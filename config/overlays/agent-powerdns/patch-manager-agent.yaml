@@ -1,0 +1,54 @@
+- op: replace
+  path: /spec/template/spec/containers/0/args
+  value:
+    - --metrics-bind-address=:8443
+    - --leader-elect
+    - --health-probe-bind-address=0
+    - --role=downstream
+    - --server-config=/config/server-config.yaml
+        
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: server-config
+    mountPath: /config
+- op: add
+  path: /spec/template/spec/containers/0/imagePullPolicy
+  value: IfNotPresent
+## Remove health probes to avoid polling a disabled port
+- op: remove
+  path: /spec/template/spec/containers/0/livenessProbe
+- op: remove
+  path: /spec/template/spec/containers/0/readinessProbe
+- op: add
+  path: /spec/template/spec/containers/0/env
+  value: []
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: PDNS_API_URL
+    value: http://localhost:8081
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: PDNS_API_VHOST
+    value: localhost
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: PDNS_API_KEY_FILE
+    value: /run/pdns/api-key
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: server-config
+    configMap:
+      name: server-config
+
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: pdns-shared
+    mountPath: /run/pdns
+
+

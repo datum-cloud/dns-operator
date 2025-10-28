@@ -164,6 +164,31 @@ spec:
                       items:
                         type: string
                       type: array
+                    soa:
+                      properties:
+                        expire:
+                          format: int32
+                          type: integer
+                        mname:
+                          type: string
+                        refresh:
+                          format: int32
+                          type: integer
+                        retry:
+                          format: int32
+                          type: integer
+                        rname:
+                          type: string
+                        serial:
+                          format: int32
+                          type: integer
+                        ttl:
+                          format: int32
+                          type: integer
+                      required:
+                      - mname
+                      - rname
+                      type: object
                     srv:
                       items:
                         properties:

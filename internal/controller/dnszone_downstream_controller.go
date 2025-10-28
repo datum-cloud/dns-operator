@@ -18,7 +18,11 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,20 +38,45 @@ type DNSZoneReconciler struct {
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszoneclasses,verbs=get;list;watch
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the DNSZone object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	logger := logf.FromContext(ctx)
+	logger.Info("dnszone reconcile start", "namespace", req.Namespace, "name", req.Name)
 
-	// TODO(user): your logic here
+	var zone dnsv1alpha1.DNSZone
+	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// If class is set and equals "powerdns", ensure in PDNS (status handled by replicator)
+	if zone.Spec.DNSZoneClassName != "" {
+		var zc dnsv1alpha1.DNSZoneClass
+		if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
+			return ctrl.Result{}, client.IgnoreNotFound(err)
+		}
+		if zc.Spec.ControllerName == ControllerNamePowerDNS {
+			cli, err := pdnsclient.NewFromEnv()
+			if err != nil {
+				logger.Error(err, "pdns client init")
+				return ctrl.Result{}, fmt.Errorf("pdns client: %w", err)
+			}
+			// Ensure zone exists or create (no status updates here)
+			if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
+				// nameservers from class policy (Static)
+				var nss []string
+				if zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
+					nss = append(nss, zc.Spec.NameServerPolicy.Static.Servers...)
+				}
+				if err := cli.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
+					logger.Error(err, "create pdns zone")
+					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
+			}
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
@@ -55,8 +84,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 // SetupWithManager sets up the controller with the Manager.
 func (r *DNSZoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		// Uncomment the following line adding a pointer to an instance of the controlled resource as an argument
-		// For().
+		For(&dnsv1alpha1.DNSZone{}).
 		Named("dnszone").
 		Complete(r)
 }

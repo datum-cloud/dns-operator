@@ -5,6 +5,14 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets
@@ -33,3 +41,11 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszoneclasses
+  verbs:
+  - get
+  - list
+  - watch

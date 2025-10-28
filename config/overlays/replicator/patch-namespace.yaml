@@ -1,0 +1,6 @@
+- op: replace
+  path: /metadata/namespace
+  value: dns-replicator-system
+
+
+

@@ -1,0 +1,57 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dns-agent-system
+
+resources:
+  - ../../default
+  - ../../components/powerdns/service.yaml
+
+configMapGenerator:
+  - name: server-config
+    files:
+      - server-config.yaml
+
+patches:
+  - path: patch-manager-agent.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  - path: patch-manager-merge-pdns.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  - path: patch-namespace.yaml
+    target:
+      kind: ServiceAccount
+      name: controller-manager
+  - path: patch-namespace.yaml
+    target:
+      kind: Service
+      name: controller-manager-metrics-service
+  - path: patch-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: manager-rolebinding
+  - path: patch-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: metrics-auth-rolebinding
+  - path: patch-crb-subject-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: manager-rolebinding
+  - path: patch-crb-subject-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: metrics-auth-rolebinding
+  - path: patch-namespace.yaml
+    target:
+      kind: RoleBinding
+      name: leader-election-rolebinding
+  
+secretGenerator:
+  - name: pdns-api
+    literals:
+      - apiKey=adminsecret
+

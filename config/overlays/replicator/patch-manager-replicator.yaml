@@ -1,0 +1,21 @@
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --role=replicator
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --server-config=/config/server-config.yaml
+- op: add
+  path: /spec/template/spec/containers/0/imagePullPolicy
+  value: IfNotPresent
+- op: add
+  path: /spec/template/spec/containers/0/volumeMounts/-
+  value:
+    name: server-config
+    mountPath: /config
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: server-config
+    configMap:
+      name: server-config
+

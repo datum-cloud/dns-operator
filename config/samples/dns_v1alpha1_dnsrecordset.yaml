@@ -4,6 +4,14 @@ metadata:
   labels:
     app.kubernetes.io/name: dns-operator
     app.kubernetes.io/managed-by: kustomize
-  name: dnsrecordset-sample
+  name: www-example-com
 spec:
-  # TODO(user): Add fields here
+  dnsZoneRef:
+    name: example-com
+  recordType: A
+  records:
+  - name: www
+    ttl: 300
+    a:
+      content:
+      - 10.0.0.1

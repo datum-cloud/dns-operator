@@ -74,6 +74,8 @@ type RecordEntry struct {
 	// +optional
 	TXT *SimpleValues `json:"txt,omitempty"`
 	// +optional
+	SOA *SOARecordSpec `json:"soa,omitempty"`
+	// +optional
 	CAA []CAARecordSpec `json:"caa,omitempty"`
 	// +optional
 	MX []MXRecordSpec `json:"mx,omitempty"`
@@ -114,7 +116,6 @@ type CAARecordSpec struct {
 }
 
 type TLSARecordSpec struct {
-	// Common TLSA tuple: usage, selector, matching type, value
 	Usage        uint8  `json:"usage"`
 	Selector     uint8  `json:"selector"`
 	MatchingType uint8  `json:"matchingType"`
@@ -125,6 +126,21 @@ type HTTPSRecordSpec struct {
 	Priority uint16            `json:"priority"`
 	Target   string            `json:"target"`
 	Params   map[string]string `json:"params,omitempty"`
+}
+
+type SOARecordSpec struct {
+	MName string `json:"mname"`
+	RName string `json:"rname"`
+	// +optional
+	Serial uint32 `json:"serial,omitempty"`
+	// +optional
+	Refresh uint32 `json:"refresh,omitempty"`
+	// +optional
+	Retry uint32 `json:"retry,omitempty"`
+	// +optional
+	Expire uint32 `json:"expire,omitempty"`
+	// +optional
+	TTL uint32 `json:"ttl,omitempty"`
 }
 
 // DNSRecordSetStatus defines the observed state of DNSRecordSet.

@@ -4,6 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: dns-operator
     app.kubernetes.io/managed-by: kustomize
-  name: dnszone-sample
+  name: example-com
 spec:
-  # TODO(user): Add fields here
+  domainName: example.com
+  dnsZoneClassName: powerdns-static

@@ -1,0 +1,68 @@
+- op: add
+  path: /spec/template/spec/containers/-
+  value:
+    name: pdns
+    image: powerdns/pdns-auth-51:latest
+    imagePullPolicy: IfNotPresent
+    ports:
+      - containerPort: 53
+        name: dns
+        protocol: UDP
+      - containerPort: 53
+        name: dns-tcp
+        protocol: TCP
+      - containerPort: 8081
+        name: api
+        protocol: TCP
+    volumeMounts:
+      - name: pdns-shared
+        mountPath: /run/pdns
+    command: ["/bin/sh","-c"]
+    args:
+      - |
+        set -eu;
+        exec pdns_server \
+          --api-key="$(cat /run/pdns/api-key)" --api=yes
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: false
+      capabilities:
+        add: ["NET_BIND_SERVICE"]
+ 
+- op: add
+  path: /spec/template/metadata/labels/app
+  value: pdns-auth
+
+- op: add
+  path: /spec/selector/matchLabels/app
+  value: pdns-auth
+
+# Add init container that generates a random API key and writes to emptyDir
+- op: add
+  path: /spec/template/spec/initContainers
+  value: []
+
+- op: add
+  path: /spec/template/spec/initContainers/-
+  value:
+    name: init-pdns-key
+    image: busybox:1.36
+    command: ["/bin/sh","-c"]
+    args:
+      - 'set -eu; mkdir -p /run/pdns; umask 077; KEY=$(head -c32 /dev/urandom | od -An -tx1 | tr -d " \n"); echo -n "$KEY" > /run/pdns/api-key; chown -R 65532:65532 /run/pdns; chmod 0400 /run/pdns/api-key;'
+    volumeMounts:
+      - name: pdns-shared
+        mountPath: /run/pdns
+    securityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+
+# Ensure emptyDir volume present
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: pdns-shared
+    emptyDir: {}
+

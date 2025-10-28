@@ -10,6 +10,8 @@
 
 bin/
 vendor/
+dist/
+dev/
 .go-version
 
 # Test binary, built with `go test -c`

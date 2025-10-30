@@ -1,2 +1,7 @@
 resources:
 - manager.yaml
+
+images:
+- name: ghcr.io/datum-cloud/dns-operator
+  newName: ghcr.io/datum-cloud/dns-operator
+  newTag: latest

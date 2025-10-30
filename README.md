@@ -1,4 +1,4 @@
-## dns-operator
+## datum-dns-operator
 
 Kubernetes operator for managing DNS zones and records, with a pluggable backend architecture. This repository provides:
 - Custom resources to model zones, recordsets, and zone classes

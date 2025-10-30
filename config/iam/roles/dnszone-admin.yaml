@@ -1,0 +1,18 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: dns.networking.miloapis.com-dnszone-admin
+  annotations:
+    kubernetes.io/display-name: DNS Zone Admin
+    kubernetes.io/description: "Full access to DNSZone resources"
+spec:
+  launchStage: Beta
+  inheritedRoles:
+    - name: dns.networking.miloapis.com-dnszone-viewer
+  includedPermissions:
+    - dns.networking.miloapis.com/dnszones.create
+    - dns.networking.miloapis.com/dnszones.update
+    - dns.networking.miloapis.com/dnszones.patch
+    - dns.networking.miloapis.com/dnszones.delete
+
+

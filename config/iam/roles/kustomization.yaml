@@ -1,0 +1,10 @@
+# This kustomization program is used to create all of the Milo IAM roles that
+# are available to users.
+#
+# Each role should have a corresponding configuration file in this directory.
+
+resources:
+  - dnszone-viewer.yaml
+  - dnszone-admin.yaml
+  - dnsrecordset-viewer.yaml
+  - dnsrecordset-admin.yaml

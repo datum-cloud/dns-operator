@@ -1,0 +1,15 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: dns.networking.miloapis.com-dnsrecordset-viewer
+  annotations:
+    kubernetes.io/display-name: DNS RecordSet Viewer
+    kubernetes.io/description: "View access to DNSRecordSet resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - dns.networking.miloapis.com/dnsrecordsets.list
+    - dns.networking.miloapis.com/dnsrecordsets.get
+    - dns.networking.miloapis.com/dnsrecordsets.watch
+
+

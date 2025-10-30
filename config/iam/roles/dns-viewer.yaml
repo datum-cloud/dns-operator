@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: dns.networking.miloapis.com-dns-viewer
+  annotations:
+    kubernetes.io/display-name: DNS Viewer
+    kubernetes.io/description: "View access to DNS resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - dns.networking.miloapis.com/dnszones.list
+    - dns.networking.miloapis.com/dnszones.get
+    - dns.networking.miloapis.com/dnszones.watch
+    - dns.networking.miloapis.com/dnsrecordsets.list
+    - dns.networking.miloapis.com/dnsrecordsets.get
+    - dns.networking.miloapis.com/dnsrecordsets.watch
+    - dns.networking.miloapis.com/dnszoneclasses.list
+    - dns.networking.miloapis.com/dnszoneclasses.get
+    - dns.networking.miloapis.com/dnszoneclasses.watch
+
+

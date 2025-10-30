@@ -48,4 +48,13 @@ patches:
     target:
       kind: RoleBinding
       name: leader-election-rolebinding
+  - path: patch-certificate-dnsnames.yaml
+    target:
+      kind: Certificate
+      name: serving-cert
+  - path: patch-mwc-ca-injection.yaml
+    target:
+      kind: MutatingWebhookConfiguration
+      name: dns-operator-mutating-webhook-configuration
+
 

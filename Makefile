@@ -164,6 +164,14 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: cert-manager
+cert-manager: kustomize cmctl ## Install cert-manager into the cluster selected by CONTEXT and/or KUBECONFIG
+	@FLAGS="$(if $(CONTEXT),--context $(CONTEXT),) $(if $(KUBECONFIG),--kubeconfig $(KUBECONFIG),)"; \
+	echo "[cert-manager] applying to $$FLAGS"; \
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager \
+	  | $(KUBECTL) $$FLAGS apply --server-side=true --force-conflicts -f -; \
+	$(CMCTL) $$FLAGS check api --wait=5m
+
 ##@ Kind bootstrap
 
 # Cluster names
@@ -236,6 +244,7 @@ secret-from-file: ## Create or update a secret from a file in NAMESPACE on CONTE
 bootstrap-downstream: ## Create kind downstream and deploy agent with embedded PowerDNS
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-create
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) cert-manager
 	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/agent-powerdns $(MAKE) kustomize-apply
 	# Export external kubeconfig for downstream cluster (reachable from host/other containers)
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
@@ -245,6 +254,7 @@ bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to do
 	@test -n "$(DOWNSTREAM_KUBECONFIG)" || { echo "DOWNSTREAM_KUBECONFIG is required. Generate with: make export-downstream-kubeconfig OUT=dev/downstream.kubeconfig"; exit 1; }
 	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-create
 	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) $(MAKE) cert-manager
 	# Ensure namespace exists for secret
 	$(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) create namespace dns-replicator-system --dry-run=client -o yaml | $(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) apply -f -
 	# Create secret with downstream kubeconfig in upstream cluster
@@ -307,6 +317,7 @@ DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 CHAINSAW ?= $(LOCALBIN)/chainsaw
+CMCTL ?= $(LOCALBIN)/cmctl
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
@@ -319,6 +330,8 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.4.0
 CHAINSAW_VERSION ?= v0.2.13
+CERTMANAGER_VERSION ?= 1.17.1
+CMCTL_VERSION ?= v2.1.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -353,6 +366,10 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: cmctl
+cmctl: ## Find or download cmctl
+	$(call go-install-tool,$(CMCTL),github.com/cert-manager/cmctl/v2,$(CMCTL_VERSION))
 
 .PHONY: chainsaw
 chainsaw: ## Find or download chainsaw

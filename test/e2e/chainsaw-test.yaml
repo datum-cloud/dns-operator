@@ -150,7 +150,7 @@ spec:
             recordType: A
             records:
             - name: www
-              ttl: 300
+              ttl: 5
               a:
                 content:
                 - 10.0.0.1
@@ -161,6 +161,10 @@ spec:
           kind: DNSRecordSet
           metadata:
             name: www-example-com
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: example-com
 
   - name: Confirm DNSRecordSet replicated downstream
     try:
@@ -181,6 +185,10 @@ spec:
           metadata:
             name: www-example-com
             namespace: ($downstreamNamespaceName)
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: example-com
 
   - name: Confirm DNSRecordSet Accepted/Programmed upstream
     try:
@@ -197,5 +205,92 @@ spec:
               status: "True"
             - type: Programmed
               status: "True"
+
+  - name: DNS queries from downstream to PDNS (SOA/NS/A)
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: dns
+              image: infoblox/dnstools:latest
+              command: ["sleep","3600"]
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils
+            namespace: default
+          status:
+            phase: Running
+    - script:
+        cluster: downstream
+        content: |
+          set -euo pipefail
+          # wait for pod ready condition
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils
+          # Execute dig from inside the dnsutils pod (in-cluster DNS context)
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com SOA +short | awk '{print \$1}' | grep -E '^ns1\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns1\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns2\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short | grep -E '^10\\.0\\.0\\.1$'"
+
+  - name: Assert DNSZone recordCount is 3 (SOA + NS + A)
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            recordCount: 3
+
+  - name: Delete A record and verify PDNS cleanup
+    try:
+    - script:
+        cluster: upstream
+        content: |
+          set -euo pipefail
+          # Delete upstream recordset if it exists and wait for deletion
+          kubectl -n "$NAMESPACE" delete dnsrecordset www-example-com --ignore-not-found --wait=true
+    - script:
+        cluster: upstream
+        content: |
+          set -euo pipefail
+          # Confirm it no longer exists upstream
+          if kubectl -n "$NAMESPACE" get dnsrecordset www-example-com >/dev/null 2>&1; then
+            echo "upstream DNSRecordSet still exists" >&2
+            exit 1
+          fi
+    - script:
+        cluster: downstream
+        content: |
+          set -euo pipefail
+          # verify A record no longer resolves
+          kubectl -n default exec pod/dnsutils -- sh -lc '
+          out=$(dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short +tries=1 +time=1); 
+          printf ">>>%s<<<\n" "$out"; 
+          [ -z "$out" ] && echo "EMPTY" || echo "NONEMPTY"
+          '
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            recordCount: 2
 
 

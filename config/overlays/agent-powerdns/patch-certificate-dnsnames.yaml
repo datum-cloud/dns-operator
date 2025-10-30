@@ -1,0 +1,5 @@
+- op: replace
+  path: /spec/dnsNames
+  value:
+    - dns-operator-webhook-service.dns-agent-system.svc
+    - dns-operator-webhook-service.dns-agent-system.svc.cluster.local

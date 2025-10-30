@@ -33,6 +33,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
+	"go.miloapis.com/dns-operator/internal/webhook/v1alpha1"
 )
 
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
@@ -55,6 +56,39 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	var rs dnsv1alpha1.DNSRecordSet
 	if err := r.Get(ctx, req.NamespacedName, &rs); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// --- Deletion path: MUST clean PDNS before removing finalizer ---
+	if !rs.DeletionTimestamp.IsZero() {
+		if containsString(rs.Finalizers, v1alpha1.DownstreamRSFinalizer) {
+			// Fetch zone (if absent or empty => nothing to clean; treat as success)
+			var zone dnsv1alpha1.DNSZone
+			err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone)
+			if err != nil {
+				logger.Error(err, "failed to get zone", "ns", req.Namespace, "name", rs.Spec.DNSZoneRef.Name)
+				return ctrl.Result{}, err
+			}
+
+			ok, err := r.cleanupPDNSForRecordSet(ctx, &rs, &zone)
+			if err != nil {
+				logger.Error(err, "pdns cleanup failed; will retry", "zone", zone.Spec.DomainName)
+				// Requeue to try again; keep finalizer so object doesn't disappear prematurely
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+			if !ok {
+				logger.Error(err, "not ok; pdns cleanup failed; will retry", "zone", zone.Spec.DomainName)
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+
+			// PDNS cleanup succeeded (or was a no-op) -> remove finalizer (conflict-safe)
+			base := rs.DeepCopy()
+			rs.Finalizers = removeString(rs.Finalizers, v1alpha1.DownstreamRSFinalizer)
+			if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+				logger.Error(err, "failed to remove finalizer", "ns", rs.Namespace, "name", rs.Name)
+				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+			}
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Fetch zone to locate class
@@ -136,4 +170,60 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}).
 		Named("dnsrecordset").
 		Complete(r)
+}
+
+// cleanupPDNSForRecordSet ensures the RRsets represented by rs are removed from PDNS.
+// Returns (true,nil) when cleanup is complete (or nothing to do), (false,nil) when
+// it should be retried shortly, or (false,err) on failure.
+func (r *DNSRecordSetReconciler) cleanupPDNSForRecordSet(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) (bool, error) {
+	// If we don't know the domain, there's nothing to clean with PDNS.
+	if zone == nil || zone.Spec.DomainName == "" {
+		return true, nil
+	}
+
+	cli, err := pdnsclient.NewFromEnv()
+	if err != nil {
+		return false, fmt.Errorf("pdns client: %w", err)
+	}
+
+	// If PDNS zone doesn't exist, consider cleanup done.
+	if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
+		return true, nil
+	}
+
+	// Authoritatively apply an empty set for this recordset (delete semantics).
+	toDelete := rs.DeepCopy()
+	toDelete.Spec.Records = nil
+
+	// Bound the external call; but allow enough to finish deterministically.
+	pdnsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := cli.ApplyRecordSetAuthoritative(pdnsCtx, zone.Spec.DomainName, *toDelete); err != nil {
+		// distinguish transient vs permanent if your client exposes that; otherwise retry
+		return false, fmt.Errorf("pdns apply delete: %w", err)
+	}
+
+	// Optionally: verify deletion (idempotency) by a lightweight read if your client supports it.
+	// If not, trust the 2xx response above and declare success.
+	return true, nil
+}
+
+func containsString(list []string, s string) bool {
+	for i := range list {
+		if list[i] == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(list []string, s string) []string {
+	out := make([]string, 0, len(list))
+	for i := range list {
+		if list[i] != s {
+			out = append(out, list[i])
+		}
+	}
+	return out
 }

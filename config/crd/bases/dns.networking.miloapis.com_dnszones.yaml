@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
+    - jsonPath: .status.recordCount
+      name: Records
+      type: integer
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -126,6 +129,10 @@ spec:
                 items:
                   type: string
                 type: array
+              recordCount:
+                description: RecordCount is the number of DNSRecordSet resources in
+                  this namespace that reference this zone.
+                type: integer
             type: object
         required:
         - spec

@@ -21,6 +21,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
+	v1alpha1 "go.miloapis.com/dns-operator/internal/webhook/v1alpha1"
 )
 
 type DNSRecordSetReplicator struct {
@@ -28,17 +29,12 @@ type DNSRecordSetReplicator struct {
 	DownstreamClient client.Client
 }
 
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
-// Reconcile flow (high-level):
-// 1) Fetch upstream object
-// 2) Handle deletion (best-effort downstream cleanup)
-// 3) Gate on referenced DNSZone existence
-// 4) Ensure downstream shadow via CreateOrPatch
-// 5) Synthesize and update upstream Status conditions
 func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
@@ -59,34 +55,48 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
-	// Deletion path: best-effort cleanup of the anchor and exit early
+	// Deletion path: downstream-first via finalizer (finalizer is added by the mutating webhook).
 	if !upstream.DeletionTimestamp.IsZero() {
-		if err := r.handleDeletion(ctx, strategy, &upstream); err != nil {
-			lg.Error(err, "deleting anchor")
+		if err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream); err != nil {
+			lg.V(1).Info("downstream still deleting; requeueing")
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
+		// finalizer removed; allow upstream object to finalize
 		return ctrl.Result{}, nil
 	}
 
-	// Gate on referenced DNSZone
-	accepted, zoneMsg, err := r.zoneAccepted(ctx, upstreamCluster.GetClient(), req.Namespace, upstream.Spec.DNSZoneRef.Name)
-	if err != nil {
+	// Gate on referenced DNSZone early and update status when missing
+	var zoneMsg string
+	if upstream.Spec.DNSZoneRef.Name == "" {
+		zoneMsg = "DNSZoneRef not set"
+		if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, zoneMsg, metav1.ConditionFalse, upstream.Generation) {
+			_ = upstreamCluster.GetClient().Status().Update(ctx, &upstream)
+		}
+		return ctrl.Result{}, nil
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := upstreamCluster.GetClient().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone); err != nil {
+		if apierrors.IsNotFound(err) {
+			zoneMsg = fmt.Sprintf("DNSZone %q not found", upstream.Spec.DNSZoneRef.Name)
+			if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, zoneMsg, metav1.ConditionFalse, upstream.Generation) {
+				if err := upstreamCluster.GetClient().Status().Update(ctx, &upstream); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err
+	} else {
+		zoneMsg = fmt.Sprintf("DNSZone %q exists", upstream.Spec.DNSZoneRef.Name)
 	}
 
-	// Ensure the downstream shadow object mirrors the upstream spec
-	op, err := r.ensureShadow(ctx, strategy, &upstream)
-	if err != nil {
+	// Ensure the downstream recordset object mirrors the upstream spec
+	if _, err = r.ensureDownstreamRecordSet(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
-	}
-	switch op {
-	case controllerutil.OperationResultCreated:
-		lg.Info("created downstream DNSRecordSet")
-	case controllerutil.OperationResultUpdated:
-		lg.Info("updated downstream DNSRecordSet")
 	}
 
 	// Update upstream status conditions to reflect acceptance & programming state
-	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, accepted, zoneMsg); err != nil {
+	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, true, zoneMsg); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
 		}
@@ -105,29 +115,57 @@ func (r *DNSRecordSetReplicator) fetchUpstream(ctx context.Context, cl cluster.C
 	return upstream, nil
 }
 
-func (r *DNSRecordSetReplicator) handleDeletion(ctx context.Context, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSRecordSet) error {
-	return strategy.DeleteAnchorForObject(ctx, upstream)
-}
-
-// zoneAccepted resolves whether the referenced DNSZone exists and returns a human
-// readable message for status.
-func (r *DNSRecordSetReplicator) zoneAccepted(ctx context.Context, c client.Client, ns, zoneName string) (bool, string, error) {
-	if zoneName == "" {
-		return false, "DNSZoneRef not set", nil
+// handleDeletion deletes the downstream shadow object and removes the upstream finalizer
+// once the shadow is confirmed gone. It returns nil only when the finalizer has been removed.
+func (r *DNSRecordSetReplicator) handleDeletion(
+	ctx context.Context,
+	upstreamClient client.Client,
+	strategy downstreamclient.ResourceStrategy,
+	upstream *dnsv1alpha1.DNSRecordSet,
+) error {
+	// If no finalizer, nothing to enforce.
+	if !controllerutil.ContainsFinalizer(upstream, v1alpha1.RSFinalizer) {
+		return nil
 	}
-	var zone dnsv1alpha1.DNSZone
-	err := c.Get(ctx, types.NamespacedName{Namespace: ns, Name: zoneName}, &zone)
+
+	// Compute downstream name/namespace for this upstream object.
+	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, fmt.Sprintf("DNSZone %q not found", zoneName), nil
-		}
-		return false, "", err
+		return err
 	}
-	return true, fmt.Sprintf("DNSZone %q exists", zoneName), nil
+
+	// Issue delete for the downstream shadow (idempotent).
+	err = r.DownstreamClient.Delete(ctx, &dnsv1alpha1.DNSRecordSet{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "dns.networking.miloapis.com/v1alpha1",
+			Kind:       "DNSRecordSet",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: md.Namespace,
+			Name:      md.Name,
+		},
+	})
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	// Confirm it's gone before removing the finalizer.
+	var shadow dnsv1alpha1.DNSRecordSet
+	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Safe to remove finalizer now.
+			controllerutil.RemoveFinalizer(upstream, v1alpha1.RSFinalizer)
+			return upstreamClient.Update(ctx, upstream)
+		}
+		return err
+	}
+
+	// Still present—requeue caller by returning an error.
+	return fmt.Errorf("downstream DNSRecordSet %s/%s still deleting", md.Namespace, md.Name)
 }
 
-// ensureShadow idempotently mirrors upstream.Spec into a downstream shadow object.
-func (r *DNSRecordSetReplicator) ensureShadow(ctx context.Context, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSRecordSet) (controllerutil.OperationResult, error) {
+// ensureDownstreamRecordSet idempotently mirrors upstream.Spec into a downstream shadow object.
+func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSRecordSet) (controllerutil.OperationResult, error) {
 	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
 		return controllerutil.OperationResultNone, err
@@ -146,7 +184,7 @@ func (r *DNSRecordSetReplicator) ensureShadow(ctx context.Context, strategy down
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
 		}
-		return strategy.SetControllerReference(ctx, upstream, &shadow)
+		return nil
 	})
 }
 

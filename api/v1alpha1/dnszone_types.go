@@ -36,6 +36,10 @@ type DNSZoneStatus struct {
 	// +optional
 	Nameservers []string `json:"nameservers,omitempty"`
 
+	// RecordCount is the number of DNSRecordSet resources in this namespace that reference this zone.
+	// +optional
+	RecordCount int `json:"recordCount,omitempty"`
+
 	// Conditions tracks state such as Accepted and Programmed readiness.
 	// +listType=map
 	// +listMapKey=type
@@ -47,6 +51,7 @@ type DNSZoneStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=.status.conditions[?(@.type=="Accepted")].status
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
+// +kubebuilder:printcolumn:name="Records",type=integer,JSONPath=.status.recordCount
 
 // DNSZone is the Schema for the dnszones API
 type DNSZone struct {

@@ -21,13 +21,14 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
-	v1alpha1 "go.miloapis.com/dns-operator/internal/webhook/v1alpha1"
 )
 
 type DNSRecordSetReplicator struct {
 	mgr              mcmanager.Manager
 	DownstreamClient client.Client
 }
+
+const RSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
@@ -44,9 +45,6 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if ok := upstreamCluster.GetCache().WaitForCacheSync(ctx); !ok {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
 
 	upstream, err := r.fetchUpstream(ctx, upstreamCluster, req.NamespacedName)
 	if err != nil {
@@ -55,7 +53,19 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
-	// Deletion path: downstream-first via finalizer (finalizer is added by the mutating webhook).
+	// Ensure upstream finalizer (non-deletion path; replaces webhook defaulter)
+	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, RSFinalizer) {
+		base := upstream.DeepCopy()
+		controllerutil.AddFinalizer(&upstream, RSFinalizer)
+		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+			log.FromContext(ctx).Error(err, "failed to add DNSRecordSet finalizer")
+			return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+		}
+		// requeue to continue with updated object
+		return ctrl.Result{}, nil
+	}
+
+	// Deletion path: downstream-first via finalizer
 	if !upstream.DeletionTimestamp.IsZero() {
 		if err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream); err != nil {
 			lg.V(1).Info("downstream still deleting; requeueing")
@@ -90,6 +100,14 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 		zoneMsg = fmt.Sprintf("DNSZone %q exists", upstream.Spec.DNSZoneRef.Name)
 	}
 
+	// Ensure OwnerReference to upstream DNSZone (same ns)
+	if updated, err := ensureOwnerRefToZone(ctx, upstreamCluster.GetClient(), &upstream, &zone); err != nil {
+		return ctrl.Result{}, err
+	} else if updated {
+		// only requeue once after successful patch
+		return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+	}
+
 	// Ensure the downstream recordset object mirrors the upstream spec
 	if _, err = r.ensureDownstreamRecordSet(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
@@ -115,6 +133,44 @@ func (r *DNSRecordSetReplicator) fetchUpstream(ctx context.Context, cl cluster.C
 	return upstream, nil
 }
 
+// ensureOwnerRefToZone ensures a single OwnerReference to the current zone.
+// It replaces any existing DNSZone owner refs (stale UID / changed zone).
+func ensureOwnerRefToZone(ctx context.Context, c client.Client, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) (bool, error) {
+	desired := metav1.OwnerReference{
+		APIVersion: dnsv1alpha1.GroupVersion.String(),
+		Kind:       "DNSZone",
+		Name:       zone.Name,
+		UID:        zone.UID,
+	}
+
+	// Check if already identical
+	for _, r := range rs.OwnerReferences {
+		if r.APIVersion == desired.APIVersion &&
+			r.Kind == desired.Kind &&
+			r.Name == desired.Name &&
+			r.UID == desired.UID {
+			return false, nil // nothing to do
+		}
+	}
+
+	// Remove any old DNSZone refs
+	newRefs := make([]metav1.OwnerReference, 0, len(rs.OwnerReferences))
+	for _, r := range rs.OwnerReferences {
+		if r.APIVersion == dnsv1alpha1.GroupVersion.String() && r.Kind == "DNSZone" {
+			continue
+		}
+		newRefs = append(newRefs, r)
+	}
+
+	base := rs.DeepCopy()
+	rs.OwnerReferences = append(newRefs, desired)
+	if err := c.Patch(ctx, rs, client.MergeFrom(base)); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 // handleDeletion deletes the downstream shadow object and removes the upstream finalizer
 // once the shadow is confirmed gone. It returns nil only when the finalizer has been removed.
 func (r *DNSRecordSetReplicator) handleDeletion(
@@ -124,7 +180,7 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	upstream *dnsv1alpha1.DNSRecordSet,
 ) error {
 	// If no finalizer, nothing to enforce.
-	if !controllerutil.ContainsFinalizer(upstream, v1alpha1.RSFinalizer) {
+	if !controllerutil.ContainsFinalizer(upstream, RSFinalizer) {
 		return nil
 	}
 
@@ -154,7 +210,7 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Safe to remove finalizer now.
-			controllerutil.RemoveFinalizer(upstream, v1alpha1.RSFinalizer)
+			controllerutil.RemoveFinalizer(upstream, RSFinalizer)
 			return upstreamClient.Update(ctx, upstream)
 		}
 		return err
@@ -228,6 +284,15 @@ func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Clie
 		"programmed", getCondStatus(upstream.Status.Conditions, CondProgrammed),
 	)
 	return nil
+}
+
+func hasOwnerUID(refs []metav1.OwnerReference, uid types.UID) bool {
+	for _, r := range refs {
+		if r.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- Watches / mapping helpers -------------------------

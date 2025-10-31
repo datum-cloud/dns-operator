@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -34,6 +35,8 @@ type DNSZoneReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
+
+const DownstreamZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone-downstream"
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
@@ -49,6 +52,50 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// --- Ensure finalizer (non-deletion path) ---
+	if zone.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&zone, DownstreamZoneFinalizer) {
+			base := zone.DeepCopy()
+			zone.Finalizers = append(zone.Finalizers, DownstreamZoneFinalizer)
+			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
+				logger.Error(err, "failed to add zone finalizer")
+				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+			}
+			return ctrl.Result{}, nil
+		}
+	} else {
+		// --- Deletion path: remove from PDNS, then drop finalizer ---
+		if controllerutil.ContainsFinalizer(&zone, DownstreamZoneFinalizer) {
+			// Only manage PDNS if this zone is handled by our controller
+			var zc dnsv1alpha1.DNSZoneClass
+			if zone.Spec.DNSZoneClassName != "" {
+				if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
+					return ctrl.Result{}, client.IgnoreNotFound(err)
+				}
+			}
+			if zc.Spec.ControllerName == ControllerNamePowerDNS {
+				cli, err := pdnsclient.NewFromEnv()
+				if err != nil {
+					logger.Error(err, "pdns client init")
+					return ctrl.Result{}, fmt.Errorf("pdns client: %w", err)
+				}
+				if err := cli.DeleteZone(ctx, zone.Spec.DomainName); err != nil {
+					logger.Error(err, "delete pdns zone failed; will retry", "zone", zone.Spec.DomainName)
+					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+				}
+			}
+
+			// remove finalizer
+			base := zone.DeepCopy()
+			controllerutil.RemoveFinalizer(&zone, DownstreamZoneFinalizer)
+			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
+				logger.Error(err, "failed to remove zone finalizer")
+				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+			}
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// If class is set and equals "powerdns", ensure in PDNS (status handled by replicator)

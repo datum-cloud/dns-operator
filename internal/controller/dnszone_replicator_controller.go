@@ -33,8 +33,11 @@ type DNSZoneReplicator struct {
 	DownstreamClient client.Client
 }
 
+const DNSZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
+
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
@@ -48,14 +51,65 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if ok := upstreamCl.GetCache().WaitForCacheSync(ctx); !ok {
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-	}
 
 	// 1) Fetch upstream
 	upstream, err := r.fetchUpstream(ctx, upstreamCl, req.NamespacedName)
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// --- Ensure finalizer on creation/update (non-deletion path) ---
+	if upstream.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&upstream, DNSZoneFinalizer) {
+			base := upstream.DeepCopy()
+			upstream.Finalizers = append(upstream.Finalizers, DNSZoneFinalizer)
+			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+				lg.Error(err, "failed to add upstream finalizer")
+				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+			}
+			// Re-run with updated object
+			return ctrl.Result{}, nil
+		}
+	} else {
+		// Deletion guard: ensure downstream is gone before removing finalizer
+		if controllerutil.ContainsFinalizer(&upstream, DNSZoneFinalizer) {
+			strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCl.GetClient(), r.DownstreamClient)
+
+			// Request deletion of downstream anchor/shadow
+			if err := r.handleDeletion(ctx, strategy, &upstream); err != nil && !apierrors.IsNotFound(err) {
+				lg.Error(err, "downstream delete failed; will retry")
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+
+			// Verify downstream object is actually gone before dropping finalizer
+			md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream)
+			if mdErr != nil {
+				lg.Error(mdErr, "failed to compute downstream metadata; will retry")
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+			var shadow dnsv1alpha1.DNSZone
+			shadow.SetNamespace(md.Namespace)
+			shadow.SetName(md.Name)
+			getErr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow)
+			if getErr == nil {
+				// Still exists; wait
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+			if !apierrors.IsNotFound(getErr) {
+				// Transient error; retry
+				lg.Error(getErr, "failed to check downstream deletion; will retry")
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+
+			// Downstream is confirmed gone -> remove upstream finalizer (conflict-safe)
+			base := upstream.DeepCopy()
+			controllerutil.RemoveFinalizer(&upstream, DNSZoneFinalizer)
+			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+				lg.Error(err, "failed to remove upstream finalizer")
+				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+			}
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// If DNSZoneClassName is not set, set Accepted=False with reason

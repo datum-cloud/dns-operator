@@ -94,6 +94,28 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 	return zoneResponse.Name, nil
 }
 
+// in package pdns (same file as CreateZone/GetZone)
+func (c *Client) DeleteZone(ctx context.Context, zone string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone
+	}
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("pdns delete zone failed: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // GetZoneRRSets fetches all rrsets for a zone and returns them.
 func (c *Client) GetZoneRRSets(ctx context.Context, zone string) ([]zoneRRset, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", nil)
@@ -182,31 +204,6 @@ func (c *Client) UpdateSOA(ctx context.Context, zone, mname, rname string) error
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("pdns update soa failed: status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// ApplyRecordSet translates our DNSRecordSet into PDNS rrsets and applies them with REPLACE.
-func (c *Client) ApplyRecordSet(ctx context.Context, zone string, rs dnsv1alpha1.DNSRecordSet) error {
-	rrsets := buildRRSets(zone, rs)
-	if len(rrsets) == 0 {
-		return nil
-	}
-	payload := patchZoneRequest{RRSets: rrsets}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-API-Key", c.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("pdns apply recordset failed: status %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -8,3 +8,4 @@ discovery:
 downstreamResourceManagement:
   kubeconfigPath: "/downstream/kubeconfig"
 
+ 

@@ -51,7 +51,7 @@ Kubernetes operator for managing DNS zones and records, with a pluggable backend
 
 ### Deployment Overlays
 
-- `config/overlays/agent-powerdns/`
+- `config/agent/`
   - Namespace: `dns-agent-system`
   - Runs the operator with `--role=downstream`
   - Merges a `pdns` sidecar container into the controller Deployment to run PowerDNS alongside the manager
@@ -67,8 +67,7 @@ Kubernetes operator for managing DNS zones and records, with a pluggable backend
 
 ### Quickstart: Agent with embedded PowerDNS
 1. Install CRDs and default manifests:
-   - `kubectl apply -k config/crd`
-   - `kubectl apply -k config/overlays/agent-powerdns`
+   - `kubectl apply -k config/agent`
 2. Create a `DNSZoneClass` for PowerDNS with static nameservers, for example:
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1

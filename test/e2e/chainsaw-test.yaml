@@ -185,10 +185,6 @@ spec:
           metadata:
             name: www-example-com
             namespace: ($downstreamNamespaceName)
-            ownerReferences:
-            - apiVersion: dns.networking.miloapis.com/v1alpha1
-              kind: DNSZone
-              name: example-com
 
   - name: Confirm DNSRecordSet Accepted/Programmed upstream
     try:

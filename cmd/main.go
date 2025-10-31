@@ -51,8 +51,6 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
-	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
-	webhookv1alpha1 "go.miloapis.com/dns-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -158,8 +156,6 @@ func main() {
 		webhookServerOptions.KeyName = webhookCertKey
 	}
 
-	webhookServer := webhook.NewServer(webhookServerOptions)
-
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/metrics/server
@@ -200,18 +196,12 @@ func main() {
 		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
-			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
 			LeaderElectionID:       "1813fe7c.datum.cloud",
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to start manager")
-			os.Exit(1)
-		}
-
-		if err := webhookv1alpha1.SetupDownstreamDNSRecordSetWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up DNSRecordSet webhook on downstream manager")
 			os.Exit(1)
 		}
 
@@ -243,7 +233,6 @@ func main() {
 		return
 
 	case "replicator":
-		clusterAwareWebhookServer := dnswebhook.NewClusterAwareWebhookServer(webhookServer, serverConfig.Discovery.Mode)
 		// Build downstream cluster from server config
 		downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
 		if err != nil {
@@ -277,15 +266,9 @@ func main() {
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
 			LeaderElectionID:       "1813fe7c.datum.cloud",
-			WebhookServer:          clusterAwareWebhookServer,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to start multicluster manager")
-			os.Exit(1)
-		}
-
-		if err := webhookv1alpha1.SetupDNSRecordSetWebhookWithManager(mcmgr); err != nil {
-			setupLog.Error(err, "unable to set up DNSRecordSet webhook on replicator manager")
 			os.Exit(1)
 		}
 

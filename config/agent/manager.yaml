@@ -1,34 +1,25 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    control-plane: controller-manager
-    app.kubernetes.io/name: dns-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: system
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
+  name: pdns-auth
   namespace: system
   labels:
-    control-plane: controller-manager
-    app.kubernetes.io/name: dns-operator
+    control-plane: controller-agent
+    app.kubernetes.io/name: pdns-auth
     app.kubernetes.io/managed-by: kustomize
 spec:
   selector:
     matchLabels:
-      control-plane: controller-manager
-      app.kubernetes.io/name: dns-operator
+      control-plane: controller-agent
+      app.kubernetes.io/name: pdns-auth
   replicas: 1
   template:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
       labels:
-        control-plane: controller-manager
-        app.kubernetes.io/name: dns-operator
+        control-plane: controller-agent
+        app.kubernetes.io/name: pdns-auth
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression
       # according to the platforms which are supported by your solution.
@@ -54,22 +45,44 @@ spec:
         # Projects are configured by default to adhere to the "restricted" Pod Security Standards.
         # This ensures that deployments meet the highest security requirements for Kubernetes.
         # For more details, see: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
-        runAsNonRoot: true
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+      - name: init-pdns-key
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -euo pipefail
+            mkdir -p /run/pdns
+            umask 077
+            KEY=$(head -c32 /dev/urandom | od -An -tx1 | tr -d " \n")
+            printf "%s" "$KEY" > /run/pdns/api-key
+            chmod 0440 /run/pdns/api-key
+        volumeMounts:
+        - name: pdns-shared
+          mountPath: /run/pdns
+        securityContext:
+          runAsUser: 65532
       containers:
       - command:
         - /manager
         args:
-          - --role=replicator
-          - --leader-elect
+          - --role=downstream
           - --health-probe-bind-address=:8081
           - --server-config=/config/server-config.yaml
+        env:
+        - name: PDNS_API_URL
+          value: http://localhost:8082
+        - name: PDNS_API_KEY_FILE
+          value: /run/pdns/api-key
         image: ghcr.io/datum-cloud/dns-operator:latest
         imagePullPolicy: IfNotPresent
         name: manager
         ports: []
         securityContext:
+          runAsNonRoot: true
           readOnlyRootFilesystem: true
           allowPrivilegeEscalation: false
           capabilities:
@@ -99,9 +112,40 @@ spec:
         volumeMounts:
         - name: server-config
           mountPath: /config
+        - name: pdns-shared
+          mountPath: /run/pdns
+      - name: pdns
+        image: powerdns/pdns-auth-51:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 53
+            name: dns
+            protocol: UDP
+          - containerPort: 53
+            name: dns-tcp
+            protocol: TCP
+          - containerPort: 8082
+            name: api
+            protocol: TCP
+        volumeMounts:
+          - name: pdns-shared
+            mountPath: /run/pdns
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -eu;
+            exec pdns_server \
+              --api-key="$(cat /run/pdns/api-key)" --api=yes --webserver-port=8082
+        securityContext:
+          capabilities:
+            drop:
+            - "ALL"
+            add: ["NET_BIND_SERVICE"]
       volumes:
       - name: server-config
         configMap:
-          name: server-config
+          name: agent-server-config
+      - name: pdns-shared
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

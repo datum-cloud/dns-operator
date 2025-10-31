@@ -6,16 +6,8 @@ namespace: dns-replicator-system
 resources:
   - ../../default
 
-configMapGenerator:
-  - name: server-config
-    files:
-      - server-config.yaml
-
 patches:
-  - path: patch-manager-replicator.yaml
-    target:
-      kind: Deployment
-      name: controller-manager
+  # base now defaults to replicator; no extra manager patch needed
   - path: patch-downstream-kubeconfig.yaml
     target:
       kind: Deployment
@@ -36,25 +28,9 @@ patches:
     target:
       kind: ClusterRoleBinding
       name: metrics-auth-rolebinding
-  - path: patch-crb-subject-namespace.yaml
-    target:
-      kind: ClusterRoleBinding
-      name: manager-rolebinding
-  - path: patch-crb-subject-namespace.yaml
-    target:
-      kind: ClusterRoleBinding
-      name: metrics-auth-rolebinding
   - path: patch-namespace.yaml
     target:
       kind: RoleBinding
       name: leader-election-rolebinding
-  - path: patch-certificate-dnsnames.yaml
-    target:
-      kind: Certificate
-      name: serving-cert
-  - path: patch-mwc-ca-injection.yaml
-    target:
-      kind: MutatingWebhookConfiguration
-      name: dns-operator-mutating-webhook-configuration
 
 

@@ -1,11 +1,15 @@
 resources:
+- ../crd
+- ../rbac
+- namespace.yaml
 - manager.yaml
+- pdns-service.yaml
 
 generatorOptions:
   disableNameSuffixHash: true
 
 configMapGenerator:
-- name: server-config
+- name: agent-server-config
   files:
   - server-config.yaml
 

@@ -106,7 +106,10 @@ func (c *Client) DeleteZone(ctx context.Context, zone string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// drain is optional for DELETE (usually no body), but Close error must be handled
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil // already gone
 	}

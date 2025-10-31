@@ -286,15 +286,6 @@ func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Clie
 	return nil
 }
 
-func hasOwnerUID(refs []metav1.OwnerReference, uid types.UID) bool {
-	for _, r := range refs {
-		if r.UID == uid {
-			return true
-		}
-	}
-	return false
-}
-
 // ---- Watches / mapping helpers -------------------------
 func (r *DNSRecordSetReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
 	r.mgr = mgr

@@ -4,7 +4,5 @@
 # Each role should have a corresponding configuration file in this directory.
 
 resources:
-  - dnszone-viewer.yaml
-  - dnszone-admin.yaml
-  - dnsrecordset-viewer.yaml
-  - dnsrecordset-admin.yaml
+  - dns-viewer.yaml
+  - dns-admin.yaml

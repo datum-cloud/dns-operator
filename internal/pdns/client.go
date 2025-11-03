@@ -180,37 +180,6 @@ type zoneRRsetRecord struct {
 	Disabled bool   `json:"disabled"`
 }
 
-// UpdateSOA replaces the SOA rrset for the given zone with provided MNAME and RNAME.
-func (c *Client) UpdateSOA(ctx context.Context, zone, mname, rname string) error {
-	serial := time.Now().Format("20060102") + "01"
-	soaContent := fmt.Sprintf("%s %s %s 10800 3600 604800 3600", mname, rname, serial)
-	payload := patchZoneRequest{
-		RRSets: []rrset{{
-			Name:       zone + ".",
-			Type:       "SOA",
-			TTL:        3600,
-			ChangeType: "REPLACE",
-			Records:    []rrsetRecord{{Content: soaContent, Disabled: false}},
-		}},
-	}
-	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("X-API-Key", c.APIKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("pdns update soa failed: status %d", resp.StatusCode)
-	}
-	return nil
-}
-
 // ApplyRecordSetAuthoritative ensures rrsets for the given record type match exactly the owners provided
 // in rs.Spec.Records: it REPLACEs provided owners and DELETEs any extra owners of the same type in PDNS.
 func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, rs dnsv1alpha1.DNSRecordSet) error {

@@ -218,7 +218,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	// Build desired SOA DNSRecordSet
 	mname := "ns1." + upstream.Spec.DomainName + "."
 	// Prefer the first static nameserver from the class, if available
-	if zc != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
+	if zc != nil && zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
 		if len(zc.Spec.NameServerPolicy.Static.Servers) > 0 && zc.Spec.NameServerPolicy.Static.Servers[0] != "" {
 			ns := zc.Spec.NameServerPolicy.Static.Servers[0]
 			if ns[len(ns)-1] != '.' {
@@ -260,6 +260,9 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 
 // ensureNSRecordSet ensures a root NS recordset reflecting static nameservers from the class.
 func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone, zc *dnsv1alpha1.DNSZoneClass) error {
+	if zc.Spec.NameServerPolicy == nil {
+		return nil
+	}
 	if zc.Spec.NameServerPolicy.Mode != dnsv1alpha1.NameServerPolicyModeStatic || zc.Spec.NameServerPolicy.Static == nil {
 		return nil
 	}
@@ -328,6 +331,9 @@ func (r *DNSZoneReplicator) deriveNameServers(ctx context.Context, c client.Clie
 	}
 	var zc dnsv1alpha1.DNSZoneClass
 	if err := c.Get(ctx, client.ObjectKey{Name: className}, &zc); err != nil {
+		return nil, false
+	}
+	if zc.Spec.NameServerPolicy == nil {
 		return nil, false
 	}
 	if zc.Spec.NameServerPolicy.Mode != dnsv1alpha1.NameServerPolicyModeStatic || zc.Spec.NameServerPolicy.Static == nil {

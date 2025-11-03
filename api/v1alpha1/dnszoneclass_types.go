@@ -26,7 +26,7 @@ type DNSZoneClassSpec struct {
 	ControllerName string `json:"controllerName"`
 
 	// NameServerPolicy defines how nameservers are assigned for zones using this class.
-	NameServerPolicy NameServerPolicy `json:"nameServerPolicy"`
+	NameServerPolicy *NameServerPolicy `json:"nameServerPolicy,omitempty"`
 
 	// Defaults provides optional default values applied to managed zones.
 	// +optional

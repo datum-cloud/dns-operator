@@ -114,7 +114,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
 				// nameservers from class policy (Static)
 				var nss []string
-				if zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
+				if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
 					nss = append(nss, zc.Spec.NameServerPolicy.Static.Servers...)
 				}
 				if err := cli.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {

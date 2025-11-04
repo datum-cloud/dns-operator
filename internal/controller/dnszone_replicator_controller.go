@@ -41,7 +41,7 @@ const DNSZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
 func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
@@ -156,18 +156,26 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	// 5) Ensure default records exist
-	if err := r.ensureSOARecordSet(ctx, upstreamCl.GetClient(), &upstream, &zoneClass); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream, &zoneClass); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// 6) Synthesize upstream status
-	if err := r.updateStatus(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+	// 5) First, refresh upstream status from downstream (populate nameservers)
+	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
+		}
+	}
+
+	// 6) Ensure default records exist only after nameservers are available from downstream
+	if len(upstream.Status.Nameservers) > 0 {
+		if err := r.ensureSOARecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Recompute status to set Programmed based on record presence
+		if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 
@@ -215,18 +223,14 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 // ensureSOARecordSet guarantees there is a managed SOA DNSRecordSet for PDNS-backed zones.
 // It creates or patches a DNSRecordSet named "soa" in the same namespace that targets the zone root ("@")
 // and uses the typed SOA fields with defaults derived from the zone name.
-func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone, zc *dnsv1alpha1.DNSZoneClass) error {
-	// Build desired SOA DNSRecordSet
-	mname := "ns1." + upstream.Spec.DomainName + "."
-	// Prefer the first static nameserver from the class, if available
-	if zc != nil && zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
-		if len(zc.Spec.NameServerPolicy.Static.Servers) > 0 && zc.Spec.NameServerPolicy.Static.Servers[0] != "" {
-			ns := zc.Spec.NameServerPolicy.Static.Servers[0]
-			if ns[len(ns)-1] != '.' {
-				ns += "."
-			}
-			mname = ns
-		}
+func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) error {
+	// Build desired SOA DNSRecordSet using nameservers from upstream status
+	if len(upstream.Status.Nameservers) == 0 {
+		return nil
+	}
+	mname := upstream.Status.Nameservers[0]
+	if mname != "" && mname[len(mname)-1] != '.' {
+		mname += "."
 	}
 	rname := "hostmaster." + upstream.Spec.DomainName + "."
 	rsName := "soa"
@@ -259,21 +263,18 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	return nil
 }
 
-// ensureNSRecordSet ensures a root NS recordset reflecting static nameservers from the class.
-func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone, zc *dnsv1alpha1.DNSZoneClass) error {
-	if zc.Spec.NameServerPolicy == nil {
-		return nil
-	}
-	if zc.Spec.NameServerPolicy.Mode != dnsv1alpha1.NameServerPolicyModeStatic || zc.Spec.NameServerPolicy.Static == nil {
+// ensureNSRecordSet ensures a root NS recordset reflecting nameservers from the upstream status.
+func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) error {
+	if len(upstream.Status.Nameservers) == 0 {
 		return nil
 	}
 
-	// Build desired NS DNSRecordSet at root
+	// Build desired NS DNSRecordSet at root from upstream status nameservers
 	rsName := "ns"
 	var existing dnsv1alpha1.DNSRecordSet
 	if err := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: rsName}, &existing); err != nil {
 		if apierrors.IsNotFound(err) {
-			values := append([]string(nil), zc.Spec.NameServerPolicy.Static.Servers...)
+			values := append([]string(nil), upstream.Status.Nameservers...)
 			newObj := dnsv1alpha1.DNSRecordSet{}
 			newObj.SetName(rsName)
 			newObj.SetNamespace(upstream.Namespace)
@@ -293,19 +294,46 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 }
 
 // updateStatus owns the upstream status synthesis: Accepted/Programmed, Nameservers.
-func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) error {
-	// Accepted: true once downstream ensured (we reached here)
-	changed := setCond(&upstream.Status.Conditions, CondAccepted, ReasonAccepted, "Downstream shadow ensured", metav1.ConditionTrue, upstream.Generation)
+func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZone) error {
+	changed := false
 
-	// Programmed: assumed true for now (TODO: verify via external SOA when available)
-	changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonProgrammed, "Assumed programmed (TODO verify)", metav1.ConditionTrue, upstream.Generation) || changed
-
-	// Nameservers: derive from DNSZoneClass if referenced
-	if ns, ok := r.deriveNameServers(ctx, c, upstream.Spec.DNSZoneClassName); ok {
-		if !equality.Semantic.DeepEqual(upstream.Status.Nameservers, ns) {
-			upstream.Status.Nameservers = append([]string(nil), ns...)
-			changed = true
+	// Nameservers: mirror from downstream DNSZone status
+	if strategy != nil {
+		if md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream); err == nil {
+			var shadow dnsv1alpha1.DNSZone
+			shadow.SetNamespace(md.Namespace)
+			shadow.SetName(md.Name)
+			if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow); err == nil {
+				if !equality.Semantic.DeepEqual(upstream.Status.Nameservers, shadow.Status.Nameservers) {
+					upstream.Status.Nameservers = append([]string(nil), shadow.Status.Nameservers...)
+					changed = true
+				}
+			}
 		}
+	}
+
+	// Accepted: true only after nameservers have been retrieved from downstream
+	if len(upstream.Status.Nameservers) > 0 {
+		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonAccepted, "Nameservers retrieved from downstream", metav1.ConditionTrue, upstream.Generation) || changed
+	} else {
+		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, "Waiting for downstream nameservers", metav1.ConditionFalse, upstream.Generation) || changed
+	}
+
+	// Programmed: true only after default NS and SOA recordsets exist
+	programmed := false
+	if len(upstream.Status.Nameservers) > 0 {
+		var rsSOA dnsv1alpha1.DNSRecordSet
+		var rsNS dnsv1alpha1.DNSRecordSet
+		errSOA := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: "soa"}, &rsSOA)
+		errNS := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: "ns"}, &rsNS)
+		if errSOA == nil && errNS == nil {
+			programmed = true
+		}
+	}
+	if programmed {
+		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonProgrammed, "Default records ensured", metav1.ConditionTrue, upstream.Generation) || changed
+	} else {
+		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonPending, "Waiting for default records", metav1.ConditionFalse, upstream.Generation) || changed
 	}
 
 	// RecordCount: compute number of DNSRecordSets referencing this zone and set status field
@@ -324,25 +352,6 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, u
 	}
 	log.FromContext(ctx).Info("upstream zone status updated", "status", upstream.Status)
 	return nil
-}
-
-func (r *DNSZoneReplicator) deriveNameServers(ctx context.Context, c client.Client, className string) ([]string, bool) {
-	if className == "" {
-		return nil, false
-	}
-	var zc dnsv1alpha1.DNSZoneClass
-	if err := c.Get(ctx, client.ObjectKey{Name: className}, &zc); err != nil {
-		return nil, false
-	}
-	if zc.Spec.NameServerPolicy == nil {
-		return nil, false
-	}
-	if zc.Spec.NameServerPolicy.Mode != dnsv1alpha1.NameServerPolicyModeStatic || zc.Spec.NameServerPolicy.Static == nil {
-		return nil, false
-	}
-	// copy to avoid aliasing
-	out := append([]string(nil), zc.Spec.NameServerPolicy.Static.Servers...)
-	return out, true
 }
 
 // computeRecordCount lists DNSRecordSets in namespace and counts those that reference zoneName.

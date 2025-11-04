@@ -23,6 +23,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,6 +121,20 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				if err := cli.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
 					logger.Error(err, "create pdns zone")
 					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				}
+			}
+
+			// At this point the zone exists in PDNS; update downstream status nameservers from class
+			var desiredNS []string
+			if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
+				desiredNS = append(desiredNS, zc.Spec.NameServerPolicy.Static.Servers...)
+			}
+			if !equality.Semantic.DeepEqual(zone.Status.Nameservers, desiredNS) {
+				base := zone.DeepCopy()
+				zone.Status.Nameservers = desiredNS
+				if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
+					logger.Error(err, "failed to update downstream nameservers status; will retry")
+					return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 				}
 			}
 		}

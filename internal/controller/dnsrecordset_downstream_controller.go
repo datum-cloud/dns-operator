@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -80,8 +81,29 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			var zone dnsv1alpha1.DNSZone
 			err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone)
 			if err != nil {
+				// If the zone is already gone, treat as success: nothing to clean in PDNS
+				if client.IgnoreNotFound(err) == nil {
+					base := rs.DeepCopy()
+					controllerutil.RemoveFinalizer(&rs, DownstreamRSFinalizer)
+					if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+						logger.Error(err, "failed to remove finalizer after zone missing", "ns", rs.Namespace, "name", rs.Name)
+						return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+					}
+					return ctrl.Result{}, nil
+				}
 				logger.Error(err, "failed to get zone", "ns", req.Namespace, "name", rs.Spec.DNSZoneRef.Name)
 				return ctrl.Result{}, err
+			}
+
+			// If the zone is being deleted, skip PDNS cleanup for this recordset
+			if !zone.DeletionTimestamp.IsZero() {
+				base := rs.DeepCopy()
+				controllerutil.RemoveFinalizer(&rs, DownstreamRSFinalizer)
+				if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+					logger.Error(err, "failed to remove finalizer while zone deleting", "ns", rs.Namespace, "name", rs.Name)
+					return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+				}
+				return ctrl.Result{}, nil
 			}
 
 			ok, err := r.cleanupPDNSForRecordSet(ctx, &rs, &zone)
@@ -110,6 +132,27 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Ensure the DNSZone is an owner of this DNSRecordSet so GC cascades on zone deletion.
+	if !hasOwnerRef(&rs, &zone) {
+		base := rs.DeepCopy()
+		if err := controllerutil.SetOwnerReference(&zone, &rs, r.Scheme); err != nil {
+			logger.Error(err, "failed to set owner reference", "rs", rs.Name, "zone", zone.Name)
+			return ctrl.Result{}, err
+		}
+		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+			logger.Error(err, "failed to patch owner reference", "rs", rs.Name, "zone", zone.Name)
+			// mild backoff; we'll try again
+			return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+		}
+		// Requeue so we continue with a stable/latest object copy
+		return ctrl.Result{}, nil
+	}
+	
+	// If the zone is deleting, do not attempt to program PDNS for this recordset
+	if !zone.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
 	}
 	if zone.Spec.DNSZoneClassName == "" {
 		return ctrl.Result{}, nil
@@ -222,4 +265,14 @@ func (r *DNSRecordSetReconciler) cleanupPDNSForRecordSet(ctx context.Context, rs
 	// Optionally: verify deletion (idempotency) by a lightweight read if your client supports it.
 	// If not, trust the 2xx response above and declare success.
 	return true, nil
+}
+
+// helper near the bottom of the file
+func hasOwnerRef(obj metav1.Object, owner metav1.Object) bool {
+	for _, or := range obj.GetOwnerReferences() {
+		if or.UID == owner.GetUID() {
+			return true
+		}
+	}
+	return false
 }

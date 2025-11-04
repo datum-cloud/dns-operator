@@ -1,3 +1,5 @@
+namespace: dns-agent-system
+
 resources:
 - ../crd
 - ../rbac
@@ -17,3 +19,23 @@ images:
 - name: ghcr.io/datum-cloud/dns-operator
   newName: ghcr.io/datum-cloud/dns-operator
   newTag: latest
+
+patches:
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: ClusterRoleBinding
+      name: manager-rolebinding
+    patch: |-
+      - op: replace
+        path: /subjects/0/namespace
+        value: dns-agent-system
+  - target:
+      group: rbac.authorization.k8s.io
+      version: v1
+      kind: RoleBinding
+      name: leader-election-rolebinding
+    patch: |-
+      - op: replace
+        path: /subjects/0/namespace
+        value: dns-agent-system

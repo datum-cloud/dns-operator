@@ -100,6 +100,11 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 		zoneMsg = fmt.Sprintf("DNSZone %q exists", upstream.Spec.DNSZoneRef.Name)
 	}
 
+	// If the zone is being deleted, do not program downstream recordset
+	if !zone.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+
 	// Ensure OwnerReference to upstream DNSZone (same ns)
 	if updated, err := ensureOwnerRefToZone(ctx, upstreamCluster.GetClient(), &upstream, &zone); err != nil {
 		return ctrl.Result{}, err

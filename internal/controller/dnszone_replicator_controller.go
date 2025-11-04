@@ -38,7 +38,7 @@ const DNSZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/finalizers,verbs=update;patch;delete
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
@@ -235,32 +235,49 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	rname := "hostmaster." + upstream.Spec.DomainName + "."
 	rsName := "soa"
 
-	var existing dnsv1alpha1.DNSRecordSet
-	if err := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: rsName}, &existing); err != nil {
-		if apierrors.IsNotFound(err) {
-			newObj := dnsv1alpha1.DNSRecordSet{}
-			newObj.SetName(rsName)
-			newObj.SetNamespace(upstream.Namespace)
-			newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
-				DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
-				RecordType: dnsv1alpha1.RRTypeSOA,
-				Records: []dnsv1alpha1.RecordEntry{{
-					Name: "@",
-					SOA: &dnsv1alpha1.SOARecordSpec{
-						MName:   mname,
-						RName:   rname,
-						Refresh: 10800,
-						Retry:   3600,
-						Expire:  604800,
-						TTL:     3600,
-					},
-				}},
-			}
-			return c.Create(ctx, &newObj)
-		}
+	// Idempotency via labels: if an SOA recordset for this zone already exists, do nothing
+	var existingList dnsv1alpha1.DNSRecordSetList
+	if err := c.List(
+		ctx,
+		&existingList,
+		client.InNamespace(upstream.Namespace),
+		client.MatchingLabels(map[string]string{
+			"dns.networking.miloapis.com/recordset-type": string(dnsv1alpha1.RRTypeSOA),
+			"dns.networking.miloapis.com/zone-name":      upstream.Name,
+		}),
+	); err != nil {
 		return err
 	}
-	return nil
+	if len(existingList.Items) > 0 {
+		return nil
+	}
+
+	newObj := dnsv1alpha1.DNSRecordSet{}
+	newObj.SetNamespace(upstream.Namespace)
+	newObj.SetGenerateName(rsName + "-")
+	labels := newObj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels["dns.networking.miloapis.com/recordset-type"] = string(dnsv1alpha1.RRTypeSOA)
+	labels["dns.networking.miloapis.com/zone-name"] = upstream.Name
+	newObj.SetLabels(labels)
+	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
+		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
+		RecordType: dnsv1alpha1.RRTypeSOA,
+		Records: []dnsv1alpha1.RecordEntry{{
+			Name: "@",
+			SOA: &dnsv1alpha1.SOARecordSpec{
+				MName:   mname,
+				RName:   rname,
+				Refresh: 10800,
+				Retry:   3600,
+				Expire:  604800,
+				TTL:     3600,
+			},
+		}},
+	}
+	return c.Create(ctx, &newObj)
 }
 
 // ensureNSRecordSet ensures a root NS recordset reflecting nameservers from the upstream status.
@@ -271,26 +288,43 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 
 	// Build desired NS DNSRecordSet at root from upstream status nameservers
 	rsName := "ns"
-	var existing dnsv1alpha1.DNSRecordSet
-	if err := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: rsName}, &existing); err != nil {
-		if apierrors.IsNotFound(err) {
-			values := append([]string(nil), upstream.Status.Nameservers...)
-			newObj := dnsv1alpha1.DNSRecordSet{}
-			newObj.SetName(rsName)
-			newObj.SetNamespace(upstream.Namespace)
-			newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
-				DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
-				RecordType: dnsv1alpha1.RRTypeNS,
-				Records: []dnsv1alpha1.RecordEntry{{
-					Name: "@",
-					Raw:  values,
-				}},
-			}
-			return c.Create(ctx, &newObj)
-		}
+	// Idempotency via labels: if an NS recordset for this zone already exists, do nothing
+	var existingList dnsv1alpha1.DNSRecordSetList
+	if err := c.List(
+		ctx,
+		&existingList,
+		client.InNamespace(upstream.Namespace),
+		client.MatchingLabels(map[string]string{
+			"dns.networking.miloapis.com/recordset-type": string(dnsv1alpha1.RRTypeNS),
+			"dns.networking.miloapis.com/zone-name":      upstream.Name,
+		}),
+	); err != nil {
 		return err
 	}
-	return nil
+	if len(existingList.Items) > 0 {
+		return nil
+	}
+
+	values := append([]string(nil), upstream.Status.Nameservers...)
+	newObj := dnsv1alpha1.DNSRecordSet{}
+	newObj.SetNamespace(upstream.Namespace)
+	newObj.SetGenerateName(rsName + "-")
+	labels := newObj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels["dns.networking.miloapis.com/recordset-type"] = string(dnsv1alpha1.RRTypeNS)
+	labels["dns.networking.miloapis.com/zone-name"] = upstream.Name
+	newObj.SetLabels(labels)
+	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
+		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
+		RecordType: dnsv1alpha1.RRTypeNS,
+		Records: []dnsv1alpha1.RecordEntry{{
+			Name: "@",
+			Raw:  values,
+		}},
+	}
+	return c.Create(ctx, &newObj)
 }
 
 // updateStatus owns the upstream status synthesis: Accepted/Programmed, Nameservers.
@@ -322,12 +356,30 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 	// Programmed: true only after default NS and SOA recordsets exist
 	programmed := false
 	if len(upstream.Status.Nameservers) > 0 {
-		var rsSOA dnsv1alpha1.DNSRecordSet
-		var rsNS dnsv1alpha1.DNSRecordSet
-		errSOA := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: "soa"}, &rsSOA)
-		errNS := c.Get(ctx, client.ObjectKey{Namespace: upstream.Namespace, Name: "ns"}, &rsNS)
-		if errSOA == nil && errNS == nil {
-			programmed = true
+		var rsList dnsv1alpha1.DNSRecordSetList
+		if err := c.List(
+			ctx,
+			&rsList,
+			client.InNamespace(upstream.Namespace),
+			client.MatchingLabels(map[string]string{
+				"dns.networking.miloapis.com/zone-name": upstream.Name,
+			}),
+		); err == nil {
+			haveSOA := false
+			haveNS := false
+			for i := range rsList.Items {
+				lbl := rsList.Items[i].GetLabels()
+				if lbl["dns.networking.miloapis.com/recordset-type"] == string(dnsv1alpha1.RRTypeSOA) {
+					haveSOA = true
+				}
+				if lbl["dns.networking.miloapis.com/recordset-type"] == string(dnsv1alpha1.RRTypeNS) {
+					haveNS = true
+				}
+				if haveSOA && haveNS {
+					break
+				}
+			}
+			programmed = haveSOA && haveNS
 		}
 	}
 	if programmed {

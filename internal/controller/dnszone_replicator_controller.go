@@ -93,8 +93,8 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 			shadow.SetName(md.Name)
 			getErr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow)
 			if getErr == nil {
-				// Still exists; wait
-				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+				// Still exists; rely on downstream watch to requeue when it changes
+				return ctrl.Result{}, nil
 			}
 			if !apierrors.IsNotFound(getErr) {
 				// Transient error; retry

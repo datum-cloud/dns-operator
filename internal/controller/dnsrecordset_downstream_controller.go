@@ -149,7 +149,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// Requeue so we continue with a stable/latest object copy
 		return ctrl.Result{}, nil
 	}
-	
+
 	// If the zone is deleting, do not attempt to program PDNS for this recordset
 	if !zone.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil

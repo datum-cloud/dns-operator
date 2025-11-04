@@ -44,7 +44,6 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets/finalizers
-  - dnszones/finalizers
   verbs:
   - update
 - apiGroups:
@@ -64,3 +63,11 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszones/finalizers
+  verbs:
+  - delete
+  - patch
+  - update

@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: pdns-auth
   namespace: system
@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/name: pdns-auth
     app.kubernetes.io/managed-by: kustomize
 spec:
+  serviceName: pdns-auth-headless
   selector:
     matchLabels:
       control-plane: controller-agent
@@ -73,6 +74,10 @@ spec:
           - --health-probe-bind-address=:8081
           - --server-config=/config/server-config.yaml
         env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         - name: PDNS_API_URL
           value: http://localhost:8082
         - name: PDNS_API_KEY_FILE

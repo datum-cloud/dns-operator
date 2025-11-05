@@ -6,3 +6,12 @@ namespace: dns-agent-system
 resources:
   - ../../agent
 
+# Patch the replica count to 2
+patches:
+  - target:
+      kind: StatefulSet
+      name: pdns-auth
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2

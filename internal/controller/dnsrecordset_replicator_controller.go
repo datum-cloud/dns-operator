@@ -28,7 +28,12 @@ type DNSRecordSetReplicator struct {
 	DownstreamClient client.Client
 }
 
-const RSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
+const (
+	recordLabelType = "dns.networking.miloapis.com/recordset-type"
+	recordLabelZone = "dns.networking.miloapis.com/zone-name"
+
+	rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
+)
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
@@ -51,12 +56,38 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// --- Ensure labels for type/zone are present for consistency and discovery ---
+	desiredType := string(upstream.Spec.RecordType)
+	desiredZone := upstream.Spec.DNSZoneRef.Name
+	labels := upstream.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	if labels[recordLabelType] != desiredType || labels[recordLabelZone] != desiredZone {
+		var cur dnsv1alpha1.DNSRecordSet
+		if err := upstreamCluster.GetClient().Get(ctx, req.NamespacedName, &cur); err != nil {
+			return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, err
+		}
+		cl := cur.GetLabels()
+		if cl == nil {
+			cl = map[string]string{}
+		}
+		base := cur.DeepCopy()
+		cl[recordLabelType] = desiredType
+		cl[recordLabelZone] = desiredZone
+		cur.SetLabels(cl)
+		if err := upstreamCluster.GetClient().Patch(ctx, &cur, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
 	// Ensure upstream finalizer (non-deletion path; replaces webhook defaulter)
-	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, RSFinalizer) {
+	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, rsFinalizer) {
 		base := upstream.DeepCopy()
-		controllerutil.AddFinalizer(&upstream, RSFinalizer)
+		controllerutil.AddFinalizer(&upstream, rsFinalizer)
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 			log.FromContext(ctx).Error(err, "failed to add DNSRecordSet finalizer")
 			return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
@@ -185,7 +216,7 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	upstream *dnsv1alpha1.DNSRecordSet,
 ) error {
 	// If no finalizer, nothing to enforce.
-	if !controllerutil.ContainsFinalizer(upstream, RSFinalizer) {
+	if !controllerutil.ContainsFinalizer(upstream, rsFinalizer) {
 		return nil
 	}
 
@@ -215,7 +246,7 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Safe to remove finalizer now.
-			controllerutil.RemoveFinalizer(upstream, RSFinalizer)
+			controllerutil.RemoveFinalizer(upstream, rsFinalizer)
 			return upstreamClient.Update(ctx, upstream)
 		}
 		return err

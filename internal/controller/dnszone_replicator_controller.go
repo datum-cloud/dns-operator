@@ -33,7 +33,7 @@ type DNSZoneReplicator struct {
 	DownstreamClient client.Client
 }
 
-const DNSZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
+const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
@@ -61,9 +61,9 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 
 	// --- Ensure finalizer on creation/update (non-deletion path) ---
 	if upstream.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(&upstream, DNSZoneFinalizer) {
+		if !controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
 			base := upstream.DeepCopy()
-			upstream.Finalizers = append(upstream.Finalizers, DNSZoneFinalizer)
+			upstream.Finalizers = append(upstream.Finalizers, dnsZoneFinalizer)
 			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				lg.Error(err, "failed to add upstream finalizer")
 				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
@@ -73,7 +73,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 		}
 	} else {
 		// Deletion guard: ensure downstream is gone before removing finalizer
-		if controllerutil.ContainsFinalizer(&upstream, DNSZoneFinalizer) {
+		if controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
 			strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCl.GetClient(), r.DownstreamClient)
 
 			// Request deletion of downstream anchor/shadow
@@ -104,7 +104,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 
 			// Downstream is confirmed gone -> remove upstream finalizer (conflict-safe)
 			base := upstream.DeepCopy()
-			controllerutil.RemoveFinalizer(&upstream, DNSZoneFinalizer)
+			controllerutil.RemoveFinalizer(&upstream, dnsZoneFinalizer)
 			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				lg.Error(err, "failed to remove upstream finalizer")
 				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
@@ -242,8 +242,8 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		&existingList,
 		client.InNamespace(upstream.Namespace),
 		client.MatchingLabels(map[string]string{
-			"dns.networking.miloapis.com/recordset-type": string(dnsv1alpha1.RRTypeSOA),
-			"dns.networking.miloapis.com/zone-name":      upstream.Name,
+			recordLabelType: string(dnsv1alpha1.RRTypeSOA),
+			recordLabelZone: upstream.Name,
 		}),
 	); err != nil {
 		return err
@@ -259,8 +259,8 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels["dns.networking.miloapis.com/recordset-type"] = string(dnsv1alpha1.RRTypeSOA)
-	labels["dns.networking.miloapis.com/zone-name"] = upstream.Name
+	labels[recordLabelType] = string(dnsv1alpha1.RRTypeSOA)
+	labels[recordLabelZone] = upstream.Name
 	newObj.SetLabels(labels)
 	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
 		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
@@ -295,8 +295,8 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		&existingList,
 		client.InNamespace(upstream.Namespace),
 		client.MatchingLabels(map[string]string{
-			"dns.networking.miloapis.com/recordset-type": string(dnsv1alpha1.RRTypeNS),
-			"dns.networking.miloapis.com/zone-name":      upstream.Name,
+			recordLabelType: string(dnsv1alpha1.RRTypeNS),
+			recordLabelZone: upstream.Name,
 		}),
 	); err != nil {
 		return err
@@ -313,8 +313,8 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 	if labels == nil {
 		labels = map[string]string{}
 	}
-	labels["dns.networking.miloapis.com/recordset-type"] = string(dnsv1alpha1.RRTypeNS)
-	labels["dns.networking.miloapis.com/zone-name"] = upstream.Name
+	labels[recordLabelType] = string(dnsv1alpha1.RRTypeNS)
+	labels[recordLabelZone] = upstream.Name
 	newObj.SetLabels(labels)
 	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
 		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
@@ -362,17 +362,17 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 			&rsList,
 			client.InNamespace(upstream.Namespace),
 			client.MatchingLabels(map[string]string{
-				"dns.networking.miloapis.com/zone-name": upstream.Name,
+				recordLabelZone: upstream.Name,
 			}),
 		); err == nil {
 			haveSOA := false
 			haveNS := false
 			for i := range rsList.Items {
 				lbl := rsList.Items[i].GetLabels()
-				if lbl["dns.networking.miloapis.com/recordset-type"] == string(dnsv1alpha1.RRTypeSOA) {
+				if lbl[recordLabelType] == string(dnsv1alpha1.RRTypeSOA) {
 					haveSOA = true
 				}
-				if lbl["dns.networking.miloapis.com/recordset-type"] == string(dnsv1alpha1.RRTypeNS) {
+				if lbl[recordLabelType] == string(dnsv1alpha1.RRTypeNS) {
 					haveNS = true
 				}
 				if haveSOA && haveNS {

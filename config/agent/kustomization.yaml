@@ -6,6 +6,7 @@ resources:
 - namespace.yaml
 - manager.yaml
 - pdns-service.yaml
+- pdns-headless-service.yaml
 
 generatorOptions:
   disableNameSuffixHash: true

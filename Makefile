@@ -244,7 +244,7 @@ secret-from-file: ## Create or update a secret from a file in NAMESPACE on CONTE
 bootstrap-downstream: ## Create kind downstream and deploy agent with embedded PowerDNS
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-create
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
-	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/agent $(MAKE) kustomize-apply
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/agent-powerdns $(MAKE) kustomize-apply
 	# Export external kubeconfig for downstream cluster (reachable from host/other containers)
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
 

@@ -193,6 +193,11 @@ func main() {
 
 	switch role {
 	case "downstream":
+		podName := os.Getenv("POD_NAME")
+		if podName == "" {
+			setupLog.Error(fmt.Errorf("POD_NAME env var is required for downstream role"), "")
+			os.Exit(1)
+		}
 		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
@@ -206,12 +211,12 @@ func main() {
 		}
 
 		if err := (&controller.DNSZoneReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+			Scheme: mgr.GetScheme(), PodName: podName}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
 			os.Exit(1)
 		}
 		if err := (&controller.DNSRecordSetReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+			Scheme: mgr.GetScheme(), PodName: podName}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)
 		}

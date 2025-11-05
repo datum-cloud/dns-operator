@@ -23,6 +23,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -40,11 +41,16 @@ import (
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
 type DNSRecordSetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme  *runtime.Scheme
+	PodName string
 }
 
-// DownstreamRSFinalizer is the finalizer for the DNSRecordSetDownstream controller
-const DownstreamRSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset-downstream"
+// downstreamRSFinalizer is the finalizer for the DNSRecordSetDownstream controller
+const downstreamRSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset-downstream"
+
+func (r *DNSRecordSetReconciler) rsFinalizer() string {
+	return downstreamRSFinalizer + "-" + r.PodName
+}
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
@@ -63,10 +69,23 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// --- Ensure finalizer on creation/update (non-deletion path) ---
-	if rs.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&rs, DownstreamRSFinalizer) {
-		base := rs.DeepCopy()
-		rs.Finalizers = append(rs.Finalizers, DownstreamRSFinalizer)
-		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+	if rs.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&rs, r.rsFinalizer()) {
+		if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			var cur dnsv1alpha1.DNSRecordSet
+			if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
+				return err
+			}
+			// Do not add new finalizers if deletion has started
+			if !cur.DeletionTimestamp.IsZero() {
+				return nil
+			}
+			if controllerutil.ContainsFinalizer(&cur, r.rsFinalizer()) {
+				return nil
+			}
+			base := cur.DeepCopy()
+			controllerutil.AddFinalizer(&cur, r.rsFinalizer())
+			return r.Patch(ctx, &cur, client.MergeFrom(base))
+		}); err != nil {
 			logger.Error(err, "failed to add finalizer", "ns", rs.Namespace, "name", rs.Name)
 			return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 		}
@@ -76,16 +95,25 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// --- Deletion path: MUST clean PDNS before removing finalizer ---
 	if !rs.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&rs, DownstreamRSFinalizer) {
+		if controllerutil.ContainsFinalizer(&rs, r.rsFinalizer()) {
 			// Fetch zone (if absent or empty => nothing to clean; treat as success)
 			var zone dnsv1alpha1.DNSZone
 			err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone)
 			if err != nil {
 				// If the zone is already gone, treat as success: nothing to clean in PDNS
 				if client.IgnoreNotFound(err) == nil {
-					base := rs.DeepCopy()
-					controllerutil.RemoveFinalizer(&rs, DownstreamRSFinalizer)
-					if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+					if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+						var cur dnsv1alpha1.DNSRecordSet
+						if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
+							return err
+						}
+						if !controllerutil.ContainsFinalizer(&cur, r.rsFinalizer()) {
+							return nil
+						}
+						base := cur.DeepCopy()
+						controllerutil.RemoveFinalizer(&cur, r.rsFinalizer())
+						return r.Patch(ctx, &cur, client.MergeFrom(base))
+					}); err != nil {
 						logger.Error(err, "failed to remove finalizer after zone missing", "ns", rs.Namespace, "name", rs.Name)
 						return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 					}
@@ -97,9 +125,18 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 			// If the zone is being deleted, skip PDNS cleanup for this recordset
 			if !zone.DeletionTimestamp.IsZero() {
-				base := rs.DeepCopy()
-				controllerutil.RemoveFinalizer(&rs, DownstreamRSFinalizer)
-				if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+				if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					var cur dnsv1alpha1.DNSRecordSet
+					if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
+						return err
+					}
+					if !controllerutil.ContainsFinalizer(&cur, r.rsFinalizer()) {
+						return nil
+					}
+					base := cur.DeepCopy()
+					controllerutil.RemoveFinalizer(&cur, r.rsFinalizer())
+					return r.Patch(ctx, &cur, client.MergeFrom(base))
+				}); err != nil {
 					logger.Error(err, "failed to remove finalizer while zone deleting", "ns", rs.Namespace, "name", rs.Name)
 					return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 				}
@@ -118,9 +155,18 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			}
 
 			// PDNS cleanup succeeded (or was a no-op) -> remove finalizer (conflict-safe)
-			base := rs.DeepCopy()
-			controllerutil.RemoveFinalizer(&rs, DownstreamRSFinalizer)
-			if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				var cur dnsv1alpha1.DNSRecordSet
+				if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
+					return err
+				}
+				if !controllerutil.ContainsFinalizer(&cur, r.rsFinalizer()) {
+					return nil
+				}
+				base := cur.DeepCopy()
+				controllerutil.RemoveFinalizer(&cur, r.rsFinalizer())
+				return r.Patch(ctx, &cur, client.MergeFrom(base))
+			}); err != nil {
 				logger.Error(err, "failed to remove finalizer", "ns", rs.Namespace, "name", rs.Name)
 				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 			}

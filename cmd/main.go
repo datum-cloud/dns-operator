@@ -262,28 +262,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Register field indexes used by the replicator when listing DNSRecordSets
-		if err := deploymentCluster.GetCache().IndexField(context.Background(),
-			&dnsv1alpha1.DNSRecordSet{}, "spec.dnsZoneRef.name",
-			func(obj client.Object) []string {
-				rs := obj.(*dnsv1alpha1.DNSRecordSet)
-				return []string{rs.Spec.DNSZoneRef.Name}
-			},
-		); err != nil {
-			setupLog.Error(err, "failed to index spec.dnsZoneRef.name")
-			os.Exit(1)
-		}
-		if err := deploymentCluster.GetCache().IndexField(context.Background(),
-			&dnsv1alpha1.DNSRecordSet{}, "spec.recordType",
-			func(obj client.Object) []string {
-				rs := obj.(*dnsv1alpha1.DNSRecordSet)
-				return []string{string(rs.Spec.RecordType)}
-			},
-		); err != nil {
-			setupLog.Error(err, "failed to index spec.recordType")
-			os.Exit(1)
-		}
-
 		// Initialize cluster discovery provider (single or milo)
 		runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
 		if err != nil {

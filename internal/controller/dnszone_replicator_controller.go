@@ -402,6 +402,26 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
 	r.mgr = mgr
 
+	// Register field indexes used by this controller when listing DNSRecordSets
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&dnsv1alpha1.DNSRecordSet{}, "spec.dnsZoneRef.name",
+		func(obj client.Object) []string {
+			rs := obj.(*dnsv1alpha1.DNSRecordSet)
+			return []string{rs.Spec.DNSZoneRef.Name}
+		},
+	); err != nil {
+		return err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&dnsv1alpha1.DNSRecordSet{}, "spec.recordType",
+		func(obj client.Object) []string {
+			rs := obj.(*dnsv1alpha1.DNSRecordSet)
+			return []string{string(rs.Spec.RecordType)}
+		},
+	); err != nil {
+		return err
+	}
+
 	b := mcbuilder.TypedControllerManagedBy[GVKRequest](mgr)
 
 	// Upstream watch

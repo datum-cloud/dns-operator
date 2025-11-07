@@ -15,6 +15,12 @@ configMapGenerator:
 - name: agent-server-config
   files:
   - server-config.yaml
+- name: lightningstream-config
+  files:
+    - lightningstream.yaml
+- name: pdns-config
+  files:
+    - pdns.conf
 
 images:
 - name: ghcr.io/datum-cloud/dns-operator

@@ -1,0 +1,34 @@
+instance: ${LS_INSTANCE}
+
+http:
+  address: ":8500"
+
+log:
+  level: info
+  format: human
+  timestamp: short
+
+lmdbs:
+  main:
+    path: /lmdb/db
+    options:
+      no_subdir: true
+      create: true
+    schema_tracks_changes: true
+  shard:
+    path: /lmdb/db-0
+    options:
+      no_subdir: true
+      create: true
+    schema_tracks_changes: true
+
+storage:
+  type: s3
+  options:
+    access_key: ${S3_ACCESS_KEY}
+    secret_key: ${S3_SECRET_KEY}
+    region: ${S3_REGION}
+    bucket: ${S3_BUCKET}
+    create_bucket: true
+    endpoint_url: ${S3_ENDPOINT_URL}
+

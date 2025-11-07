@@ -5,6 +5,10 @@ namespace: dns-agent-system
 
 resources:
   - ../../agent
+  - minio-deployment.yaml
+  - minio-service.yaml
+  - minio-pvc.yaml
+  - minio-credentials.yaml
 
 # Patch the replica count to 2
 patches:

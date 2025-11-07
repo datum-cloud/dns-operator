@@ -43,6 +43,7 @@ const (
 // DNSRecordSetSpec defines the desired state of DNSRecordSet
 type DNSRecordSetSpec struct {
 	// DNSZoneRef references the DNSZone (same namespace) this recordset belongs to.
+	// +kubebuilder:validation:Required
 	DNSZoneRef corev1.LocalObjectReference `json:"dnsZoneRef"`
 
 	// RecordType is the DNS RR type for this recordset.
@@ -160,6 +161,8 @@ type DNSRecordSetStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=.status.conditions[?(@.type=="Accepted")].status
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
+// +kubebuilder:selectablefield:JSONPath=".spec.dnsZoneRef.name"
+// +kubebuilder:selectablefield:JSONPath=".spec.recordType"
 
 // DNSRecordSet is the Schema for the dnsrecordsets API
 type DNSRecordSet struct {

@@ -35,15 +35,10 @@ import (
 // DNSZoneReconciler reconciles a DNSZone object
 type DNSZoneReconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	PodName string
+	Scheme *runtime.Scheme
 }
 
 const downstreamZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone-downstream"
-
-func (r *DNSZoneReconciler) zoneFinalizer() string {
-	return downstreamZoneFinalizer + "-" + r.PodName
-}
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
@@ -63,7 +58,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// --- Ensure finalizer (non-deletion path) ---
 	if zone.DeletionTimestamp.IsZero() {
-		if !controllerutil.ContainsFinalizer(&zone, r.zoneFinalizer()) {
+		if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
 			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 				var cur dnsv1alpha1.DNSZone
 				if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
@@ -73,11 +68,11 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				if !cur.DeletionTimestamp.IsZero() {
 					return nil
 				}
-				if controllerutil.ContainsFinalizer(&cur, r.zoneFinalizer()) {
+				if controllerutil.ContainsFinalizer(&cur, downstreamZoneFinalizer) {
 					return nil
 				}
 				base := cur.DeepCopy()
-				controllerutil.AddFinalizer(&cur, r.zoneFinalizer())
+				controllerutil.AddFinalizer(&cur, downstreamZoneFinalizer)
 				return r.Patch(ctx, &cur, client.MergeFrom(base))
 			}); err != nil {
 				logger.Error(err, "failed to add zone finalizer")
@@ -87,11 +82,12 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	} else {
 		// --- Deletion path: remove from PDNS, then drop finalizer ---
-		if controllerutil.ContainsFinalizer(&zone, r.zoneFinalizer()) {
+		if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
 			// Only manage PDNS if this zone is handled by our controller
 			var zc dnsv1alpha1.DNSZoneClass
 			if zone.Spec.DNSZoneClassName != "" {
 				if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
+					// TODO: should we delete if the class is not found?
 					return ctrl.Result{}, client.IgnoreNotFound(err)
 				}
 			}
@@ -113,11 +109,11 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
 					return err
 				}
-				if !controllerutil.ContainsFinalizer(&cur, r.zoneFinalizer()) {
+				if !controllerutil.ContainsFinalizer(&cur, downstreamZoneFinalizer) {
 					return nil
 				}
 				base := cur.DeepCopy()
-				controllerutil.RemoveFinalizer(&cur, r.zoneFinalizer())
+				controllerutil.RemoveFinalizer(&cur, downstreamZoneFinalizer)
 				return r.Patch(ctx, &cur, client.MergeFrom(base))
 			}); err != nil {
 				logger.Error(err, "failed to remove zone finalizer")

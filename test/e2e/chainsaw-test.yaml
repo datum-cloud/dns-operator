@@ -228,6 +228,8 @@ spec:
             namespace: default
           status:
             phase: Running
+    - sleep:
+        duration: 3s
     - script:
         cluster: downstream
         content: |
@@ -289,4 +291,74 @@ spec:
           status:
             recordCount: 2
 
+  - name: Teardown — delete zone first, classes last
+    try:
+    # 1) Delete the upstream zone (idempotent)
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: example-com
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            # ok if delete succeeded OR it was already gone
+            ($error == null): true
 
+    # 2) Compute mapped downstream namespace (same trick you used earlier)
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+    # 3) Prove downstream zone is gone by attempting a delete and expecting an error
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          namespace: ($downstreamNamespaceName)
+          name: example-com
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            # should be NotFound now
+            ($error != null): true
+    - sleep:
+        duration: 5s
+
+    # 5) Now it’s safe to delete the DNSZoneClass (downstream first, then upstream)
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-static
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-static
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true

@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -72,6 +73,9 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var leaderElectionLeaseDuration time.Duration
+	var leaderElectionRenewDeadline time.Duration
+	var leaderElectionRetryPeriod time.Duration
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -86,6 +90,9 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 10*time.Second, "The duration that non-leader candidates will wait to force acquire leadership.")
+	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 3*time.Second, "The duration that the leader will retry leadership renewal.")
+	flag.DurationVar(&leaderElectionRetryPeriod, "leader-elect-retry-period", 2*time.Second, "The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -193,16 +200,14 @@ func main() {
 
 	switch role {
 	case "downstream":
-		podName := os.Getenv("POD_NAME")
-		if podName == "" {
-			setupLog.Error(fmt.Errorf("POD_NAME env var is required for downstream role"), "")
-			os.Exit(1)
-		}
 		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
+			LeaseDuration:          &leaderElectionLeaseDuration,
+			RenewDeadline:          &leaderElectionRenewDeadline,
+			RetryPeriod:            &leaderElectionRetryPeriod,
 			LeaderElectionID:       "1813fe7c.datum.cloud",
 		})
 		if err != nil {
@@ -211,12 +216,12 @@ func main() {
 		}
 
 		if err := (&controller.DNSZoneReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(), PodName: podName}).SetupWithManager(mgr); err != nil {
+			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
 			os.Exit(1)
 		}
 		if err := (&controller.DNSRecordSetReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(), PodName: podName}).SetupWithManager(mgr); err != nil {
+			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)
 		}
@@ -254,6 +259,28 @@ func main() {
 		deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) { o.Scheme = scheme })
 		if err != nil {
 			setupLog.Error(err, "failed creating local cluster")
+			os.Exit(1)
+		}
+
+		// Register field indexes used by the replicator when listing DNSRecordSets
+		if err := deploymentCluster.GetCache().IndexField(context.Background(),
+			&dnsv1alpha1.DNSRecordSet{}, "spec.dnsZoneRef.name",
+			func(obj client.Object) []string {
+				rs := obj.(*dnsv1alpha1.DNSRecordSet)
+				return []string{rs.Spec.DNSZoneRef.Name}
+			},
+		); err != nil {
+			setupLog.Error(err, "failed to index spec.dnsZoneRef.name")
+			os.Exit(1)
+		}
+		if err := deploymentCluster.GetCache().IndexField(context.Background(),
+			&dnsv1alpha1.DNSRecordSet{}, "spec.recordType",
+			func(obj client.Object) []string {
+				rs := obj.(*dnsv1alpha1.DNSRecordSet)
+				return []string{string(rs.Spec.RecordType)}
+			},
+		); err != nil {
+			setupLog.Error(err, "failed to index spec.recordType")
 			os.Exit(1)
 		}
 

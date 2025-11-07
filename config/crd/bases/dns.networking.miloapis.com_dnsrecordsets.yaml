@@ -334,6 +334,9 @@ spec:
         required:
         - spec
         type: object
+    selectableFields:
+    - jsonPath: .spec.dnsZoneRef.name
+    - jsonPath: .spec.recordType
     served: true
     storage: true
     subresources:

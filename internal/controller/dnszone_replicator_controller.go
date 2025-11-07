@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -69,7 +70,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
 			}
 			// Re-run with updated object
-			return ctrl.Result{}, nil
+			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 		}
 	} else {
 		// Deletion guard: ensure downstream is gone before removing finalizer
@@ -115,9 +116,9 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 
 	// If DNSZoneClassName is not set, set Accepted=False with reason
 	if upstream.Spec.DNSZoneClassName == "" {
+		base := upstream.DeepCopy() // take snapshot BEFORE mutating status
 		if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, "DNSZoneClassName not set", metav1.ConditionFalse, upstream.Generation) {
-			err = upstreamCl.GetClient().Status().Update(ctx, &upstream)
-			if err != nil {
+			if err := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -138,10 +139,11 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 	var zoneClass dnsv1alpha1.DNSZoneClass
 	if err := upstreamCl.GetClient().Get(ctx, client.ObjectKey{Name: upstream.Spec.DNSZoneClassName}, &zoneClass); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Update status: Accepted=False with reason
-			if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, fmt.Sprintf("DNSZoneClass %q not found", upstream.Spec.DNSZoneClassName), metav1.ConditionFalse, upstream.Generation) {
-				err = upstreamCl.GetClient().Status().Update(ctx, &upstream)
-				if err != nil {
+			base := upstream.DeepCopy()
+			if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending,
+				fmt.Sprintf("DNSZoneClass %q not found", upstream.Spec.DNSZoneClassName),
+				metav1.ConditionFalse, upstream.Generation) {
+				if err := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -241,10 +243,10 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		ctx,
 		&existingList,
 		client.InNamespace(upstream.Namespace),
-		client.MatchingLabels(map[string]string{
-			recordLabelType: string(dnsv1alpha1.RRTypeSOA),
-			recordLabelZone: upstream.Name,
-		}),
+		client.MatchingFieldsSelector{Selector: fields.AndSelectors(
+			fields.OneTermEqualSelector("spec.dnsZoneRef.name", upstream.Name),
+			fields.OneTermEqualSelector("spec.recordType", string(dnsv1alpha1.RRTypeSOA)),
+		)},
 	); err != nil {
 		return err
 	}
@@ -255,13 +257,6 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	newObj := dnsv1alpha1.DNSRecordSet{}
 	newObj.SetNamespace(upstream.Namespace)
 	newObj.SetGenerateName(rsName + "-")
-	labels := newObj.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	labels[recordLabelType] = string(dnsv1alpha1.RRTypeSOA)
-	labels[recordLabelZone] = upstream.Name
-	newObj.SetLabels(labels)
 	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
 		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
 		RecordType: dnsv1alpha1.RRTypeSOA,
@@ -294,10 +289,10 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		ctx,
 		&existingList,
 		client.InNamespace(upstream.Namespace),
-		client.MatchingLabels(map[string]string{
-			recordLabelType: string(dnsv1alpha1.RRTypeNS),
-			recordLabelZone: upstream.Name,
-		}),
+		client.MatchingFieldsSelector{Selector: fields.AndSelectors(
+			fields.OneTermEqualSelector("spec.dnsZoneRef.name", upstream.Name),
+			fields.OneTermEqualSelector("spec.recordType", string(dnsv1alpha1.RRTypeNS)),
+		)},
 	); err != nil {
 		return err
 	}
@@ -309,13 +304,6 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 	newObj := dnsv1alpha1.DNSRecordSet{}
 	newObj.SetNamespace(upstream.Namespace)
 	newObj.SetGenerateName(rsName + "-")
-	labels := newObj.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
-	}
-	labels[recordLabelType] = string(dnsv1alpha1.RRTypeNS)
-	labels[recordLabelZone] = upstream.Name
-	newObj.SetLabels(labels)
 	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
 		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
 		RecordType: dnsv1alpha1.RRTypeNS,
@@ -329,6 +317,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 
 // updateStatus owns the upstream status synthesis: Accepted/Programmed, Nameservers.
 func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZone) error {
+	base := upstream.DeepCopy()
 	changed := false
 
 	// Nameservers: mirror from downstream DNSZone status
@@ -353,34 +342,34 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, "Waiting for downstream nameservers", metav1.ConditionFalse, upstream.Generation) || changed
 	}
 
+	var rsList dnsv1alpha1.DNSRecordSetList
+	if err := c.List(
+		ctx,
+		&rsList,
+		client.InNamespace(upstream.Namespace),
+		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.dnsZoneRef.name", upstream.Name)},
+	); err != nil {
+		return err
+	}
+
 	// Programmed: true only after default NS and SOA recordsets exist
 	programmed := false
 	if len(upstream.Status.Nameservers) > 0 {
-		var rsList dnsv1alpha1.DNSRecordSetList
-		if err := c.List(
-			ctx,
-			&rsList,
-			client.InNamespace(upstream.Namespace),
-			client.MatchingLabels(map[string]string{
-				recordLabelZone: upstream.Name,
-			}),
-		); err == nil {
-			haveSOA := false
-			haveNS := false
-			for i := range rsList.Items {
-				lbl := rsList.Items[i].GetLabels()
-				if lbl[recordLabelType] == string(dnsv1alpha1.RRTypeSOA) {
-					haveSOA = true
-				}
-				if lbl[recordLabelType] == string(dnsv1alpha1.RRTypeNS) {
-					haveNS = true
-				}
-				if haveSOA && haveNS {
-					break
-				}
+		haveSOA := false
+		haveNS := false
+		for i := range rsList.Items {
+			if rsList.Items[i].Spec.RecordType == dnsv1alpha1.RRTypeSOA {
+				haveSOA = true
 			}
-			programmed = haveSOA && haveNS
+			if rsList.Items[i].Spec.RecordType == dnsv1alpha1.RRTypeNS {
+				haveNS = true
+			}
+			if haveSOA && haveNS {
+				break
+			}
 		}
+		programmed = haveSOA && haveNS
+
 	}
 	if programmed {
 		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonProgrammed, "Default records ensured", metav1.ConditionTrue, upstream.Generation) || changed
@@ -389,36 +378,23 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 	}
 
 	// RecordCount: compute number of DNSRecordSets referencing this zone and set status field
-	if rc, ok := r.computeRecordCount(ctx, c, upstream.Namespace, upstream.Name); ok {
-		if upstream.Status.RecordCount != rc {
-			upstream.Status.RecordCount = rc
-			changed = true
-		}
+	recordCount := 0
+	for i := range rsList.Items {
+		recordCount += len(rsList.Items[i].Spec.Records)
+	}
+	if upstream.Status.RecordCount != recordCount {
+		upstream.Status.RecordCount = recordCount
+		changed = true
 	}
 
 	if !changed {
 		return nil
 	}
-	if err := c.Status().Update(ctx, upstream); err != nil {
+	if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
 		return err
 	}
 	log.FromContext(ctx).Info("upstream zone status updated", "status", upstream.Status)
 	return nil
-}
-
-// computeRecordCount lists DNSRecordSets in namespace and counts those that reference zoneName.
-func (r *DNSZoneReplicator) computeRecordCount(ctx context.Context, c client.Client, namespace, zoneName string) (int, bool) {
-	var rsList dnsv1alpha1.DNSRecordSetList
-	if err := c.List(ctx, &rsList, client.InNamespace(namespace)); err != nil {
-		return 0, false
-	}
-	count := 0
-	for i := range rsList.Items {
-		if rsList.Items[i].Spec.DNSZoneRef.Name == zoneName {
-			count += len(rsList.Items[i].Spec.Records)
-		}
-	}
-	return count, true
 }
 
 // ---- Watches / mapping helpers --------------------------------------------

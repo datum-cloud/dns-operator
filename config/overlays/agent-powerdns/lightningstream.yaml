@@ -29,5 +29,6 @@ storage:
     secret_key: ${S3_SECRET_KEY}
     region: ${S3_REGION}
     bucket: ${S3_BUCKET}
+    create_bucket: true
     endpoint_url: ${S3_ENDPOINT_URL}
 

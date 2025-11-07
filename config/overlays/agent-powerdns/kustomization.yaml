@@ -19,3 +19,12 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 2
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: lightningstream-config
+    behavior: replace
+    files:
+      - lightningstream.yaml

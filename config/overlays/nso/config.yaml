@@ -1,0 +1,20 @@
+apiVersion: apiserver.config.datumapis.com/v1alpha1
+kind: NetworkServicesOperator
+metricsServer:
+  bindAddress: "0"
+webhookServer:
+  port: 9444
+  tls:
+    secretRef:
+      name: network-services-operator-webhook-server-cert
+      namespace: kube-system
+gateway:
+  targetDomain: prism.e2e.env.datum.net
+  downstreamGatewayClassName: datum-downstream-gateway-e2e
+  permittedTLSOptions:
+    gateway.networking.datumapis.com/certificate-issuer: []
+  listenerTLSOptions:
+    gateway.networking.datumapis.com/certificate-issuer: gateway-clusterissuer-selfsigned-ca
+downstreamResourceManagement:
+  kubeconfigPath: /config/kubeconfig
+

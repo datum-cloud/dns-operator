@@ -104,6 +104,10 @@ spec:
           metadata:
             name: example-com
             namespace: ($downstreamNamespaceName)
+  - name: Sleep for 5 seconds
+    try:
+    - sleep:
+        duration: 5s
 
   - name: Confirm DNSZone Accepted/Programmed upstream
     try:
@@ -115,6 +119,21 @@ spec:
           metadata:
             name: example-com
           status:
+            domainRef:
+              status:
+                nameservers:
+                - hostname: A.IANA-SERVERS.NET
+                  ips:
+                  - address: 199.43.135.53
+                    registrantName: ICANN
+                  - address: 2001:500:8f::53
+                    registrantName: ICANN
+                - hostname: B.IANA-SERVERS.NET
+                  ips:
+                  - address: 199.43.133.53
+                    registrantName: ICANN
+                  - address: 2001:500:8d::53
+                    registrantName: ICANN
             conditions:
             - type: Accepted
               status: "True"

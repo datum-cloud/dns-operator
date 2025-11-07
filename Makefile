@@ -181,6 +181,13 @@ UPSTREAM_CLUSTER_NAME ?= dns-upstream
 # Image to load into kind clusters
 KIND_IMAGE ?= $(IMG)
 
+# Network Services Operator integration
+NSO_REPO ?= https://github.com/datum-cloud/network-services-operator.git
+NSO_DIR ?= dev/network-services-operator
+NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
+NSO_NAMESPACE ?= network-services-operator-system
+NSO_DEPLOY ?= false
+
 # Host to rewrite kubeconfig servers for in-cluster access (Docker Desktop/macOS default)
 KIND_KUBECONFIG_HOST ?= host.docker.internal
 
@@ -208,6 +215,12 @@ kustomize-apply: kustomize ## Apply a kustomize directory to a specific kubectl 
 	@test -n "$(KUSTOMIZE_DIR)" || { echo "KUSTOMIZE_DIR is required"; exit 1; }
 	@test -n "$(CONTEXT)" || { echo "CONTEXT is required"; exit 1; }
 	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone $(KUSTOMIZE_DIR) | $(KUBECTL) --context $(CONTEXT) apply -f -
+
+.PHONY: kustomize-apply-ssa
+kustomize-apply-ssa: kustomize ## Apply a kustomize directory with server-side apply and force conflicts
+	@test -n "$(KUSTOMIZE_DIR)" || { echo "KUSTOMIZE_DIR is required"; exit 1; }
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required"; exit 1; }
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone $(KUSTOMIZE_DIR) | $(KUBECTL) --context $(CONTEXT) apply --server-side=true --force-conflicts -f -
 
 .PHONY: export-kind-kubeconfig
 export-kind-kubeconfig: ## Export kind kubeconfig for CLUSTER to OUT and rewrite server host
@@ -254,14 +267,28 @@ bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to do
 	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-create
 	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
 	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) $(MAKE) cert-manager
+	# Install networking services operator CRDs (Domain, etc.) into upstream
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) $(MAKE) install-networking-crds
+	# Export external kubeconfig for upstream cluster (used to deploy NSO)
+	CLUSTER=$(UPSTREAM_CLUSTER_NAME) OUT=dev/kind.upstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
+	# Optionally build and deploy Network Services Operator into upstream
+	@if [ "$(NSO_DEPLOY)" = "true" ]; then \
+		echo "[bootstrap-upstream] Installing Kubernetes Gateway API CRDs ($(GATEWAY_API_VERSION))"; \
+		$(MAKE) install-gateway-api-crds CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) ; \
+		$(MAKE) nso-deploy-upstream KUBECONFIG=$(abspath dev/kind.upstream.kubeconfig) ; \
+		echo "[bootstrap-upstream] Re-applying NSO overlay (config + RBAC) with server-side apply to override defaults"; \
+		CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/nso $(MAKE) kustomize-apply-ssa ; \
+		echo "[bootstrap-upstream] Restarting NSO to pick up new ConfigMap"; \
+		kubectl --context kind-$(UPSTREAM_CLUSTER_NAME) -n network-services-operator-system rollout restart deploy/network-services-operator-controller-manager || true ; \
+	else \
+		echo "[bootstrap-upstream] Skipping NSO deployment (NSO_DEPLOY=false). Only CRDs installed."; \
+	fi
 	# Ensure namespace exists for secret
 	$(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) create namespace dns-replicator-system --dry-run=client -o yaml | $(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) apply -f -
 	# Create secret with downstream kubeconfig in upstream cluster
 	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE=$(DOWNSTREAM_KUBECONFIG) $(MAKE) secret-from-file
 	# Deploy replicator overlay
 	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/replicator $(MAKE) kustomize-apply
-	# Export external kubeconfig for upstream cluster (reachable from host/other containers)
-	CLUSTER=$(UPSTREAM_CLUSTER_NAME) OUT=dev/kind.upstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
 
 .PHONY: export-downstream-kubeconfig
 export-downstream-kubeconfig: ## Export downstream kubeconfig rewritten for in-cluster usage by upstream
@@ -277,6 +304,15 @@ bootstrap-e2e: ## Bootstrap downstream, export kubeconfig, then bootstrap upstre
 	OUT=$(E2E_DOWNSTREAM_KUBECONFIG) KIND_KUBECONFIG_INSECURE=$(E2E_INSECURE) $(MAKE) export-downstream-kubeconfig
 	DOWNSTREAM_KUBECONFIG=$(E2E_DOWNSTREAM_KUBECONFIG) IMG=$(IMG) $(MAKE) bootstrap-upstream
 	@echo "E2E bootstrap complete. Upstream: $(UPSTREAM_CLUSTER_NAME), Downstream: $(DOWNSTREAM_CLUSTER_NAME)."
+	@echo "Downstream kubeconfig: $(E2E_DOWNSTREAM_KUBECONFIG)"
+	@echo "External kubeconfigs: dev/kind.downstream.kubeconfig, dev/kind.upstream.kubeconfig"
+
+.PHONY: bootstrap-e2e-with-nso
+bootstrap-e2e-with-nso: ## Bootstrap e2e and also install+configure NSO in upstream
+	$(MAKE) bootstrap-downstream IMG=$(IMG)
+	OUT=$(E2E_DOWNSTREAM_KUBECONFIG) KIND_KUBECONFIG_INSECURE=$(E2E_INSECURE) $(MAKE) export-downstream-kubeconfig
+	DOWNSTREAM_KUBECONFIG=$(E2E_DOWNSTREAM_KUBECONFIG) IMG=$(IMG) NSO_DEPLOY=true $(MAKE) bootstrap-upstream
+	@echo "E2E bootstrap (with NSO) complete. Upstream: $(UPSTREAM_CLUSTER_NAME), Downstream: $(DOWNSTREAM_CLUSTER_NAME)."
 	@echo "Downstream kubeconfig: $(E2E_DOWNSTREAM_KUBECONFIG)"
 	@echo "External kubeconfigs: dev/kind.downstream.kubeconfig, dev/kind.upstream.kubeconfig"
 
@@ -322,6 +358,7 @@ CMCTL ?= $(LOCALBIN)/cmctl
 KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 DEFAULTER_GEN_VERSION ?= v0.32.3
+GATEWAY_API_VERSION ?= v1.1.0
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
@@ -386,6 +423,41 @@ chainsaw-prepare-kubeconfigs: ## Copy dev kind kubeconfigs into test/e2e for sta
 	@test -f dev/kind.downstream.kubeconfig || { echo "Missing dev/kind.downstream.kubeconfig. Bootstrap clusters first."; exit 1; }
 	cp dev/kind.upstream.kubeconfig test/e2e/kubeconfig-upstream
 	cp dev/kind.downstream.kubeconfig test/e2e/kubeconfig-downstream
+
+.PHONY: nso-clone
+nso-clone: ## Clone network-services-operator into dev if missing
+	@test -d $(NSO_DIR) || { \
+		echo "Cloning $(NSO_REPO) into $(NSO_DIR)"; \
+		git clone $(NSO_REPO) $(NSO_DIR); \
+	}
+
+.PHONY: nso-build
+nso-build: nso-clone ## Build NSO image locally
+	$(MAKE) -C $(NSO_DIR) docker-build IMG=$(NSO_IMG)
+
+.PHONY: nso-load-upstream
+nso-load-upstream: ## Load NSO image into upstream kind cluster
+	$(KIND) load docker-image $(NSO_IMG) --name $(UPSTREAM_CLUSTER_NAME)
+
+.PHONY: nso-deploy-upstream
+nso-deploy-upstream: nso-build nso-load-upstream ## Deploy NSO into upstream cluster using KUBECONFIG
+	@test -n "$(KUBECONFIG)" || { echo "KUBECONFIG is required (e.g., dev/kind.upstream.kubeconfig)"; exit 1; }
+	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) set-image-controller IMG=$(NSO_IMG)
+	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) deploy IMG=$(NSO_IMG)
+
+.PHONY: install-networking-crds
+install-networking-crds: controller-gen ## Generate and install networking services CRDs (e.g., Domain) into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
+	mkdir -p dev/crds/network-services
+	$(CONTROLLER_GEN) crd:crdVersions=v1 \
+	  paths="go.datum.net/network-services-operator/api/v1alpha" \
+	  output:crd:dir=dev/crds/network-services
+	$(KUBECTL) --context $(CONTEXT) apply -f dev/crds/network-services
+
+.PHONY: install-gateway-api-crds
+install-gateway-api-crds: ## Install Kubernetes Gateway API CRDs into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
+	$(KUBECTL) --context $(CONTEXT) apply -k "github.com/kubernetes-sigs/gateway-api/config/crd?ref=$(GATEWAY_API_VERSION)"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

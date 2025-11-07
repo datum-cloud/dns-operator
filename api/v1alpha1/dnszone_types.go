@@ -17,17 +17,34 @@ limitations under the License.
 package v1alpha1
 
 import (
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // DNSZoneSpec defines the desired state of DNSZone
 type DNSZoneSpec struct {
 	// DomainName is the FQDN of the zone (e.g., "example.com").
+	//
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +kubebuilder:validation:XValidation:message="A domain name is immutable and cannot be changed after creation",rule="oldSelf == '' || self == oldSelf"
+	// +kubebuilder:validation:XValidation:message="Must have at least two segments separated by dots",rule="self.indexOf('.') != -1"
 	DomainName string `json:"domainName"`
 
 	// DNSZoneClassName references the DNSZoneClass used to provision this zone.
 	// +optional
 	DNSZoneClassName string `json:"dnsZoneClassName,omitempty"`
+}
+
+type DomainRefStatus struct {
+	Nameservers []networkingv1alpha.Nameserver `json:"nameservers,omitempty"`
+}
+
+type DomainRef struct {
+	Name   string          `json:"name"`
+	Status DomainRefStatus `json:"status,omitempty"`
 }
 
 // DNSZoneStatus defines the observed state of DNSZone.
@@ -45,6 +62,10 @@ type DNSZoneStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// DomainRef references the Domain this zone belongs to.
+	// +optional
+	DomainRef *DomainRef `json:"domainRef,omitempty"`
 }
 
 // +kubebuilder:object:root=true

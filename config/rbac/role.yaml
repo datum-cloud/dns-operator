@@ -71,3 +71,23 @@ rules:
   - delete
   - patch
   - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - domains
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - domains/status
+  verbs:
+  - get
+  - list
+  - watch

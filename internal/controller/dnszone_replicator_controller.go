@@ -3,11 +3,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
@@ -25,6 +27,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
 )
@@ -41,6 +44,8 @@ const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/finalizers,verbs=update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
@@ -126,16 +131,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 	}
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCl.GetClient(), r.DownstreamClient)
-
-	// 2) Deletion guard
-	if !upstream.DeletionTimestamp.IsZero() {
-		if err := r.handleDeletion(ctx, strategy, &upstream); err != nil {
-			lg.Error(err, "deleting anchor")
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// 3) Resolve DNSZoneClass early; if specified but not found, set Accepted=False with message and stop
+	// 2) Resolve DNSZoneClass early; if specified but not found, set Accepted=False with message and stop
 	var zoneClass dnsv1alpha1.DNSZoneClass
 	if err := upstreamCl.GetClient().Get(ctx, client.ObjectKey{Name: upstream.Spec.DNSZoneClassName}, &zoneClass); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -152,13 +148,18 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 		return ctrl.Result{}, err
 	}
 
-	// 4) Ensure downstream shadow (only after class presence check)
+	// 3) Ensure downstream shadow (only after class presence check)
 	_, err = r.ensureDownstreamZone(ctx, strategy, &upstream)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// 5) First, refresh upstream status from downstream (populate nameservers)
+	// Ensure a matching Domain exists in the upstream cluster for this zone's domain name.
+	if err := r.ensureDomain(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 4) First, refresh upstream status from downstream (populate nameservers)
 	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
@@ -170,7 +171,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
-	// 6) Ensure default records exist (nameservers known by guard above)
+	// 5) Ensure default records exist (nameservers known by guard above)
 	if err := r.ensureSOARecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -338,6 +339,40 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 		}
 	}
 
+	// DomainRef: populate from upstream Domain object that matches spec.domainName.
+	var dlist networkingv1alpha.DomainList
+	if err := c.List(
+		ctx,
+		&dlist,
+		client.InNamespace(upstream.Namespace),
+		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", upstream.Spec.DomainName)},
+	); err != nil {
+		return err
+	}
+	var newRef *dnsv1alpha1.DomainRef
+	if len(dlist.Items) > 0 {
+		// Try to find one thats verified first else pick the first one.
+		indx := 0
+		for i, d := range dlist.Items {
+			if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+				indx = i
+				break
+			}
+		}
+
+		d := dlist.Items[indx]
+		newRef = &dnsv1alpha1.DomainRef{
+			Name: d.Name,
+			Status: dnsv1alpha1.DomainRefStatus{
+				Nameservers: append([]networkingv1alpha.Nameserver(nil), d.Status.Nameservers...),
+			},
+		}
+	}
+	if !equality.Semantic.DeepEqual(upstream.Status.DomainRef, newRef) {
+		upstream.Status.DomainRef = newRef
+		changed = true
+	}
+
 	// Accepted: true only after nameservers have been retrieved from downstream
 	if len(upstream.Status.Nameservers) > 0 {
 		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonAccepted, "Nameservers retrieved from downstream", metav1.ConditionTrue, upstream.Generation) || changed
@@ -400,6 +435,28 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 	return nil
 }
 
+// ensureDomain guarantees that a Domain object with spec.domainName equal to the zone's domain name exists upstream.
+// If none exists, it creates one in the same namespace.
+func (r *DNSZoneReplicator) ensureDomain(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) error {
+	var existing networkingv1alpha.DomainList
+	if err := c.List(
+		ctx,
+		&existing,
+		client.InNamespace(upstream.Namespace),
+		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", upstream.Spec.DomainName)},
+	); err != nil {
+		return err
+	}
+	if len(existing.Items) > 0 {
+		return nil
+	}
+	newDomain := networkingv1alpha.Domain{}
+	newDomain.SetNamespace(upstream.Namespace)
+	newDomain.SetGenerateName(fmt.Sprintf("%s-", strings.ReplaceAll(upstream.Spec.DomainName, ".", "-")))
+	newDomain.Spec.DomainName = upstream.Spec.DomainName
+	return c.Create(ctx, &newDomain)
+}
+
 // ---- Watches / mapping helpers --------------------------------------------
 
 func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
@@ -420,6 +477,26 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 		func(obj client.Object) []string {
 			rs := obj.(*dnsv1alpha1.DNSRecordSet)
 			return []string{string(rs.Spec.RecordType)}
+		},
+	); err != nil {
+		return err
+	}
+	// Index DNSZone by spec.domainName to efficiently map Domains -> Zones across namespaces.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&dnsv1alpha1.DNSZone{}, "spec.domainName",
+		func(obj client.Object) []string {
+			z := obj.(*dnsv1alpha1.DNSZone)
+			return []string{z.Spec.DomainName}
+		},
+	); err != nil {
+		return err
+	}
+	// Index for Domain.spec.domainName to efficiently lookups by domain name.
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&networkingv1alpha.Domain{}, "spec.domainName",
+		func(obj client.Object) []string {
+			d := obj.(*networkingv1alpha.Domain)
+			return []string{d.Spec.DomainName}
 		},
 	); err != nil {
 		return err
@@ -462,6 +539,47 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 					Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: zname}},
 				},
 			}}
+		})
+	})
+
+	// Watch upstream Domain objects and enqueue only if a matching DNSZone exists.
+	domainGVK := schema.GroupVersionKind{Group: networkingv1alpha.GroupVersion.Group, Version: networkingv1alpha.GroupVersion.Version, Kind: "Domain"}
+	upstreamDomain := newUnstructuredForGVK(domainGVK)
+	b = b.Watches(upstreamDomain, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
+			u, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				return nil
+			}
+			m := u.UnstructuredContent()
+			spec, _ := m["spec"].(map[string]interface{})
+			if spec == nil {
+				return nil
+			}
+			dname, _ := spec["domainName"].(string)
+			if dname == "" {
+				return nil
+			}
+			// Find upstream DNSZone(s) in the same namespace as the Domain.
+			var zones dnsv1alpha1.DNSZoneList
+			if err := cl.GetClient().List(ctx, &zones,
+				client.InNamespace(obj.GetNamespace()),
+				client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", dname)},
+			); err != nil {
+				return nil
+			}
+			// TODO: ideally there is only ever one DNSZone with the same spec.domainName in the same namespace.
+			var reqs []GVKRequest
+			for i := range zones.Items {
+				reqs = append(reqs, GVKRequest{
+					GVK: zoneGVK,
+					Request: mcreconcile.Request{
+						ClusterName: clusterName,
+						Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: zones.Items[i].Namespace, Name: zones.Items[i].Name}},
+					},
+				})
+			}
+			return reqs
 		})
 	})
 

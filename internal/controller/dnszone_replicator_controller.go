@@ -165,19 +165,22 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 		}
 	}
 
-	// 6) Ensure default records exist only after nameservers are available from downstream
-	if len(upstream.Status.Nameservers) > 0 {
-		if err := r.ensureSOARecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+	// If nameservers are not yet present, lightly poll to catch downstream status changes
+	if len(upstream.Status.Nameservers) == 0 {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+	}
+
+	// 6) Ensure default records exist (nameservers known by guard above)
+	if err := r.ensureSOARecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Recompute status to set Programmed based on record presence
+	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
+		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
-		}
-		if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
-			return ctrl.Result{}, err
-		}
-		// Recompute status to set Programmed based on record presence
-		if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
-			if !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
 		}
 	}
 

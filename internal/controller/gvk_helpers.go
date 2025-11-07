@@ -70,6 +70,10 @@ func typedEnqueueDownstreamGVKRequest(gvk schema.GroupVersionKind) mchandler.Typ
 			}
 			clusterName := strings.TrimPrefix(strings.ReplaceAll(clusterLabel, "_", "/"), "cluster-")
 
+			// Trace downstream event -> upstream enqueue
+			ctrl.LoggerFrom(ctx).Info("enqueue from downstream", "gvk", gvk.String(), "cluster", clusterName,
+				"ns", labels[downstreamclient.UpstreamOwnerNamespaceLabel], "name", labels[downstreamclient.UpstreamOwnerNameLabel])
+
 			return []GVKRequest{{
 				GVK: gvk,
 				Request: mcreconcile.Request{

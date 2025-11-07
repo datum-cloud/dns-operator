@@ -14,5 +14,8 @@ spec:
     - dns.networking.miloapis.com/dnsrecordsets.list
     - dns.networking.miloapis.com/dnsrecordsets.get
     - dns.networking.miloapis.com/dnsrecordsets.watch
+    - dns.networking.miloapis.com/dnszoneclasses.list
+    - dns.networking.miloapis.com/dnszoneclasses.get
+    - dns.networking.miloapis.com/dnszoneclasses.watch
 
 

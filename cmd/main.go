@@ -49,8 +49,8 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -64,6 +64,8 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(config.AddToScheme(scheme))
+	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -295,7 +297,8 @@ func main() {
 			os.Exit(1)
 		}
 		if err := (&controller.DNSZoneReplicator{
-			DownstreamClient: downstreamCluster.GetClient(),
+			DownstreamClient:    downstreamCluster.GetClient(),
+			AccountingNamespace: serverConfig.DownstreamResourceManagement.DNSZoneAccountingNamespace,
 		}).SetupWithManager(mcmgr, downstreamCluster); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneReplicator")
 			os.Exit(1)

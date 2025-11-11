@@ -104,6 +104,20 @@ spec:
           metadata:
             name: example-com
             namespace: ($downstreamNamespaceName)
+  
+  - name: Confirm DNSZone accounting downstream exists (configmap)
+    try:
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: example-com
+            namespace: datum-downstream-dnszone-accounting
+          data:
+            owner: (join('/', ['single', ($namespace), 'example-com']))
+
   - name: Sleep for 5 seconds
     try:
     - sleep:
@@ -309,6 +323,24 @@ spec:
             name: example-com
           status:
             recordCount: 2
+
+  - name: Delete DNSZone and confirm accounting configmap is deleted
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: example-com
+
+    - error:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: example-com
+            namespace: datum-downstream-dnszone-accounting
 
   - name: Teardown — delete zone first, classes last
     try:

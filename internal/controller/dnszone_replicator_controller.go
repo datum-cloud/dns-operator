@@ -35,6 +35,8 @@ import (
 type DNSZoneReplicator struct {
 	mgr              mcmanager.Manager
 	DownstreamClient client.Client
+	// AccountingNamespace is the downstream namespace used for DNSZone ownership accounting.
+	AccountingNamespace string
 }
 
 const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
@@ -108,6 +110,13 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 			}
 
+			// Cleanup zone accounting configmap once downstream is confirmed gone
+			owner := fmt.Sprintf("%s/%s/%s", req.ClusterName, upstream.Namespace, upstream.Name)
+			if cerr := r.cleanupZoneAccounting(ctx, &upstream, owner); cerr != nil && !apierrors.IsNotFound(cerr) {
+				lg.Error(cerr, "failed to cleanup accounting configmap; will retry")
+				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+			}
+
 			// Downstream is confirmed gone -> remove upstream finalizer (conflict-safe)
 			base := upstream.DeepCopy()
 			controllerutil.RemoveFinalizer(&upstream, dnsZoneFinalizer)
@@ -149,8 +158,22 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 	}
 
 	// 3) Ensure downstream shadow (only after class presence check)
-	_, err = r.ensureDownstreamZone(ctx, strategy, &upstream)
-	if err != nil {
+	owner := fmt.Sprintf("%s/%s/%s", req.ClusterName, upstream.Namespace, upstream.Name)
+	if owned, aerr := r.ensureZoneAccounting(ctx, &upstream, owner); aerr != nil {
+		return ctrl.Result{}, aerr
+	} else if !owned {
+		base := upstream.DeepCopy()
+		changed := false
+		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonDNSZoneInUse, "DNSZone claimed by another resource", metav1.ConditionFalse, upstream.Generation) || changed
+		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonDNSZoneInUse, "DNSZone claimed by another resource", metav1.ConditionFalse, upstream.Generation) || changed
+		if changed {
+			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
+				return ctrl.Result{}, perr
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+	if _, err = r.ensureDownstreamZone(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -224,6 +247,96 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 		}
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
+}
+
+// ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by normalized domainName,
+// and that its Data["owner"] matches the provided owner value. It creates the namespace/configmap if needed.
+// Returns owned=true when this zone owns the ConfigMap; owned=false if another owner holds it.
+func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *dnsv1alpha1.DNSZone, owner string) (bool, error) {
+	ns := r.AccountingNamespace
+	if ns == "" {
+		// This should never happen, but if it does, we should log an error and return an error.
+		log.FromContext(ctx).Error(fmt.Errorf("accounting namespace is not set"), "ensureZoneAccounting")
+		return false, fmt.Errorf("accounting namespace is not set")
+	}
+	// Ensure namespace exists
+	var namespace corev1.Namespace
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Name: ns}, &namespace); err != nil {
+		if apierrors.IsNotFound(err) {
+			namespace = corev1.Namespace{}
+			namespace.Name = ns
+			if cerr := r.DownstreamClient.Create(ctx, &namespace); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+				return false, cerr
+			}
+		} else {
+			return false, err
+		}
+	}
+
+	cmName := normalizeDomainToName(upstream.Spec.DomainName)
+	var cm corev1.ConfigMap
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+		// Create new ownership CM
+		newCM := corev1.ConfigMap{}
+		newCM.Namespace = ns
+		newCM.Name = cmName
+		newCM.Data = map[string]string{
+			"owner": owner,
+		}
+		if cerr := r.DownstreamClient.Create(ctx, &newCM); cerr != nil {
+			// A race can occur; if created by another, treat as not owned and let next reconcile decide
+			if apierrors.IsAlreadyExists(cerr) {
+				// Re-fetch and compare
+				if gerr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); gerr == nil {
+					return cm.Data["owner"] == owner, nil
+				}
+			}
+			return false, cerr
+		}
+		return true, nil
+	}
+
+	// Exists: check ownership
+	return cm.Data["owner"] == owner, nil
+}
+
+// cleanupZoneAccounting deletes the ownership ConfigMap for a zone if it is owned by the provided owner.
+func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream *dnsv1alpha1.DNSZone, owner string) error {
+	ns := r.AccountingNamespace
+	if ns == "" {
+		// This should never happen, but if it does, we should log an error and return an error.
+		log.FromContext(ctx).Error(fmt.Errorf("accounting namespace is not set"), "cleanupZoneAccounting")
+		return fmt.Errorf("accounting namespace is not set")
+	}
+	cmName := normalizeDomainToName(upstream.Spec.DomainName)
+	var cm corev1.ConfigMap
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if cm.Data["owner"] != owner {
+		// Do not delete if not owned by us
+		return nil
+	}
+	if err := r.DownstreamClient.Delete(ctx, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// normalizeDomainToName converts a DNS domain to a DNS-1123 compatible name.
+func normalizeDomainToName(domain string) string {
+	n := strings.ToLower(strings.TrimSuffix(domain, "."))
+	n = strings.ReplaceAll(n, ".", "-")
+	return n
 }
 
 // ensureSOARecordSet guarantees there is a managed SOA DNSRecordSet for PDNS-backed zones.

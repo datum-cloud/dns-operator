@@ -13,5 +13,12 @@ import (
 // Public to allow building arbitrary schemes.
 // All generated defaulters are covering - they call all nested defaulters.
 func RegisterDefaults(scheme *runtime.Scheme) error {
+	scheme.AddTypeDefaultingFunc(&DNSOperator{}, func(obj interface{}) { SetObjectDefaults_DNSOperator(obj.(*DNSOperator)) })
 	return nil
+}
+
+func SetObjectDefaults_DNSOperator(in *DNSOperator) {
+	if in.DownstreamResourceManagement.DNSZoneAccountingNamespace == "" {
+		in.DownstreamResourceManagement.DNSZoneAccountingNamespace = "datum-downstream-dnszone-accounting"
+	}
 }

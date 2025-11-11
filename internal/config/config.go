@@ -62,6 +62,11 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 // +k8s:deepcopy-gen=true
 
 type DownstreamResourceManagementConfig struct {
+	// DNSZoneAccountingNamespace is the namespace where the DNSZone accounting is performed.
+	//
+	// +default="datum-downstream-dnszone-accounting"
+	DNSZoneAccountingNamespace string `json:"dnsZoneAccountingNamespace"`
+
 	// KubeconfigPath is the path to the kubeconfig file to use when managing
 	// downstream resources. When not provided, the operator will use the
 	// in-cluster config.

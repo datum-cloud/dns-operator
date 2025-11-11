@@ -113,10 +113,10 @@ spec:
           apiVersion: v1
           kind: ConfigMap
           metadata:
-            name: example-com
+            name: example.com
             namespace: datum-downstream-dnszone-accounting
           data:
-            owner: (join('/', ['single', ($namespace), 'example-com']))
+            owner: (join('/', ['single', ($namespace), 'example.com']))
 
   - name: Sleep for 5 seconds
     try:
@@ -339,7 +339,7 @@ spec:
           apiVersion: v1
           kind: ConfigMap
           metadata:
-            name: example-com
+            name: example.com
             namespace: datum-downstream-dnszone-accounting
 
   - name: Teardown — delete zone first, classes last

@@ -249,7 +249,7 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 	})
 }
 
-// ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by normalized domainName,
+// ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by domainName,
 // and that its Data["owner"] matches the provided owner value. It creates the namespace/configmap if needed.
 // Returns owned=true when this zone owns the ConfigMap; owned=false if another owner holds it.
 func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *dnsv1alpha1.DNSZone, owner string) (bool, error) {
@@ -273,16 +273,15 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 		}
 	}
 
-	cmName := normalizeDomainToName(upstream.Spec.DomainName)
 	var cm corev1.ConfigMap
-	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); err != nil {
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: upstream.Spec.DomainName}, &cm); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		// Create new ownership CM
 		newCM := corev1.ConfigMap{}
 		newCM.Namespace = ns
-		newCM.Name = cmName
+		newCM.Name = upstream.Spec.DomainName
 		newCM.Data = map[string]string{
 			"owner": owner,
 		}
@@ -290,7 +289,7 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 			// A race can occur; if created by another, treat as not owned and let next reconcile decide
 			if apierrors.IsAlreadyExists(cerr) {
 				// Re-fetch and compare
-				if gerr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); gerr == nil {
+				if gerr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: upstream.Spec.DomainName}, &cm); gerr == nil {
 					return cm.Data["owner"] == owner, nil
 				}
 			}
@@ -311,9 +310,8 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 		log.FromContext(ctx).Error(fmt.Errorf("accounting namespace is not set"), "cleanupZoneAccounting")
 		return fmt.Errorf("accounting namespace is not set")
 	}
-	cmName := normalizeDomainToName(upstream.Spec.DomainName)
 	var cm corev1.ConfigMap
-	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, &cm); err != nil {
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: upstream.Spec.DomainName}, &cm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -330,13 +328,6 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 		return err
 	}
 	return nil
-}
-
-// normalizeDomainToName converts a DNS domain to a DNS-1123 compatible name.
-func normalizeDomainToName(domain string) string {
-	n := strings.ToLower(strings.TrimSuffix(domain, "."))
-	n = strings.ReplaceAll(n, ".", "-")
-	return n
 }
 
 // ensureSOARecordSet guarantees there is a managed SOA DNSRecordSet for PDNS-backed zones.

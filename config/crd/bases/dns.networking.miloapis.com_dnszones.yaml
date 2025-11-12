@@ -66,6 +66,7 @@ spec:
                 - message: Must have at least two segments separated by dots
                   rule: self.indexOf('.') != -1
             required:
+            - dnsZoneClassName
             - domainName
             type: object
           status:

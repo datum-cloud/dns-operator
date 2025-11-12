@@ -326,10 +326,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              observedGeneration:
-                description: ObservedGeneration is the last processed generation.
-                format: int64
-                type: integer
             type: object
         required:
         - spec

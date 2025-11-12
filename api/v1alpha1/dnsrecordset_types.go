@@ -47,6 +47,7 @@ type DNSRecordSetSpec struct {
 	DNSZoneRef corev1.LocalObjectReference `json:"dnsZoneRef"`
 
 	// RecordType is the DNS RR type for this recordset.
+	// +kubebuilder:validation:Required
 	RecordType RRType `json:"recordType"`
 
 	// Records contains one or more owner names with values appropriate for the RecordType.
@@ -56,6 +57,7 @@ type DNSRecordSetSpec struct {
 // RecordEntry represents one owner name and its values.
 type RecordEntry struct {
 	// Name is the owner name (relative to the zone or FQDN).
+	// +kubebuilder:validation:Required
 	Name string `json:"name"`
 	// TTL optionally overrides TTL for this owner/RRset.
 	// +optional
@@ -146,10 +148,6 @@ type SOARecordSpec struct {
 
 // DNSRecordSetStatus defines the observed state of DNSRecordSet.
 type DNSRecordSetStatus struct {
-	// ObservedGeneration is the last processed generation.
-	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
 	// Conditions includes Accepted and Programmed readiness.
 	// +listType=map
 	// +listMapKey=type

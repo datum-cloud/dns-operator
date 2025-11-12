@@ -34,8 +34,8 @@ type DNSZoneSpec struct {
 	DomainName string `json:"domainName"`
 
 	// DNSZoneClassName references the DNSZoneClass used to provision this zone.
-	// +optional
-	DNSZoneClassName string `json:"dnsZoneClassName,omitempty"`
+	// +kubebuilder:validation:Required
+	DNSZoneClassName string `json:"dnsZoneClassName"`
 }
 
 type DomainRefStatus struct {

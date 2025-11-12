@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -36,7 +37,7 @@ const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
-func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl.Result, error) {
+func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
 	lg.Info("reconcile start")
@@ -61,6 +62,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 			log.FromContext(ctx).Error(err, "failed to add DNSRecordSet finalizer")
 			return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
 		}
+		lg.Info("added upstream finalizer", "finalizer", rsFinalizer)
 		// requeue to continue with updated object
 		return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 	}
@@ -68,9 +70,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 	// Deletion path: downstream-first via finalizer
 	if !upstream.DeletionTimestamp.IsZero() {
 		if err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream); err != nil {
-			lg.V(1).Info("downstream still deleting; requeueing")
+			lg.Info("downstream DNSRecordSet still deleting; requeueing")
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
+		lg.Info("finalizer removed; allowing upstream DNSRecordSet to finalize")
 		// finalizer removed; allow upstream object to finalize
 		return ctrl.Result{}, nil
 	}
@@ -82,6 +85,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 		if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, zoneMsg, metav1.ConditionFalse, upstream.Generation) {
 			_ = upstreamCluster.GetClient().Status().Update(ctx, &upstream)
 		}
+		lg.Info("DNSZoneRef not set; marked Accepted=False and exiting early")
 		return ctrl.Result{}, nil
 	}
 	var zone dnsv1alpha1.DNSZone
@@ -93,6 +97,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 					return ctrl.Result{}, err
 				}
 			}
+			lg.Info("referenced DNSZone not found; marked Accepted=False and exiting early", "dnsZone", upstream.Spec.DNSZoneRef.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -102,6 +107,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 
 	// If the zone is being deleted, do not program downstream recordset
 	if !zone.DeletionTimestamp.IsZero() {
+		lg.Info("referenced DNSZone is deleting; skipping downstream programming", "dnsZone", zone.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -109,6 +115,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req GVKRequest) 
 	if updated, err := ensureOwnerRefToZone(ctx, upstreamCluster.GetClient(), &upstream, &zone); err != nil {
 		return ctrl.Result{}, err
 	} else if updated {
+		lg.Info("updated OwnerReference to DNSZone", "dnsZone", zone.Name)
 		// only requeue once after successful patch
 		return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 	}
@@ -173,6 +180,7 @@ func ensureOwnerRefToZone(ctx context.Context, c client.Client, rs *dnsv1alpha1.
 		return false, err
 	}
 
+	log.FromContext(ctx).Info("set OwnerReference to DNSZone", "recordset", rs.Name, "dnsZone", zone.Name)
 	return true, nil
 }
 
@@ -209,6 +217,7 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	log.FromContext(ctx).Info("requested downstream delete for DNSRecordSet", "namespace", md.Namespace, "name", md.Name)
 
 	// Confirm it's gone before removing the finalizer.
 	var shadow dnsv1alpha1.DNSRecordSet
@@ -216,13 +225,18 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	if apierrors.IsNotFound(getErr) {
 		base := upstream.DeepCopy()
 		controllerutil.RemoveFinalizer(upstream, rsFinalizer)
-		return upstreamClient.Patch(ctx, upstream, client.MergeFrom(base))
+		if err := upstreamClient.Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
+			return err
+		}
+		log.FromContext(ctx).Info("removed upstream finalizer", "finalizer", rsFinalizer)
+		return nil
 	}
 	if getErr != nil {
 		return getErr
 	}
 
 	// Still present—requeue caller by returning an error.
+	log.FromContext(ctx).Info("downstream DNSRecordSet still exists; waiting", "namespace", md.Namespace, "name", md.Name)
 	return fmt.Errorf("downstream DNSRecordSet %s/%s still deleting", md.Namespace, md.Name)
 }
 
@@ -238,7 +252,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
-	return controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
+	res, cErr := controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
 		if shadow.Labels == nil {
 			shadow.Labels = map[string]string{}
 		}
@@ -248,6 +262,11 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		}
 		return nil
 	})
+	if cErr != nil {
+		return res, cErr
+	}
+	log.FromContext(ctx).Info("ensured downstream DNSRecordSet", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
+	return res, nil
 }
 
 // updateStatus synthesizes the Accepted and Programmed conditions and performs a Status().Update when changes occur.
@@ -296,22 +315,19 @@ func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Clie
 func (r *DNSRecordSetReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
 	r.mgr = mgr
 
-	b := mcbuilder.TypedControllerManagedBy[GVKRequest](mgr)
+	b := mcbuilder.ControllerManagedBy(mgr)
 
 	// Upstream watch (desired spec)
-	rsGVK := schema.GroupVersionKind{Group: "dns.networking.miloapis.com", Version: "v1alpha1", Kind: "DNSRecordSet"}
-	upstreamRS := newUnstructuredForGVK(rsGVK)
-	b = b.Watches(upstreamRS, typedEnqueueRequestForGVK(rsGVK))
+	b = b.For(&dnsv1alpha1.DNSRecordSet{})
 
 	// Downstream watch (realized status → wake upstream owner)
-	downstreamRS := newUnstructuredForGVK(rsGVK)
 	src := mcsource.TypedKind(
-		downstreamRS,
-		typedEnqueueDownstreamGVKRequest(rsGVK),
+		&dnsv1alpha1.DNSRecordSet{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.DNSRecordSet](&dnsv1alpha1.DNSRecordSet{}),
 	)
 	clusterSrc, err := src.ForCluster("", downstreamCl)
 	if err != nil {
-		return fmt.Errorf("failed to build downstream watch for %s: %w", rsGVK.String(), err)
+		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").String(), err)
 	}
 	b = b.WatchesRawSource(clusterSrc)
 

@@ -116,7 +116,7 @@ spec:
             name: example.com
             namespace: datum-downstream-dnszone-accounting
           data:
-            owner: (join('/', ['single', ($namespace), 'example.com']))
+            owner: (join('/', ['single', ($namespace), 'example-com']))
 
   - name: Sleep for 5 seconds
     try:
@@ -289,12 +289,12 @@ spec:
 
   - name: Delete A record and verify PDNS cleanup
     try:
-    - script:
+    - delete:
         cluster: upstream
-        content: |
-          set -euo pipefail
-          # Delete upstream recordset if it exists and wait for deletion
-          kubectl -n "$NAMESPACE" delete dnsrecordset www-example-com --ignore-not-found --wait=true
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: www-example-com
     - script:
         cluster: upstream
         content: |
@@ -304,6 +304,8 @@ spec:
             echo "upstream DNSRecordSet still exists" >&2
             exit 1
           fi
+    - sleep:
+        duration: 5s
     - script:
         cluster: downstream
         content: |

@@ -11,7 +11,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,7 +50,7 @@ const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 
-func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl.Result, error) {
+func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
 	lg.Info("reconcile start")
@@ -76,6 +75,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				lg.Error(err, "failed to add upstream finalizer")
 				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
 			}
+			lg.Info("added upstream finalizer", "finalizer", dnsZoneFinalizer)
 			// Re-run with updated object
 			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 		}
@@ -89,6 +89,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				lg.Error(err, "downstream delete failed; will retry")
 				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 			}
+			lg.Info("requested downstream delete for DNSZone")
 
 			// Verify downstream object is actually gone before dropping finalizer
 			md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream)
@@ -101,6 +102,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 			shadow.SetName(md.Name)
 			getErr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow)
 			if getErr == nil {
+				lg.Info("downstream DNSZone still exists; waiting", "namespace", md.Namespace, "name", md.Name)
 				// Still exists; rely on downstream watch to requeue when it changes
 				return ctrl.Result{}, nil
 			}
@@ -111,11 +113,13 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 			}
 
 			// Cleanup zone accounting configmap once downstream is confirmed gone
+			lg.Info("downstream DNSZone confirmed deleted", "namespace", md.Namespace, "name", md.Name)
 			owner := fmt.Sprintf("%s/%s/%s", req.ClusterName, upstream.Namespace, upstream.Name)
 			if cerr := r.cleanupZoneAccounting(ctx, &upstream, owner); cerr != nil && !apierrors.IsNotFound(cerr) {
 				lg.Error(cerr, "failed to cleanup accounting configmap; will retry")
 				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
 			}
+			lg.Info("cleaned up accounting configmap for DNSZone", "domain", upstream.Spec.DomainName)
 
 			// Downstream is confirmed gone -> remove upstream finalizer (conflict-safe)
 			base := upstream.DeepCopy()
@@ -124,6 +128,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				lg.Error(err, "failed to remove upstream finalizer")
 				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
 			}
+			lg.Info("removed upstream finalizer", "finalizer", dnsZoneFinalizer)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -136,6 +141,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 				return ctrl.Result{}, err
 			}
 		}
+		lg.Info("DNSZoneClassName not set; marked Accepted=False and exiting early")
 		return ctrl.Result{}, nil
 	}
 
@@ -152,6 +158,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 					return ctrl.Result{}, err
 				}
 			}
+			lg.Info("DNSZoneClass not found; marked Accepted=False and exiting early", "class", upstream.Spec.DNSZoneClassName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -191,6 +198,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req GVKRequest) (ctrl
 
 	// If nameservers are not yet present, lightly poll to catch downstream status changes
 	if len(upstream.Status.Nameservers) == 0 {
+		lg.Info("nameservers not yet available; requeueing shortly")
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
@@ -237,7 +245,7 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
-	return controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
+	res, cErr := controllerutil.CreateOrPatch(ctx, strategy.GetClient(), &shadow, func() error {
 		if shadow.Labels == nil {
 			shadow.Labels = map[string]string{}
 		}
@@ -247,6 +255,11 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 		}
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
+	if cErr != nil {
+		return res, cErr
+	}
+	log.FromContext(ctx).Info("ensured downstream DNSZone", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
+	return res, nil
 }
 
 // ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by domainName,
@@ -268,6 +281,7 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 			if cerr := r.DownstreamClient.Create(ctx, &namespace); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
 				return false, cerr
 			}
+			log.FromContext(ctx).Info("created accounting namespace (downstream)", "namespace", ns)
 		} else {
 			return false, err
 		}
@@ -290,16 +304,21 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 			if apierrors.IsAlreadyExists(cerr) {
 				// Re-fetch and compare
 				if gerr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: upstream.Spec.DomainName}, &cm); gerr == nil {
-					return cm.Data["owner"] == owner, nil
+					owned := cm.Data["owner"] == owner
+					log.FromContext(ctx).Info("zone accounting exists after race", "namespace", ns, "configmap", upstream.Spec.DomainName, "owned", owned, "owner", cm.Data["owner"])
+					return owned, nil
 				}
 			}
 			return false, cerr
 		}
+		log.FromContext(ctx).Info("created zone accounting configmap (downstream)", "namespace", ns, "configmap", newCM.Name, "owner", owner)
 		return true, nil
 	}
 
 	// Exists: check ownership
-	return cm.Data["owner"] == owner, nil
+	owned := cm.Data["owner"] == owner
+	log.FromContext(ctx).Info("zone accounting found (downstream)", "namespace", ns, "configmap", cm.Name, "owned", owned, "owner", cm.Data["owner"])
+	return owned, nil
 }
 
 // cleanupZoneAccounting deletes the ownership ConfigMap for a zone if it is owned by the provided owner.
@@ -319,6 +338,7 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 	}
 	if cm.Data["owner"] != owner {
 		// Do not delete if not owned by us
+		log.FromContext(ctx).Info("skipping accounting configmap delete; not owner", "namespace", ns, "configmap", cm.Name, "owner", cm.Data["owner"], "expectedOwner", owner)
 		return nil
 	}
 	if err := r.DownstreamClient.Delete(ctx, &cm); err != nil {
@@ -327,6 +347,7 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 		}
 		return err
 	}
+	log.FromContext(ctx).Info("deleted accounting configmap (downstream)", "namespace", ns, "configmap", cm.Name)
 	return nil
 }
 
@@ -359,6 +380,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		return err
 	}
 	if len(existingList.Items) > 0 {
+		log.FromContext(ctx).Info("SOA DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
 
@@ -380,6 +402,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 			},
 		}},
 	}
+	log.FromContext(ctx).Info("creating default SOA DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
 	return c.Create(ctx, &newObj)
 }
 
@@ -405,6 +428,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		return err
 	}
 	if len(existingList.Items) > 0 {
+		log.FromContext(ctx).Info("NS DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
 
@@ -420,6 +444,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 			Raw:  values,
 		}},
 	}
+	log.FromContext(ctx).Info("creating default NS DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
 	return c.Create(ctx, &newObj)
 }
 
@@ -552,12 +577,14 @@ func (r *DNSZoneReplicator) ensureDomain(ctx context.Context, c client.Client, u
 		return err
 	}
 	if len(existing.Items) > 0 {
+		log.FromContext(ctx).Info("Domain already exists for DNSZone; skipping create", "namespace", upstream.Namespace, "domainName", upstream.Spec.DomainName)
 		return nil
 	}
 	newDomain := networkingv1alpha.Domain{}
 	newDomain.SetNamespace(upstream.Namespace)
 	newDomain.SetGenerateName(fmt.Sprintf("%s-", strings.ReplaceAll(upstream.Spec.DomainName, ".", "-")))
 	newDomain.Spec.DomainName = upstream.Spec.DomainName
+	log.FromContext(ctx).Info("creating Domain for DNSZone (upstream)", "namespace", newDomain.Namespace, "domainName", newDomain.Spec.DomainName)
 	return c.Create(ctx, &newDomain)
 }
 
@@ -606,81 +633,32 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 		return err
 	}
 
-	b := mcbuilder.TypedControllerManagedBy[GVKRequest](mgr)
+	b := mcbuilder.ControllerManagedBy(mgr)
 
 	// Upstream watch
-	zoneGVK := schema.GroupVersionKind{Group: "dns.networking.miloapis.com", Version: "v1alpha1", Kind: "DNSZone"}
-	upstreamZone := newUnstructuredForGVK(zoneGVK)
-	b = b.Watches(upstreamZone, typedEnqueueRequestForGVK(zoneGVK))
-
-	// Also watch upstream DNSRecordSet to keep RecordCount up-to-date on the zone
-	rsGVK := schema.GroupVersionKind{Group: "dns.networking.miloapis.com", Version: "v1alpha1", Kind: "DNSRecordSet"}
-	upstreamRS := newUnstructuredForGVK(rsGVK)
-	b = b.Watches(upstreamRS, func(clusterName string, _ cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
-		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
-			u, ok := obj.(*unstructured.Unstructured)
-			if !ok {
-				return nil
-			}
-			// Read spec.dnsZoneRef.name from unstructured content
-			m := u.UnstructuredContent()
-			spec, _ := m["spec"].(map[string]interface{})
-			if spec == nil {
-				return nil
-			}
-			zref, _ := spec["dnsZoneRef"].(map[string]interface{})
-			if zref == nil {
-				return nil
-			}
-			zname, _ := zref["name"].(string)
-			if zname == "" {
-				return nil
-			}
-			return []GVKRequest{{
-				GVK: zoneGVK,
-				Request: mcreconcile.Request{
-					ClusterName: clusterName,
-					Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: zname}},
-				},
-			}}
-		})
-	})
+	b = b.For(&dnsv1alpha1.DNSZone{}).Owns(&dnsv1alpha1.DNSRecordSet{})
 
 	// Watch upstream Domain objects and enqueue only if a matching DNSZone exists.
-	domainGVK := schema.GroupVersionKind{Group: networkingv1alpha.GroupVersion.Group, Version: networkingv1alpha.GroupVersion.Version, Kind: "Domain"}
-	upstreamDomain := newUnstructuredForGVK(domainGVK)
-	b = b.Watches(upstreamDomain, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, GVKRequest] {
-		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []GVKRequest {
-			u, ok := obj.(*unstructured.Unstructured)
+	b = b.Watches(&networkingv1alpha.Domain{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+			u, ok := obj.(*networkingv1alpha.Domain)
 			if !ok {
-				return nil
-			}
-			m := u.UnstructuredContent()
-			spec, _ := m["spec"].(map[string]interface{})
-			if spec == nil {
-				return nil
-			}
-			dname, _ := spec["domainName"].(string)
-			if dname == "" {
 				return nil
 			}
 			// Find upstream DNSZone(s) in the same namespace as the Domain.
 			var zones dnsv1alpha1.DNSZoneList
 			if err := cl.GetClient().List(ctx, &zones,
 				client.InNamespace(obj.GetNamespace()),
-				client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", dname)},
+				client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", u.Spec.DomainName)},
 			); err != nil {
 				return nil
 			}
 			// TODO: ideally there is only ever one DNSZone with the same spec.domainName in the same namespace.
-			var reqs []GVKRequest
+			var reqs []mcreconcile.Request
 			for i := range zones.Items {
-				reqs = append(reqs, GVKRequest{
-					GVK: zoneGVK,
-					Request: mcreconcile.Request{
-						ClusterName: clusterName,
-						Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: zones.Items[i].Namespace, Name: zones.Items[i].Name}},
-					},
+				reqs = append(reqs, mcreconcile.Request{
+					ClusterName: clusterName,
+					Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: zones.Items[i].Namespace, Name: zones.Items[i].Name}},
 				})
 			}
 			return reqs
@@ -688,14 +666,13 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 	})
 
 	// Downstream watch (wake upstream on changes)
-	downstreamZone := newUnstructuredForGVK(zoneGVK)
 	src := mcsource.TypedKind(
-		downstreamZone,
-		typedEnqueueDownstreamGVKRequest(zoneGVK),
+		&dnsv1alpha1.DNSZone{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.DNSZone](&dnsv1alpha1.DNSZone{}),
 	)
 	clusterSrc, err := src.ForCluster("", downstreamCl)
 	if err != nil {
-		return fmt.Errorf("failed to build downstream watch for %s: %w", zoneGVK.String(), err)
+		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("DNSZone").String(), err)
 	}
 	b = b.WatchesRawSource(clusterSrc)
 

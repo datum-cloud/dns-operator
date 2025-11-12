@@ -495,6 +495,11 @@ func (in *RecordEntry) DeepCopyInto(out *RecordEntry) {
 		*out = new(CNAMEValue)
 		**out = **in
 	}
+	if in.NS != nil {
+		in, out := &in.NS, &out.NS
+		*out = new(SimpleValues)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.TXT != nil {
 		in, out := &in.TXT, &out.TXT
 		*out = new(SimpleValues)

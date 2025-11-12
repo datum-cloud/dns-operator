@@ -158,6 +158,15 @@ spec:
                       description: Name is the owner name (relative to the zone or
                         FQDN).
                       type: string
+                    ns:
+                      properties:
+                        content:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - content
+                      type: object
                     raw:
                       description: Raw contains raw RDATA strings when used instead
                         of typed fields.

@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -24,6 +27,31 @@ func NewClient(baseURL, apiKey string) *Client {
 		APIKey:  apiKey,
 		HTTP:    &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+type pdnsAPIError struct {
+	Status int
+	Body   string
+}
+
+func (e *pdnsAPIError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("pdns api error: status %d: %s", e.Status, e.Body)
+	}
+	return fmt.Sprintf("pdns api error: status %d", e.Status)
+}
+
+func readRespBody(resp *http.Response, max int64) string {
+	if resp == nil || resp.Body == nil {
+		return ""
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// don't blow up logs; cap at e.g. 16KB
+	if max <= 0 {
+		max = 16 << 10 // 16 KiB
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, max))
+	return strings.TrimSpace(string(b))
 }
 
 type createZoneRequest struct {
@@ -183,17 +211,27 @@ type zoneRRsetRecord struct {
 // ApplyRecordSetAuthoritative ensures rrsets for the given record type match exactly the owners provided
 // in rs.Spec.Records: it REPLACEs provided owners and DELETEs any extra owners of the same type in PDNS.
 func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, rs dnsv1alpha1.DNSRecordSet) error {
-	desired := buildRRSets(zone, rs)
-	// Build a set of desired owners for quick lookup
-	desiredOwners := map[string]struct{}{}
-	for _, rr := range desired {
-		// Only target the specific type for this recordset
-		if rr.Type == string(rs.Spec.RecordType) {
-			desiredOwners[rr.Name] = struct{}{}
+	// Build desired rrsets for this zone+type
+	desiredAll := buildRRSets(zone, rs)
+
+	// Filter only the target type (defensive) and normalize empty-record rrsets:
+	// - If an rrset has 0 records, PDNS will reject a REPLACE. Convert it to a DELETE instead.
+	desired := make([]rrset, 0, len(desiredAll))
+	desiredOwners := make(map[string]struct{}, len(desiredAll))
+	for _, rr := range desiredAll {
+		if rr.Type != string(rs.Spec.RecordType) {
+			continue
 		}
+		if len(rr.Records) == 0 {
+			rr.ChangeType = "DELETE"
+		} else {
+			rr.ChangeType = "REPLACE"
+		}
+		desired = append(desired, rr)
+		desiredOwners[rr.Name] = struct{}{}
 	}
 
-	// Fetch existing rrsets and find owners of this type to delete if not in desired
+	// Fetch existing rrsets and find owners of this type to delete if not present in desired
 	existing, err := c.GetZoneRRSets(ctx, zone)
 	if err != nil {
 		return err
@@ -203,8 +241,7 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 		if ex.Type != string(rs.Spec.RecordType) {
 			continue
 		}
-		// Normalize name to absolute form
-		name := ex.Name
+		name := ex.Name // already absolute from PDNS
 		if _, ok := desiredOwners[name]; !ok {
 			deletes = append(deletes, rrset{
 				Name:       name,
@@ -216,22 +253,43 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 		}
 	}
 
-	payload := patchZoneRequest{RRSets: append(desired, deletes...)}
+	// Compose patch payload (deterministic order helps debugging/tests)
+	patch := append(desired, deletes...)
+	sort.Slice(patch, func(i, j int) bool {
+		if patch[i].Type != patch[j].Type {
+			return patch[i].Type < patch[j].Type
+		}
+		if patch[i].Name != patch[j].Name {
+			return patch[i].Name < patch[j].Name
+		}
+		// DELETEs last so REPLACEs win when both accidentally appear
+		if patch[i].ChangeType != patch[j].ChangeType {
+			return patch[i].ChangeType < patch[j].ChangeType
+		}
+		return false
+	})
+
+	payload := patchZoneRequest{RRSets: patch}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", bytes.NewReader(body))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("X-API-Key", c.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("pdns apply authoritative failed: status %d", resp.StatusCode)
+		errBody := readRespBody(resp, 64<<10) // closes Body
+		// include status + body so tests/logs show the real PDNS error
+		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -259,20 +317,20 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 		case dnsv1alpha1.RRTypeCNAME:
 			target := ""
 			if rec.CNAME != nil {
-				target = rec.CNAME.Content
+				target = strings.TrimSpace(rec.CNAME.Content)
 			} else if len(rec.Raw) > 0 {
-				target = rec.Raw[0]
+				target = strings.TrimSpace(rec.Raw[0])
 			}
-			if target != "" && target[len(target)-1] != '.' {
-				target += "."
+			target = qualifyIfNeeded(target)
+			if target != "" {
+				out = append(out, rrset{
+					Name:       name,
+					Type:       "CNAME",
+					TTL:        ttl,
+					ChangeType: "REPLACE",
+					Records:    []rrsetRecord{{Content: target, Disabled: false}},
+				})
 			}
-			out = append(out, rrset{
-				Name:       name,
-				Type:       "CNAME",
-				TTL:        ttl,
-				ChangeType: "REPLACE",
-				Records:    []rrsetRecord{{Content: target, Disabled: false}},
-			})
 		case dnsv1alpha1.RRTypeTXT:
 			values := rec.Raw
 			if rec.TXT != nil {
@@ -286,27 +344,36 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 		case dnsv1alpha1.RRTypeMX:
 			lines := make([]string, 0, len(rec.MX))
 			for _, mx := range rec.MX {
-				exch := mx.Exchange
-				if exch != "" && exch[len(exch)-1] != '.' {
-					exch += "."
+				exch := strings.TrimSpace(mx.Exchange)
+				if exch == "" {
+					continue
 				}
-				lines = append(lines, fmt.Sprintf("%d %s", mx.Preference, exch))
+				lines = append(lines, fmt.Sprintf("%d %s", mx.Preference, qualifyIfNeeded(exch)))
 			}
 			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
+				for _, r := range rec.Raw {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						lines = append(lines, qualifyIfNeeded(r))
+					}
+				}
 			}
 			out = append(out, makeSimpleRRSet(name, "MX", ttl, lines))
 		case dnsv1alpha1.RRTypeSRV:
 			lines := make([]string, 0, len(rec.SRV))
 			for _, s := range rec.SRV {
-				tgt := s.Target
-				if tgt != "" && tgt[len(tgt)-1] != '.' {
-					tgt += "."
-				}
-				lines = append(lines, fmt.Sprintf("%d %d %d %s", s.Priority, s.Weight, s.Port, tgt))
+				tgt := strings.TrimSpace(s.Target)
+				lines = append(lines, fmt.Sprintf("%d %d %d %s", s.Priority, s.Weight, s.Port, qualifyIfNeeded(tgt)))
 			}
 			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
+				for _, r := range rec.Raw {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						if r != "" {
+							lines = append(lines, qualifyIfNeeded(r))
+						}
+					}
+				}
 			}
 			out = append(out, makeSimpleRRSet(name, "SRV", ttl, lines))
 		case dnsv1alpha1.RRTypeCAA:
@@ -319,22 +386,27 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			out = append(out, makeSimpleRRSet(name, "CAA", ttl, lines))
 		case dnsv1alpha1.RRTypeNS:
+			// Prefer typed NS values; fall back to Raw
 			values := rec.Raw
-			if len(values) == 0 && rec.A != nil {
-				values = rec.A.Content
+			if rec.NS != nil && len(rec.NS.Content) > 0 {
+				values = rec.NS.Content
 			}
-			fq := make([]string, 0, len(values))
+
+			// Normalize: trim spaces, drop empties, and remove any trailing dot.
+			norm := make([]string, 0, len(values))
 			for _, v := range values {
-				if v != "" && v[len(v)-1] != '.' {
-					v += "."
+				v = strings.TrimSpace(v)
+				if v == "" {
+					continue
 				}
-				fq = append(fq, v)
+				norm = append(norm, qualifyIfNeeded(v))
 			}
-			out = append(out, makeSimpleRRSet(name, "NS", ttl, fq))
+
+			out = append(out, makeSimpleRRSet(name, "NS", ttl, norm))
 		case dnsv1alpha1.RRTypeSOA:
 			if rec.SOA != nil {
-				mname := qualifyIfNeeded(rec.SOA.MName)
-				rname := qualifyIfNeeded(rec.SOA.RName)
+				mname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.MName))
+				rname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.RName))
 				serial := fmt.Sprintf("%s01", time.Now().Format("20060102"))
 				if rec.SOA.Serial != 0 {
 					serial = fmt.Sprintf("%d", rec.SOA.Serial)
@@ -358,10 +430,24 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 				line := fmt.Sprintf("%s %s %s %d %d %d %d", mname, rname, serial, refresh, retry, expire, minimum)
 				out = append(out, makeSimpleRRSet(name, "SOA", ttl, []string{line}))
 			} else if len(rec.Raw) > 0 {
-				out = append(out, makeSimpleRRSet(name, "SOA", ttl, rec.Raw))
+				vals := make([]string, 0, len(rec.Raw))
+				for _, r := range rec.Raw {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						vals = append(vals, qualifyIfNeeded(r))
+					}
+				}
+				out = append(out, makeSimpleRRSet(name, "SOA", ttl, vals))
 			}
 		case dnsv1alpha1.RRTypePTR:
-			out = append(out, makeSimpleRRSet(name, "PTR", ttl, rec.Raw))
+			vals := make([]string, 0, len(rec.Raw))
+			for _, r := range rec.Raw {
+				r = strings.TrimSpace(r)
+				if r != "" {
+					vals = append(vals, qualifyIfNeeded(r))
+				}
+			}
+			out = append(out, makeSimpleRRSet(name, "PTR", ttl, vals))
 		case dnsv1alpha1.RRTypeTLSA:
 			lines := make([]string, 0, len(rec.TLSA))
 			for _, t := range rec.TLSA {
@@ -374,38 +460,126 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 		case dnsv1alpha1.RRTypeHTTPS:
 			lines := make([]string, 0, len(rec.HTTPS))
 			for _, h := range rec.HTTPS {
-				params := ""
-				for k, v := range h.Params {
-					if params != "" {
-						params += " "
-					}
-					params += fmt.Sprintf("%s=%s", k, quoteIfNeeded(v))
-				}
-				lines = append(lines, fmt.Sprintf("%d %s %s", h.Priority, qualifyIfNeeded(h.Target), params))
+				lines = append(lines, encodeSvcbLine(h.Priority, h.Target, h.Params))
 			}
 			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
+				for _, r := range rec.Raw {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						lines = append(lines, r)
+					}
+				}
 			}
 			out = append(out, makeSimpleRRSet(name, "HTTPS", ttl, lines))
 		case dnsv1alpha1.RRTypeSVCB:
 			lines := make([]string, 0, len(rec.SVCB))
 			for _, h := range rec.SVCB {
-				params := ""
-				for k, v := range h.Params {
-					if params != "" {
-						params += " "
-					}
-					params += fmt.Sprintf("%s=%s", k, quoteIfNeeded(v))
-				}
-				lines = append(lines, fmt.Sprintf("%d %s %s", h.Priority, qualifyIfNeeded(h.Target), params))
+				lines = append(lines, encodeSvcbLine(h.Priority, h.Target, h.Params))
 			}
 			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
+				for _, r := range rec.Raw {
+					r = strings.TrimSpace(r)
+					if r != "" {
+						lines = append(lines, r)
+					}
+				}
 			}
 			out = append(out, makeSimpleRRSet(name, "SVCB", ttl, lines))
+
 		}
 	}
 	return out
+}
+
+var (
+	svcbFlagKeys    = map[string]struct{}{"no-default-alpn": {}}
+	svcbUnquotedCSV = map[string]struct{}{"alpn": {}, "ipv4hint": {}, "ipv6hint": {}, "port": {}}
+	svcbQuotedKeys  = map[string]struct{}{"esnikeys": {}, "ech": {}}
+)
+
+// rank keys in PDNS-style canonical order
+func svcbKeyRank(k string) int {
+	switch k {
+	case "alpn":
+		return 10
+	case "no-default-alpn":
+		return 20
+	case "port":
+		return 30
+	case "esnikeys", "ech":
+		return 40
+	case "ipv4hint":
+		return 50
+	case "ipv6hint":
+		return 60
+	default:
+		return 1000 // unknowns after known ones
+	}
+}
+
+func encodeSvcbParams(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ri, rj := svcbKeyRank(keys[i]), svcbKeyRank(keys[j])
+		if ri != rj {
+			return ri < rj
+		}
+		// stable within same rank
+		return keys[i] < keys[j]
+	})
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := strings.TrimSpace(m[k])
+		if _, isFlag := svcbFlagKeys[k]; isFlag {
+			parts = append(parts, k)
+			continue
+		}
+		if v == "" {
+			continue
+		}
+		if _, unq := svcbUnquotedCSV[k]; unq {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, v))
+			continue
+		}
+		if _, q := svcbQuotedKeys[k]; q {
+			parts = append(parts, fmt.Sprintf("%s=%s", k, quoteIfNeeded(v)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k, quoteIfNeeded(v)))
+	}
+	return strings.Join(parts, " ")
+}
+
+func encodeSvcbLine(priority uint16, target string, params map[string]string) string {
+	// target: "." for service-form with no alias; otherwise hostname (no trailing dot)
+	t := strings.TrimSpace(target)
+	if t == "." {
+		// service-form: literal "." must be preserved
+		// (do not strip)
+	} else if t == "" {
+		// default to service-form with no alias
+		t = "."
+	} else {
+		t = qualifyIfNeeded(t)
+	}
+
+	// alias form: priority 0 => MUST have a target and MUST NOT have params
+	if priority == 0 {
+		return fmt.Sprintf("%d %s", priority, t)
+	}
+
+	p := encodeSvcbParams(params)
+	if p != "" {
+		return fmt.Sprintf("%d %s %s", priority, t, p)
+	}
+	return fmt.Sprintf("%d %s", priority, t)
 }
 
 func makeSimpleRRSet(name, typ string, ttl int, values []string) rrset {
@@ -447,6 +621,13 @@ func quoteIfNeeded(s string) string {
 		return s
 	}
 	return fmt.Sprintf("\"%s\"", s)
+}
+
+func stripTrailingDot(s string) string {
+	if strings.HasSuffix(s, ".") {
+		return s[:len(s)-1]
+	}
+	return s
 }
 
 // NewFromEnv constructs a PowerDNS API client using environment variables.

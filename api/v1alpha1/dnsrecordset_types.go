@@ -75,6 +75,8 @@ type RecordEntry struct {
 	// +optional
 	CNAME *CNAMEValue `json:"cname,omitempty"`
 	// +optional
+	NS *SimpleValues `json:"ns,omitempty"`
+	// +optional
 	TXT *SimpleValues `json:"txt,omitempty"`
 	// +optional
 	SOA *SOARecordSpec `json:"soa,omitempty"`

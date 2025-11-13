@@ -1,7 +1,6 @@
 package pdns
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -13,6 +12,11 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+)
+
+const (
+	ns1ExampleNet = "ns1.example.net."
+	exampleCom    = "example.com."
 )
 
 func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
@@ -52,9 +56,9 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 		case http.MethodGet:
 			// Return a zone with two rrsets
 			resp := zoneResponse{
-				Name: "example.com.",
+				Name: exampleCom,
 				RRSets: []zoneRRset{
-					{Name: "example.com.", Type: "A", TTL: 300, Records: []zoneRRsetRecord{{Content: "1.2.3.4"}}},
+					{Name: exampleCom, Type: "A", TTL: 300, Records: []zoneRRsetRecord{{Content: "1.2.3.4"}}},
 					{Name: "www.example.com.", Type: "CNAME", TTL: 300, Records: []zoneRRsetRecord{{Content: "target"}}},
 				},
 			}
@@ -88,8 +92,8 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	if err := json.Unmarshal(lastReq.Body, &cz); err != nil {
 		t.Fatalf("CreateZone body decode: %v", err)
 	}
-	if cz.Name != "example.com." {
-		t.Fatalf("CreateZone name: got %q want %q", cz.Name, "example.com.")
+	if cz.Name != exampleCom {
+		t.Fatalf("CreateZone name: got %q want %q", cz.Name, exampleCom)
 	}
 	if !reflect.DeepEqual(cz.Nameservers, []string{"ns1.example.com.", "ns2.example.com."}) {
 		t.Fatalf("CreateZone nameservers: got %#v", cz.Nameservers)
@@ -100,7 +104,7 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetZone error: %v", err)
 	}
-	if z != "example.com." {
+	if z != exampleCom {
 		t.Fatalf("GetZone name: got %q", z)
 	}
 
@@ -199,19 +203,19 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 
 	rs.Spec.RecordType = dnsv1alpha1.RRTypeNS
 	rs.Spec.Records[0].CAA = nil
-	rs.Spec.Records[0].NS = &dnsv1alpha1.SimpleValues{Content: []string{"ns1.example.net.", " ns2.example.net. "}}
+	rs.Spec.Records[0].NS = &dnsv1alpha1.SimpleValues{Content: []string{ns1ExampleNet, " ns2.example.net. "}}
 	rr = buildRRSets("example.com", rs)
 
 	nsGot := []string{rr[0].Records[0].Content, rr[0].Records[1].Content}
 	// PDNS payload uses absolute hostnames (with trailing dots)
-	if rr[0].Type != "NS" || nsGot[0] != "ns1.example.net." || nsGot[1] != "ns2.example.net." {
+	if rr[0].Type != "NS" || nsGot[0] != ns1ExampleNet || nsGot[1] != "ns2.example.net." {
 		t.Fatalf("NS rrset unexpected: %#v", rr)
 	}
 
 	rs.Spec.RecordType = dnsv1alpha1.RRTypeSOA
 	rs.Spec.Records[0].NS = nil
 	rs.Spec.Records[0].SOA = &dnsv1alpha1.SOARecordSpec{
-		MName:  "ns1.example.net.",
+		MName:  ns1ExampleNet,
 		RName:  "hostmaster.example.net.",
 		TTL:    3600,
 		Serial: 0, // trigger auto
@@ -223,7 +227,7 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 	parts := strings.Fields(rr[0].Records[0].Content)
 
 	// PDNS payload uses absolute hostnames (with trailing dots) for mname/rname
-	if len(parts) != 7 || parts[0] != "ns1.example.net." || parts[1] != "hostmaster.example.net." {
+	if len(parts) != 7 || parts[0] != ns1ExampleNet || parts[1] != "hostmaster.example.net." {
 		t.Fatalf("SOA content unexpected: %q", rr[0].Records[0].Content)
 	}
 
@@ -316,7 +320,7 @@ func TestApplyRecordSetAuthoritative_PatchIncludesDeletes(t *testing.T) {
 
 	// Zone has an existing A rrset for "old.example.com."
 	existing := zoneResponse{
-		Name: "example.com.",
+		Name: exampleCom,
 		RRSets: []zoneRRset{
 			{Name: "old.example.com.", Type: "A", TTL: 300, Records: []zoneRRsetRecord{{Content: "9.9.9.9"}}},
 			{Name: "keep.example.com.", Type: "TXT", TTL: 300, Records: []zoneRRsetRecord{{Content: `"ok"`}}},
@@ -388,7 +392,7 @@ func TestHelpers(t *testing.T) {
 	if got := quoteIfNeeded(`"x"`); got != `"x"` {
 		t.Fatalf("quoteIfNeeded pass-through: %q", got)
 	}
-	if got := qualifyOwner("@", "example.com"); got != "example.com." {
+	if got := qualifyOwner("@", "example.com"); got != exampleCom {
 		t.Fatalf("qualifyOwner @: %q", got)
 	}
 	if got := qualifyOwner("www", "example.com"); got != "www.example.com." {
@@ -431,7 +435,7 @@ func TestSOASerialAutoChangesPerDay(t *testing.T) {
 			Records: []dnsv1alpha1.RecordEntry{{
 				Name: "@",
 				SOA: &dnsv1alpha1.SOARecordSpec{
-					MName: "ns1.example.net.",
+					MName: ns1ExampleNet,
 					RName: "hostmaster.example.net.",
 				},
 			}},
@@ -452,10 +456,6 @@ func TestSOASerialAutoChangesPerDay(t *testing.T) {
 	}
 }
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
 // optional: ensures ApplyRecordSetAuthoritative uses PATCH path properly
 func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 	t.Parallel()
@@ -465,7 +465,7 @@ func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			_ = json.NewEncoder(w).Encode(zoneResponse{Name: "example.com.", RRSets: nil})
+			_ = json.NewEncoder(w).Encode(zoneResponse{Name: exampleCom, RRSets: nil})
 		case http.MethodPatch:
 			gotMethod = r.Method
 			gotPath = r.URL.Path
@@ -501,11 +501,4 @@ func TestMakeSimpleRRSet(t *testing.T) {
 	if rr.Name != "x.example." || rr.Type != "TXT" || rr.TTL != 300 || len(rr.Records) != 2 || rr.Records[0].Content != `"a"` {
 		t.Fatalf("unexpected rrset: %#v", rr)
 	}
-}
-
-// helper to pretty-print JSON for diffs when needed (unused in assertions but handy)
-func prettyJSON(b []byte) string {
-	var buf bytes.Buffer
-	_ = json.Indent(&buf, b, "", "  ")
-	return buf.String()
 }

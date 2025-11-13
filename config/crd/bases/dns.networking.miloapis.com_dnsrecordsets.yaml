@@ -108,10 +108,17 @@ spec:
                       items:
                         properties:
                           flag:
+                            description: 0–255 flag
+                            maximum: 255
+                            minimum: 0
                             type: integer
                           tag:
+                            description: 'RFC-style tags: keep it simple: [a-z0-9]+'
+                            minLength: 1
+                            pattern: ^[a-z0-9]+$
                             type: string
                           value:
+                            minLength: 1
                             type: string
                         required:
                         - flag
@@ -134,6 +141,8 @@ spec:
                               type: string
                             type: object
                           priority:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                           target:
                             type: string
@@ -146,8 +155,11 @@ spec:
                       items:
                         properties:
                           exchange:
+                            minLength: 1
                             type: string
                           preference:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                         required:
                         - exchange
@@ -157,6 +169,8 @@ spec:
                     name:
                       description: Name is the owner name (relative to the zone or
                         FQDN).
+                      minLength: 1
+                      pattern: ^(@|[A-Za-z0-9*._-]+)$
                       type: string
                     ns:
                       properties:
@@ -179,6 +193,7 @@ spec:
                           format: int32
                           type: integer
                         mname:
+                          minLength: 1
                           type: string
                         refresh:
                           format: int32
@@ -187,6 +202,7 @@ spec:
                           format: int32
                           type: integer
                         rname:
+                          minLength: 1
                           type: string
                         serial:
                           format: int32
@@ -202,12 +218,19 @@ spec:
                       items:
                         properties:
                           port:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                           priority:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                           target:
+                            minLength: 1
                             type: string
                           weight:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                         required:
                         - port
@@ -224,6 +247,8 @@ spec:
                               type: string
                             type: object
                           priority:
+                            maximum: 65535
+                            minimum: 0
                             type: integer
                           target:
                             type: string
@@ -266,6 +291,7 @@ spec:
                   required:
                   - name
                   type: object
+                minItems: 1
                 type: array
             required:
             - dnsZoneRef

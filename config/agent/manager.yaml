@@ -79,6 +79,8 @@ spec:
           - --leader-elect-renew-deadline=3s
           - --leader-elect-retry-period=2s
           - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8080
+          - --metrics-secure=false
           - --server-config=/config/server-config.yaml
         env:
         - name: PDNS_API_URL
@@ -88,7 +90,10 @@ spec:
         image: ghcr.io/datum-cloud/dns-operator:latest
         imagePullPolicy: IfNotPresent
         name: manager
-        ports: []
+        ports:
+          - containerPort: 8080
+            name: metrics
+            protocol: TCP
         securityContext:
           runAsNonRoot: true
           readOnlyRootFilesystem: true

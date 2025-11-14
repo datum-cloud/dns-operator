@@ -305,7 +305,7 @@ spec:
             exit 1
           fi
     - sleep:
-        duration: 5s
+        duration: 10s
     - script:
         cluster: downstream
         content: |

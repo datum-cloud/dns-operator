@@ -167,6 +167,10 @@ spec:
         image: powerdns/lightningstream:main
         imagePullPolicy: IfNotPresent
         command: ["lightningstream"]
+        ports:
+          - containerPort: 8500
+            name: lmdb-metrics
+            protocol: TCP
         args: ["--config", "/etc/lightningstream/lightningstream.yaml", "--minimum-pid", "50", "sync"]
         securityContext:
           runAsUser: 953

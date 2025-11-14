@@ -11,7 +11,6 @@ import (
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -45,22 +44,13 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// --- Ensure finalizer (non-deletion path) ---
 	if zone.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				var cur dnsv1alpha1.DNSZone
-				if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
-					return err
-				}
-				// Do not add new finalizers if deletion has started
-				if !cur.DeletionTimestamp.IsZero() {
-					return nil
-				}
-				if controllerutil.ContainsFinalizer(&cur, downstreamZoneFinalizer) {
-					return nil
-				}
-				base := cur.DeepCopy()
-				controllerutil.AddFinalizer(&cur, downstreamZoneFinalizer)
-				return r.Patch(ctx, &cur, client.MergeFrom(base))
-			}); err != nil {
+
+			if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
+				return ctrl.Result{}, nil
+			}
+			base := zone.DeepCopy()
+			controllerutil.AddFinalizer(&zone, downstreamZoneFinalizer)
+			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 				logger.Error(err, "failed to add zone finalizer")
 				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 			}
@@ -90,18 +80,12 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			}
 
 			// remove finalizer
-			if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				var cur dnsv1alpha1.DNSZone
-				if err := r.Get(ctx, req.NamespacedName, &cur); err != nil {
-					return err
-				}
-				if !controllerutil.ContainsFinalizer(&cur, downstreamZoneFinalizer) {
-					return nil
-				}
-				base := cur.DeepCopy()
-				controllerutil.RemoveFinalizer(&cur, downstreamZoneFinalizer)
-				return r.Patch(ctx, &cur, client.MergeFrom(base))
-			}); err != nil {
+			if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
+				return ctrl.Result{}, nil
+			}
+			base := zone.DeepCopy()
+			controllerutil.RemoveFinalizer(&zone, downstreamZoneFinalizer)
+			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 				logger.Error(err, "failed to remove zone finalizer")
 				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
 			}

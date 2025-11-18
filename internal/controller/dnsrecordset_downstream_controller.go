@@ -164,12 +164,27 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Ensure the zone exists in PDNS before attempting to apply rrsets
 	if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
 		logger.Info("pdns zone not ready yet; requeueing", "zone", zone.Spec.DomainName, "err", err.Error())
+		// reflect not programmed (pending) while waiting on PDNS zone
+		if setCond(&rs.Status.Conditions, CondProgrammed, ReasonPending, fmt.Sprintf("PDNS zone %q not ready: %v", zone.Spec.DomainName, err), metav1.ConditionFalse, rs.Generation) {
+			_ = r.Status().Update(ctx, &rs)
+		}
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 
 	if err := cli.ApplyRecordSetAuthoritative(ctx, zone.Spec.DomainName, rs); err != nil {
 		logger.Error(err, "apply pdns recordset")
+		// surface PDNS error into status
+		if setCond(&rs.Status.Conditions, CondProgrammed, ReasonPending, fmt.Sprintf("PDNS apply failed: %v", err), metav1.ConditionFalse, rs.Generation) {
+			_ = r.Status().Update(ctx, &rs)
+		}
 		return ctrl.Result{}, err
+	}
+
+	// success: mark programmed true
+	if setCond(&rs.Status.Conditions, CondProgrammed, ReasonProgrammed, "PDNS apply succeeded", metav1.ConditionTrue, rs.Generation) {
+		if err := r.Status().Update(ctx, &rs); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil

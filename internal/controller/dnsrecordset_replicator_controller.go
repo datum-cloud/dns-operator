@@ -7,6 +7,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -112,21 +113,35 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	}
 
 	// Ensure OwnerReference to upstream DNSZone (same ns)
-	if updated, err := ensureOwnerRefToZone(ctx, upstreamCluster.GetClient(), &upstream, &zone); err != nil {
-		return ctrl.Result{}, err
-	} else if updated {
-		lg.Info("updated OwnerReference to DNSZone", "dnsZone", zone.Name)
-		// only requeue once after successful patch
-		return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+	if !metav1.IsControlledBy(&upstream, &zone) {
+		base := upstream.DeepCopy()
+		if err := controllerutil.SetControllerReference(&zone, &upstream, upstreamCluster.GetScheme()); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		// ensure we continue with the updated object
+		return ctrl.Result{}, nil
 	}
-
 	// Ensure the downstream recordset object mirrors the upstream spec
 	if _, err = r.ensureDownstreamRecordSet(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Update upstream status conditions to reflect acceptance & programming state
-	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, true, zoneMsg); err != nil {
+	// Mirror downstream Programmed condition into upstream, if present
+	var downstreamProg *metav1.Condition
+	if md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream); mdErr == nil {
+		var shadow dnsv1alpha1.DNSRecordSet
+		if getErr := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); getErr == nil {
+			if c := apimeta.FindStatusCondition(shadow.Status.Conditions, CondProgrammed); c != nil {
+				downstreamProg = c.DeepCopy()
+			}
+		}
+	}
+
+	// Update upstream status: Accepted here; Programmed mirrored from downstream
+	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, true, zoneMsg, downstreamProg); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
 		}
@@ -143,45 +158,6 @@ func (r *DNSRecordSetReplicator) fetchUpstream(ctx context.Context, cl cluster.C
 		return dnsv1alpha1.DNSRecordSet{}, err
 	}
 	return upstream, nil
-}
-
-// ensureOwnerRefToZone ensures a single OwnerReference to the current zone.
-// It replaces any existing DNSZone owner refs (stale UID / changed zone).
-func ensureOwnerRefToZone(ctx context.Context, c client.Client, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) (bool, error) {
-	desired := metav1.OwnerReference{
-		APIVersion: dnsv1alpha1.GroupVersion.String(),
-		Kind:       "DNSZone",
-		Name:       zone.Name,
-		UID:        zone.UID,
-	}
-
-	// Check if already identical
-	for _, r := range rs.OwnerReferences {
-		if r.APIVersion == desired.APIVersion &&
-			r.Kind == desired.Kind &&
-			r.Name == desired.Name &&
-			r.UID == desired.UID {
-			return false, nil // nothing to do
-		}
-	}
-
-	// Remove any old DNSZone refs
-	newRefs := make([]metav1.OwnerReference, 0, len(rs.OwnerReferences))
-	for _, r := range rs.OwnerReferences {
-		if r.APIVersion == dnsv1alpha1.GroupVersion.String() && r.Kind == "DNSZone" {
-			continue
-		}
-		newRefs = append(newRefs, r)
-	}
-
-	base := rs.DeepCopy()
-	rs.OwnerReferences = append(newRefs, desired)
-	if err := c.Patch(ctx, rs, client.MergeFrom(base)); err != nil {
-		return false, err
-	}
-
-	log.FromContext(ctx).Info("set OwnerReference to DNSZone", "recordset", rs.Name, "dnsZone", zone.Name)
-	return true, nil
 }
 
 // handleDeletion deletes the downstream shadow object and removes the upstream finalizer
@@ -269,8 +245,8 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 	return res, nil
 }
 
-// updateStatus synthesizes the Accepted and Programmed conditions and performs a Status().Update when changes occur.
-func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSRecordSet, accepted bool, zoneMsg string) error {
+// updateStatus sets Accepted locally and mirrors the Programmed condition from downstream when provided.
+func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSRecordSet, accepted bool, zoneMsg string, downstreamProg *metav1.Condition) error {
 	changed := false
 
 	// Accepted condition
@@ -284,17 +260,15 @@ func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Clie
 		}
 	}
 
-	// Programmed condition: true when we've run ensureShadow (i.e., this function is called post-CreateOrPatch) AND the zone is accepted
-	progMsg := "Awaiting DNSZone and downstream creation"
-	progStatus := metav1.ConditionFalse
-	progReason := ReasonPending
-	if accepted {
-		progMsg = "Downstream shadow exists"
-		progStatus = metav1.ConditionTrue
-		progReason = ReasonProgrammed
-	}
-	if setCond(&upstream.Status.Conditions, CondProgrammed, progReason, progMsg, progStatus, upstream.Generation) {
-		changed = true
+	// Programmed condition: mirror downstream when available; else mark pending
+	if downstreamProg != nil {
+		if setCond(&upstream.Status.Conditions, CondProgrammed, downstreamProg.Reason, downstreamProg.Message, downstreamProg.Status, upstream.Generation) {
+			changed = true
+		}
+	} else {
+		if setCond(&upstream.Status.Conditions, CondProgrammed, ReasonPending, "Awaiting downstream controller", metav1.ConditionFalse, upstream.Generation) {
+			changed = true
+		}
 	}
 
 	if !changed {

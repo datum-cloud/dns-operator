@@ -48,11 +48,6 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 		return ctrl.Result{}, nil
 	}
 
-	// If already discovered, nothing to do.
-	if getCondStatus(dzd.Status.Conditions, CondDiscovered) == metav1.ConditionTrue {
-		return ctrl.Result{}, nil
-	}
-
 	// Validate reference
 	if strings.TrimSpace(dzd.Spec.DNSZoneRef.Name) == "" {
 		base := dzd.DeepCopy()
@@ -75,6 +70,15 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Ensure OwnerReference to referenced DNSZone early
+	if updated, err := ensureOwnerRefToZoneDiscovery(ctx, upstreamCluster.GetClient(), &dzd, &zone); err != nil {
+		return ctrl.Result{}, err
+	} else if updated {
+		logger.Info("updated OwnerReference to DNSZone", "dnsZone", zone.Name)
+		// requeue to continue with updated object
+		return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+	}
+
 	// Mark Accepted true if not already
 	if getCondStatus(dzd.Status.Conditions, CondAccepted) != metav1.ConditionTrue {
 		base := dzd.DeepCopy()
@@ -83,6 +87,11 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 				return ctrl.Result{}, err
 			}
 		}
+	}
+
+	// If already discovered, nothing to do (after ensuring owner ref and acceptance).
+	if getCondStatus(dzd.Status.Conditions, CondDiscovered) == metav1.ConditionTrue {
+		return ctrl.Result{}, nil
 	}
 
 	// Perform discovery (one-shot)
@@ -111,4 +120,38 @@ func (r *DNSZoneDiscoveryReplicator) SetupWithManager(mgr mcmanager.Manager) err
 		For(&dnsv1alpha1.DNSZoneDiscovery{}).
 		Named("dnszonediscovery-replicator").
 		Complete(r)
+}
+
+// ensureOwnerRefToDiscovery ensures DNSZoneDiscovery has an OwnerReference to the referenced DNSZone.
+// Returns true when a metadata patch was applied.
+func ensureOwnerRefToZoneDiscovery(ctx context.Context, c client.Client, dzd *dnsv1alpha1.DNSZoneDiscovery, zone *dnsv1alpha1.DNSZone) (bool, error) {
+	desired := metav1.OwnerReference{
+		APIVersion: dnsv1alpha1.GroupVersion.String(),
+		Kind:       "DNSZone",
+		Name:       zone.Name,
+		UID:        zone.UID,
+	}
+	// Already present and identical?
+	for _, r := range dzd.OwnerReferences {
+		if r.APIVersion == desired.APIVersion &&
+			r.Kind == desired.Kind &&
+			r.Name == desired.Name &&
+			r.UID == desired.UID {
+			return false, nil
+		}
+	}
+	// Remove any stale DNSZone refs, then add the desired one.
+	newRefs := make([]metav1.OwnerReference, 0, len(dzd.OwnerReferences))
+	for _, r := range dzd.OwnerReferences {
+		if r.APIVersion == dnsv1alpha1.GroupVersion.String() && r.Kind == "DNSZone" {
+			continue
+		}
+		newRefs = append(newRefs, r)
+	}
+	base := dzd.DeepCopy()
+	dzd.OwnerReferences = append(newRefs, desired)
+	if err := c.Patch(ctx, dzd, client.MergeFrom(base)); err != nil {
+		return false, err
+	}
+	return true, nil
 }

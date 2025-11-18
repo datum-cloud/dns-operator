@@ -185,8 +185,7 @@ spec:
             - name: www
               ttl: 5
               a:
-                content:
-                - 10.0.0.1
+                content: 10.0.0.1
     - assert:
         cluster: upstream
         resource:
@@ -275,7 +274,7 @@ spec:
           kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns2\\.example\\.com\.$'"
           kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short | grep -E '^10\\.0\\.0\\.1$'"
 
-  - name: Assert DNSZone recordCount is 3 (SOA + NS + A)
+  - name: Assert DNSZone recordCount is 4 (SOA + NS (2) + A)
     try:
     - assert:
         cluster: upstream
@@ -285,7 +284,7 @@ spec:
           metadata:
             name: example-com
           status:
-            recordCount: 3
+            recordCount: 4
 
   - name: Delete A record and verify PDNS cleanup
     try:

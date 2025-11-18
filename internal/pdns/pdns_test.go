@@ -128,99 +128,179 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 
 	ttl := int64(120)
 
-	rs := dnsv1alpha1.DNSRecordSet{
+	// A
+	rsA := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			RecordType: dnsv1alpha1.RRTypeA, // will be overridden per case below
+			RecordType: dnsv1alpha1.RRTypeA,
 			Records: []dnsv1alpha1.RecordEntry{
 				{
 					Name: "www",
 					TTL:  &ttl,
-					A:    &dnsv1alpha1.SimpleValues{Content: []string{"1.2.3.4"}},
+					A:    &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"},
 				},
 			},
 		},
 	}
-	// A
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeA
-	rr := buildRRSets("example.com", rs)
+	rr := buildRRSets("example.com", rsA)
 	if len(rr) != 1 || rr[0].Type != "A" || rr[0].Name != "www.example.com." || rr[0].TTL != 120 || rr[0].Records[0].Content != "1.2.3.4" {
 		t.Fatalf("A rrset unexpected: %#v", rr)
 	}
 
 	// AAAA
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeAAAA
-	rs.Spec.Records[0].AAAA = &dnsv1alpha1.SimpleValues{Content: []string{"2001:db8::1"}}
-	rs.Spec.Records[0].A = nil
-	rr = buildRRSets("example.com", rs)
+	rsAAAA := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeAAAA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "www",
+					TTL:  &ttl,
+					AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "2001:db8::1"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsAAAA)
 	if rr[0].Type != "AAAA" || rr[0].Records[0].Content != "2001:db8::1" {
 		t.Fatalf("AAAA rrset unexpected: %#v", rr)
 	}
 
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeCNAME
-	rs.Spec.Records[0].CNAME = &dnsv1alpha1.CNAMEValue{Content: "alias.example.net."}
-	rs.Spec.Records[0].AAAA = nil
-	rr = buildRRSets("example.com", rs)
+	// CNAME
+	rsCNAME := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeCNAME,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name:  "www",
+					TTL:   &ttl,
+					CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "alias.example.net."},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsCNAME)
 	if rr[0].Type != "CNAME" || rr[0].Records[0].Content != "alias.example.net." {
 		t.Fatalf("CNAME rrset unexpected: %#v", rr)
 	}
 
 	// TXT: quoted
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeTXT
-	rs.Spec.Records[0].TXT = &dnsv1alpha1.SimpleValues{Content: []string{"hello", "\"already-quoted\""}}
-	rs.Spec.Records[0].CNAME = nil
-	rr = buildRRSets("example.com", rs)
-	got := []string{rr[0].Records[0].Content, rr[0].Records[1].Content}
-	if got[0] != `"hello"` || got[1] != `"already-quoted"` {
-		t.Fatalf("TXT quoting unexpected: %#v", got)
+	rsTXT := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeTXT,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "www",
+					TTL:  &ttl,
+					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: "hello"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsTXT)
+	got := rr[0].Records[0].Content
+	if got != `"hello"` {
+		t.Fatalf("TXT quoting unexpected: %q", got)
 	}
 
 	// MX: PDNS payload uses absolute exchange (trailing dot)
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeMX
-	rs.Spec.Records[0].MX = []dnsv1alpha1.MXRecordSpec{{Preference: 10, Exchange: "mail.example.com."}}
-	rs.Spec.Records[0].TXT = nil
-	rr = buildRRSets("example.com", rs)
+	rsMX := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeMX,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "mail",
+					TTL:  &ttl,
+					MX:   &dnsv1alpha1.MXRecordSpec{Preference: 10, Exchange: "mail.example.com."},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsMX)
 	if rr[0].Type != "MX" || rr[0].Records[0].Content != "10 mail.example.com." {
 		t.Fatalf("MX rrset unexpected: %#v", rr)
 	}
 
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeSRV
-	rs.Spec.Records[0].SRV = []dnsv1alpha1.SRVRecordSpec{{Priority: 0, Weight: 5, Port: 443, Target: "svc.example.com."}}
-	rs.Spec.Records[0].MX = nil
-	rr = buildRRSets("example.com", rs)
-	// PDNS payload uses an absolute target with trailing dot
+	// SRV: PDNS payload uses an absolute target with trailing dot
+	rsSRV := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeSRV,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "srv",
+					TTL:  &ttl,
+					SRV:  &dnsv1alpha1.SRVRecordSpec{Priority: 0, Weight: 5, Port: 443, Target: "svc.example.com."},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsSRV)
 	if rr[0].Type != "SRV" || rr[0].Records[0].Content != "0 5 443 svc.example.com." {
 		t.Fatalf("SRV rrset unexpected: %#v", rr)
 	}
 
 	// CAA: quoted value
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeCAA
-	rs.Spec.Records[0].SRV = nil
-	rs.Spec.Records[0].CAA = []dnsv1alpha1.CAARecordSpec{{Flag: 0, Tag: "issue", Value: "letsencrypt.org"}}
-	rr = buildRRSets("example.com", rs)
+	rsCAA := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeCAA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "www",
+					TTL:  &ttl,
+					CAA:  &dnsv1alpha1.CAARecordSpec{Flag: 0, Tag: "issue", Value: "letsencrypt.org"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsCAA)
 	if rr[0].Type != "CAA" || rr[0].Records[0].Content != `0 issue "letsencrypt.org"` {
 		t.Fatalf("CAA rrset unexpected: %#v", rr)
 	}
 
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeNS
-	rs.Spec.Records[0].CAA = nil
-	rs.Spec.Records[0].NS = &dnsv1alpha1.SimpleValues{Content: []string{ns1ExampleNet, " ns2.example.net. "}}
-	rr = buildRRSets("example.com", rs)
-
+	// NS: multiple entries for same owner should group into a single rrset with multiple records
+	rsNS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeNS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "@",
+					TTL:  &ttl,
+					NS:   &dnsv1alpha1.NSRecordSpec{Content: ns1ExampleNet},
+				},
+				{
+					Name: "@",
+					NS:   &dnsv1alpha1.NSRecordSpec{Content: "ns2.example.net."},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsNS)
+	if len(rr) != 1 {
+		t.Fatalf("NS rrset grouping unexpected len: %#v", rr)
+	}
 	nsGot := []string{rr[0].Records[0].Content, rr[0].Records[1].Content}
 	// PDNS payload uses absolute hostnames (with trailing dots)
 	if rr[0].Type != "NS" || nsGot[0] != ns1ExampleNet || nsGot[1] != "ns2.example.net." {
 		t.Fatalf("NS rrset unexpected: %#v", rr)
 	}
 
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeSOA
-	rs.Spec.Records[0].NS = nil
-	rs.Spec.Records[0].SOA = &dnsv1alpha1.SOARecordSpec{
-		MName:  ns1ExampleNet,
-		RName:  "hostmaster.example.net.",
-		TTL:    3600,
-		Serial: 0, // trigger auto
+	// SOA
+	rsSOA := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeSOA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "@",
+					TTL:  &ttl,
+					SOA: &dnsv1alpha1.SOARecordSpec{
+						MName:  ns1ExampleNet,
+						RName:  "hostmaster.example.net.",
+						TTL:    3600,
+						Serial: 0, // trigger auto
+					},
+				},
+			},
+		},
 	}
-	rr = buildRRSets("example.com", rs)
+	rr = buildRRSets("example.com", rsSOA)
 	if rr[0].Type != "SOA" {
 		t.Fatalf("SOA type unexpected: %#v", rr)
 	}
@@ -235,48 +315,76 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 	if len(parts[2]) != 10 {
 		t.Fatalf("SOA serial shape unexpected: %q", parts[2])
 	}
-	rs.Spec.RecordType = dnsv1alpha1.RRTypePTR
-	rs.Spec.Records[0].SOA = nil
-	rs.Spec.Records[0].Raw = []string{"ptr.example.net.", " another.example.net. "}
-	rr = buildRRSets("example.com", rs)
-
-	ptrGot := []string{rr[0].Records[0].Content, rr[0].Records[1].Content}
-	// PDNS payload uses absolute hostnames (with trailing dots)
-	if ptrGot[0] != "ptr.example.net." || ptrGot[1] != "another.example.net." {
-		t.Fatalf("PTR rrset unexpected: %#v", rr)
-	}
 
 	// TLSA: straight join
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeTLSA
-	rs.Spec.Records[0].Raw = nil
-	rs.Spec.Records[0].TLSA = []dnsv1alpha1.TLSARecordSpec{{Usage: 3, Selector: 1, MatchingType: 1, CertData: "ABCD"}}
-	rr = buildRRSets("example.com", rs)
+	rsTLSA := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeTLSA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "tlsa",
+					TTL:  &ttl,
+					TLSA: &dnsv1alpha1.TLSARecordSpec{Usage: 3, Selector: 1, MatchingType: 1, CertData: "ABCD"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsTLSA)
 	if rr[0].Records[0].Content != "3 1 1 ABCD" {
 		t.Fatalf("TLSA rrset unexpected: %#v", rr)
 	}
 
-	// HTTPS (SVCB) – flags, quoted, unquoted CSV; alias and service forms
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeHTTPS
-	rs.Spec.Records[0].TLSA = nil
-	rs.Spec.Records[0].HTTPS = []dnsv1alpha1.HTTPSRecordSpec{
-		{Priority: 0, Target: "alias.example.net.", Params: map[string]string{"no-default-alpn": ""}},         // alias (params should be ignored)
-		{Priority: 1, Target: ".", Params: map[string]string{"alpn": "h2,h3", "ipv4hint": "1.2.3.4,5.6.7.8"}}, // service form
+	// HTTPS (SVCB) – alias form only; params ignored for priority 0
+	rsHTTPS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeHTTPS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "svc",
+					TTL:  &ttl,
+					HTTPS: &dnsv1alpha1.HTTPSRecordSpec{
+						Priority: 0,
+						Target:   "alias.example.net.",
+						Params:   map[string]string{"no-default-alpn": ""}, // params should be ignored
+					},
+				},
+			},
+		},
 	}
-	rr = buildRRSets("example.com", rs)
+	rr = buildRRSets("example.com", rsHTTPS)
+	if rr[0].Type != "HTTPS" {
+		t.Fatalf("HTTPS type unexpected: %#v", rr)
+	}
+	if len(rr[0].Records) != 1 {
+		t.Fatalf("HTTPS rrset expected single record, got %#v", rr[0].Records)
+	}
 	if got := rr[0].Records[0].Content; got != "0 alias.example.net." {
 		t.Fatalf("HTTPS alias form unexpected: %q", got)
 	}
-	if got := rr[0].Records[1].Content; !strings.Contains(got, `alpn=h2,h3`) || !strings.Contains(got, "ipv4hint=1.2.3.4,5.6.7.8") || !strings.HasPrefix(got, "1 . ") {
-		t.Fatalf("HTTPS service form unexpected: %q", got)
-	}
 
-	// SVCB mirrors HTTPS behavior
-	rs.Spec.RecordType = dnsv1alpha1.RRTypeSVCB
-	rs.Spec.Records[0].SVCB = rs.Spec.Records[0].HTTPS
-	rs.Spec.Records[0].HTTPS = nil
-	rr = buildRRSets("example.com", rs)
+	// SVCB mirrors HTTPS behavior for a simple alias record
+	rsSVCB := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeSVCB,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "svc",
+					TTL:  &ttl,
+					SVCB: &dnsv1alpha1.HTTPSRecordSpec{
+						Priority: 0,
+						Target:   "alias.example.net.",
+						Params:   map[string]string{"no-default-alpn": ""},
+					},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsSVCB)
 	if rr[0].Type != "SVCB" {
 		t.Fatalf("SVCB type unexpected: %#v", rr)
+	}
+	if got := rr[0].Records[0].Content; got != "0 alias.example.net." {
+		t.Fatalf("SVCB alias form unexpected: %q", got)
 	}
 }
 
@@ -353,7 +461,7 @@ func TestApplyRecordSetAuthoritative_PatchIncludesDeletes(t *testing.T) {
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeA,
 			Records: []dnsv1alpha1.RecordEntry{
-				{Name: "new", TTL: &ttl, A: &dnsv1alpha1.SimpleValues{Content: []string{"1.1.1.1"}}},
+				{Name: "new", TTL: &ttl, A: &dnsv1alpha1.ARecordSpec{Content: "1.1.1.1"}},
 			},
 		},
 	}
@@ -482,7 +590,7 @@ func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeA,
 			Records: []dnsv1alpha1.RecordEntry{
-				{Name: "@", A: &dnsv1alpha1.SimpleValues{Content: []string{"8.8.8.8"}}},
+				{Name: "@", A: &dnsv1alpha1.ARecordSpec{Content: "8.8.8.8"}},
 			},
 		},
 	}

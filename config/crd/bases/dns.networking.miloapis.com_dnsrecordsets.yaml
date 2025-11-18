@@ -89,83 +89,78 @@ spec:
                         should be set matching RecordType.
                       properties:
                         content:
-                          items:
-                            type: string
-                          type: array
+                          format: ipv4
+                          type: string
                       required:
                       - content
                       type: object
                     aaaa:
                       properties:
                         content:
-                          items:
-                            type: string
-                          type: array
+                          format: ipv6
+                          type: string
                       required:
                       - content
                       type: object
                     caa:
-                      items:
-                        properties:
-                          flag:
-                            description: 0–255 flag
-                            maximum: 255
-                            minimum: 0
-                            type: integer
-                          tag:
-                            description: 'RFC-style tags: keep it simple: [a-z0-9]+'
-                            minLength: 1
-                            pattern: ^[a-z0-9]+$
-                            type: string
-                          value:
-                            minLength: 1
-                            type: string
-                        required:
-                        - flag
-                        - tag
-                        - value
-                        type: object
-                      type: array
+                      properties:
+                        flag:
+                          description: 0–255 flag
+                          maximum: 255
+                          minimum: 0
+                          type: integer
+                        tag:
+                          description: 'RFC-style tags: keep it simple: [a-z0-9]+'
+                          minLength: 1
+                          pattern: ^[a-z0-9]+$
+                          type: string
+                        value:
+                          minLength: 1
+                          type: string
+                      required:
+                      - flag
+                      - tag
+                      - value
+                      type: object
                     cname:
                       properties:
                         content:
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$
                           type: string
                       required:
                       - content
                       type: object
                     https:
-                      items:
-                        properties:
-                          params:
-                            additionalProperties:
-                              type: string
-                            type: object
-                          priority:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                          target:
+                      properties:
+                        params:
+                          additionalProperties:
                             type: string
-                        required:
-                        - priority
-                        - target
-                        type: object
-                      type: array
+                          type: object
+                        priority:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                        target:
+                          type: string
+                      required:
+                      - priority
+                      - target
+                      type: object
                     mx:
-                      items:
-                        properties:
-                          exchange:
-                            minLength: 1
-                            type: string
-                          preference:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                        required:
-                        - exchange
-                        - preference
-                        type: object
-                      type: array
+                      properties:
+                        exchange:
+                          minLength: 1
+                          type: string
+                        preference:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                      required:
+                      - exchange
+                      - preference
+                      type: object
                     name:
                       description: Name is the owner name (relative to the zone or
                         FQDN).
@@ -175,18 +170,23 @@ spec:
                     ns:
                       properties:
                         content:
-                          items:
-                            type: string
-                          type: array
+                          description: |-
+                            Require a hostname (FQDN or relative), allow optional trailing dot, no underscores.
+                            Labels: 1-63 chars, alphanum with interior hyphens, total length <=253.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?$
+                          type: string
                       required:
                       - content
                       type: object
-                    raw:
-                      description: Raw contains raw RDATA strings when used instead
-                        of typed fields.
-                      items:
-                        type: string
-                      type: array
+                    ptr:
+                      properties:
+                        content:
+                          type: string
+                      required:
+                      - content
+                      type: object
                     soa:
                       properties:
                         expire:
@@ -215,66 +215,60 @@ spec:
                       - rname
                       type: object
                     srv:
-                      items:
-                        properties:
-                          port:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                          priority:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                          target:
-                            minLength: 1
-                            type: string
-                          weight:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                        required:
-                        - port
-                        - priority
-                        - target
-                        - weight
-                        type: object
-                      type: array
+                      properties:
+                        port:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                        priority:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                        target:
+                          minLength: 1
+                          type: string
+                        weight:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                      required:
+                      - port
+                      - priority
+                      - target
+                      - weight
+                      type: object
                     svcb:
-                      items:
-                        properties:
-                          params:
-                            additionalProperties:
-                              type: string
-                            type: object
-                          priority:
-                            maximum: 65535
-                            minimum: 0
-                            type: integer
-                          target:
+                      properties:
+                        params:
+                          additionalProperties:
                             type: string
-                        required:
-                        - priority
-                        - target
-                        type: object
-                      type: array
+                          type: object
+                        priority:
+                          maximum: 65535
+                          minimum: 0
+                          type: integer
+                        target:
+                          type: string
+                      required:
+                      - priority
+                      - target
+                      type: object
                     tlsa:
-                      items:
-                        properties:
-                          certData:
-                            type: string
-                          matchingType:
-                            type: integer
-                          selector:
-                            type: integer
-                          usage:
-                            type: integer
-                        required:
-                        - certData
-                        - matchingType
-                        - selector
-                        - usage
-                        type: object
-                      type: array
+                      properties:
+                        certData:
+                          type: string
+                        matchingType:
+                          type: integer
+                        selector:
+                          type: integer
+                        usage:
+                          type: integer
+                      required:
+                      - certData
+                      - matchingType
+                      - selector
+                      - usage
+                      type: object
                     ttl:
                       description: TTL optionally overrides TTL for this owner/RRset.
                       format: int64
@@ -282,9 +276,7 @@ spec:
                     txt:
                       properties:
                         content:
-                          items:
-                            type: string
-                          type: array
+                          type: string
                       required:
                       - content
                       type: object

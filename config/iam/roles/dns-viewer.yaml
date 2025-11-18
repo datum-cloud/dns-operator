@@ -17,5 +17,8 @@ spec:
     - dns.networking.miloapis.com/dnszoneclasses.list
     - dns.networking.miloapis.com/dnszoneclasses.get
     - dns.networking.miloapis.com/dnszoneclasses.watch
+    - dns.networking.miloapis.com/dnszonediscoveries.list
+    - dns.networking.miloapis.com/dnszonediscoveries.get
+    - dns.networking.miloapis.com/dnszonediscoveries.watch
 
 

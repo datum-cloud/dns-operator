@@ -289,6 +289,10 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneReplicator")
 			os.Exit(1)
 		}
+		if err := (&controller.DNSZoneDiscoveryReplicator{}).SetupWithManager(mcmgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscoveryReplicator")
+			os.Exit(1)
+		}
 
 		if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 			setupLog.Error(err, "unable to set up health check")

@@ -18,5 +18,9 @@ spec:
     - dns.networking.miloapis.com/dnsrecordsets.update
     - dns.networking.miloapis.com/dnsrecordsets.patch
     - dns.networking.miloapis.com/dnsrecordsets.delete
+    - dns.networking.miloapis.com/dnszonediscoveries.create
+    - dns.networking.miloapis.com/dnszonediscoveries.update
+    - dns.networking.miloapis.com/dnszonediscoveries.patch
+    - dns.networking.miloapis.com/dnszonediscoveries.delete
 
 

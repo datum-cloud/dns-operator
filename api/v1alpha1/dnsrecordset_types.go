@@ -52,42 +52,67 @@ type RecordEntry struct {
 	// +optional
 	TTL *int64 `json:"ttl,omitempty"`
 
-	// Raw contains raw RDATA strings when used instead of typed fields.
-	// +optional
-	Raw []string `json:"raw,omitempty"`
-
 	// Exactly one of the following type-specific fields should be set matching RecordType.
 	// +optional
-	A *SimpleValues `json:"a,omitempty"`
+	A *ARecordSpec `json:"a,omitempty"`
 	// +optional
-	AAAA *SimpleValues `json:"aaaa,omitempty"`
+	AAAA *AAAARecordSpec `json:"aaaa,omitempty"`
 	// +optional
-	CNAME *CNAMEValue `json:"cname,omitempty"`
+	CNAME *CNAMERecordSpec `json:"cname,omitempty"`
 	// +optional
-	NS *SimpleValues `json:"ns,omitempty"`
+	NS *NSRecordSpec `json:"ns,omitempty"`
 	// +optional
-	TXT *SimpleValues `json:"txt,omitempty"`
+	TXT *TXTRecordSpec `json:"txt,omitempty"`
 	// +optional
 	SOA *SOARecordSpec `json:"soa,omitempty"`
 	// +optional
-	CAA []CAARecordSpec `json:"caa,omitempty"`
+	CAA *CAARecordSpec `json:"caa,omitempty"`
 	// +optional
-	MX []MXRecordSpec `json:"mx,omitempty"`
+	MX *MXRecordSpec `json:"mx,omitempty"`
 	// +optional
-	SRV []SRVRecordSpec `json:"srv,omitempty"`
+	SRV *SRVRecordSpec `json:"srv,omitempty"`
 	// +optional
-	TLSA []TLSARecordSpec `json:"tlsa,omitempty"`
+	TLSA *TLSARecordSpec `json:"tlsa,omitempty"`
 	// +optional
-	HTTPS []HTTPSRecordSpec `json:"https,omitempty"`
+	HTTPS *HTTPSRecordSpec `json:"https,omitempty"`
 	// +optional
-	SVCB []HTTPSRecordSpec `json:"svcb,omitempty"`
+	SVCB *HTTPSRecordSpec `json:"svcb,omitempty"`
+
+	// +optional
+	PTR *PTRRecordSpec `json:"ptr,omitempty"`
 }
 
-type SimpleValues struct {
-	Content []string `json:"content"`
+type PTRRecordSpec struct {
+	Content string `json:"content"`
 }
 
-type CNAMEValue struct {
+type TXTRecordSpec struct {
+	Content string `json:"content"`
+}
+
+type ARecordSpec struct {
+	// +kubebuilder:validation:Format=ipv4
+	Content string `json:"content"`
+}
+
+type AAAARecordSpec struct {
+	// +kubebuilder:validation:Format=ipv6
+	Content string `json:"content"`
+}
+
+type CNAMERecordSpec struct {
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$`
+	// +kubebuilder:validation:MinLength=1
+	Content string `json:"content"`
+}
+
+type NSRecordSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// Require a hostname (FQDN or relative), allow optional trailing dot, no underscores.
+	// Labels: 1-63 chars, alphanum with interior hyphens, total length <=253.
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?$`
 	Content string `json:"content"`
 }
 

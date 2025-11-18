@@ -50,6 +50,7 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets/status
+  - dnszonediscoveries/status
   - dnszones/status
   verbs:
   - get
@@ -62,6 +63,16 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszonediscoveries
+  verbs:
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - dns.networking.miloapis.com

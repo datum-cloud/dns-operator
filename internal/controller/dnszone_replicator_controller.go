@@ -432,17 +432,22 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		return nil
 	}
 
-	values := append([]string(nil), upstream.Status.Nameservers...)
+	records := make([]dnsv1alpha1.RecordEntry, 0, len(upstream.Status.Nameservers))
+	for _, value := range upstream.Status.Nameservers {
+		records = append(records, dnsv1alpha1.RecordEntry{
+			Name: "@",
+			NS: &dnsv1alpha1.NSRecordSpec{
+				Content: value,
+			},
+		})
+	}
 	newObj := dnsv1alpha1.DNSRecordSet{}
 	newObj.SetNamespace(upstream.Namespace)
 	newObj.SetGenerateName(rsName + "-")
 	newObj.Spec = dnsv1alpha1.DNSRecordSetSpec{
 		DNSZoneRef: corev1.LocalObjectReference{Name: upstream.Name},
 		RecordType: dnsv1alpha1.RRTypeNS,
-		Records: []dnsv1alpha1.RecordEntry{{
-			Name: "@",
-			Raw:  values,
-		}},
+		Records:    records,
 	}
 	log.FromContext(ctx).Info("creating default NS DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
 	return c.Create(ctx, &newObj)

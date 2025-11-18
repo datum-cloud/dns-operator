@@ -294,199 +294,216 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 }
 
 func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
-	out := make([]rrset, 0, len(rs.Spec.Records))
+	type ownerKey = string
+	setsByOwner := make(map[ownerKey]*rrset, len(rs.Spec.Records))
+
+	getOrInit := func(owner string, ttl int) *rrset {
+		if existing, ok := setsByOwner[owner]; ok {
+			return existing
+		}
+		r := &rrset{
+			Name:       owner,
+			Type:       string(rs.Spec.RecordType),
+			TTL:        ttl,
+			ChangeType: "REPLACE",
+			Records:    []rrsetRecord{},
+		}
+		setsByOwner[owner] = r
+		return r
+	}
+
 	for _, rec := range rs.Spec.Records {
 		ttl := 300
 		if rec.TTL != nil {
 			ttl = int(*rec.TTL)
 		}
 		name := qualifyOwner(rec.Name, zone)
+		r := getOrInit(name, ttl)
+
 		switch rs.Spec.RecordType {
 		case dnsv1alpha1.RRTypeA:
-			values := rec.Raw
-			if rec.A != nil {
-				values = rec.A.Content
+			if rec.A == nil {
+				continue
 			}
-			out = append(out, makeSimpleRRSet(name, "A", ttl, values))
+			v := strings.TrimSpace(rec.A.Content)
+			if v != "" {
+				r.Records = append(r.Records, rrsetRecord{Content: v, Disabled: false})
+			}
+
 		case dnsv1alpha1.RRTypeAAAA:
-			values := rec.Raw
-			if rec.AAAA != nil {
-				values = rec.AAAA.Content
+			if rec.AAAA == nil {
+				continue
 			}
-			out = append(out, makeSimpleRRSet(name, "AAAA", ttl, values))
+			v := strings.TrimSpace(rec.AAAA.Content)
+			if v != "" {
+				r.Records = append(r.Records, rrsetRecord{Content: v, Disabled: false})
+			}
+
 		case dnsv1alpha1.RRTypeCNAME:
-			target := ""
-			if rec.CNAME != nil {
-				target = strings.TrimSpace(rec.CNAME.Content)
-			} else if len(rec.Raw) > 0 {
-				target = strings.TrimSpace(rec.Raw[0])
+			if rec.CNAME == nil {
+				continue
 			}
+			target := strings.TrimSpace(rec.CNAME.Content)
 			target = qualifyIfNeeded(target)
 			if target != "" {
-				out = append(out, rrset{
-					Name:       name,
-					Type:       "CNAME",
-					TTL:        ttl,
-					ChangeType: "REPLACE",
-					Records:    []rrsetRecord{{Content: target, Disabled: false}},
+				// TODO: Technically this is a violation of the RFC, but we'll allow it for now.
+				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
+			}
+
+		case dnsv1alpha1.RRTypeTXT:
+			if rec.TXT == nil {
+				continue
+			}
+			if s := strings.TrimSpace(rec.TXT.Content); s != "" {
+				r.Records = append(r.Records, rrsetRecord{
+					Content:  quoteIfNeeded(s),
+					Disabled: false,
 				})
 			}
-		case dnsv1alpha1.RRTypeTXT:
-			values := rec.Raw
-			if rec.TXT != nil {
-				values = rec.TXT.Content
-			}
-			quoted := make([]string, 0, len(values))
-			for _, v := range values {
-				quoted = append(quoted, quoteIfNeeded(v))
-			}
-			out = append(out, makeSimpleRRSet(name, "TXT", ttl, quoted))
+
 		case dnsv1alpha1.RRTypeMX:
-			lines := make([]string, 0, len(rec.MX))
-			for _, mx := range rec.MX {
-				exch := strings.TrimSpace(mx.Exchange)
-				if exch == "" {
-					continue
-				}
-				lines = append(lines, fmt.Sprintf("%d %s", mx.Preference, qualifyIfNeeded(exch)))
+			if rec.MX == nil {
+				continue
 			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				for _, r := range rec.Raw {
-					r = strings.TrimSpace(r)
-					if r != "" {
-						lines = append(lines, qualifyIfNeeded(r))
-					}
-				}
+			exch := strings.TrimSpace(rec.MX.Exchange)
+			if exch != "" {
+				line := fmt.Sprintf("%d %s", rec.MX.Preference, qualifyIfNeeded(exch))
+				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
-			out = append(out, makeSimpleRRSet(name, "MX", ttl, lines))
+
 		case dnsv1alpha1.RRTypeSRV:
-			lines := make([]string, 0, len(rec.SRV))
-			for _, s := range rec.SRV {
-				tgt := strings.TrimSpace(s.Target)
-				lines = append(lines, fmt.Sprintf("%d %d %d %s", s.Priority, s.Weight, s.Port, qualifyIfNeeded(tgt)))
+			if rec.SRV == nil {
+				continue
 			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				for _, r := range rec.Raw {
-					r = strings.TrimSpace(r)
-					if r != "" {
-						if r != "" {
-							lines = append(lines, qualifyIfNeeded(r))
-						}
-					}
-				}
+			tgt := strings.TrimSpace(rec.SRV.Target)
+			if tgt != "" {
+				line := fmt.Sprintf(
+					"%d %d %d %s",
+					rec.SRV.Priority,
+					rec.SRV.Weight,
+					rec.SRV.Port,
+					qualifyIfNeeded(tgt),
+				)
+				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
-			out = append(out, makeSimpleRRSet(name, "SRV", ttl, lines))
+
 		case dnsv1alpha1.RRTypeCAA:
-			lines := make([]string, 0, len(rec.CAA))
-			for _, c := range rec.CAA {
-				lines = append(lines, fmt.Sprintf("%d %s %s", c.Flag, c.Tag, quoteIfNeeded(c.Value)))
+			if rec.CAA == nil {
+				continue
 			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
-			}
-			out = append(out, makeSimpleRRSet(name, "CAA", ttl, lines))
+			line := fmt.Sprintf(
+				"%d %s %s",
+				rec.CAA.Flag,
+				rec.CAA.Tag,
+				quoteIfNeeded(rec.CAA.Value),
+			)
+			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
+
 		case dnsv1alpha1.RRTypeNS:
-			// Prefer typed NS values; fall back to Raw
-			values := rec.Raw
-			if rec.NS != nil && len(rec.NS.Content) > 0 {
-				values = rec.NS.Content
+			if rec.NS == nil {
+				continue
+			}
+			v := strings.TrimSpace(rec.NS.Content)
+			if v != "" {
+				r.Records = append(r.Records, rrsetRecord{
+					Content:  qualifyIfNeeded(v),
+					Disabled: false,
+				})
 			}
 
-			// Normalize: trim spaces, drop empties, and remove any trailing dot.
-			norm := make([]string, 0, len(values))
-			for _, v := range values {
-				v = strings.TrimSpace(v)
-				if v == "" {
-					continue
-				}
-				norm = append(norm, qualifyIfNeeded(v))
-			}
-
-			out = append(out, makeSimpleRRSet(name, "NS", ttl, norm))
 		case dnsv1alpha1.RRTypeSOA:
-			if rec.SOA != nil {
-				mname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.MName))
-				rname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.RName))
-				serial := fmt.Sprintf("%s01", time.Now().Format("20060102"))
-				if rec.SOA.Serial != 0 {
-					serial = fmt.Sprintf("%d", rec.SOA.Serial)
-				}
-				refresh := uint32(10800)
-				retry := uint32(3600)
-				expire := uint32(604800)
-				minimum := uint32(3600)
-				if rec.SOA.Refresh != 0 {
-					refresh = rec.SOA.Refresh
-				}
-				if rec.SOA.Retry != 0 {
-					retry = rec.SOA.Retry
-				}
-				if rec.SOA.Expire != 0 {
-					expire = rec.SOA.Expire
-				}
-				if rec.SOA.TTL != 0 {
-					minimum = rec.SOA.TTL
-				}
-				line := fmt.Sprintf("%s %s %s %d %d %d %d", mname, rname, serial, refresh, retry, expire, minimum)
-				out = append(out, makeSimpleRRSet(name, "SOA", ttl, []string{line}))
-			} else if len(rec.Raw) > 0 {
-				vals := make([]string, 0, len(rec.Raw))
-				for _, r := range rec.Raw {
-					r = strings.TrimSpace(r)
-					if r != "" {
-						vals = append(vals, qualifyIfNeeded(r))
-					}
-				}
-				out = append(out, makeSimpleRRSet(name, "SOA", ttl, vals))
+			if rec.SOA == nil {
+				continue
 			}
-		case dnsv1alpha1.RRTypePTR:
-			vals := make([]string, 0, len(rec.Raw))
-			for _, r := range rec.Raw {
-				r = strings.TrimSpace(r)
-				if r != "" {
-					vals = append(vals, qualifyIfNeeded(r))
-				}
-			}
-			out = append(out, makeSimpleRRSet(name, "PTR", ttl, vals))
-		case dnsv1alpha1.RRTypeTLSA:
-			lines := make([]string, 0, len(rec.TLSA))
-			for _, t := range rec.TLSA {
-				lines = append(lines, fmt.Sprintf("%d %d %d %s", t.Usage, t.Selector, t.MatchingType, t.CertData))
-			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				lines = append(lines, rec.Raw...)
-			}
-			out = append(out, makeSimpleRRSet(name, "TLSA", ttl, lines))
-		case dnsv1alpha1.RRTypeHTTPS:
-			lines := make([]string, 0, len(rec.HTTPS))
-			for _, h := range rec.HTTPS {
-				lines = append(lines, encodeSvcbLine(h.Priority, h.Target, h.Params))
-			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				for _, r := range rec.Raw {
-					r = strings.TrimSpace(r)
-					if r != "" {
-						lines = append(lines, r)
-					}
-				}
-			}
-			out = append(out, makeSimpleRRSet(name, "HTTPS", ttl, lines))
-		case dnsv1alpha1.RRTypeSVCB:
-			lines := make([]string, 0, len(rec.SVCB))
-			for _, h := range rec.SVCB {
-				lines = append(lines, encodeSvcbLine(h.Priority, h.Target, h.Params))
-			}
-			if len(lines) == 0 && len(rec.Raw) > 0 {
-				for _, r := range rec.Raw {
-					r = strings.TrimSpace(r)
-					if r != "" {
-						lines = append(lines, r)
-					}
-				}
-			}
-			out = append(out, makeSimpleRRSet(name, "SVCB", ttl, lines))
 
+			mname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.MName))
+			rname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.RName))
+
+			serial := fmt.Sprintf("%s01", time.Now().Format("20060102"))
+			if rec.SOA.Serial != 0 {
+				serial = fmt.Sprintf("%d", rec.SOA.Serial)
+			}
+
+			refresh := uint32(10800)
+			retry := uint32(3600)
+			expire := uint32(604800)
+			minimum := uint32(3600)
+			if rec.SOA.Refresh != 0 {
+				refresh = rec.SOA.Refresh
+			}
+			if rec.SOA.Retry != 0 {
+				retry = rec.SOA.Retry
+			}
+			if rec.SOA.Expire != 0 {
+				expire = rec.SOA.Expire
+			}
+			if rec.SOA.TTL != 0 {
+				minimum = rec.SOA.TTL
+			}
+
+			line := fmt.Sprintf(
+				"%s %s %s %d %d %d %d",
+				mname, rname, serial, refresh, retry, expire, minimum,
+			)
+
+			// SOA should be single-valued for a given owner; last one wins.
+			r.Records = []rrsetRecord{{Content: line, Disabled: false}}
+
+		case dnsv1alpha1.RRTypePTR:
+			// Adjust this once you have a typed PTR field in RecordEntry.
+			// For example, if you add:
+			//   PTR *PTRRecordSpec `json:"ptr,omitempty"`
+			// and PTRRecordSpec has Content string:
+			//
+			// if rec.PTR != nil {
+			//     v := strings.TrimSpace(rec.PTR.Content)
+			//     if v != "" {
+			//         r.Records = append(r.Records, rrsetRecord{
+			//             Content:  qualifyIfNeeded(v),
+			//             Disabled: false,
+			//         })
+			//     }
+			// }
+			continue
+
+		case dnsv1alpha1.RRTypeTLSA:
+			if rec.TLSA == nil {
+				continue
+			}
+			line := fmt.Sprintf(
+				"%d %d %d %s",
+				rec.TLSA.Usage,
+				rec.TLSA.Selector,
+				rec.TLSA.MatchingType,
+				rec.TLSA.CertData,
+			)
+			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
+
+		case dnsv1alpha1.RRTypeHTTPS:
+			if rec.HTTPS == nil {
+				continue
+			}
+			line := encodeSvcbLine(rec.HTTPS.Priority, rec.HTTPS.Target, rec.HTTPS.Params)
+			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
+
+		case dnsv1alpha1.RRTypeSVCB:
+			if rec.SVCB == nil {
+				continue
+			}
+			line := encodeSvcbLine(rec.SVCB.Priority, rec.SVCB.Target, rec.SVCB.Params)
+			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 		}
+	}
+
+	// Convert map to slice with stable order by owner name.
+	out := make([]rrset, 0, len(setsByOwner))
+	owners := make([]string, 0, len(setsByOwner))
+	for owner := range setsByOwner {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+	for _, owner := range owners {
+		out = append(out, *setsByOwner[owner])
 	}
 	return out
 }

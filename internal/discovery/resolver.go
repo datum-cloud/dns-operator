@@ -64,7 +64,7 @@ func DiscoverZoneRecords(ctx context.Context, domain string) ([]dnsv1alpha1.Disc
 		if len(answers) == 0 {
 			continue
 		}
-		entries := mapAnswersToEntries(domain, answers, qt)
+		entries := mapAnswersToEntries(domain, answers)
 		if len(entries) == 0 {
 
 			continue

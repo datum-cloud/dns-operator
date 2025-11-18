@@ -8,15 +8,15 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
-// mapAnswersToEntries converts a slice of dns.RR answers of a single qtype into
+// mapAnswersToEntries converts a slice of dns.RR answers of a single RR type into
 // a list of RecordEntry where each entry represents exactly one owner + one
 // value for the given RecordType.
 //
 // It sets typed fields on RecordEntry wherever supported by the API types.
 // Unsupported/unknown types (including PTR, since there is no typed PTR field)
 // are skipped.
-func mapAnswersToEntries(zoneFQDN string, answers []dns.RR, qtype uint16) []dnsv1alpha1.RecordEntry {
-	var out []dnsv1alpha1.RecordEntry
+func mapAnswersToEntries(zoneFQDN string, answers []dns.RR) []dnsv1alpha1.RecordEntry {
+	out := make([]dnsv1alpha1.RecordEntry, 0, len(answers))
 
 	for _, rr := range answers {
 		name := ownerToRelative(rr.Header().Name, zoneFQDN)
@@ -96,9 +96,9 @@ func mapAnswersToEntries(zoneFQDN string, answers []dns.RR, qtype uint16) []dnsv
 
 		case *dns.HTTPS:
 			entry.HTTPS = &dnsv1alpha1.HTTPSRecordSpec{
-				Priority: r.SVCB.Priority,
-				Target:   ensureTrailingDot(r.SVCB.Target),
-				Params:   svcbParamsToMap(r.SVCB.Value),
+				Priority: r.Priority,
+				Target:   ensureTrailingDot(r.Target),
+				Params:   svcbParamsToMap(r.Value),
 			}
 
 		case *dns.SVCB:

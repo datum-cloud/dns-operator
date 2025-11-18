@@ -78,7 +78,7 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 	// Mark Accepted true if not already
 	if getCondStatus(dzd.Status.Conditions, CondAccepted) != metav1.ConditionTrue {
 		base := dzd.DeepCopy()
-		if setCond(&dzd.Status.Conditions, CondAccepted, ReasonAccepted, "discovery accepted", metav1.ConditionTrue, dzd.Generation) {
+		if setCond(&dzd.Status.Conditions, CondAccepted, ReasonAccepted, "Discovery Accepted", metav1.ConditionTrue, dzd.Generation) {
 			if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -97,7 +97,7 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 
 	base := dzd.DeepCopy()
 	dzd.Status.RecordSets = recordSets
-	_ = setCond(&dzd.Status.Conditions, CondDiscovered, ReasonDiscovered, "zone records discovered", metav1.ConditionTrue, dzd.Generation)
+	_ = setCond(&dzd.Status.Conditions, CondDiscovered, ReasonDiscovered, "Zone Records Discovered", metav1.ConditionTrue, dzd.Generation)
 	if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}

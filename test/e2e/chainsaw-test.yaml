@@ -323,7 +323,7 @@ spec:
           metadata:
             name: example-com
           status:
-            recordCount: 2
+            recordCount: 3
 
   - name: Delete DNSZone and confirm accounting configmap is deleted
     try:

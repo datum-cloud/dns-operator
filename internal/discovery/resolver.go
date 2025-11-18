@@ -13,6 +13,7 @@ import (
 // DiscoverZoneRecords performs best-effort discovery of common RR types for the given domain
 // and returns RecordSets grouped by RecordType, with typed fields populated where available.
 func DiscoverZoneRecords(ctx context.Context, domain string) ([]dnsv1alpha1.DiscoveredRecordSet, error) {
+	fmt.Printf("starting discovery for domain=%q\n", domain)
 	// Exclude NS and SOA per requirements.
 	options := dnsx.DefaultOptions
 	qtypes := []uint16{
@@ -30,19 +31,29 @@ func DiscoverZoneRecords(ctx context.Context, domain string) ([]dnsv1alpha1.Disc
 	options.QuestionTypes = qtypes
 	options.QueryAll = true
 
+	fmt.Println("creating dnsx client")
 	client, err := dnsx.New(options)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("querying multiple record types")
 	resp, err := client.QueryMultiple(domain)
-	if err != nil || resp == nil || resp.RawResp == nil {
+	if err != nil {
 		return nil, err
 	}
-	// print all records
-	fmt.Printf("All records: %+v\n", resp.RawResp)
+	if resp == nil {
+		return nil, fmt.Errorf("dnsx returned nil response")
+	}
+	// Print quick summary for debugging
+	fmt.Printf("resolver status=%s answers=%d types=%v\n", resp.StatusCode, len(resp.AllRecords), qtypes)
 
+	// Build RRs from textual records since QueryMultiple does not populate RawResp
 	typeToRRs := make(map[uint16][]dns.RR)
-	for _, rr := range resp.RawResp.Answer {
+	for _, rec := range resp.AllRecords {
+		rr, perr := dns.NewRR(rec)
+		if perr != nil || rr == nil {
+			continue
+		}
 		rt := rr.Header().Rrtype
 		typeToRRs[rt] = append(typeToRRs[rt], rr)
 	}

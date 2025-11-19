@@ -9,7 +9,6 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -118,12 +117,13 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 			}
 
-			// At this point the zone exists in PDNS; update downstream status nameservers from class
+			// At this point the zone exists in PDNS; set downstream status nameservers from class if not already set
 			var desiredNS []string
 			if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
 				desiredNS = append(desiredNS, zc.Spec.NameServerPolicy.Static.Servers...)
 			}
-			if !equality.Semantic.DeepEqual(zone.Status.Nameservers, desiredNS) {
+			// Do not override once nameservers have been set downstream
+			if len(zone.Status.Nameservers) == 0 && len(desiredNS) > 0 {
 				base := zone.DeepCopy()
 				zone.Status.Nameservers = desiredNS
 				if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {

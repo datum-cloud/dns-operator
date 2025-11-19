@@ -236,7 +236,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
 		}
-		return nil
+		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
 		return res, cErr

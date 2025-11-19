@@ -32,20 +32,20 @@ storage:
     endpoint_url: ${S3_ENDPOINT_URL}
     use_update_marker: true
 
-cleanup:
-  # Enable the cleaner
-  enabled: true
-  # Interval to check if snapshots need to be cleaned. Some perturbation
-  # is added to this interval so that multiple instances started at exactly
-  # the same time do not always try to clean the same snapshots at the same
-  # time.
-  interval: 1h
-  # Snapshots must have been available for at least this interval before they
-  # are considered for cleaning, so that slower instances have a chance to
-  # download them.
-  must_keep_interval: 24h
-  # Remove stale instances without newer snapshots after this interval, but
-  # only after we are sure this instance has downloaded and merged that
-  # snapshot, and subsequently written a new snapshots that incorporates these
-  # changes.
-  remove_old_instances_interval: 168h   # 1 week
+  cleanup:
+    # Enable the cleaner
+    enabled: true
+    # Interval to check if snapshots need to be cleaned. Some perturbation
+    # is added to this interval so that multiple instances started at exactly
+    # the same time do not always try to clean the same snapshots at the same
+    # time.
+    interval: 1h
+    # Snapshots must have been available for at least this interval before they
+    # are considered for cleaning, so that slower instances have a chance to
+    # download them.
+    must_keep_interval: 24h
+    # Remove stale instances without newer snapshots after this interval, but
+    # only after we are sure this instance has downloaded and merged that
+    # snapshot, and subsequently written a new snapshots that incorporates these
+    # changes.
+    remove_old_instances_interval: 168h   # 1 week

@@ -174,7 +174,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err := cli.ApplyRecordSetAuthoritative(ctx, zone.Spec.DomainName, rs); err != nil {
 		logger.Error(err, "apply pdns recordset")
 		// surface PDNS error into status
-		if setCond(&rs.Status.Conditions, CondProgrammed, ReasonPending, fmt.Sprintf("%v", err), metav1.ConditionFalse, rs.Generation) {
+		if setCond(&rs.Status.Conditions, CondProgrammed, ReasonInvalidDNSRecordSet, fmt.Sprintf("%v", err), metav1.ConditionFalse, rs.Generation) {
 			_ = r.Status().Update(ctx, &rs)
 		}
 		return ctrl.Result{}, err

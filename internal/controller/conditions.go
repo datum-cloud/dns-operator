@@ -8,14 +8,15 @@ import (
 )
 
 const (
-	CondAccepted       = "Accepted"
-	CondProgrammed     = "Programmed"
-	CondDiscovered     = "Discovered"
-	ReasonAccepted     = "Accepted"
-	ReasonPending      = "Pending"
-	ReasonProgrammed   = "Programmed"
-	ReasonDiscovered   = "Discovered"
-	ReasonDNSZoneInUse = "DNSZoneInUse"
+	CondAccepted              = "Accepted"
+	CondProgrammed            = "Programmed"
+	CondDiscovered            = "Discovered"
+	ReasonAccepted            = "Accepted"
+	ReasonPending             = "Pending"
+	ReasonInvalidDNSRecordSet = "InvalidDNSRecordSet"
+	ReasonProgrammed          = "Programmed"
+	ReasonDiscovered          = "Discovered"
+	ReasonDNSZoneInUse        = "DNSZoneInUse"
 )
 
 // set/update one condition; returns true if it changed

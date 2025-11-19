@@ -36,9 +36,9 @@ type pdnsAPIError struct {
 
 func (e *pdnsAPIError) Error() string {
 	if e.Body != "" {
-		return fmt.Sprintf("pdns api error: status %d: %s", e.Status, e.Body)
+		return fmt.Sprintf("status %d: %s", e.Status, e.Body)
 	}
-	return fmt.Sprintf("pdns api error: status %d", e.Status)
+	return fmt.Sprintf("error: status %d", e.Status)
 }
 
 func readRespBody(resp *http.Response, max int64) string {

@@ -4,10 +4,10 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/discovery"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -49,14 +49,8 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 		return ctrl.Result{}, nil
 	}
 
-	// Validate reference
-	if strings.TrimSpace(dzd.Spec.DNSZoneRef.Name) == "" {
-		base := dzd.DeepCopy()
-		if setCond(&dzd.Status.Conditions, CondAccepted, ReasonPending, "spec.dnsZoneRef.name is required", metav1.ConditionFalse, dzd.Generation) {
-			if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
-				return ctrl.Result{}, err
-			}
-		}
+	// If already discovered, nothing to do at all.
+	if apimeta.IsStatusConditionTrue(dzd.Status.Conditions, CondDiscovered) {
 		return ctrl.Result{}, nil
 	}
 
@@ -65,8 +59,17 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 	if err := upstreamCluster.GetClient().Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: dzd.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		base := dzd.DeepCopy()
 		msg := fmt.Sprintf("dnszone %q not found", dzd.Spec.DNSZoneRef.Name)
-		if setCond(&dzd.Status.Conditions, CondAccepted, ReasonPending, msg, metav1.ConditionFalse, dzd.Generation) {
-			_ = upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base))
+		if apimeta.SetStatusCondition(&dzd.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonPending,
+			Message:            msg,
+			ObservedGeneration: dzd.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -81,30 +84,31 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 			return ctrl.Result{}, err
 		}
 		logger.Info("set controller OwnerReference to DNSZone", "dnsZone", zone.Name)
-		// requeue to continue with updated object
 		return ctrl.Result{}, nil
 	}
 
 	// Mark Accepted true if not already
-	if getCondStatus(dzd.Status.Conditions, CondAccepted) != metav1.ConditionTrue {
+	if !apimeta.IsStatusConditionTrue(dzd.Status.Conditions, CondAccepted) {
 		base := dzd.DeepCopy()
-		if setCond(&dzd.Status.Conditions, CondAccepted, ReasonAccepted, "Discovery Accepted", metav1.ConditionTrue, dzd.Generation) {
+		if apimeta.SetStatusCondition(&dzd.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonAccepted,
+			Message:            "Discovery Accepted",
+			ObservedGeneration: dzd.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
 			if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
 	}
 
-	// If already discovered, nothing to do (after ensuring owner ref and acceptance).
-	if getCondStatus(dzd.Status.Conditions, CondDiscovered) == metav1.ConditionTrue {
-		return ctrl.Result{}, nil
-	}
-
 	// Perform discovery (one-shot)
 	recordSets, err := discovery.DiscoverZoneRecords(ctx, zone.Spec.DomainName)
 	if err != nil {
 		logger.Error(err, "discovery failed; will retry", "zone", zone.Spec.DomainName)
-		return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+		return ctrl.Result{}, err
 	}
 
 	// Log how many records were discovered
@@ -112,7 +116,14 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 
 	base := dzd.DeepCopy()
 	dzd.Status.RecordSets = recordSets
-	_ = setCond(&dzd.Status.Conditions, CondDiscovered, ReasonDiscovered, "Zone Records Discovered", metav1.ConditionTrue, dzd.Generation)
+	apimeta.SetStatusCondition(&dzd.Status.Conditions, metav1.Condition{
+		Type:               CondDiscovered,
+		Status:             metav1.ConditionTrue,
+		Reason:             ReasonDiscovered,
+		Message:            "Zone Records Discovered",
+		ObservedGeneration: dzd.Generation,
+		LastTransitionTime: metav1.NewTime(time.Now()),
+	})
 	if err := upstreamCluster.GetClient().Status().Patch(ctx, &dzd, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, err
 	}

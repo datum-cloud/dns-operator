@@ -73,11 +73,11 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			upstream.Finalizers = append(upstream.Finalizers, dnsZoneFinalizer)
 			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				lg.Error(err, "failed to add upstream finalizer")
-				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+				return ctrl.Result{}, err
 			}
 			lg.Info("added upstream finalizer", "finalizer", dnsZoneFinalizer)
 			// Re-run with updated object
-			return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// Deletion guard: ensure downstream is gone before removing finalizer
@@ -87,7 +87,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			// Request deletion of downstream anchor/shadow
 			if err := r.handleDeletion(ctx, strategy, &upstream); err != nil && !apierrors.IsNotFound(err) {
 				lg.Error(err, "downstream delete failed; will retry")
-				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+				return ctrl.Result{}, err
 			}
 			lg.Info("requested downstream delete for DNSZone")
 
@@ -95,7 +95,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream)
 			if mdErr != nil {
 				lg.Error(mdErr, "failed to compute downstream metadata; will retry")
-				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+				return ctrl.Result{}, err
 			}
 			var shadow dnsv1alpha1.DNSZone
 			shadow.SetNamespace(md.Namespace)
@@ -103,13 +103,12 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			getErr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow)
 			if getErr == nil {
 				lg.Info("downstream DNSZone still exists; waiting", "namespace", md.Namespace, "name", md.Name)
-				// Still exists; rely on downstream watch to requeue when it changes
 				return ctrl.Result{}, nil
 			}
 			if !apierrors.IsNotFound(getErr) {
 				// Transient error; retry
 				lg.Error(getErr, "failed to check downstream deletion; will retry")
-				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+				return ctrl.Result{}, err
 			}
 
 			// Cleanup zone accounting configmap once downstream is confirmed gone
@@ -117,7 +116,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			owner := fmt.Sprintf("%s/%s/%s", req.ClusterName, upstream.Namespace, upstream.Name)
 			if cerr := r.cleanupZoneAccounting(ctx, &upstream, owner); cerr != nil && !apierrors.IsNotFound(cerr) {
 				lg.Error(cerr, "failed to cleanup accounting configmap; will retry")
-				return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+				return ctrl.Result{}, err
 			}
 			lg.Info("cleaned up accounting configmap for DNSZone", "domain", upstream.Spec.DomainName)
 
@@ -126,7 +125,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			controllerutil.RemoveFinalizer(&upstream, dnsZoneFinalizer)
 			if err := upstreamCl.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				lg.Error(err, "failed to remove upstream finalizer")
-				return ctrl.Result{RequeueAfter: 300 * time.Millisecond}, nil
+				return ctrl.Result{}, err
 			}
 			lg.Info("removed upstream finalizer", "finalizer", dnsZoneFinalizer)
 		}
@@ -136,7 +135,14 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// If DNSZoneClassName is not set, set Accepted=False with reason
 	if upstream.Spec.DNSZoneClassName == "" {
 		base := upstream.DeepCopy() // take snapshot BEFORE mutating status
-		if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, "DNSZoneClassName not set", metav1.ConditionFalse, upstream.Generation) {
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonPending,
+			Message:            "DNSZoneClassName not set",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
 			if err := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -151,9 +157,14 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if err := upstreamCl.GetClient().Get(ctx, client.ObjectKey{Name: upstream.Spec.DNSZoneClassName}, &zoneClass); err != nil {
 		if apierrors.IsNotFound(err) {
 			base := upstream.DeepCopy()
-			if setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending,
-				fmt.Sprintf("DNSZoneClass %q not found", upstream.Spec.DNSZoneClassName),
-				metav1.ConditionFalse, upstream.Generation) {
+			if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+				Type:               CondAccepted,
+				Status:             metav1.ConditionFalse,
+				Reason:             ReasonPending,
+				Message:            fmt.Sprintf("DNSZoneClass %q not found", upstream.Spec.DNSZoneClassName),
+				ObservedGeneration: upstream.Generation,
+				LastTransitionTime: metav1.NewTime(time.Now()),
+			}) {
 				if err := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -171,8 +182,26 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	} else if !owned {
 		base := upstream.DeepCopy()
 		changed := false
-		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonDNSZoneInUse, "DNSZone claimed by another resource", metav1.ConditionFalse, upstream.Generation) || changed
-		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonDNSZoneInUse, "DNSZone claimed by another resource", metav1.ConditionFalse, upstream.Generation) || changed
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonDNSZoneInUse,
+			Message:            "DNSZone claimed by another resource",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondProgrammed,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonDNSZoneInUse,
+			Message:            "DNSZone claimed by another resource",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
 		if changed {
 			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
 				return ctrl.Result{}, perr
@@ -196,10 +225,10 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 	}
 
-	// If nameservers are not yet present, lightly poll to catch downstream status changes
+	// If nameservers are not yet present, rely on downstream watch to trigger requeue
 	if len(upstream.Status.Nameservers) == 0 {
-		lg.Info("nameservers not yet available; requeueing shortly")
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		lg.Info("nameservers not yet available; waiting for downstream update")
+		return ctrl.Result{}, nil
 	}
 
 	// 5) Ensure default records exist (nameservers known by guard above)
@@ -509,9 +538,27 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 
 	// Accepted: true only after nameservers have been retrieved from downstream
 	if len(upstream.Status.Nameservers) > 0 {
-		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonAccepted, "Nameservers retrieved from downstream", metav1.ConditionTrue, upstream.Generation) || changed
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonAccepted,
+			Message:            "Nameservers retrieved from downstream",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
 	} else {
-		changed = setCond(&upstream.Status.Conditions, CondAccepted, ReasonPending, "Waiting for downstream nameservers", metav1.ConditionFalse, upstream.Generation) || changed
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonPending,
+			Message:            "Waiting for downstream nameservers",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
 	}
 
 	var rsList dnsv1alpha1.DNSRecordSetList
@@ -544,9 +591,27 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 
 	}
 	if programmed {
-		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonProgrammed, "Default records ensured", metav1.ConditionTrue, upstream.Generation) || changed
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondProgrammed,
+			Status:             metav1.ConditionTrue,
+			Reason:             ReasonProgrammed,
+			Message:            "Default records ensured",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
 	} else {
-		changed = setCond(&upstream.Status.Conditions, CondProgrammed, ReasonPending, "Waiting for default records", metav1.ConditionFalse, upstream.Generation) || changed
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondProgrammed,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonPending,
+			Message:            "Waiting for default records",
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			changed = true
+		}
 	}
 
 	// RecordCount: compute number of DNSRecordSets referencing this zone and set status field

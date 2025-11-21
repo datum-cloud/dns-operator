@@ -30,6 +30,7 @@ const (
 type DNSRecordSetSpec struct {
 	// DNSZoneRef references the DNSZone (same namespace) this recordset belongs to.
 	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="dnsZoneRef.name must be set"
 	DNSZoneRef corev1.LocalObjectReference `json:"dnsZoneRef"`
 
 	// RecordType is the DNS RR type for this recordset.

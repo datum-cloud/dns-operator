@@ -5,7 +5,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
@@ -51,7 +50,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			controllerutil.AddFinalizer(&zone, downstreamZoneFinalizer)
 			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 				logger.Error(err, "failed to add zone finalizer")
-				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil
 		}
@@ -74,7 +73,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 				if err := cli.DeleteZone(ctx, zone.Spec.DomainName); err != nil {
 					logger.Error(err, "delete pdns zone failed; will retry", "zone", zone.Spec.DomainName)
-					return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+					return ctrl.Result{}, err
 				}
 			}
 
@@ -86,7 +85,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			controllerutil.RemoveFinalizer(&zone, downstreamZoneFinalizer)
 			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 				logger.Error(err, "failed to remove zone finalizer")
-				return ctrl.Result{RequeueAfter: 200 * time.Millisecond}, nil
+				return ctrl.Result{}, err
 			}
 		}
 		return ctrl.Result{}, nil
@@ -113,7 +112,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				}
 				if err := cli.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
 					logger.Error(err, "create pdns zone")
-					return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+					return ctrl.Result{}, err
 				}
 			}
 
@@ -128,7 +127,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				zone.Status.Nameservers = desiredNS
 				if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 					logger.Error(err, "failed to update downstream nameservers status; will retry")
-					return ctrl.Result{RequeueAfter: 1 * time.Second}, nil
+					return ctrl.Result{}, err
 				}
 			}
 		}

@@ -61,6 +61,9 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: dnsZoneRef.name must be set
+                  rule: self.name != ''
               recordType:
                 description: RecordType is the DNS RR type for this recordset.
                 enum:

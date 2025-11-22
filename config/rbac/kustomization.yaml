@@ -31,4 +31,7 @@ resources:
 - dnszoneclass_admin_role.yaml
 - dnszoneclass_editor_role.yaml
 - dnszoneclass_viewer_role.yaml
+- dnszonediscovery_admin_role.yaml
+- dnszonediscovery_editor_role.yaml
+- dnszonediscovery_viewer_role.yaml
 

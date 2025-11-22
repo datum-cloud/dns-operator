@@ -1,18 +1,4 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// SPDX-License-Identifier: AGPL-3.0-only
 
 package v1alpha1
 
@@ -43,78 +29,130 @@ const (
 // DNSRecordSetSpec defines the desired state of DNSRecordSet
 type DNSRecordSetSpec struct {
 	// DNSZoneRef references the DNSZone (same namespace) this recordset belongs to.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="dnsZoneRef.name must be set"
 	DNSZoneRef corev1.LocalObjectReference `json:"dnsZoneRef"`
 
 	// RecordType is the DNS RR type for this recordset.
+	// +kubebuilder:validation:Required
 	RecordType RRType `json:"recordType"`
 
 	// Records contains one or more owner names with values appropriate for the RecordType.
+	// +kubebuilder:validation:MinItems=1
 	Records []RecordEntry `json:"records"`
 }
 
 // RecordEntry represents one owner name and its values.
 type RecordEntry struct {
 	// Name is the owner name (relative to the zone or FQDN).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^(@|[A-Za-z0-9*._-]+)$`
 	Name string `json:"name"`
 	// TTL optionally overrides TTL for this owner/RRset.
 	// +optional
 	TTL *int64 `json:"ttl,omitempty"`
 
-	// Raw contains raw RDATA strings when used instead of typed fields.
-	// +optional
-	Raw []string `json:"raw,omitempty"`
-
 	// Exactly one of the following type-specific fields should be set matching RecordType.
 	// +optional
-	A *SimpleValues `json:"a,omitempty"`
+	A *ARecordSpec `json:"a,omitempty"`
 	// +optional
-	AAAA *SimpleValues `json:"aaaa,omitempty"`
+	AAAA *AAAARecordSpec `json:"aaaa,omitempty"`
 	// +optional
-	CNAME *CNAMEValue `json:"cname,omitempty"`
+	CNAME *CNAMERecordSpec `json:"cname,omitempty"`
 	// +optional
-	TXT *SimpleValues `json:"txt,omitempty"`
+	NS *NSRecordSpec `json:"ns,omitempty"`
 	// +optional
-	CAA []CAARecordSpec `json:"caa,omitempty"`
+	TXT *TXTRecordSpec `json:"txt,omitempty"`
 	// +optional
-	MX []MXRecordSpec `json:"mx,omitempty"`
+	SOA *SOARecordSpec `json:"soa,omitempty"`
 	// +optional
-	SRV []SRVRecordSpec `json:"srv,omitempty"`
+	CAA *CAARecordSpec `json:"caa,omitempty"`
 	// +optional
-	TLSA []TLSARecordSpec `json:"tlsa,omitempty"`
+	MX *MXRecordSpec `json:"mx,omitempty"`
 	// +optional
-	HTTPS []HTTPSRecordSpec `json:"https,omitempty"`
+	SRV *SRVRecordSpec `json:"srv,omitempty"`
 	// +optional
-	SVCB []HTTPSRecordSpec `json:"svcb,omitempty"`
+	TLSA *TLSARecordSpec `json:"tlsa,omitempty"`
+	// +optional
+	HTTPS *HTTPSRecordSpec `json:"https,omitempty"`
+	// +optional
+	SVCB *HTTPSRecordSpec `json:"svcb,omitempty"`
+
+	// +optional
+	PTR *PTRRecordSpec `json:"ptr,omitempty"`
 }
 
-type SimpleValues struct {
-	Content []string `json:"content"`
+type PTRRecordSpec struct {
+	Content string `json:"content"`
 }
 
-type CNAMEValue struct {
+type TXTRecordSpec struct {
+	Content string `json:"content"`
+}
+
+type ARecordSpec struct {
+	// +kubebuilder:validation:Format=ipv4
+	Content string `json:"content"`
+}
+
+type AAAARecordSpec struct {
+	// +kubebuilder:validation:Format=ipv6
+	Content string `json:"content"`
+}
+
+type CNAMERecordSpec struct {
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$`
+	// +kubebuilder:validation:MinLength=1
+	Content string `json:"content"`
+}
+
+type NSRecordSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// Require a hostname (FQDN or relative), allow optional trailing dot, no underscores.
+	// Labels: 1-63 chars, alphanum with interior hyphens, total length <=253.
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?$`
 	Content string `json:"content"`
 }
 
 type SRVRecordSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Priority uint16 `json:"priority"`
-	Weight   uint16 `json:"weight"`
-	Port     uint16 `json:"port"`
-	Target   string `json:"target"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Weight uint16 `json:"weight"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Port uint16 `json:"port"`
+	// +kubebuilder:validation:MinLength=1
+	Target string `json:"target"`
 }
 
 type MXRecordSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Preference uint16 `json:"preference"`
-	Exchange   string `json:"exchange"`
+	// +kubebuilder:validation:MinLength=1
+	Exchange string `json:"exchange"`
 }
 
 type CAARecordSpec struct {
-	Flag  uint8  `json:"flag"`
-	Tag   string `json:"tag"`
+	// 0–255 flag
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=255
+	Flag uint8 `json:"flag"`
+	// RFC-style tags: keep it simple: [a-z0-9]+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]+$`
+	Tag string `json:"tag"`
+	// +kubebuilder:validation:MinLength=1
 	Value string `json:"value"`
 }
 
 type TLSARecordSpec struct {
-	// Common TLSA tuple: usage, selector, matching type, value
 	Usage        uint8  `json:"usage"`
 	Selector     uint8  `json:"selector"`
 	MatchingType uint8  `json:"matchingType"`
@@ -122,17 +160,33 @@ type TLSARecordSpec struct {
 }
 
 type HTTPSRecordSpec struct {
-	Priority uint16            `json:"priority"`
-	Target   string            `json:"target"`
-	Params   map[string]string `json:"params,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Priority uint16 `json:"priority"`
+	Target   string `json:"target"`
+	// +optional
+	Params map[string]string `json:"params,omitempty"`
+}
+
+type SOARecordSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	MName string `json:"mname"`
+	// +kubebuilder:validation:MinLength=1
+	RName string `json:"rname"`
+	// +optional
+	Serial uint32 `json:"serial,omitempty"`
+	// +optional
+	Refresh uint32 `json:"refresh,omitempty"`
+	// +optional
+	Retry uint32 `json:"retry,omitempty"`
+	// +optional
+	Expire uint32 `json:"expire,omitempty"`
+	// +optional
+	TTL uint32 `json:"ttl,omitempty"`
 }
 
 // DNSRecordSetStatus defines the observed state of DNSRecordSet.
 type DNSRecordSetStatus struct {
-	// ObservedGeneration is the last processed generation.
-	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
 	// Conditions includes Accepted and Programmed readiness.
 	// +listType=map
 	// +listMapKey=type
@@ -144,6 +198,8 @@ type DNSRecordSetStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=.status.conditions[?(@.type=="Accepted")].status
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
+// +kubebuilder:selectablefield:JSONPath=".spec.dnsZoneRef.name"
+// +kubebuilder:selectablefield:JSONPath=".spec.recordType"
 
 // DNSRecordSet is the Schema for the dnsrecordsets API
 type DNSRecordSet struct {

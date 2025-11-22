@@ -1,0 +1,237 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pdns-auth
+  namespace: system
+  labels:
+    control-plane: controller-agent
+    app.kubernetes.io/name: pdns-auth
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  volumeClaimTemplates:
+    - metadata:
+        name: lmdb
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+  serviceName: pdns-auth-headless
+  selector:
+    matchLabels:
+      control-plane: controller-agent
+      app.kubernetes.io/name: pdns-auth
+  replicas: 1
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-agent
+        app.kubernetes.io/name: pdns-auth
+    spec:
+      securityContext:
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: init-pdns-key
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -euo pipefail
+            mkdir -p /run/pdns
+            umask 077
+            KEY=$(head -c32 /dev/urandom | od -An -tx1 | tr -d " \n")
+            printf "%s" "$KEY" > /run/pdns/api-key
+            chmod 0440 /run/pdns/api-key
+        volumeMounts:
+        - name: pdns-shared
+          mountPath: /run/pdns
+        securityContext:
+          runAsUser: 65532
+      - name: init-lmdb-perms
+        image: busybox:1.36
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -eu
+            mkdir -p /lmdb
+            chown -R 953:953 /lmdb
+            chmod 0775 /lmdb
+            if [ -f /run/pdns/api-key ]; then chmod 0444 /run/pdns/api-key; fi
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        volumeMounts:
+          - name: lmdb
+            mountPath: /lmdb
+          - name: pdns-shared
+            mountPath: /run/pdns
+      containers:
+      - command:
+        - /manager
+        args:
+          - --role=downstream
+          - --leader-elect
+          - --leader-elect-lease-duration=10s
+          - --leader-elect-renew-deadline=3s
+          - --leader-elect-retry-period=2s
+          - --health-probe-bind-address=:8081
+          - --metrics-bind-address=:8080
+          - --metrics-secure=false
+          - --server-config=/config/server-config.yaml
+        env:
+        - name: PDNS_API_URL
+          value: http://localhost:8082
+        - name: PDNS_API_KEY_FILE
+          value: /run/pdns/api-key
+        image: ghcr.io/datum-cloud/dns-operator:latest
+        imagePullPolicy: IfNotPresent
+        name: manager
+        ports:
+          - containerPort: 8080
+            name: metrics
+            protocol: TCP
+        securityContext:
+          runAsNonRoot: true
+          readOnlyRootFilesystem: true
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        # TODO(user): Configure the resources accordingly based on the project requirements.
+        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        volumeMounts:
+        - name: server-config
+          mountPath: /config
+        - name: pdns-shared
+          mountPath: /run/pdns
+      - name: pdns
+        image: powerdns/pdns-auth-51:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 53
+            name: dns
+            protocol: UDP
+          - containerPort: 53
+            name: dns-tcp
+            protocol: TCP
+          - containerPort: 8082
+            name: api
+            protocol: TCP
+        volumeMounts:
+          - name: lmdb
+            mountPath: /lmdb
+          - name: pdns-shared
+            mountPath: /run/pdns
+          - name: pdns-config
+            mountPath: /etc/powerdns
+            readOnly: true
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -eu;
+            exec pdns_server \
+              --api-key="$(cat /run/pdns/api-key)" --api=yes --webserver-port=8082
+        securityContext:
+          runAsUser: 953
+          runAsGroup: 953
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+            add: ["NET_BIND_SERVICE"]
+      - name: lightningstream
+        image: powerdns/lightningstream:main
+        imagePullPolicy: IfNotPresent
+        command: ["lightningstream"]
+        ports:
+          - containerPort: 8500
+            name: lmdb-metrics
+            protocol: TCP
+        args: ["--config", "/etc/lightningstream/lightningstream.yaml", "--minimum-pid", "50", "sync"]
+        securityContext:
+          runAsUser: 953
+          runAsGroup: 953
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - "ALL"
+        env:
+          - name: LS_INSTANCE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: S3_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: s3-credentials
+                key: accesskey
+                optional: true
+          - name: S3_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: s3-credentials
+                key: secretkey
+                optional: true
+          - name: S3_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: s3-credentials
+                key: endpoint_url
+                optional: true
+          - name: S3_BUCKET
+            valueFrom:
+              secretKeyRef:
+                name: s3-credentials
+                key: bucket
+                optional: true
+          - name: S3_REGION
+            valueFrom:
+              secretKeyRef:
+                name: s3-credentials
+                key: region
+                optional: true
+        volumeMounts:
+          - name: lmdb
+            mountPath: /lmdb
+          - name: lightningstream-config
+            mountPath: /etc/lightningstream      
+      
+      volumes:
+      - name: server-config
+        configMap:
+          name: agent-server-config
+      - name: pdns-shared
+        emptyDir: {}
+      - name: lightningstream-config
+        configMap:
+          name: lightningstream-config
+      - name: pdns-config
+        configMap:
+          name: pdns-config
+      serviceAccountName: controller-manager
+      terminationGracePeriodSeconds: 10

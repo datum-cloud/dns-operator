@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: network-services-operator-domains
+rules:
+- apiGroups: ["networking.datumapis.com"]
+  resources: ["domains"]
+  verbs: ["get","list","watch","create","update","patch","delete"]
+- apiGroups: ["networking.datumapis.com"]
+  resources: ["domains/status","domains/finalizers"]
+  verbs: ["get","update","patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: network-services-operator-domains
+subjects:
+- kind: ServiceAccount
+  name: network-services-operator-controller-manager
+  namespace: network-services-operator-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: network-services-operator-domains
+

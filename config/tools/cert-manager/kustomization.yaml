@@ -1,0 +1,20 @@
+resources:
+  - namespace.yaml
+helmCharts:
+  - name: cert-manager
+    namespace: cert-manager
+    valuesInline:
+      crds:
+        enabled: true
+      config:
+        apiVersion: controller.config.cert-manager.io/v1alpha1
+        kind: ControllerConfiguration
+        enableGatewayAPI: false
+    releaseName: cert-manager
+    version: 1.17.1
+    repo: https://charts.jetstack.io
+  - name: cert-manager-csi-driver
+    namespace: cert-manager
+    releaseName: cert-manager-csi-driver
+    version: v0.10.1
+    repo: https://charts.jetstack.io

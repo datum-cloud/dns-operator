@@ -1,0 +1,28 @@
+namespace: dns-agent-system
+
+resources:
+- ../crd
+- ../rbac
+- namespace.yaml
+- manager.yaml
+- pdns-service.yaml
+- pdns-headless-service.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+- name: agent-server-config
+  files:
+  - server-config.yaml
+- name: lightningstream-config
+  files:
+    - lightningstream.yaml
+- name: pdns-config
+  files:
+    - pdns.conf
+
+images:
+- name: ghcr.io/datum-cloud/dns-operator
+  newName: ghcr.io/datum-cloud/dns-operator
+  newTag: latest

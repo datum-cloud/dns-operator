@@ -21,6 +21,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Programmed")].status
       name: Programmed
       type: string
+    - jsonPath: .status.recordCount
+      name: Records
+      type: integer
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -52,8 +55,18 @@ spec:
                 type: string
               domainName:
                 description: DomainName is the FQDN of the zone (e.g., "example.com").
+                maxLength: 253
+                minLength: 1
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
                 type: string
+                x-kubernetes-validations:
+                - message: A domain name is immutable and cannot be changed after
+                    creation
+                  rule: oldSelf == '' || self == oldSelf
+                - message: Must have at least two segments separated by dots
+                  rule: self.indexOf('.') != -1
             required:
+            - dnsZoneClassName
             - domainName
             type: object
           status:
@@ -120,12 +133,49 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              domainRef:
+                description: DomainRef references the Domain this zone belongs to.
+                properties:
+                  name:
+                    type: string
+                  status:
+                    properties:
+                      nameservers:
+                        items:
+                          properties:
+                            hostname:
+                              type: string
+                            ips:
+                              items:
+                                description: NameserverIP captures per-address provenance
+                                  for a nameserver.
+                                properties:
+                                  address:
+                                    type: string
+                                  registrantName:
+                                    type: string
+                                required:
+                                - address
+                                type: object
+                              type: array
+                          required:
+                          - hostname
+                          type: object
+                        type: array
+                    type: object
+                required:
+                - name
+                type: object
               nameservers:
                 description: Nameservers lists the active authoritative nameservers
                   for this zone.
                 items:
                   type: string
                 type: array
+              recordCount:
+                description: RecordCount is the number of DNSRecordSet resources in
+                  this namespace that reference this zone.
+                type: integer
             type: object
         required:
         - spec

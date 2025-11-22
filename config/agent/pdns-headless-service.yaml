@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pdns-auth-headless
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: pdns-auth
+  ports: [] # no ports are needed for headless service
+

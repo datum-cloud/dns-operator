@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= ghcr.io/datum-cloud/dns-operator:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -46,8 +46,9 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
-generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen defaulter-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(DEFAULTER_GEN) ./internal/config --output-file=zz_generated.defaults.go
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -81,14 +82,6 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
-.PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
-
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -171,6 +164,178 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
+.PHONY: cert-manager
+cert-manager: kustomize cmctl ## Install cert-manager into the cluster selected by CONTEXT and/or KUBECONFIG
+	@FLAGS="$(if $(CONTEXT),--context $(CONTEXT),) $(if $(KUBECONFIG),--kubeconfig $(KUBECONFIG),)"; \
+	echo "[cert-manager] applying to $$FLAGS"; \
+	$(KUSTOMIZE) build --enable-helm config/tools/cert-manager \
+	  | $(KUBECTL) $$FLAGS apply --server-side=true --force-conflicts -f -; \
+	$(CMCTL) $$FLAGS check api --wait=5m
+
+##@ Kind bootstrap
+
+# Cluster names
+DOWNSTREAM_CLUSTER_NAME ?= dns-downstream
+UPSTREAM_CLUSTER_NAME ?= dns-upstream
+
+# Image to load into kind clusters
+KIND_IMAGE ?= $(IMG)
+
+# Network Services Operator integration
+NSO_REPO ?= https://github.com/datum-cloud/network-services-operator.git
+NSO_DIR ?= dev/network-services-operator
+NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
+NSO_NAMESPACE ?= network-services-operator-system
+NSO_DEPLOY ?= false
+
+# Host to rewrite kubeconfig servers for in-cluster access (Docker Desktop/macOS default)
+KIND_KUBECONFIG_HOST ?= host.docker.internal
+
+.PHONY: kind-create
+kind-create: ## Create a kind cluster with name CLUSTER
+	@test -n "$(CLUSTER)" || { echo "CLUSTER is required, e.g. make kind-create CLUSTER=$(DOWNSTREAM_CLUSTER_NAME)"; exit 1; }
+	@case "$$($(KIND) get clusters)" in \
+		*"$(CLUSTER)"*) echo "Kind cluster '$(CLUSTER)' already exists. Skipping." ;; \
+		*) echo "Creating Kind cluster '$(CLUSTER)'..."; $(KIND) create cluster --name $(CLUSTER) ;; \
+	esac
+
+.PHONY: kind-delete
+kind-delete: ## Delete a kind cluster with name CLUSTER
+	@test -n "$(CLUSTER)" || { echo "CLUSTER is required"; exit 1; }
+	$(KIND) delete cluster --name $(CLUSTER)
+
+.PHONY: kind-load-image
+kind-load-image: ## Build and load manager image into kind cluster
+	@test -n "$(CLUSTER)" || { echo "CLUSTER is required"; exit 1; }
+	$(MAKE) docker-build IMG=$(KIND_IMAGE)
+	$(KIND) load docker-image $(KIND_IMAGE) --name $(CLUSTER)
+
+.PHONY: kustomize-apply
+kustomize-apply: kustomize ## Apply a kustomize directory to a specific kubectl context
+	@test -n "$(KUSTOMIZE_DIR)" || { echo "KUSTOMIZE_DIR is required"; exit 1; }
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required"; exit 1; }
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone $(KUSTOMIZE_DIR) | $(KUBECTL) --context $(CONTEXT) apply -f -
+
+.PHONY: kustomize-apply-ssa
+kustomize-apply-ssa: kustomize ## Apply a kustomize directory with server-side apply and force conflicts
+	@test -n "$(KUSTOMIZE_DIR)" || { echo "KUSTOMIZE_DIR is required"; exit 1; }
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required"; exit 1; }
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone $(KUSTOMIZE_DIR) | $(KUBECTL) --context $(CONTEXT) apply --server-side=true --force-conflicts -f -
+
+.PHONY: export-kind-kubeconfig
+export-kind-kubeconfig: ## Export kind kubeconfig for CLUSTER to OUT and rewrite server host
+	@test -n "$(CLUSTER)" || { echo "CLUSTER is required"; exit 1; }
+	@test -n "$(OUT)" || { echo "OUT is required"; exit 1; }
+	@mkdir -p $(dir $(OUT))
+	$(KIND) get kubeconfig --name $(CLUSTER) > $(OUT).raw
+	# Replace server host with $(KIND_KUBECONFIG_HOST) to be reachable from other Docker containers
+	sed -E "s#(server:[[:space:]]*https://)[^:]+(:[0-9]+)#\1$(KIND_KUBECONFIG_HOST)\2#g" $(OUT).raw > $(OUT)
+	@if [ "$(KIND_KUBECONFIG_INSECURE)" = "true" ]; then \
+		echo "Rewriting kubeconfig to skip TLS verify (dev only)"; \
+		sed -E "s#^([[:space:]]*)certificate-authority-data:.*#\1insecure-skip-tls-verify: true#" $(OUT) > $(OUT).tmp; \
+		mv $(OUT).tmp $(OUT); \
+	fi
+	@rm -f $(OUT).raw
+
+.PHONY: export-kind-kubeconfig-raw
+export-kind-kubeconfig-raw: ## Export kind kubeconfig for CLUSTER to OUT without rewriting
+	@test -n "$(CLUSTER)" || { echo "CLUSTER is required"; exit 1; }
+	@test -n "$(OUT)" || { echo "OUT is required"; exit 1; }
+	@mkdir -p $(dir $(OUT))
+	$(KIND) get kubeconfig --name $(CLUSTER) > $(OUT)
+
+.PHONY: secret-from-file
+secret-from-file: ## Create or update a secret from a file in NAMESPACE on CONTEXT
+	@test -n "$(NAMESPACE)" || { echo "NAMESPACE is required"; exit 1; }
+	@test -n "$(NAME)" || { echo "NAME is required"; exit 1; }
+	@test -n "$(KEY)" || { echo "KEY is required"; exit 1; }
+	@test -n "$(FILE)" || { echo "FILE is required"; exit 1; }
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required"; exit 1; }
+	$(KUBECTL) --context $(CONTEXT) -n $(NAMESPACE) create secret generic $(NAME) --from-file=$(KEY)=$(FILE) --dry-run=client -o yaml | $(KUBECTL) --context $(CONTEXT) apply -f -
+
+.PHONY: bootstrap-downstream
+bootstrap-downstream: ## Create kind downstream and deploy agent with embedded PowerDNS
+	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-create
+	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/agent-powerdns $(MAKE) kustomize-apply
+	# Export external kubeconfig for downstream cluster (reachable from host/other containers)
+	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
+
+.PHONY: bootstrap-upstream
+bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to downstream
+	@test -n "$(DOWNSTREAM_KUBECONFIG)" || { echo "DOWNSTREAM_KUBECONFIG is required. Generate with: make export-downstream-kubeconfig OUT=dev/downstream.kubeconfig"; exit 1; }
+	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-create
+	CLUSTER=$(UPSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) $(MAKE) cert-manager
+	# Install networking services operator CRDs (Domain, etc.) into upstream
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) $(MAKE) install-networking-crds
+	# Export external kubeconfig for upstream cluster (used to deploy NSO)
+	CLUSTER=$(UPSTREAM_CLUSTER_NAME) OUT=dev/kind.upstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
+	# Optionally build and deploy Network Services Operator into upstream
+	@if [ "$(NSO_DEPLOY)" = "true" ]; then \
+		echo "[bootstrap-upstream] Installing Kubernetes Gateway API CRDs ($(GATEWAY_API_VERSION))"; \
+		$(MAKE) install-gateway-api-crds CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) ; \
+		$(MAKE) nso-deploy-upstream KUBECONFIG=$(abspath dev/kind.upstream.kubeconfig) ; \
+		echo "[bootstrap-upstream] Re-applying NSO overlay (config + RBAC) with server-side apply to override defaults"; \
+		CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/nso $(MAKE) kustomize-apply-ssa ; \
+		echo "[bootstrap-upstream] Restarting NSO to pick up new ConfigMap"; \
+		kubectl --context kind-$(UPSTREAM_CLUSTER_NAME) -n network-services-operator-system rollout restart deploy/network-services-operator-controller-manager || true ; \
+	else \
+		echo "[bootstrap-upstream] Skipping NSO deployment (NSO_DEPLOY=false). Only CRDs installed."; \
+	fi
+	# Ensure namespace exists for secret
+	$(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) create namespace dns-replicator-system --dry-run=client -o yaml | $(KUBECTL) --context kind-$(UPSTREAM_CLUSTER_NAME) apply -f -
+	# Create secret with downstream kubeconfig in upstream cluster
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE=$(DOWNSTREAM_KUBECONFIG) $(MAKE) secret-from-file
+	# Deploy replicator overlay
+	CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/replicator $(MAKE) kustomize-apply
+
+.PHONY: export-downstream-kubeconfig
+export-downstream-kubeconfig: ## Export downstream kubeconfig rewritten for in-cluster usage by upstream
+	@test -n "$(OUT)" || { echo "OUT is required"; exit 1; }
+	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=$(OUT) $(MAKE) export-kind-kubeconfig
+
+## End-to-end bootstrap (downstream → export kubeconfig → upstream)
+E2E_DOWNSTREAM_KUBECONFIG ?= dev/downstream.kubeconfig
+E2E_INSECURE ?= true
+.PHONY: bootstrap-e2e
+bootstrap-e2e: ## Bootstrap downstream, export kubeconfig, then bootstrap upstream
+	$(MAKE) bootstrap-downstream IMG=$(IMG)
+	OUT=$(E2E_DOWNSTREAM_KUBECONFIG) KIND_KUBECONFIG_INSECURE=$(E2E_INSECURE) $(MAKE) export-downstream-kubeconfig
+	DOWNSTREAM_KUBECONFIG=$(E2E_DOWNSTREAM_KUBECONFIG) IMG=$(IMG) $(MAKE) bootstrap-upstream
+	@echo "E2E bootstrap complete. Upstream: $(UPSTREAM_CLUSTER_NAME), Downstream: $(DOWNSTREAM_CLUSTER_NAME)."
+	@echo "Downstream kubeconfig: $(E2E_DOWNSTREAM_KUBECONFIG)"
+	@echo "External kubeconfigs: dev/kind.downstream.kubeconfig, dev/kind.upstream.kubeconfig"
+
+.PHONY: bootstrap-e2e-with-nso
+bootstrap-e2e-with-nso: ## Bootstrap e2e and also install+configure NSO in upstream
+	$(MAKE) bootstrap-downstream IMG=$(IMG)
+	OUT=$(E2E_DOWNSTREAM_KUBECONFIG) KIND_KUBECONFIG_INSECURE=$(E2E_INSECURE) $(MAKE) export-downstream-kubeconfig
+	DOWNSTREAM_KUBECONFIG=$(E2E_DOWNSTREAM_KUBECONFIG) IMG=$(IMG) NSO_DEPLOY=true $(MAKE) bootstrap-upstream
+	@echo "E2E bootstrap (with NSO) complete. Upstream: $(UPSTREAM_CLUSTER_NAME), Downstream: $(DOWNSTREAM_CLUSTER_NAME)."
+	@echo "Downstream kubeconfig: $(E2E_DOWNSTREAM_KUBECONFIG)"
+	@echo "External kubeconfigs: dev/kind.downstream.kubeconfig, dev/kind.upstream.kubeconfig"
+
+##@ DNS debugging
+
+# Defaults for DNS debug target
+DNS_DEBUG_CONTEXT ?= kind-dns-downstream
+DNS_DEBUG_NAMESPACE ?= dns-agent-system
+DNS_DEBUG_ZONE ?= example.com
+DNS_DEBUG_HOST ?= www
+
+.PHONY: dns-debug
+dns-debug: ## Launch a DNS tools pod and query PDNS SOA/NS/A for $(DNS_DEBUG_ZONE)
+	@echo "[dns-debug] Ensuring dnstools pod exists in $(DNS_DEBUG_NAMESPACE)"
+	@kubectl --context $(DNS_DEBUG_CONTEXT) -n $(DNS_DEBUG_NAMESPACE) get pod dnstools >/dev/null 2>&1 || \
+		kubectl --context $(DNS_DEBUG_CONTEXT) -n $(DNS_DEBUG_NAMESPACE) run dnstools --image=infoblox/dnstools:latest --restart=Never --command -- sh -c 'sleep 3600'
+	@kubectl --context $(DNS_DEBUG_CONTEXT) -n $(DNS_DEBUG_NAMESPACE) wait --for=condition=Ready pod/dnstools --timeout=90s
+	@echo "[dns-debug] Querying PDNS Service pdns-auth.$(DNS_DEBUG_NAMESPACE).svc.cluster.local"
+	@kubectl --context $(DNS_DEBUG_CONTEXT) -n $(DNS_DEBUG_NAMESPACE) exec dnstools -- \
+		sh -lc 'echo SOA:; dig +time=2 +tries=1 +short @pdns-auth.$(DNS_DEBUG_NAMESPACE).svc.cluster.local $(DNS_DEBUG_ZONE) SOA; \
+		echo NS:;  dig +time=2 +tries=1 +short @pdns-auth.$(DNS_DEBUG_NAMESPACE).svc.cluster.local $(DNS_DEBUG_ZONE) NS; \
+		echo A $(DNS_DEBUG_HOST).$(DNS_DEBUG_ZONE):; dig +time=2 +tries=1 +short @pdns-auth.$(DNS_DEBUG_NAMESPACE).svc.cluster.local $(DNS_DEBUG_HOST).$(DNS_DEBUG_ZONE) A'
+
 ##@ Dependencies
 
 ## Location to install dependencies to
@@ -183,17 +348,26 @@ KUBECTL ?= kubectl
 KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+CHAINSAW ?= $(LOCALBIN)/chainsaw
+CMCTL ?= $(LOCALBIN)/cmctl
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
+DEFAULTER_GEN_VERSION ?= v0.32.3
+GATEWAY_API_VERSION ?= v1.1.0
+
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.4.0
+CHAINSAW_VERSION ?= v0.2.13
+CERTMANAGER_VERSION ?= 1.17.1
+CMCTL_VERSION ?= v2.1.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -204,6 +378,12 @@ $(KUSTOMIZE): $(LOCALBIN)
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
+
+.PHONY: defaulter-gen
+defaulter-gen: $(DEFAULTER_GEN) ## Download defaulter-gen locally if necessary.
+$(DEFAULTER_GEN): $(LOCALBIN)
+	$(call go-install-tool,$(DEFAULTER_GEN),k8s.io/code-generator/cmd/defaulter-gen,$(DEFAULTER_GEN_VERSION))
+
 
 .PHONY: setup-envtest
 setup-envtest: envtest ## Download the binaries required for ENVTEST in the local bin directory.
@@ -222,6 +402,62 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+
+.PHONY: cmctl
+cmctl: ## Find or download cmctl
+	$(call go-install-tool,$(CMCTL),github.com/cert-manager/cmctl/v2,$(CMCTL_VERSION))
+
+.PHONY: chainsaw
+chainsaw: ## Find or download chainsaw
+	$(call go-install-tool,$(CHAINSAW),github.com/kyverno/chainsaw,$(CHAINSAW_VERSION))
+
+.PHONY: chainsaw-test
+chainsaw-test: chainsaw chainsaw-prepare-kubeconfigs ## Run Chainsaw tests (requires dev/kind.*.kubeconfig to exist)
+	@test -f dev/kind.upstream.kubeconfig || { echo "Missing dev/kind.upstream.kubeconfig. Bootstrap clusters first."; exit 1; }
+	@test -f dev/kind.downstream.kubeconfig || { echo "Missing dev/kind.downstream.kubeconfig. Bootstrap clusters first."; exit 1; }
+	cd test/e2e && $(CHAINSAW) test .
+
+.PHONY: chainsaw-prepare-kubeconfigs
+chainsaw-prepare-kubeconfigs: ## Copy dev kind kubeconfigs into test/e2e for stable relative resolution
+	@test -f dev/kind.upstream.kubeconfig || { echo "Missing dev/kind.upstream.kubeconfig. Bootstrap clusters first."; exit 1; }
+	@test -f dev/kind.downstream.kubeconfig || { echo "Missing dev/kind.downstream.kubeconfig. Bootstrap clusters first."; exit 1; }
+	cp dev/kind.upstream.kubeconfig test/e2e/kubeconfig-upstream
+	cp dev/kind.downstream.kubeconfig test/e2e/kubeconfig-downstream
+
+.PHONY: nso-clone
+nso-clone: ## Clone network-services-operator into dev if missing
+	@test -d $(NSO_DIR) || { \
+		echo "Cloning $(NSO_REPO) into $(NSO_DIR)"; \
+		git clone $(NSO_REPO) $(NSO_DIR); \
+	}
+
+.PHONY: nso-build
+nso-build: nso-clone ## Build NSO image locally
+	$(MAKE) -C $(NSO_DIR) docker-build IMG=$(NSO_IMG)
+
+.PHONY: nso-load-upstream
+nso-load-upstream: ## Load NSO image into upstream kind cluster
+	$(KIND) load docker-image $(NSO_IMG) --name $(UPSTREAM_CLUSTER_NAME)
+
+.PHONY: nso-deploy-upstream
+nso-deploy-upstream: nso-build nso-load-upstream ## Deploy NSO into upstream cluster using KUBECONFIG
+	@test -n "$(KUBECONFIG)" || { echo "KUBECONFIG is required (e.g., dev/kind.upstream.kubeconfig)"; exit 1; }
+	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) set-image-controller IMG=$(NSO_IMG)
+	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) deploy IMG=$(NSO_IMG)
+
+.PHONY: install-networking-crds
+install-networking-crds: controller-gen ## Generate and install networking services CRDs (e.g., Domain) into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
+	mkdir -p dev/crds/network-services
+	$(CONTROLLER_GEN) crd:crdVersions=v1 \
+	  paths="go.datum.net/network-services-operator/api/v1alpha" \
+	  output:crd:dir=dev/crds/network-services
+	$(KUBECTL) --context $(CONTEXT) apply -f dev/crds/network-services
+
+.PHONY: install-gateway-api-crds
+install-gateway-api-crds: ## Install Kubernetes Gateway API CRDs into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
+	$(KUBECTL) --context $(CONTEXT) apply -k "github.com/kubernetes-sigs/gateway-api/config/crd?ref=$(GATEWAY_API_VERSION)"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

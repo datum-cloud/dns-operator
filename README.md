@@ -8,7 +8,7 @@ Kubernetes operator for managing DNS zones and records, with a pluggable backend
 - Kustomize overlays to deploy either role
 
 ### CRDs
-- **`DNSZoneClass`** (namespaced)
+- **`DNSZoneClass`** (cluster-scoped)
   - `spec.controllerName`: selects backend controller (e.g., "powerdns")
   - `spec.nameServerPolicy`: currently supports `Static` with `servers: []`
   - `spec.defaults.defaultTTL`: optional default TTL for zones

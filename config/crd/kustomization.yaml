@@ -5,6 +5,7 @@ resources:
 - bases/dns.networking.miloapis.com_dnszoneclasses.yaml
 - bases/dns.networking.miloapis.com_dnszones.yaml
 - bases/dns.networking.miloapis.com_dnsrecordsets.yaml
+- bases/dns.networking.miloapis.com_dnszonediscoveries.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

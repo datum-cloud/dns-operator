@@ -1,0 +1,11 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSOperator
+discovery:
+  mode: single
+  internalServiceDiscovery: false
+  discoveryKubeconfigPath: ""
+  projectKubeconfigPath: ""
+downstreamResourceManagement:
+  kubeconfigPath: "/downstream/kubeconfig"
+
+ 

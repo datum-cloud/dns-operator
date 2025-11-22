@@ -1,0 +1,51 @@
+instance: ${LS_INSTANCE}
+
+http:
+  address: ":8500"
+
+log:
+  level: info
+  format: human
+  timestamp: short
+
+lmdbs:
+  main:
+    path: /lmdb/db
+    options:
+      no_subdir: true
+      create: true
+    schema_tracks_changes: true
+  shard:
+    path: /lmdb/db-0
+    options:
+      no_subdir: true
+      create: true
+    schema_tracks_changes: true
+
+storage:
+  type: s3
+  options:
+    access_key: ${S3_ACCESS_KEY}
+    secret_key: ${S3_SECRET_KEY}
+    region: ${S3_REGION}
+    bucket: ${S3_BUCKET}
+    endpoint_url: ${S3_ENDPOINT_URL}
+    use_update_marker: true
+
+  cleanup:
+    # Enable the cleaner
+    enabled: true
+    # Interval to check if snapshots need to be cleaned. Some perturbation
+    # is added to this interval so that multiple instances started at exactly
+    # the same time do not always try to clean the same snapshots at the same
+    # time.
+    interval: 1h
+    # Snapshots must have been available for at least this interval before they
+    # are considered for cleaning, so that slower instances have a chance to
+    # download them.
+    must_keep_interval: 24h
+    # Remove stale instances without newer snapshots after this interval, but
+    # only after we are sure this instance has downloaded and merged that
+    # snapshot, and subsequently written a new snapshots that incorporates these
+    # changes.
+    remove_old_instances_interval: 168h   # 1 week

@@ -1,41 +1,43 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+// SPDX-License-Identifier: AGPL-3.0-only
 
 package main
 
 import (
+	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"golang.org/x/sync/errgroup"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
+	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
@@ -43,11 +45,15 @@ import (
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
+	codecs   = serializer.NewCodecFactory(scheme, serializer.EnableStrict)
 )
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(config.AddToScheme(scheme))
+	utilruntime.Must(config.RegisterDefaults(scheme))
 	utilruntime.Must(dnsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(networkingv1alpha.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -57,16 +63,29 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var leaderElectionLeaseDuration time.Duration
+	var leaderElectionRenewDeadline time.Duration
+	var leaderElectionRetryPeriod time.Duration
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+
+	var role string
+	var serverConfigFile string
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 10*time.Second,
+		"The duration that non-leader candidates will wait to force acquire leadership.")
+	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 3*time.Second,
+		"The duration that the leader will retry leadership renewal.")
+	flag.DurationVar(&leaderElectionRetryPeriod, "leader-elect-retry-period", 2*time.Second,
+		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -78,6 +97,9 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
+	flag.StringVar(&role, "role", "downstream", "Role for this binary: downstream|replicator|all")
+
 	opts := zap.Options{
 		Development: true,
 	}
@@ -85,6 +107,24 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	var serverConfig config.DNSOperator
+	var configData []byte
+	if len(serverConfigFile) > 0 {
+		var err error
+		configData, err = os.ReadFile(serverConfigFile)
+		if err != nil {
+			setupLog.Error(fmt.Errorf("unable to read server config from %q", serverConfigFile), "")
+			os.Exit(1)
+		}
+	}
+
+	if err := runtime.DecodeInto(codecs.UniversalDecoder(), configData, &serverConfig); err != nil {
+		setupLog.Error(err, "unable to decode server config")
+		os.Exit(1)
+	}
+
+	setupLog.Info("server config", "config", serverConfig)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -115,8 +155,6 @@ func main() {
 		webhookServerOptions.CertName = webhookCertName
 		webhookServerOptions.KeyName = webhookCertKey
 	}
-
-	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
@@ -153,58 +191,244 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "bed97aed.networking.miloapis.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
+	switch role {
+	case "downstream":
+		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+			Scheme:                 scheme,
+			Metrics:                metricsServerOptions,
+			HealthProbeBindAddress: probeAddr,
+			LeaderElection:         enableLeaderElection,
+			LeaseDuration:          &leaderElectionLeaseDuration,
+			RenewDeadline:          &leaderElectionRenewDeadline,
+			RetryPeriod:            &leaderElectionRetryPeriod,
+			LeaderElectionID:       "1813fe7c.datum.cloud",
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to start manager")
+			os.Exit(1)
+		}
+
+		if err := (&controller.DNSZoneReconciler{Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
+			os.Exit(1)
+		}
+		if err := (&controller.DNSRecordSetReconciler{Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
+			os.Exit(1)
+		}
+
+		if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up health check")
+			os.Exit(1)
+		}
+		if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up ready check")
+			os.Exit(1)
+		}
+
+		setupLog.Info("starting downstream manager")
+		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+			setupLog.Error(err, "problem running manager")
+			os.Exit(1)
+		}
+		return
+
+	case "replicator":
+		// Build downstream cluster from server config
+		downstreamRestConfig, err := serverConfig.DownstreamResourceManagement.RestConfig()
+		if err != nil {
+			setupLog.Error(err, "unable to load control plane kubeconfig")
+			os.Exit(1)
+		}
+		downstreamCluster, err := cluster.New(downstreamRestConfig, func(o *cluster.Options) { o.Scheme = scheme })
+		if err != nil {
+			setupLog.Error(err, "failed to construct downstream cluster")
+			os.Exit(1)
+		}
+
+		cfg := ctrl.GetConfigOrDie()
+		deploymentCluster, err := cluster.New(cfg, func(o *cluster.Options) { o.Scheme = scheme })
+		if err != nil {
+			setupLog.Error(err, "failed creating local cluster")
+			os.Exit(1)
+		}
+
+		// Initialize cluster discovery provider (single or milo)
+		runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
+		if err != nil {
+			setupLog.Error(err, "unable to initialize cluster discovery")
+			os.Exit(1)
+		}
+
+		// Multicluster manager
+		mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+			Scheme:                 scheme,
+			Metrics:                metricsServerOptions,
+			HealthProbeBindAddress: probeAddr,
+			LeaderElection:         enableLeaderElection,
+			LeaderElectionID:       "1813fe7c.datum.cloud",
+		})
+		if err != nil {
+			setupLog.Error(err, "unable to start multicluster manager")
+			os.Exit(1)
+		}
+
+		// --- register controllers BEFORE starting provider/manager ---
+		if err := (&controller.DNSRecordSetReplicator{
+			DownstreamClient: downstreamCluster.GetClient(),
+		}).SetupWithManager(mcmgr, downstreamCluster); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSetReplicator")
+			os.Exit(1)
+		}
+		if err := (&controller.DNSZoneReplicator{
+			DownstreamClient:    downstreamCluster.GetClient(),
+			AccountingNamespace: serverConfig.DownstreamResourceManagement.DNSZoneAccountingNamespace,
+		}).SetupWithManager(mcmgr, downstreamCluster); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneReplicator")
+			os.Exit(1)
+		}
+		if err := (&controller.DNSZoneDiscoveryReplicator{}).SetupWithManager(mcmgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscoveryReplicator")
+			os.Exit(1)
+		}
+
+		if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up health check")
+			os.Exit(1)
+		}
+		if err := mcmgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+			setupLog.Error(err, "unable to set up ready check")
+			os.Exit(1)
+		}
+
+		// Start everything concurrently (no explicit wait-for-engagement loop)
+		ctx := ctrl.SetupSignalHandler()
+
+		g, ctx := errgroup.WithContext(ctx)
+
+		// Start any pre-created runnables (e.g., deploymentCluster)
+		for _, r := range runnables {
+			rr := r
+			g.Go(func() error { return ignoreCanceled(rr.Start(ctx)) })
+		}
+
+		// Start discovery provider (which will engage "single")
+		setupLog.Info("starting cluster discovery provider")
+		g.Go(func() error { return ignoreCanceled(provider.Run(ctx, mcmgr)) })
+
+		// Start downstream cluster (its cache backs your delegating client)
+		g.Go(func() error { return ignoreCanceled(downstreamCluster.Start(ctx)) })
+
+		// Finally start the multicluster manager (controllers + caches)
+		setupLog.Info("starting multicluster manager (replicator)")
+		g.Go(func() error { return ignoreCanceled(mcmgr.Start(ctx)) })
+
+		if err := g.Wait(); err != nil {
+			setupLog.Error(err, "problem running multicluster manager")
+			os.Exit(1)
+		}
+		return
+
+	default:
+		setupLog.Error(fmt.Errorf("invalid role: %s", role), "")
 		os.Exit(1)
+	}
+}
+
+type runnableProvider interface {
+	multicluster.Provider
+	Run(context.Context, mcmanager.Manager) error
+}
+
+// Needed until we contribute the patch in the following PR again (need to sign CLA):
+//
+//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
+type wrappedSingleClusterProvider struct {
+	multicluster.Provider
+	cluster cluster.Cluster
+}
+
+func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
+	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
+		return err
+	}
+	return p.Provider.(runnableProvider).Run(ctx, mgr)
+}
+
+func initializeClusterDiscovery(
+	serverConfig config.DNSOperator,
+	deploymentCluster cluster.Cluster,
+	scheme *runtime.Scheme,
+) (runnables []manager.Runnable, provider runnableProvider, err error) {
+	runnables = append(runnables, deploymentCluster)
+	switch serverConfig.Discovery.Mode {
+	case multiclusterproviders.ProviderSingle:
+		provider = &wrappedSingleClusterProvider{
+			Provider: mcsingle.New("single", deploymentCluster),
+			cluster:  deploymentCluster,
+		}
+
+	case multiclusterproviders.ProviderMilo:
+		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+		}
+
+		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+		}
+
+		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+			Client: client.Options{
+				Cache: &client.CacheOptions{
+					Unstructured: true,
+				},
+			},
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+		}
+
+		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
+			ClusterOptions: []cluster.Option{
+				func(o *cluster.Options) {
+					o.Scheme = scheme
+				},
+			},
+			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
+			ProjectRestConfig:        projectRestConfig,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
+		}
+
+		runnables = append(runnables, discoveryManager)
+
+	// case providers.ProviderKind:
+	// 	provider = mckind.New(mckind.Options{
+	// 		ClusterOptions: []cluster.Option{
+	// 			func(o *cluster.Options) {
+	// 				o.Scheme = scheme
+	// 			},
+	// 		},
+	// 	})
+
+	default:
+		return nil, nil, fmt.Errorf(
+			"unsupported cluster discovery mode %s",
+			serverConfig.Discovery.Mode,
+		)
 	}
 
-	if err := (&controller.DNSZoneReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
-		os.Exit(1)
-	}
-	if err := (&controller.DNSRecordSetReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
-		os.Exit(1)
-	}
-	// +kubebuilder:scaffold:builder
+	return runnables, provider, nil
+}
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+func ignoreCanceled(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return nil
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
-
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
-	}
+	return err
 }

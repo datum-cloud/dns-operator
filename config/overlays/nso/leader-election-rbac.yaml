@@ -1,0 +1,27 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nso-leader-election
+  namespace: network-services-operator-system
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get","list","watch","create","update","patch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create","patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nso-leader-election
+  namespace: network-services-operator-system
+subjects:
+- kind: ServiceAccount
+  name: network-services-operator-controller-manager
+  namespace: network-services-operator-system
+roleRef:
+  kind: Role
+  name: nso-leader-election
+  apiGroup: rbac.authorization.k8s.io
+

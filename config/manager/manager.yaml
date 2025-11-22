@@ -61,9 +61,12 @@ spec:
       - command:
         - /manager
         args:
+          - --role=replicator
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: controller:latest
+          - --server-config=/config/server-config.yaml
+        image: ghcr.io/datum-cloud/dns-operator:latest
+        imagePullPolicy: IfNotPresent
         name: manager
         ports: []
         securityContext:
@@ -93,7 +96,12 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts: []
-      volumes: []
+        volumeMounts:
+        - name: server-config
+          mountPath: /config
+      volumes:
+      - name: server-config
+        configMap:
+          name: server-config
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

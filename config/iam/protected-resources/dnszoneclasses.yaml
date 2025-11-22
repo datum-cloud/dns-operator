@@ -1,0 +1,20 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnszoneclass
+spec:
+  serviceRef:
+    name: "dns.networking.miloapis.com"
+  kind: DNSZoneClass
+  plural: dnszoneclasses
+  singular: dnszoneclass
+  permissions:
+    - list
+    - get
+    - watch
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+
+

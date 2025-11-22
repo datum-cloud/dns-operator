@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: network-services-operator-system
+
+resources:
+  - namespace.yaml
+  - leader-election-rbac.yaml
+  - domain-rbac.yaml
+  - configmap-rbac.yaml
+  - secret-rbac.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: network-services-operator-config
+    files:
+      - config.yaml
+      # Use the upstream kubeconfig for downstreamResourceManagement.kubeconfigPath
+      - kubeconfig=../../../dev/kind.upstream.kubeconfig
+
+

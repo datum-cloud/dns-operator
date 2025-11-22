@@ -8,6 +8,13 @@
 *.so
 *.dylib
 
+bin/
+vendor/
+dist/
+dev/
+.go-version
+config/**/charts
+
 # Test binary, built with `go test -c`
 *.test
 

@@ -1,0 +1,17 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZoneClass
+metadata:
+  labels:
+    app.kubernetes.io/name: dns-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: powerdns-static
+spec:
+  controllerName: powerdns
+  nameServerPolicy:
+    mode: Static
+    static:
+      servers:
+      - ns1.example.com
+      - ns2.example.com
+  defaults:
+    defaultTTL: 300

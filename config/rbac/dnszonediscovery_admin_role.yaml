@@ -1,0 +1,22 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: dns-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dnszonediscovery-admin-role
+rules:
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszonediscoveries
+  verbs:
+  - '*'
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszonediscoveries/status
+  verbs:
+  - get
+
+

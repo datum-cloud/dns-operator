@@ -1,0 +1,104 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnsrecordsets
+  - dnszones
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnsrecordsets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnsrecordsets/status
+  - dnszonediscoveries/status
+  - dnszones/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszoneclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszonediscoveries
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
+  - dnszones/finalizers
+  verbs:
+  - delete
+  - patch
+  - update
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - domains
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.datumapis.com
+  resources:
+  - domains/status
+  verbs:
+  - get
+  - list
+  - watch

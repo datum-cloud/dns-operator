@@ -1,0 +1,416 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-end-to-end
+spec:
+  clusters:
+    upstream:
+      kubeconfig: kubeconfig-upstream
+    downstream:
+      kubeconfig: kubeconfig-downstream
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static
+
+  - name: Prereq - create DNSZoneClass in downstream
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static
+
+  - name: Create DNSZone upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          spec:
+            domainName: example.com
+            dnsZoneClassName: powerdns-static
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+
+  - name: Confirm DNSZone replicated downstream
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+            namespace: ($downstreamNamespaceName)
+  
+  - name: Confirm DNSZone accounting downstream exists (configmap)
+    try:
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: example.com
+            namespace: datum-downstream-dnszone-accounting
+          data:
+            owner: (join('/', ['single', ($namespace), 'example-com']))
+
+  - name: Sleep for 5 seconds
+    try:
+    - sleep:
+        duration: 5s
+
+  - name: Confirm DNSZone Accepted/Programmed upstream
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            domainRef:
+              status:
+                nameservers:
+                - hostname: A.IANA-SERVERS.NET
+                  ips:
+                  - address: 199.43.135.53
+                    registrantName: ICANN
+                  - address: 2001:500:8f::53
+                    registrantName: ICANN
+                - hostname: B.IANA-SERVERS.NET
+                  ips:
+                  - address: 199.43.133.53
+                    registrantName: ICANN
+                  - address: 2001:500:8d::53
+                    registrantName: ICANN
+            conditions:
+            - type: Accepted
+              status: "True"
+            - type: Programmed
+              status: "True"
+
+  - name: Assert upstream DNSZone nameservers
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            nameservers:
+            - ns1.example.com
+            - ns2.example.com
+
+  - name: Create DNSRecordSet upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-example-com
+          spec:
+            dnsZoneRef:
+              name: example-com
+            recordType: A
+            records:
+            - name: www
+              ttl: 5
+              a:
+                content: 10.0.0.1
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-example-com
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: example-com
+
+  - name: Confirm DNSRecordSet replicated downstream
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-example-com
+            namespace: ($downstreamNamespaceName)
+
+  - name: Confirm DNSRecordSet Accepted/Programmed upstream
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-example-com
+          status:
+            conditions:
+            - type: Accepted
+              status: "True"
+            - type: Programmed
+              status: "True"
+
+  - name: DNS queries from downstream to PDNS (SOA/NS/A)
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: dns
+              image: infoblox/dnstools:latest
+              command: ["sleep","3600"]
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils
+            namespace: default
+          status:
+            phase: Running
+    - sleep:
+        duration: 3s
+    - script:
+        cluster: downstream
+        content: |
+          set -euo pipefail
+          # wait for pod ready condition
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils
+          # Execute dig from inside the dnsutils pod (in-cluster DNS context)
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com SOA +short | awk '{print \$1}' | grep -E '^ns1\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns1\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns2\\.example\\.com\.$'"
+          kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short | grep -E '^10\\.0\\.0\\.1$'"
+
+  - name: Assert DNSZone recordCount is 4 (SOA + NS (2) + A)
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            recordCount: 4
+
+  - name: Delete A record and verify PDNS cleanup
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: www-example-com
+    - script:
+        cluster: upstream
+        content: |
+          set -euo pipefail
+          # Confirm it no longer exists upstream
+          if kubectl -n "$NAMESPACE" get dnsrecordset www-example-com >/dev/null 2>&1; then
+            echo "upstream DNSRecordSet still exists" >&2
+            exit 1
+          fi
+    - sleep:
+        duration: 10s
+    - script:
+        cluster: downstream
+        content: |
+          set -euo pipefail
+          # verify A record no longer resolves
+          kubectl -n default exec pod/dnsutils -- sh -lc '
+          out=$(dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short +tries=1 +time=1); 
+          printf ">>>%s<<<\n" "$out"; 
+          [ -z "$out" ] && echo "EMPTY" || echo "NONEMPTY"
+          '
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-com
+          status:
+            recordCount: 3
+
+  - name: Delete DNSZone and confirm accounting configmap is deleted
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: example-com
+
+    - error:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: example.com
+            namespace: datum-downstream-dnszone-accounting
+
+  - name: Teardown — delete zone first, classes last
+    try:
+    # 1) Delete the upstream zone (idempotent)
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: example-com
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            # ok if delete succeeded OR it was already gone
+            ($error == null): true
+
+    # 2) Compute mapped downstream namespace (same trick you used earlier)
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+
+    # 3) Prove downstream zone is gone by attempting a delete and expecting an error
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          namespace: ($downstreamNamespaceName)
+          name: example-com
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            # should be NotFound now
+            ($error != null): true
+    - sleep:
+        duration: 5s
+
+    # 5) Now it’s safe to delete the DNSZoneClass (downstream first, then upstream)
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-static
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-static
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true

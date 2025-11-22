@@ -1,0 +1,17 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSRecordSet
+metadata:
+  labels:
+    app.kubernetes.io/name: dns-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: www-example-com
+spec:
+  dnsZoneRef:
+    name: example-com
+  recordType: A
+  records:
+  - name: www
+    ttl: 300
+    a:
+      content:
+      - 10.0.0.1

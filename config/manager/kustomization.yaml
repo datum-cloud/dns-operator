@@ -1,0 +1,15 @@
+resources:
+- manager.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+- name: server-config
+  files:
+  - server-config.yaml
+
+images:
+- name: ghcr.io/datum-cloud/dns-operator
+  newName: ghcr.io/datum-cloud/dns-operator
+  newTag: latest

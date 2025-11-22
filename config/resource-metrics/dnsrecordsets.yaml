@@ -1,0 +1,76 @@
+kind: CustomResourceStateMetrics
+spec:
+  resources:
+    - groupVersionKind:
+        group: dns.networking.miloapis.com
+        kind: "DNSRecordSet"
+        version: "v1alpha1"
+      metricNamePrefix: dns_record_set
+      labelsFromPath:
+        name: [metadata, name]
+        namespace: [metadata, namespace]
+        dns_zone_name: [spec, dnsZoneRef, name]
+        record_type: [spec, recordType]
+      metrics:
+      - name: "owner"
+        help: "Owner information"
+        errorLogV: 10
+        each:
+          type: Info
+          info:
+            path: [metadata,ownerReferences]
+            labelsFromPath:
+              owner_kind: [kind]
+              owner_name: [name]
+              owner_uid: [uid]
+              controller: [controller]
+      - name: "info"
+        help: "DNSRecordSet information"
+        each:
+          type: Info
+          info:
+            labelsFromPath:
+              uid: [metadata, uid]
+      - name: "record_info"
+        help: "DNSRecordSet record information"
+        each:
+          type: Info
+          info:
+            path: [spec, records]
+            labelsFromPath:
+              record_name: [name]
+      - name: "created"
+        help: "created timestamp"
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, creationTimestamp]
+      - name: "deleted"
+        help: "deletion timestamp"
+        errorLogV: 10
+        each:
+          type: Gauge
+          gauge:
+            path: [metadata, deletionTimestamp]
+      - name: "status_condition"
+        help: "The current status conditions of the Domains"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              condition: [type]
+              reason: [reason]
+              status: [status]
+            valueFrom: [status]
+      - name: "status_condition_last_transition_time"
+        help: "last transition time for status conditions"
+        each:
+          type: Gauge
+          gauge:
+            path: [status, conditions]
+            labelsFromPath:
+              type: [type]
+              reason: [reason]
+              status: [status]
+            valueFrom: [lastTransitionTime]

@@ -21,6 +21,12 @@ configMapGenerator:
 - name: pdns-config
   files:
     - pdns.conf
+- name: dnsdist-config
+  files:
+    - dnsdist.yml=dnsdist-config.yaml
+- name: dnscollector-config
+  files:
+    - config.yaml=dnscollector-config.yaml
 
 images:
 - name: ghcr.io/datum-cloud/dns-operator

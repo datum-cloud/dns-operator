@@ -27,6 +27,10 @@ remote_logging:
       transport: tcp
       address: "127.0.0.1:6000"
       connection_count: 2
+    - name: vector_remote_logging
+      transport: tcp
+      address: "127.0.0.1:6001"
+      connection_count: 2
 
 query_rules:
   - name: "log all queries"
@@ -36,6 +40,13 @@ query_rules:
       type: DnstapLog
       identity: dnsdist_v2
       logger_name: remote_logging
+  - name: "log all queries to vector"
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist_v2
+      logger_name: vector_remote_logging
 
   - name: "default rule"
     selector:
@@ -52,6 +63,13 @@ response_rules:
       type: DnstapLog
       identity: dnsdist_v2
       logger_name: remote_logging
+  - name: log all responses to vector
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist_v2
+      logger_name: vector_remote_logging
 
 cache_hit_response_rules:
   - name: log all responses from cache
@@ -61,3 +79,10 @@ cache_hit_response_rules:
       type: DnstapLog
       identity: dnsdist_v2_cache
       logger_name: remote_logging
+  - name: log all responses from cache to vector
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist_v2_cache
+      logger_name: vector_remote_logging

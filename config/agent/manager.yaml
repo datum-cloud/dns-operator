@@ -269,6 +269,31 @@ spec:
             drop:
               - "ALL"
 
+      - name: vector
+        image: timberio/vector:0.51.1-distroless-static
+        args:
+          - --log-format=json
+          - --verbose
+          - --watch-config
+          - --config-dir
+          - /etc/vector/
+        volumeMounts:
+          - name: vector-config
+            mountPath: /etc/vector/vector-config.yaml
+            subPath: vector-config.yaml
+          - name: vector-config-volume
+            mountPath: /etc/vector
+        ports:
+          - containerPort: 9598
+            name: vector-metrics
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
       volumes:
       - name: server-config
         configMap:
@@ -287,5 +312,10 @@ spec:
       - name: dnscollector-config
         configMap:
           name: dnscollector-config
+      - name: vector-config
+        configMap:
+          name: vector-config
+      - name: vector-config-volume
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

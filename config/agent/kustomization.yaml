@@ -27,6 +27,9 @@ configMapGenerator:
 - name: dnscollector-config
   files:
     - config.yaml=dnscollector-config.yaml
+- name: vector-config
+  files:
+    - vector-config.yaml
 
 images:
 - name: ghcr.io/datum-cloud/dns-operator

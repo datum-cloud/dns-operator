@@ -1,0 +1,105 @@
+data_dir: /var/lib/vector
+
+api:
+  enabled: false
+
+sources:
+  dnstap_tcp:
+    type: dnstap
+    address: 0.0.0.0:6001
+    mode: tcp
+  internal_metrics:
+    type: internal_metrics
+
+transforms:
+  dnstap_enriched:
+    type: remap
+    inputs:
+      - dnstap_tcp
+    source: |
+      .message_type = to_string(.messageType) ?? to_string(.message_type) ?? "unknown"
+      .proto = to_string(.socketProtocol) ?? to_string(.protocol) ?? "unknown"
+      .family = to_string(.socketFamily) ?? to_string(.network_family) ?? "unknown"
+      .opcode = to_string(.requestData.header.opcode) ?? to_string(.responseData.header.opcode) ?? to_string(.opcode) ?? "unknown"
+      .rcode = to_string(.responseData.rcodeName) ?? to_string(.response_code) ?? to_string(.responseData.header.rcode) ?? "unknown"
+      .server_id = to_string(.serverId) ?? "unknown"
+      .qname = to_string(.question[0].domainName) ?? to_string(.query_name) ?? "unknown"
+      .qtype = to_string(.question[0].questionType) ?? to_string(.question[0].questionTypeId) ?? to_string(.query_type) ?? "unknown"
+      .hit = 1
+      if exists(.requestData.time) && exists(.time) {
+        req, err_req = to_int(.requestData.time)
+        resp, err_resp = to_int(.time)
+        if !is_null(err_req) { req = null }
+        if !is_null(err_resp) { resp = null }
+        if is_integer(req) && is_integer(resp) {
+          diff = to_int!(resp) - to_int!(req)
+          if diff >= 0 {
+            .latency_ns = diff
+            .latency_seconds = to_float(.latency_ns) / 1000000000.0
+          }
+        }
+      }
+
+  dnstap_metrics:
+    type: log_to_metric
+    inputs:
+      - dnstap_enriched
+    metrics:
+      - type: counter
+        name: dns_queries_total
+        field: hit
+        condition: '.message_type == "ClientQuery"'
+        tags:
+          family: "{{family}}"
+          proto: "{{proto}}"
+          opcode: "{{opcode}}"
+          qtype: "{{qtype}}"
+      - type: counter
+        name: dns_responses_total
+        field: hit
+        condition: '.message_type == "ClientResponse"'
+        tags:
+          family: "{{family}}"
+          proto: "{{proto}}"
+          rcode: "{{rcode}}"
+          server: "{{server_id}}"
+      - type: counter
+        name: dns_nxdomain_total
+        field: hit
+        condition: '.message_type == "ClientResponse" && .rcode == "NXDomain"'
+        tags:
+          proto: "{{proto}}"
+          server: "{{server_id}}"
+      - type: counter
+        name: dns_servfail_total
+        field: hit
+        condition: '.message_type == "ClientResponse" && .rcode == "ServFail"'
+        tags:
+          proto: "{{proto}}"
+          server: "{{server_id}}"
+      - type: histogram
+        name: dns_response_latency_seconds
+        field: latency_seconds
+        condition: '.message_type == "ClientResponse" && exists(.latency_seconds)'
+        bins: [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5]
+        tags:
+          proto: "{{proto}}"
+          qtype: "{{qtype}}"
+          rcode: "{{rcode}}"
+          server: "{{server_id}}"
+
+sinks:
+  console:
+    type: console
+    target: stdout
+    encoding:
+      codec: json
+    inputs:
+      - dnstap_tcp
+
+  prometheus:
+    type: prometheus_exporter
+    inputs:
+      - dnstap_metrics
+      - internal_metrics
+    address: 0.0.0.0:9598

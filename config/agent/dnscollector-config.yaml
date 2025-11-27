@@ -19,14 +19,18 @@ global:
     interval-monitor: 10
     buffer-size: 8192
   telemetry:
-    enabled: false
+    enabled: true
     web-path: "/metrics"
     web-listen: ":9165"
     prometheus-prefix: "dnscollector_exporter"
+
+    # Optional TLS configuration
     tls-support: false
     tls-cert-file: ""
     tls-key-file: ""
     client-ca-file: ""
+
+    # Optional authentication
     basic-auth-enable: false
     basic-auth-login: admin
     basic-auth-pwd: changeme
@@ -46,10 +50,70 @@ pipelines:
       normalize:
         qname-lowercase: true
         qname-replace-nonprintable: true
+      latency:
+        measure-latency: true
     routing-policy:
-      forward: [ console ]
+      forward: [ console, prometheus, loki ]
       dropped: [ ]
 
   - name: console
     stdout:
       mode: text
+
+  - name: prometheus
+    prometheus:
+      listen-ip: 0.0.0.0
+      listen-port: 8084
+      basic-auth-enable: false
+      basic-auth-login: admin
+      basic-auth-pwd: changeme
+      tls-support: false
+      tls-mutual: false
+      tls-min-version: 1.2
+      cert-file: ""
+      key-file: ""
+      prometheus-prefix: "dnscollector"
+      top-n: 10
+      chan-buffer-size: 0
+      histogram-metrics-enabled: true
+      requesters-metrics-enabled: true
+      domains-metrics-enabled: true
+      noerror-metrics-enabled: true
+      servfail-metrics-enabled: true
+      nonexistent-metrics-enabled: true
+      timeout-metrics-enabled: true
+      prometheus-labels: ["stream_id"]
+      requesters-cache-size: 250000
+      requesters-cache-ttl: 3600
+      domains-cache-size: 500000
+      domains-cache-ttl: 3600
+      noerror-domains-cache-size: 100000
+      noerror-domains-cache-ttl: 3600
+      servfail-domains-cache-size: 10000
+      servfail-domains-cache-ttl: 3600
+      nonexistent-domains-cache-size: 10000
+      nonexistent-domains-cache-ttl: 3600
+      default-domains-cache-size: 1000
+      default-domains-cache-ttl: 3600
+
+  - name: loki
+    lokiclient:
+      server-url: "http://loki.dns-monitoring.svc:3100/loki/api/v1/push"
+      job-name: "dnscollector"
+      mode: "text"
+      flush-interval: 5
+      batch-size: 1048576
+      retry-interval: 10
+      text-format: ""
+      proxy-url: ""
+      tls-insecure: false
+      tls-min-version: 1.2
+      ca-file: ""
+      cert-file: ""
+      key-file: ""
+      basic-auth-login: ""
+      basic-auth-pwd: ""
+      basic-auth-pwd-file: ""
+      tenant-id: ""
+      relabel-configs: []
+      chan-buffer-size: 0

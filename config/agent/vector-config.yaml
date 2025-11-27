@@ -103,3 +103,20 @@ sinks:
       - dnstap_metrics
       - internal_metrics
     address: 0.0.0.0:9598
+
+  loki:
+    type: loki
+    inputs:
+      - dnstap_enriched
+    endpoint: http://loki.dns-monitoring.svc:3100
+    out_of_order_action: accept
+    encoding:
+      codec: json
+    labels:
+      job: dnsdist
+      app: dnsdist
+      component: vector
+      server: "{{server_id}}"
+      proto: "{{proto}}"
+      family: "{{family}}"
+      message_type: "{{message_type}}"

@@ -1,3 +1,13 @@
+webserver:
+  listen_address: 0.0.0.0:8083
+  password: ""
+  api_key: ""
+  acl:
+    - 0.0.0.0/0
+  api_requires_authentication: false
+  stats_require_authentication: false
+  dashboard_requires_authentication: false
+
 acl:
   - 0.0.0.0/0
 

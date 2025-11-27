@@ -258,6 +258,16 @@ spec:
         image: dmachard/dnscollector:latest
         imagePullPolicy: IfNotPresent
         args: ["-config", "/etc/dnscollector/config.yaml"]
+        ports:
+          - containerPort: 6000
+            name: dnstap
+            protocol: TCP
+          - containerPort: 9165
+            name: dnscolt-metrics
+            protocol: TCP
+          - containerPort: 8084
+            name: dnscol-metrics
+            protocol: TCP
         volumeMounts:
           - name: dnscollector-config
             mountPath: /etc/dnscollector

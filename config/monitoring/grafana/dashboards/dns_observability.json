@@ -1,0 +1,153 @@
+{
+  "id": null,
+  "title": "DNS Observability",
+  "tags": ["dnsdist", "vector", "dnscollector"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "DNS Queries per Second",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (proto) (rate(dns_queries_total{job=\"vector\"}[1m])) or on() vector(0)",
+          "legendFormat": "{{proto}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "showLegend": true }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Responses by RCODE",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (rcode) (rate(dns_responses_total{job=\"vector\"}[5m])) or on() vector(0)",
+          "legendFormat": "{{rcode}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "showLegend": true }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "NXDOMAIN / SERVFAIL rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(dns_nxdomain_total{job=\"vector\"}[5m])) or on() vector(0)",
+          "legendFormat": "nxdomain",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(dns_servfail_total{job=\"vector\"}[5m])) or on() vector(0)",
+          "legendFormat": "servfail",
+          "refId": "B"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Latency (p50/p95/p99)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.50, sum(rate(dns_response_latency_seconds_bucket{job=\"vector\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(dns_response_latency_seconds_bucket{job=\"vector\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(dns_response_latency_seconds_bucket{job=\"vector\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 8 }
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "DNS Logs (Loki)",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{app=\"dnsdist\"} | json",
+          "refId": "A"
+        }
+      ],
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 14 }
+    }
+  ]
+}

@@ -469,7 +469,7 @@ set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
 rm -f $(1) ;\
-GOBIN=$(LOCALBIN) go install $${package} ;\
+CGO_ENABLED=0 GOOS=$$(go env GOOS) GOARCH=$$(go env GOARCH) GOBIN=$(LOCALBIN) go install $${package} ;\
 mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $$(realpath $(1)-$(3)) $(1)

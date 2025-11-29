@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+
+  - job_name: dnsdist
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - pdns-auth.dns-agent-system.svc:8083
+        labels:
+          app: dnsdist
+
+  - job_name: dnscollector_exporter
+    metrics_path: /metrics
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - pdns-auth.dns-agent-system.svc:9165
+        labels:
+          app: dnscollector_exporter
+
+  - job_name: dnscollector
+    metrics_path: /metrics
+    scrape_interval: 5s
+    static_configs:
+      - targets:
+          - pdns-auth.dns-agent-system.svc:8084
+        labels:
+          app: dnscollector
+
+  - job_name: vector
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - pdns-auth.dns-agent-system.svc:9598
+        labels:
+          app: vector

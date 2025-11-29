@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: dns-observability
+    orgId: 1
+    folder: DNS
+    type: file
+    disableDeletion: true
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

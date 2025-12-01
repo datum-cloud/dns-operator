@@ -132,19 +132,18 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
-	// Mirror downstream Programmed condition into upstream, if present
-	var downstreamProg *metav1.Condition
-	if md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream); mdErr == nil {
-		var shadow dnsv1alpha1.DNSRecordSet
-		if getErr := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); getErr == nil {
-			if c := apimeta.FindStatusCondition(shadow.Status.Conditions, CondProgrammed); c != nil {
-				downstreamProg = c.DeepCopy()
-			}
-		}
+	// Mirror downstream status (conditions + records) when the shadow exists
+	md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream)
+	if mdErr != nil {
+		return ctrl.Result{}, mdErr
+	}
+	var shadow dnsv1alpha1.DNSRecordSet
+	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	// Update upstream status: Accepted here; Programmed mirrored from downstream
-	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, true, zoneMsg, downstreamProg); err != nil {
+	// Update upstream status by mirroring downstream when present
+	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, shadow.Status.DeepCopy()); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
 		}
@@ -240,73 +239,23 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 }
 
 // updateStatus sets Accepted locally and mirrors the Programmed condition from downstream when provided.
-func (r *DNSRecordSetReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSRecordSet, accepted bool, zoneMsg string, downstreamProg *metav1.Condition) error {
-	base := upstream.DeepCopy()
-	changed := false
-
-	// Accepted condition
-	if accepted {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondAccepted,
-			Status:             metav1.ConditionTrue,
-			Reason:             ReasonAccepted,
-			Message:            zoneMsg,
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-	} else {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondAccepted,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonPending,
-			Message:            zoneMsg,
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-	}
-
-	// Programmed condition: mirror downstream when available; else mark pending
-	if downstreamProg != nil {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondProgrammed,
-			Status:             downstreamProg.Status,
-			Reason:             downstreamProg.Reason,
-			Message:            downstreamProg.Message,
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-	} else {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondProgrammed,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonPending,
-			Message:            "Awaiting downstream controller",
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-
-	}
-
-	if !changed {
+func (r *DNSRecordSetReplicator) updateStatus(
+	ctx context.Context,
+	c client.Client,
+	upstream *dnsv1alpha1.DNSRecordSet,
+	downstreamStatus *dnsv1alpha1.DNSRecordSetStatus,
+) error {
+	if downstreamStatus == nil {
 		return nil
 	}
-	if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-		return err
+
+	if equality.Semantic.DeepEqual(upstream.Status, *downstreamStatus) {
+		return nil
 	}
 
-	log.FromContext(ctx).Info("upstream recordset status updated",
-		"accepted", apimeta.IsStatusConditionTrue(upstream.Status.Conditions, CondAccepted),
-		"programmed", apimeta.IsStatusConditionTrue(upstream.Status.Conditions, CondProgrammed),
-	)
-	return nil
+	base := upstream.DeepCopy()
+	upstream.Status = *downstreamStatus
+	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
 }
 
 // ---- Watches / mapping helpers -------------------------

@@ -83,11 +83,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	}
 
 	// Gate on referenced DNSZone early and update status when missing
-	var zoneMsg string
 	var zone dnsv1alpha1.DNSZone
 	if err := upstreamCluster.GetClient().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
-			zoneMsg = fmt.Sprintf("DNSZone %q not found", upstream.Spec.DNSZoneRef.Name)
+			zoneMsg := fmt.Sprintf("DNSZone %q not found", upstream.Spec.DNSZoneRef.Name)
 			if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
 				Type:               CondAccepted,
 				Status:             metav1.ConditionFalse,
@@ -105,8 +104,6 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
-	} else {
-		zoneMsg = fmt.Sprintf("DNSZone %q exists", upstream.Spec.DNSZoneRef.Name)
 	}
 
 	// If the zone is being deleted, do not program downstream recordset

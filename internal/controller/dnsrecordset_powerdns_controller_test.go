@@ -19,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const ns = "default"
+
 type fakePDNSClient struct {
 	replaceCalls []replaceCall
 	deleteCalls  []deleteCall
@@ -81,19 +83,19 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-func newZoneAndClass(namespace, zoneName, controllerName string) (*dnsv1alpha1.DNSZone, *dnsv1alpha1.DNSZoneClass) {
+func newZoneAndClass(zoneName string) (*dnsv1alpha1.DNSZone, *dnsv1alpha1.DNSZoneClass) {
 	zc := &dnsv1alpha1.DNSZoneClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pdns-class",
 		},
 		Spec: dnsv1alpha1.DNSZoneClassSpec{
-			ControllerName: controllerName,
+			ControllerName: controller.ControllerNamePowerDNS,
 		},
 	}
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      zoneName,
-			Namespace: namespace,
+			Namespace: "default",
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{
 			DomainName:       "example.com",
@@ -104,14 +106,12 @@ func newZoneAndClass(namespace, zoneName, controllerName string) (*dnsv1alpha1.D
 }
 
 // helper to make a simple A record DNSRecordSet with a single owner name/value
-func newARecordSet(
-	namespace, name, zoneName, ownerName, value string,
-) *dnsv1alpha1.DNSRecordSet {
+func newARecordSet(name, zoneName, ownerName, value string) *dnsv1alpha1.DNSRecordSet {
 	ttl := int64(300)
 	return &dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
-			Namespace: namespace,
+			Namespace: "default",
 			// CreationTimestamp is zero; name ordering will decide owner when equal
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -174,12 +174,11 @@ func TestReconcile_SingleOwner_Success(t *testing.T) {
 	t.Parallel()
 
 	scheme := newScheme(t)
-	ns := "default"
-	zoneName := "my-zone"
-	ownerName := "www"
+	zoneName := "my-zone-a"
+	ownerName := "@"
 
-	zone, zc := newZoneAndClass(ns, zoneName, controller.ControllerNamePowerDNS)
-	rs := newARecordSet(ns, "rs-1", zoneName, ownerName, "1.2.3.4")
+	zone, zc := newZoneAndClass(zoneName)
+	rs := newARecordSet("rs-1", zoneName, ownerName, "1.2.3.4")
 
 	pdns := &fakePDNSClient{}
 	cl := newFakeClient(t, scheme, zone, zc, rs)
@@ -206,7 +205,7 @@ func TestReconcile_SingleOwner_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.Requeue {
+	if res.RequeueAfter > 0 {
 		t.Fatalf("expected no requeue, got %+v", res)
 	}
 
@@ -258,12 +257,11 @@ func TestReconcile_SingleOwner_PDNSError(t *testing.T) {
 	t.Parallel()
 
 	scheme := newScheme(t)
-	ns := "default"
-	zoneName := "my-zone"
+	zoneName := "my-zone-b"
 	ownerName := "www"
 
-	zone, zc := newZoneAndClass(ns, zoneName, controller.ControllerNamePowerDNS)
-	rs := newARecordSet(ns, "rs-1", zoneName, ownerName, "1.2.3.4")
+	zone, zc := newZoneAndClass(zoneName)
+	rs := newARecordSet("rs-1", zoneName, ownerName, "1.2.3.4")
 
 	pdns := &fakePDNSClient{
 		replaceErr: errors.New("boom"),
@@ -329,13 +327,12 @@ func TestReconcile_StatusCleanup_WhenOwnerRemoved(t *testing.T) {
 	t.Parallel()
 
 	scheme := newScheme(t)
-	ns := "default"
-	zoneName := "my-zone"
+	zoneName := "my-zone-c"
 
-	zone, zc := newZoneAndClass(ns, zoneName, controller.ControllerNamePowerDNS)
+	zone, zc := newZoneAndClass(zoneName)
 
 	// RecordSet had a record "old", but spec no longer has it; status still has it => stale.
-	rs := newARecordSet(ns, "rs-1", zoneName, "new", "1.2.3.4")
+	rs := newARecordSet("rs-1", zoneName, "new", "1.2.3.4")
 	rs.Status.RecordSets = []dnsv1alpha1.RecordSetStatus{
 		{
 			Name: "old",
@@ -406,14 +403,13 @@ func TestReconcile_OwnerConflict_NotOwnerCondition(t *testing.T) {
 	t.Parallel()
 
 	scheme := newScheme(t)
-	ns := "default"
 	zoneName := "my-zone"
 	ownerName := "www"
 
-	zone, zc := newZoneAndClass(ns, zoneName, controller.ControllerNamePowerDNS)
+	zone, zc := newZoneAndClass(zoneName)
 
-	rsOwner := newARecordSet(ns, "aaa-owner", zoneName, ownerName, "1.2.3.4")
-	rsOther := newARecordSet(ns, "zzz-other", zoneName, ownerName, "5.6.7.8")
+	rsOwner := newARecordSet("aaa-owner", zoneName, ownerName, "1.2.3.4")
+	rsOther := newARecordSet("zzz-other", zoneName, ownerName, "5.6.7.8")
 
 	// Make timestamps identical so name ordering decides owner ("aaa-owner" < "zzz-other")
 	now := metav1.NewTime(time.Now())
@@ -500,11 +496,10 @@ func TestReconcile_OwnerWithNoRecords_DeletesRRSet(t *testing.T) {
 	t.Parallel()
 
 	scheme := newScheme(t)
-	ns := "default"
 	zoneName := "my-zone"
 	ownerName := "empty"
 
-	zone, zc := newZoneAndClass(ns, zoneName, controller.ControllerNamePowerDNS)
+	zone, zc := newZoneAndClass(zoneName)
 
 	// RecordSet that owns "empty" but has no usable A record content.
 	ttl := int64(300)

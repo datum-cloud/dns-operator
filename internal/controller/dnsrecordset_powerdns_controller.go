@@ -119,10 +119,9 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 	}
 
 	var pdnsErr error
-	switch {
-	case owner == nil:
+	if owner == nil {
 		pdnsErr = r.PDNS.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
-	default:
+	} else {
 		entries := filterRecordEntries(owner, req.RecordSetName)
 		payload, ok := pdnsclient.BuildOwnerRRSet(zone.Spec.DomainName, dnsv1alpha1.RRType(req.RecordSetType), req.RecordSetName, entries)
 		if !ok || len(payload.Records) == 0 {

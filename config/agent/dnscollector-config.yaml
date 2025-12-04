@@ -48,17 +48,62 @@ pipelines:
       listen-port: 6000
     transforms:
       normalize:
+        enable: true
         qname-lowercase: true
+        rr-lowercase: true
         qname-replace-nonprintable: true
+        add-tld: true
+        add-tld-plus-one: true
+        quiet-text: false
+      reordering:
+        enable: true
+        flush-interval: 30
+        max-buffer-size: 100
+      suspicious:
+        enable: true
+        threshold-qname-len: 100
+        threshold-packet-len: 1000
+        threshold-slow: 1.0
+        common-qtypes:
+          - A
+          - AAAA
+          - TXT
+          - CNAME
+          - PTR
+          - NAPTR
+          - DNSKEY
+          - SRV
+          - SOA
+          - NS
+          - MX
+          - DS
+          - HTTPS
+        unallowed-chars:
+          - '"'
+          - '=='
+          - '/'
+          - ':'
+        threshold-max-labels: 10
+        whitelist-domains:
+          - '\.ip6\.arpa'
       latency:
+        enable: true
         measure-latency: true
+        unanswered-queries: true
+        queries-timeout: 2
+      geoip:
+        enable: true
+        mmdb-country-file: /mmdb/GeoLite2-Country.mmdb
+        mmdb-city-file: /mmdb/GeoLite2-City.mmdb
+        mmdb-asn-file: /mmdb/GeoLite2-ASN.mmdb
+        lookup-ecs: true
     routing-policy:
       forward: [ console, prometheus, loki ]
       dropped: [ ]
 
   - name: console
     stdout:
-      mode: text
+      mode: json
 
   - name: prometheus
     prometheus:
@@ -100,7 +145,7 @@ pipelines:
     lokiclient:
       server-url: "http://loki.dns-monitoring.svc:3100/loki/api/v1/push"
       job-name: "dnscollector"
-      mode: "text"
+      mode: "json"
       flush-interval: 5
       batch-size: 1048576
       retry-interval: 10

@@ -10,11 +10,6 @@ global:
     max-size: 10
     max-backups: 10
   server-identity: "dns-collector"
-  pid-file: ""
-  text-format: "timestamp-rfc3339ns identity operation rcode queryip queryport family protocol length-unit qname qtype latency"
-  text-format-delimiter: " "
-  text-format-boundary: "\""
-  text-jinja: ""
   worker:
     interval-monitor: 10
     buffer-size: 8192
@@ -91,74 +86,24 @@ pipelines:
         measure-latency: true
         unanswered-queries: true
         queries-timeout: 2
-      geoip:
-        enable: true
-        mmdb-country-file: /mmdb/GeoLite2-Country.mmdb
-        mmdb-city-file: /mmdb/GeoLite2-City.mmdb
-        mmdb-asn-file: /mmdb/GeoLite2-ASN.mmdb
-        lookup-ecs: true
     routing-policy:
-      forward: [ console, prometheus, loki ]
+      forward: [ vector ]
       dropped: [ ]
 
-  - name: console
-    stdout:
-      mode: json
-
-  - name: prometheus
-    prometheus:
-      listen-ip: 0.0.0.0
-      listen-port: 8084
-      basic-auth-enable: false
-      basic-auth-login: admin
-      basic-auth-pwd: changeme
-      tls-support: false
-      tls-mutual: false
-      tls-min-version: 1.2
-      cert-file: ""
-      key-file: ""
-      prometheus-prefix: "dnscollector"
-      top-n: 10
-      chan-buffer-size: 0
-      histogram-metrics-enabled: true
-      requesters-metrics-enabled: true
-      domains-metrics-enabled: true
-      noerror-metrics-enabled: true
-      servfail-metrics-enabled: true
-      nonexistent-metrics-enabled: true
-      timeout-metrics-enabled: true
-      prometheus-labels: ["stream_id"]
-      requesters-cache-size: 250000
-      requesters-cache-ttl: 3600
-      domains-cache-size: 500000
-      domains-cache-ttl: 3600
-      noerror-domains-cache-size: 100000
-      noerror-domains-cache-ttl: 3600
-      servfail-domains-cache-size: 10000
-      servfail-domains-cache-ttl: 3600
-      nonexistent-domains-cache-size: 10000
-      nonexistent-domains-cache-ttl: 3600
-      default-domains-cache-size: 1000
-      default-domains-cache-ttl: 3600
-
-  - name: loki
-    lokiclient:
-      server-url: "http://loki.dns-monitoring.svc:3100/loki/api/v1/push"
-      job-name: "dnscollector"
-      mode: "json"
-      flush-interval: 5
-      batch-size: 1048576
+  - name: vector
+    tcpclient:
+      transport: tcp
+      remote-address: 127.0.0.1
+      remote-port: 6001
+      connect-timeout: 5
       retry-interval: 10
-      text-format: ""
-      proxy-url: ""
+      flush-interval: 30
       tls-insecure: false
       tls-min-version: 1.2
       ca-file: ""
       cert-file: ""
       key-file: ""
-      basic-auth-login: ""
-      basic-auth-pwd: ""
-      basic-auth-pwd-file: ""
-      tenant-id: ""
-      relabel-configs: []
+      mode: json
+      text-format: ""
+      buffer-size: 100
       chan-buffer-size: 0

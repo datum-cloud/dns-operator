@@ -5,9 +5,11 @@ api:
 
 sources:
   dnstap_tcp:
-    type: dnstap
+    type: socket
     address: 0.0.0.0:6001
     mode: tcp
+    decoding:
+      codec: json
   internal_metrics:
     type: internal_metrics
 
@@ -17,28 +19,35 @@ transforms:
     inputs:
       - dnstap_tcp
     source: |
-      .message_type = to_string(.messageType) ?? to_string(.message_type) ?? "unknown"
-      .proto = to_string(.socketProtocol) ?? to_string(.protocol) ?? "unknown"
-      .family = to_string(.socketFamily) ?? to_string(.network_family) ?? "unknown"
-      .opcode = to_string(.requestData.header.opcode) ?? to_string(.responseData.header.opcode) ?? to_string(.opcode) ?? "unknown"
-      .rcode = to_string(.responseData.rcodeName) ?? to_string(.response_code) ?? to_string(.responseData.header.rcode) ?? "unknown"
-      .server_id = to_string(.serverId) ?? "unknown"
-      .qname = to_string(.question[0].domainName) ?? to_string(.query_name) ?? "unknown"
-      .qtype = to_string(.question[0].questionType) ?? to_string(.question[0].questionTypeId) ?? to_string(.query_type) ?? "unknown"
+      # Reuse dns-collector enrichment; only normalize for metrics
+      .message_type = upcase(to_string(.dnstap.operation) ?? "UNKNOWN")
+      .server_id = to_string(.dnstap.identity) ?? "unknown"
+      .stream_id = .server_id
+      .proto = to_string(.network.protocol) ?? "unknown"
+      .family = to_string(.network.family) ?? "unknown"
+      .opcode = to_string(.dns.opcode) ?? "unknown"
+      .qname = downcase(to_string(.dns.qname) ?? "unknown")
+      .qtype = to_string(.dns.qtype) ?? "unknown"
+      .rcode = upcase(to_string(.dns.rcode) ?? "UNKNOWN")
+      .zone = downcase(to_string(.publicsuffix."etld+1") ?? .qname)
       .hit = 1
-      if exists(.requestData.time) && exists(.time) {
-        req, err_req = to_int(.requestData.time)
-        resp, err_resp = to_int(.time)
-        if !is_null(err_req) { req = null }
-        if !is_null(err_resp) { resp = null }
-        if is_integer(req) && is_integer(resp) {
-          diff = to_int!(resp) - to_int!(req)
-          if diff >= 0 {
-            .latency_ns = diff
-            .latency_seconds = to_float(.latency_ns) / 1000000000.0
-          }
+
+      if exists(.dnstap.latency) {
+        lat, err = to_float(.dnstap.latency)
+        if err == null {
+          .latency_seconds = lat
         }
       }
+
+      # Cache heuristic: dnsdist identity naming (e.g., *_cache)
+      .cache_hit = contains(.server_id, "_cache")
+
+      # DNSSEC status via AD bit and SERVFAIL heuristic
+      ad = to_bool(.dns.flags.ad) ?? false
+      status = "insecure"
+      if ad { status = "secure" }
+      if .rcode == "SERVFAIL" { status = "bogus" }
+      .dnssec_status = status
 
   dnstap_metrics:
     type: log_to_metric
@@ -48,45 +57,74 @@ transforms:
       - type: counter
         name: dns_queries_total
         field: hit
-        condition: '.message_type == "ClientQuery"'
+        condition: '.message_type == "CLIENT_QUERY"'
         tags:
           family: "{{family}}"
           proto: "{{proto}}"
           opcode: "{{opcode}}"
           qtype: "{{qtype}}"
+          zone: "{{zone}}"
+          server: "{{server_id}}"
+          stream: "{{stream_id}}"
       - type: counter
         name: dns_responses_total
         field: hit
-        condition: '.message_type == "ClientResponse"'
+        condition: '.message_type == "CLIENT_RESPONSE"'
         tags:
           family: "{{family}}"
           proto: "{{proto}}"
+          qtype: "{{qtype}}"
           rcode: "{{rcode}}"
           server: "{{server_id}}"
+          zone: "{{zone}}"
+          stream: "{{stream_id}}"
       - type: counter
-        name: dns_nxdomain_total
+        name: dns_cache_hits_total
         field: hit
-        condition: '.message_type == "ClientResponse" && .rcode == "NXDomain"'
+        condition: '.message_type == "CLIENT_RESPONSE" && .cache_hit == true'
         tags:
           proto: "{{proto}}"
           server: "{{server_id}}"
+          zone: "{{zone}}"
+          qtype: "{{qtype}}"
+      - type: counter
+        name: dns_dnssec_status_total
+        field: hit
+        condition: '.message_type == "CLIENT_RESPONSE"'
+        tags:
+          proto: "{{proto}}"
+          server: "{{server_id}}"
+          zone: "{{zone}}"
+          dnssec_status: "{{dnssec_status}}"
       - type: counter
         name: dns_servfail_total
         field: hit
-        condition: '.message_type == "ClientResponse" && .rcode == "ServFail"'
+        condition: '.message_type == "CLIENT_RESPONSE" && .rcode == "SERVFAIL"'
         tags:
           proto: "{{proto}}"
           server: "{{server_id}}"
+          zone: "{{zone}}"
+          qtype: "{{qtype}}"
+      - type: counter
+        name: dns_nxdomain_total
+        field: hit
+        condition: '.message_type == "CLIENT_RESPONSE" && .rcode == "NXDOMAIN"'
+        tags:
+          proto: "{{proto}}"
+          server: "{{server_id}}"
+          zone: "{{zone}}"
+          qtype: "{{qtype}}"
       - type: histogram
         name: dns_response_latency_seconds
         field: latency_seconds
-        condition: '.message_type == "ClientResponse" && exists(.latency_seconds)'
+        condition: '.message_type == "CLIENT_RESPONSE" && exists(.latency_seconds)'
         bins: [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5]
         tags:
           proto: "{{proto}}"
           qtype: "{{qtype}}"
           rcode: "{{rcode}}"
           server: "{{server_id}}"
+          zone: "{{zone}}"
 
 sinks:
   console:
@@ -107,7 +145,7 @@ sinks:
   loki:
     type: loki
     inputs:
-      - dnstap_enriched
+      - dnstap_tcp
     endpoint: http://loki.dns-monitoring.svc:3100
     out_of_order_action: accept
     encoding:

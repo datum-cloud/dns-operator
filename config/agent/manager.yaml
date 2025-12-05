@@ -69,30 +69,6 @@ spec:
             mountPath: /lmdb
           - name: pdns-shared
             mountPath: /run/pdns
-      - name: init-geoip-data
-        image: ghcr.io/maxmind/geoipupdate:v7.1.1
-        imagePullPolicy: IfNotPresent
-        env:
-          - name: GEOIPUPDATE_DB_DIR
-            value: /mmdb
-          - name: GEOIPUPDATE_EDITION_IDS
-            value: GeoLite2-ASN GeoLite2-City GeoLite2-Country
-          - name: GEOIPUPDATE_ACCOUNT_ID
-            valueFrom:
-              secretKeyRef:
-                name: geoip-credentials
-                key: account_id
-          - name: GEOIPUPDATE_LICENSE_KEY
-            valueFrom:
-              secretKeyRef:
-                name: geoip-credentials
-                key: license_key
-        securityContext:
-          runAsUser: 0
-          runAsGroup: 0
-        volumeMounts:
-          - name: dnscollector-mmdb
-            mountPath: /mmdb
       containers:
       - command:
         - /manager
@@ -296,9 +272,6 @@ spec:
           - name: dnscollector-config
             mountPath: /etc/dnscollector
             readOnly: true
-          - name: dnscollector-mmdb
-            mountPath: /mmdb
-            readOnly: true
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -349,8 +322,6 @@ spec:
       - name: dnscollector-config
         configMap:
           name: dnscollector-config
-      - name: dnscollector-mmdb
-        emptyDir: {}
       - name: vector-config
         configMap:
           name: vector-config

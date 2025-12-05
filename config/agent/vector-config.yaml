@@ -151,8 +151,8 @@ sinks:
     encoding:
       codec: json
     labels:
-      job: dnsdist
-      app: dnsdist
+      job: vector
+      app: vector
       component: vector
       server: "{{server_id}}"
       proto: "{{proto}}"

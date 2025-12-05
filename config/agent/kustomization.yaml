@@ -31,12 +31,6 @@ configMapGenerator:
   files:
     - vector-config.yaml
 
-secretGenerator:
-  - name: geoip-credentials
-    literals:
-      - account_id=changeme
-      - license_key=changeme
-
 images:
 - name: ghcr.io/datum-cloud/dns-operator
   newName: ghcr.io/datum-cloud/dns-operator

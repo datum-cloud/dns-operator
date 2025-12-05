@@ -14,10 +14,7 @@ configMapGenerator:
       - dashboards/dashboards.yaml
   - name: grafana-dashboards
     files:
-      - dashboards/dns_observability.json
-      - dashboards/grafana_exporter.json
-      - dashboards/grafana_loki.json
-      - dashboards/grafana_prometheus.json
+      - dashboards/dns_workbench.json
   - name: grafana-datasources
     files:
       - datasources/datasources.yaml

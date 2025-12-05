@@ -23,10 +23,6 @@ spec:
     targetPort: 8083
     protocol: TCP
   - name: dnscol-metrics
-    port: 8084
-    targetPort: 8084
-    protocol: TCP
-  - name: dnscolt-metrics
     port: 9165
     targetPort: 9165
     protocol: TCP

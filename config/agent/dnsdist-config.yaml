@@ -44,7 +44,7 @@ query_rules:
       type: All
     action:
       type: DnstapLog
-      identity: dnsdist_v2
+      identity: dnsdist
       logger_name: remote_logging
 
   - name: "default rule"
@@ -60,7 +60,7 @@ response_rules:
       type: All
     action:
       type: DnstapLog
-      identity: dnsdist_v2
+      identity: dnsdist
       logger_name: remote_logging
 
 cache_hit_response_rules:
@@ -69,5 +69,5 @@ cache_hit_response_rules:
       type: All
     action:
       type: DnstapLog
-      identity: dnsdist_v2_cache
+      identity: dnsdist_cache
       logger_name: remote_logging

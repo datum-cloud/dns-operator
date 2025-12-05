@@ -263,9 +263,6 @@ spec:
             name: dnstap
             protocol: TCP
           - containerPort: 9165
-            name: dnscolt-metrics
-            protocol: TCP
-          - containerPort: 8084
             name: dnscol-metrics
             protocol: TCP
         volumeMounts:

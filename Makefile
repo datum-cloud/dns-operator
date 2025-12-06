@@ -260,6 +260,8 @@ bootstrap-downstream: ## Create kind downstream and deploy agent with embedded P
 	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/agent-powerdns $(MAKE) kustomize-apply
 	# Export external kubeconfig for downstream cluster (reachable from host/other containers)
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
+	# Install monitoring stack into downstream
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/monitoring $(MAKE) kustomize-apply
 
 .PHONY: bootstrap-upstream
 bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to downstream

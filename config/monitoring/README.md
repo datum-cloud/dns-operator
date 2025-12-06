@@ -39,12 +39,4 @@ patch `PROMETHEUS_URL` and remove the `prometheus` entry from
 The bundled Prometheus scrapes:
 - `dnsdist` at `pdns-auth.dns-agent-system.svc:8083` (`/metrics`)
 - `dnscollector_exporter` at `pdns-auth.dns-agent-system.svc:9165` (`/metrics`)
-- `dnscollector` at `pdns-auth.dns-agent-system.svc:8084` (`/metrics`)
 - `vector` at `pdns-auth.dns-agent-system.svc:9598` (`/metrics`)
-
-## Metrics and logs wiring
-- `config/agent/pdns-service.yaml` exposes metrics ports for dnsdist (8083),
-  dnscollector (9165), and vector (9598).
-- `config/agent/dnscollector-config.yaml` enables the telemetry endpoint.
-- `config/agent/vector-config.yaml` streams enriched dnstap events to Loki at
-  `loki.dns-monitoring.svc:3100`.

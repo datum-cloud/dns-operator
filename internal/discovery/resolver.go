@@ -3,13 +3,24 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/projectdiscovery/dnsx/libs/dnsx"
+	"github.com/projectdiscovery/retryabledns"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
+
+const (
+	discoveryLookupConcurrency = 8
+	discoveryLookupTimeout     = 5 * time.Second
+)
+
+var queryRecordsFunc = queryRecordsForName
 
 // commonDiscoverySubdomains captures a curated list of host/service labels that we want
 // to probe in addition to the zone apex. The goal is to cover the most frequent records
@@ -112,36 +123,64 @@ func DiscoverZoneRecords(ctx context.Context, domain string) ([]dnsv1alpha1.Disc
 	}
 
 	typeToRRs := make(map[uint16][]dns.RR)
+	var mu sync.Mutex
+	mergeResponses := func(rrs map[uint16][]dns.RR) {
+		if len(rrs) == 0 {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for rt, entries := range rrs {
+			typeToRRs[rt] = append(typeToRRs[rt], entries...)
+		}
+	}
 
-	for idx, name := range candidateNames {
-		fmt.Printf("querying multiple record types for fqdn=%q\n", name)
-		resp, err := client.QueryMultiple(name)
-		if err != nil {
-			if idx == 0 {
-				return nil, err
-			}
-			fmt.Printf("skipping fqdn=%q due to query error: %v\n", name, err)
-			continue
+	apexRRs, err := queryRecordsFunc(ctx, candidateNames[0], client, qtypes)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Printf("timed out querying apex fqdn=%q after %s; treating as empty\n", candidateNames[0], discoveryLookupTimeout)
+		} else {
+			return nil, err
 		}
-		if resp == nil {
-			if idx == 0 {
-				return nil, fmt.Errorf("dnsx returned nil response")
-			}
-			fmt.Printf("dnsx returned nil response for fqdn=%q; continuing\n", name)
-			continue
-		}
-		// Print quick summary for debugging
-		fmt.Printf("resolver status=%s answers=%d fqdn=%s types=%v\n", resp.StatusCode, len(resp.AllRecords), name, qtypes)
+	} else {
+		mergeResponses(apexRRs)
+	}
 
-		// Build RRs from textual records since QueryMultiple does not populate RawResp
-		for _, rec := range resp.AllRecords {
-			rr, perr := dns.NewRR(rec)
-			if perr != nil || rr == nil {
-				continue
-			}
-			rt := rr.Header().Rrtype
-			typeToRRs[rt] = append(typeToRRs[rt], rr)
+	if len(candidateNames) > 1 {
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, discoveryLookupConcurrency)
+
+		for _, name := range candidateNames[1:] {
+			name := name
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					fmt.Printf("context canceled before querying fqdn=%q\n", name)
+					return
+				}
+				defer func() { <-sem }()
+
+				rrs, qerr := queryRecordsFunc(ctx, name, client, qtypes)
+				if qerr != nil {
+					switch {
+					case errors.Is(qerr, context.DeadlineExceeded):
+						fmt.Printf("timed out querying fqdn=%q after %s; treating as empty\n", name, discoveryLookupTimeout)
+					case errors.Is(qerr, context.Canceled):
+						fmt.Printf("context canceled before completing lookup for fqdn=%q\n", name)
+					default:
+						fmt.Printf("skipping fqdn=%q due to query error: %v\n", name, qerr)
+					}
+					return
+				}
+				mergeResponses(rrs)
+			}()
 		}
+
+		wg.Wait()
 	}
 
 	typeToEntries := make(map[dnsv1alpha1.RRType][]dnsv1alpha1.RecordEntry)
@@ -197,6 +236,48 @@ func mapQtypeToRRType(qt uint16) (dnsv1alpha1.RRType, bool) {
 		return dnsv1alpha1.RRTypeSVCB, true
 	default:
 		return "", false
+	}
+}
+
+func queryRecordsForName(ctx context.Context, name string, client *dnsx.DNSX, qtypes []uint16) (map[uint16][]dns.RR, error) {
+	fmt.Printf("querying multiple record types for fqdn=%q\n", name)
+
+	type queryResult struct {
+		resp *retryabledns.DNSData
+		err  error
+	}
+
+	resCh := make(chan queryResult, 1)
+	go func() {
+		resp, err := client.QueryMultiple(name)
+		resCh <- queryResult{resp: resp, err: err}
+	}()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, discoveryLookupTimeout)
+	defer cancel()
+
+	select {
+	case <-timeoutCtx.Done():
+		return nil, timeoutCtx.Err()
+	case res := <-resCh:
+		if res.err != nil {
+			return nil, res.err
+		}
+		if res.resp == nil {
+			return nil, fmt.Errorf("dnsx returned nil response")
+		}
+		fmt.Printf("resolver status=%s answers=%d fqdn=%s types=%v\n", res.resp.StatusCode, len(res.resp.AllRecords), name, qtypes)
+
+		typeToRRs := make(map[uint16][]dns.RR)
+		for _, rec := range res.resp.AllRecords {
+			rr, perr := dns.NewRR(rec)
+			if perr != nil || rr == nil {
+				continue
+			}
+			rt := rr.Header().Rrtype
+			typeToRRs[rt] = append(typeToRRs[rt], rr)
+		}
+		return typeToRRs, nil
 	}
 }
 

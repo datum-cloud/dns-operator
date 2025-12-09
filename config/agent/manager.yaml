@@ -127,14 +127,15 @@ spec:
           mountPath: /config
         - name: pdns-shared
           mountPath: /run/pdns
+
       - name: pdns
         image: powerdns/pdns-auth-51:latest
         imagePullPolicy: IfNotPresent
         ports:
-          - containerPort: 53
+          - containerPort: 5300
             name: dns
             protocol: UDP
-          - containerPort: 53
+          - containerPort: 5300
             name: dns-tcp
             protocol: TCP
           - containerPort: 8082
@@ -153,7 +154,10 @@ spec:
           - |
             set -eu;
             exec pdns_server \
-              --api-key="$(cat /run/pdns/api-key)" --api=yes --webserver-port=8082
+              --local-port=5300 \
+              --api-key="$(cat /run/pdns/api-key)" \
+              --api=yes \
+              --webserver-port=8082
         securityContext:
           runAsUser: 953
           runAsGroup: 953
@@ -163,6 +167,7 @@ spec:
             drop:
             - "ALL"
             add: ["NET_BIND_SERVICE"]
+
       - name: lightningstream
         image: powerdns/lightningstream:main
         imagePullPolicy: IfNotPresent
@@ -220,7 +225,82 @@ spec:
             mountPath: /lmdb
           - name: lightningstream-config
             mountPath: /etc/lightningstream      
-      
+
+      - name: dnsdist
+        image: powerdns/dnsdist-21:latest
+        args: ["--config", "/etc/dnsdist/dnsdist.yml"]
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 53
+            name: dnsdist-udp
+            protocol: UDP
+          - containerPort: 53
+            name: dnsdist-tcp
+            protocol: TCP
+          - containerPort: 8083
+            name: dnsdist-metrics
+            protocol: TCP
+        volumeMounts:
+          - name: pdns-shared
+            mountPath: /run/pdns
+          - name: dnsdist-config
+            mountPath: /etc/dnsdist
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - "ALL"
+            add: ["NET_BIND_SERVICE"]
+
+      - name: dnstap-collector
+        image: dmachard/dnscollector:latest
+        imagePullPolicy: IfNotPresent
+        args: ["-config", "/etc/dnscollector/config.yaml"]
+        ports:
+          - containerPort: 6000
+            name: dnstap
+            protocol: TCP
+          - containerPort: 9165
+            name: dnscol-metrics
+            protocol: TCP
+        volumeMounts:
+          - name: dnscollector-config
+            mountPath: /etc/dnscollector
+            readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - "ALL"
+
+      - name: vector
+        image: timberio/vector:0.51.1-distroless-static
+        args:
+          - --log-format=json
+          - --verbose
+          - --watch-config
+          - --config-dir
+          - /etc/vector/
+        volumeMounts:
+          - name: vector-config
+            mountPath: /etc/vector/vector-config.yaml
+            subPath: vector-config.yaml
+          - name: vector-config-volume
+            mountPath: /etc/vector
+        ports:
+          - containerPort: 9598
+            name: vector-metrics
+            protocol: TCP
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
       volumes:
       - name: server-config
         configMap:
@@ -233,5 +313,16 @@ spec:
       - name: pdns-config
         configMap:
           name: pdns-config
+      - name: dnsdist-config
+        configMap:
+          name: dnsdist-config
+      - name: dnscollector-config
+        configMap:
+          name: dnscollector-config
+      - name: vector-config
+        configMap:
+          name: vector-config
+      - name: vector-config-volume
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

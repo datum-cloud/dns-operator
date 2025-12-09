@@ -1,0 +1,73 @@
+webserver:
+  listen_address: 0.0.0.0:8083
+  password: ""
+  api_key: ""
+  acl:
+    - 0.0.0.0/0
+  api_requires_authentication: false
+  stats_require_authentication: false
+  dashboard_requires_authentication: false
+
+acl:
+  - 0.0.0.0/0
+
+binds:
+  - listen_address: "0.0.0.0:53"
+    reuseport: true
+    protocol: Do53
+    threads: 2
+
+packet_caches:
+  - name: cache
+    size: 100
+
+pools:
+  - name: default
+    packet_cache: cache
+
+backends:
+  - address: "127.0.0.1:5300"
+    protocol: Do53
+    pools:
+      - default
+
+remote_logging:
+  dnstap_loggers:
+    - name: remote_logging
+      transport: tcp
+      address: "127.0.0.1:6000"
+      connection_count: 2
+
+query_rules:
+  - name: "log all queries"
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist
+      logger_name: remote_logging
+
+  - name: "default rule"
+    selector:
+      type: All
+    action:
+      type: Pool
+      pool_name: default
+
+response_rules:
+  - name: log all responses
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist
+      logger_name: remote_logging
+
+cache_hit_response_rules:
+  - name: log all responses from cache
+    selector:
+      type: All
+    action:
+      type: DnstapLog
+      identity: dnsdist_cache
+      logger_name: remote_logging

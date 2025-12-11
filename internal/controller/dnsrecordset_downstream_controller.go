@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -21,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 )
 
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
@@ -50,63 +49,24 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// --- Ensure finalizer on creation/update (non-deletion path) ---
-	if rs.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
-		base := rs.DeepCopy()
-		controllerutil.AddFinalizer(&rs, downstreamRSFinalizer)
-		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-			logger.Error(err, "failed to add finalizer", "ns", rs.Namespace, "name", rs.Name)
-			return ctrl.Result{}, err
-		}
-		// After mutating the object, return so we reconcile again with updated state.
-		return ctrl.Result{}, nil
-	}
-
-	// --- Deletion path: MUST clean PDNS before removing finalizer ---
-	if !rs.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
-			// Fetch zone (if absent or empty => nothing to clean; treat as success)
-			var zone dnsv1alpha1.DNSZone
-			err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone)
-			if err != nil {
-				// If the zone is already gone, treat as success: nothing to clean in PDNS
-				if client.IgnoreNotFound(err) == nil {
-					base := rs.DeepCopy()
-					controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)
-					if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-						logger.Error(err, "failed to remove finalizer after zone missing", "ns", rs.Namespace, "name", rs.Name)
-						return ctrl.Result{}, err
-					}
-					return ctrl.Result{}, nil
-				}
-				logger.Error(err, "failed to get zone", "ns", req.Namespace, "name", rs.Spec.DNSZoneRef.Name)
+	// Ensure finalizer is present while not deleting.
+	if rs.DeletionTimestamp.IsZero() {
+		if !controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
+			base := rs.DeepCopy()
+			controllerutil.AddFinalizer(&rs, downstreamRSFinalizer)
+			if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+				logger.Error(err, "failed to add finalizer", "namespace", rs.Namespace, "name", rs.Name)
 				return ctrl.Result{}, err
 			}
-
-			// If the zone is being deleted, skip PDNS cleanup for this recordset
-			if !zone.DeletionTimestamp.IsZero() {
-				// remove our finalizer
-				base := rs.DeepCopy()
-
-				controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)
-				if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-					logger.Error(err, "failed to remove finalizer", "ns", rs.Namespace, "name", rs.Name)
-					return ctrl.Result{}, err
-				}
-
-				// Return early to avoid cleanup PDNS since those records will be deleted by the zone deletion
-				return ctrl.Result{}, nil
-			}
-
-			if err := r.cleanupPDNSForRecordSet(ctx, &rs, &zone); err != nil {
-				return ctrl.Result{}, fmt.Errorf("cleanup failed for zone %q: %w", zone.Spec.DomainName, err)
-			}
-
-			// PDNS cleanup succeeded (or was a no-op) -> remove finalizer (conflict-safe)
+			return ctrl.Result{}, nil
+		}
+	} else {
+		if controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
 			base := rs.DeepCopy()
 			controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)
 			if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-				return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
+				logger.Error(err, "failed to remove finalizer", "namespace", rs.Namespace, "name", rs.Name)
+				return ctrl.Result{}, err
 			}
 		}
 		return ctrl.Result{}, nil
@@ -115,7 +75,14 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Fetch zone to locate class
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
+				fmt.Sprintf("waiting for DNSZone %q", rs.Spec.DNSZoneRef.Name)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Ensure the DNSZone is an owner of this DNSRecordSet so GC cascades on zone deletion.
@@ -133,96 +100,69 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// If the zone is deleting, do not attempt to program PDNS for this recordset
+	// If the zone is deleting, surface Accepted=False and return.
 	if !zone.DeletionTimestamp.IsZero() {
-		logger.Info("zone is deleting; skipping pdns program")
+		if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
+			fmt.Sprintf("DNSZone %q is deleting", zone.Name)); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 	if zone.Spec.DNSZoneClassName == "" {
-		logger.Info("zone class not set; skipping pdns program")
+		if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
+			fmt.Sprintf("DNSZone %q has no class yet", zone.Name)); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 	var zc dnsv1alpha1.DNSZoneClass
 	if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
-		logger.Info("zone class not found; skipping pdns program")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-	if zc.Spec.ControllerName != ControllerNamePowerDNS {
-		logger.Info("zone class controller not powerdns; skipping pdns program")
-		return ctrl.Result{}, nil
-	}
-
-	cli, err := pdnsclient.NewFromEnv()
-	if err != nil {
-		logger.Error(err, "pdns client init")
-		return ctrl.Result{}, fmt.Errorf("pdns client: %w", err)
-	}
-
-	logger.Info("pdns client initialized")
-
-	// Ensure the zone exists in PDNS before attempting to apply rrsets
-	if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
-		logger.Info("pdns zone not ready yet; requeueing", "zone", zone.Spec.DomainName, "err", err.Error())
-		// reflect not programmed (pending) while waiting on PDNS zone
-		base := rs.DeepCopy()
-		if apimeta.SetStatusCondition(&rs.Status.Conditions, metav1.Condition{
-			Type:               CondProgrammed,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonPending,
-			Message:            fmt.Sprintf("PDNS zone %q not ready: %v", zone.Spec.DomainName, err),
-			ObservedGeneration: rs.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			if err := r.Status().Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+		if apierrors.IsNotFound(err) {
+			if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
+				fmt.Sprintf("DNSZoneClass %q not found", zone.Spec.DNSZoneClassName)); err != nil {
 				return ctrl.Result{}, err
 			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	logger.Info("pdns zone ready")
-
-	if err := cli.ApplyRecordSetAuthoritative(ctx, zone.Spec.DomainName, rs); err != nil {
-		logger.Error(err, "apply pdns recordset")
-		base := rs.DeepCopy()
-		// surface PDNS error into status
-		if apimeta.SetStatusCondition(&rs.Status.Conditions, metav1.Condition{
-			Type:               CondProgrammed,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonInvalidDNSRecordSet,
-			Message:            fmt.Sprintf("%v", err),
-			ObservedGeneration: rs.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			if err := r.Status().Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-				return ctrl.Result{}, err
-			}
+			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
-
-	logger.Info("pdns apply succeeded")
-
-	// success: mark programmed true
-	base := rs.DeepCopy()
-	if apimeta.SetStatusCondition(&rs.Status.Conditions, metav1.Condition{
-		Type:               CondProgrammed,
-		Status:             metav1.ConditionTrue,
-		Reason:             ReasonProgrammed,
-		Message:            "PDNS apply succeeded",
-		ObservedGeneration: rs.Generation,
-		LastTransitionTime: metav1.NewTime(time.Now()),
-	}) {
-		if err := r.Status().Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
+	if zc.Spec.ControllerName != ControllerNamePowerDNS {
+		if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
+			fmt.Sprintf("DNSZoneClass controller %q is not %q", zc.Spec.ControllerName, ControllerNamePowerDNS)); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{}, nil
 	}
 
-	logger.Info("programmed condition set")
+	if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionTrue, ReasonAccepted,
+		"DNSRecordSet accepted for PowerDNS zone"); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	logger.Info("reconcile complete")
 
 	return ctrl.Result{}, nil
+}
+
+func (r *DNSRecordSetReconciler) setAcceptedCondition(
+	ctx context.Context,
+	rs *dnsv1alpha1.DNSRecordSet,
+	status metav1.ConditionStatus,
+	reason, message string,
+) error {
+	base := rs.DeepCopy()
+	cond := metav1.Condition{
+		Type:               CondAccepted,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: rs.Generation,
+		LastTransitionTime: metav1.Now(),
+	}
+	if !apimeta.SetStatusCondition(&rs.Status.Conditions, cond) {
+		return nil
+	}
+	return r.Status().Patch(ctx, rs, client.MergeFrom(base))
 }
 
 // SetupWithManager wires watches:
@@ -271,29 +211,3 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // cleanupPDNSForRecordSet ensures the RRsets represented by rs are removed from PDNS.
 // Returns nil when cleanup is complete (or nothing to do), or error on failure.
-func (r *DNSRecordSetReconciler) cleanupPDNSForRecordSet(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) error {
-	cli, err := pdnsclient.NewFromEnv()
-	if err != nil {
-		return fmt.Errorf("pdns client: %w", err)
-	}
-
-	// If PDNS zone doesn't exist, consider cleanup done.
-	if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
-		return nil
-	}
-
-	// Authoritatively apply an empty set for this recordset (delete semantics).
-	toDelete := rs.DeepCopy()
-	toDelete.Spec.Records = nil
-
-	// Bound the external call; but allow enough to finish deterministically.
-	pdnsCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if err := cli.ApplyRecordSetAuthoritative(pdnsCtx, zone.Spec.DomainName, *toDelete); err != nil {
-		// distinguish transient vs permanent if your client exposes that; otherwise retry
-		return fmt.Errorf("pdns apply delete: %w", err)
-	}
-
-	return nil
-}

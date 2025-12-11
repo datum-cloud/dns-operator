@@ -13,5 +13,4 @@ spec:
   - name: www
     ttl: 300
     a:
-      content:
-      - 10.0.0.1
+      content: 10.0.0.1

@@ -245,6 +245,12 @@ spec:
           kind: DNSRecordSet
           metadata:
             name: example-com-txt
+          spec:
+            dnsZoneRef:
+              name: example-com
+            recordType: TXT
+            records:
+            - name: datum-custom-hostname
           status:
             conditions:
             - type: Accepted

@@ -350,6 +350,16 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
 			}
 
+		case dnsv1alpha1.RRTypeALIAS:
+			if rec.ALIAS == nil {
+				continue
+			}
+			target := strings.TrimSpace(rec.ALIAS.Content)
+			target = qualifyIfNeeded(target)
+			if target != "" {
+				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
+			}
+
 		case dnsv1alpha1.RRTypeTXT:
 			if rec.TXT == nil {
 				continue
@@ -450,21 +460,46 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			r.Records = []rrsetRecord{{Content: line, Disabled: false}}
 
 		case dnsv1alpha1.RRTypePTR:
-			// Adjust this once you have a typed PTR field in RecordEntry.
-			// For example, if you add:
-			//   PTR *PTRRecordSpec `json:"ptr,omitempty"`
-			// and PTRRecordSpec has Content string:
-			//
-			// if rec.PTR != nil {
-			//     v := strings.TrimSpace(rec.PTR.Content)
-			//     if v != "" {
-			//         r.Records = append(r.Records, rrsetRecord{
-			//             Content:  qualifyIfNeeded(v),
-			//             Disabled: false,
-			//         })
-			//     }
-			// }
-			continue
+			if rec.PTR == nil {
+				continue
+			}
+			v := strings.TrimSpace(rec.PTR.Content)
+			if v != "" {
+				// PTR rdata is a domain name; normalize to absolute (trailing dot).
+				r.Records = append(r.Records, rrsetRecord{
+					Content:  qualifyIfNeeded(v),
+					Disabled: false,
+				})
+			}
+
+		case dnsv1alpha1.RRTypeSSHFP:
+			if rec.SSHFP == nil {
+				continue
+			}
+			fp := strings.TrimSpace(rec.SSHFP.Fingerprint)
+			if fp != "" {
+				line := fmt.Sprintf("%d %d %s", rec.SSHFP.Algorithm, rec.SSHFP.Type, fp)
+				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
+			}
+
+		case dnsv1alpha1.RRTypeNAPTR:
+			if rec.NAPTR == nil {
+				continue
+			}
+			flags := quoteIfNeeded(strings.TrimSpace(rec.NAPTR.Flags))
+			services := quoteIfNeeded(strings.TrimSpace(rec.NAPTR.Services))
+			regexp := quoteIfNeeded(strings.TrimSpace(rec.NAPTR.Regexp))
+			repl := strings.TrimSpace(rec.NAPTR.Replacement)
+			switch repl {
+			case "":
+				continue
+			case ".":
+				// literal dot must be preserved (root/no replacement)
+			default:
+				repl = qualifyIfNeeded(repl)
+			}
+			line := fmt.Sprintf("%d %d %s %s %s %s", rec.NAPTR.Order, rec.NAPTR.Preference, flags, services, regexp, repl)
+			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 
 		case dnsv1alpha1.RRTypeTLSA:
 			if rec.TLSA == nil {

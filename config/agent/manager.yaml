@@ -163,6 +163,30 @@ spec:
             drop:
             - "ALL"
             add: ["NET_BIND_SERVICE"]
+      - name: pdns-recursor
+        image: powerdns/pdns-recursor-51:latest
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -eu;
+            exec pdns_recursor \
+              --daemon=no \
+              --disable-syslog=yes \
+              --local-address=127.0.0.1,::1 \
+              --local-port=5300 \
+              --allow-from=127.0.0.1/32,::1/128
+        volumeMounts:
+          - name: pdns-recursor-run
+            mountPath: /var/run/pdns-recursor
+        securityContext:
+          runAsUser: 953
+          runAsGroup: 953
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
       - name: lightningstream
         image: powerdns/lightningstream:main
         imagePullPolicy: IfNotPresent
@@ -226,6 +250,8 @@ spec:
         configMap:
           name: agent-server-config
       - name: pdns-shared
+        emptyDir: {}
+      - name: pdns-recursor-run
         emptyDir: {}
       - name: lightningstream-config
         configMap:

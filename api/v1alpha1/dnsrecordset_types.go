@@ -7,7 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=A;AAAA;CNAME;TXT;MX;SRV;CAA;NS;SOA;PTR;TLSA;HTTPS;SVCB
+// +kubebuilder:validation:Enum=A;AAAA;CNAME;TXT;MX;SRV;CAA;NS;SOA;PTR;TLSA;HTTPS;SVCB;ALIAS;SSHFP;NAPTR
 type RRType string
 
 const (
@@ -24,6 +24,9 @@ const (
 	RRTypeTLSA  RRType = "TLSA"
 	RRTypeHTTPS RRType = "HTTPS"
 	RRTypeSVCB  RRType = "SVCB"
+	RRTypeALIAS RRType = "ALIAS"
+	RRTypeSSHFP RRType = "SSHFP"
+	RRTypeNAPTR RRType = "NAPTR"
 )
 
 // DNSRecordSetSpec defines the desired state of DNSRecordSet
@@ -81,10 +84,58 @@ type RecordEntry struct {
 
 	// +optional
 	PTR *PTRRecordSpec `json:"ptr,omitempty"`
+
+	// +optional
+	ALIAS *ALIASRecordSpec `json:"alias,omitempty"`
+
+	// +optional
+	SSHFP *SSHFPRecordSpec `json:"sshfp,omitempty"`
+
+	// +optional
+	NAPTR *NAPTRRecordSpec `json:"naptr,omitempty"`
+}
+
+// ALIASRecordSpec is a PowerDNS-specific RR type that behaves like a CNAME at apex.
+// Content is a hostname (FQDN or relative) and will be normalized to an absolute name in providers.
+type ALIASRecordSpec struct {
+	Content string `json:"content"`
 }
 
 type PTRRecordSpec struct {
 	Content string `json:"content"`
+}
+
+type SSHFPRecordSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=255
+	Algorithm uint8 `json:"algorithm"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=255
+	Type uint8 `json:"type"`
+	// Fingerprint is the hex fingerprint data.
+	// +kubebuilder:validation:MinLength=1
+	Fingerprint string `json:"fingerprint"`
+}
+
+type NAPTRRecordSpec struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Order uint16 `json:"order"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
+	Preference uint16 `json:"preference"`
+	// Flags is typically "S", "A", "U", or "".
+	// +optional
+	Flags string `json:"flags,omitempty"`
+	// Services is the service field (often something like "E2U+sip").
+	// +optional
+	Services string `json:"services,omitempty"`
+	// Regexp is the substitution expression (often empty).
+	// +optional
+	Regexp string `json:"regexp,omitempty"`
+	// Replacement is the next domain name (FQDN/relative) or ".".
+	// +kubebuilder:validation:MinLength=1
+	Replacement string `json:"replacement"`
 }
 
 type TXTRecordSpec struct {

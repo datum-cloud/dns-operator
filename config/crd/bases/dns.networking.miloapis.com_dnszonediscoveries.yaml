@@ -151,6 +151,9 @@ spec:
                       - TLSA
                       - HTTPS
                       - SVCB
+                      - ALIAS
+                      - SSHFP
+                      - NAPTR
                       type: string
                     records:
                       description: |-
@@ -174,6 +177,16 @@ spec:
                             properties:
                               content:
                                 format: ipv6
+                                type: string
+                            required:
+                            - content
+                            type: object
+                          alias:
+                            description: |-
+                              ALIASRecordSpec is a PowerDNS-specific RR type that behaves like a CNAME at apex.
+                              Content is a hostname (FQDN or relative) and will be normalized to an absolute name in providers.
+                            properties:
+                              content:
                                 type: string
                             required:
                             - content
@@ -243,6 +256,38 @@ spec:
                             minLength: 1
                             pattern: ^(@|[A-Za-z0-9*._-]+)$
                             type: string
+                          naptr:
+                            properties:
+                              flags:
+                                description: Flags is typically "S", "A", "U", or
+                                  "".
+                                type: string
+                              order:
+                                maximum: 65535
+                                minimum: 0
+                                type: integer
+                              preference:
+                                maximum: 65535
+                                minimum: 0
+                                type: integer
+                              regexp:
+                                description: Regexp is the substitution expression
+                                  (often empty).
+                                type: string
+                              replacement:
+                                description: Replacement is the next domain name (FQDN/relative)
+                                  or ".".
+                                minLength: 1
+                                type: string
+                              services:
+                                description: Services is the service field (often
+                                  something like "E2U+sip").
+                                type: string
+                            required:
+                            - order
+                            - preference
+                            - replacement
+                            type: object
                           ns:
                             properties:
                               content:
@@ -312,6 +357,25 @@ spec:
                             - priority
                             - target
                             - weight
+                            type: object
+                          sshfp:
+                            properties:
+                              algorithm:
+                                maximum: 255
+                                minimum: 0
+                                type: integer
+                              fingerprint:
+                                description: Fingerprint is the hex fingerprint data.
+                                minLength: 1
+                                type: string
+                              type:
+                                maximum: 255
+                                minimum: 0
+                                type: integer
+                            required:
+                            - algorithm
+                            - fingerprint
+                            - type
                             type: object
                           svcb:
                             properties:

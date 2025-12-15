@@ -182,6 +182,24 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		t.Fatalf("CNAME rrset unexpected: %#v", rr)
 	}
 
+	// ALIAS (PowerDNS-specific): normalize target to absolute (trailing dot)
+	rsALIAS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeALIAS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name:  "@",
+					TTL:   &ttl,
+					ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "target.example.net"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsALIAS)
+	if rr[0].Type != "ALIAS" || rr[0].Name != "example.com." || rr[0].Records[0].Content != "target.example.net." {
+		t.Fatalf("ALIAS rrset unexpected: %#v", rr)
+	}
+
 	// TXT: quoted
 	rsTXT := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -314,6 +332,60 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 	// serial like yyyymmddNN (we use %s01)
 	if len(parts[2]) != 10 {
 		t.Fatalf("SOA serial shape unexpected: %q", parts[2])
+	}
+
+	// PTR: normalize target to absolute (trailing dot)
+	rsPTR := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypePTR,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "ptrhost",
+					TTL:  &ttl,
+					PTR:  &dnsv1alpha1.PTRRecordSpec{Content: "target.example.net"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsPTR)
+	if rr[0].Type != "PTR" || rr[0].Records[0].Content != "target.example.net." {
+		t.Fatalf("PTR rrset unexpected: %#v", rr)
+	}
+
+	// SSHFP
+	rsSSHFP := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeSSHFP,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name:  "ssh",
+					TTL:   &ttl,
+					SSHFP: &dnsv1alpha1.SSHFPRecordSpec{Algorithm: 1, Type: 1, Fingerprint: "abcdef"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsSSHFP)
+	if rr[0].Type != "SSHFP" || rr[0].Records[0].Content != "1 1 abcdef" {
+		t.Fatalf("SSHFP rrset unexpected: %#v", rr)
+	}
+
+	// NAPTR (quoted flags/services/regexp; replacement preserves "." literal)
+	rsNAPTR := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeNAPTR,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name:  "naptr",
+					TTL:   &ttl,
+					NAPTR: &dnsv1alpha1.NAPTRRecordSpec{Order: 100, Preference: 10, Flags: "U", Services: "E2U+sip", Regexp: "!^.*$!sip:info@example.com!", Replacement: "."},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsNAPTR)
+	if rr[0].Type != "NAPTR" || rr[0].Records[0].Content != `100 10 "U" "E2U+sip" "!^.*$!sip:info@example.com!" .` {
+		t.Fatalf("NAPTR rrset unexpected: %#v", rr)
 	}
 
 	// TLSA: straight join

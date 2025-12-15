@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -604,11 +605,14 @@ func (r *DNSZoneReplicator) ensureTXTRecordSet(ctx context.Context, c client.Cli
 	obj.SetNamespace(upstream.Namespace)
 	obj.SetName(fmt.Sprintf("%s-%s", upstream.Name, rsName))
 
+	// strip trailing domain name from verification.DNSRecord.Name
+	txtVerificationRecordName := strings.TrimSuffix(strings.TrimSuffix(verification.DNSRecord.Name, "."+upstream.Spec.DomainName), ".")
+
 	res, err := controllerutil.CreateOrPatch(ctx, c, &obj, func() error {
 		obj.Spec.DNSZoneRef = corev1.LocalObjectReference{Name: upstream.Name}
 		obj.Spec.RecordType = dnsv1alpha1.RRTypeTXT
 		obj.Spec.Records = []dnsv1alpha1.RecordEntry{{
-			Name: verification.DNSRecord.Name,
+			Name: txtVerificationRecordName,
 			TXT:  &dnsv1alpha1.TXTRecordSpec{Content: verification.DNSRecord.Content},
 		}}
 		return nil

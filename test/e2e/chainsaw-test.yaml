@@ -153,6 +153,8 @@ spec:
               status: "True"
             - type: Programmed
               status: "True"
+            - type: VerificationRecord
+              status: "True"
 
   - name: Assert upstream DNSZone nameservers
     try:
@@ -234,6 +236,22 @@ spec:
             - type: Programmed
               status: "True"
 
+  - name: Confirm DNSRecordSet VerificationRecord upstream
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: example-com-txt
+          status:
+            conditions:
+            - type: Accepted
+              status: "True"
+            - type: Programmed
+              status: "True"
+
   - name: DNS queries from downstream to PDNS (SOA/NS/A)
     try:
     - create:
@@ -274,7 +292,7 @@ spec:
           kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local example.com NS +short | grep -E '^ns2\\.example\\.com\.$'"
           kubectl -n default exec pod/dnsutils -- sh -c "dig @pdns-auth.dns-agent-system.svc.cluster.local www.example.com A +short | grep -E '^10\\.0\\.0\\.1$'"
 
-  - name: Assert DNSZone recordCount is 4 (SOA + NS (2) + A)
+  - name: Assert DNSZone recordCount is 5 (SOA + NS (2) + A + TXT)
     try:
     - assert:
         cluster: upstream
@@ -284,7 +302,7 @@ spec:
           metadata:
             name: example-com
           status:
-            recordCount: 4
+            recordCount: 5
 
   - name: Delete A record and verify PDNS cleanup
     try:
@@ -323,7 +341,7 @@ spec:
           metadata:
             name: example-com
           status:
-            recordCount: 3
+            recordCount: 4
 
   - name: Delete DNSZone and confirm accounting configmap is deleted
     try:

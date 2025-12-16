@@ -171,10 +171,10 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 			SOA:  &dnsv1alpha1.SOARecordSpec{MName: "ns1.example.net.", RName: "hostmaster.example.net."},
 		},
 	)
-	// // PTR (we’ll add it under a label in the same zone; PDNS doesn’t enforce reverse-zone semantics)
-	// apply(dnsv1alpha1.RRTypePTR,
-	// 	dnsv1alpha1.RecordEntry{Name: "ptrhost", TTL: &ttl, Raw: []string{"target." + zone + "."}},
-	// )
+	// // PTR
+	apply(dnsv1alpha1.RRTypePTR,
+		dnsv1alpha1.RecordEntry{Name: "ptrhost", TTL: &ttl, PTR: &dnsv1alpha1.PTRRecordSpec{Content: "target." + zone + "."}},
+	)
 	// TLSA
 	apply(dnsv1alpha1.RRTypeTLSA,
 		dnsv1alpha1.RecordEntry{Name: "_443._tcp", TTL: &ttl, TLSA: &dnsv1alpha1.TLSARecordSpec{Usage: 3, Selector: 1, MatchingType: 1, CertData: "ABCD"}},

@@ -344,6 +344,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 				continue
 			}
 			target := strings.TrimSpace(rec.CNAME.Content)
+			target = qualifyIfNeeded(target)
 			if target != "" {
 				// TODO: Technically this is a violation of the RFC, but we'll allow it for now.
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
@@ -366,7 +367,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			exch := strings.TrimSpace(rec.MX.Exchange)
 			if exch != "" {
-				line := fmt.Sprintf("%d %s", rec.MX.Preference, exch)
+				line := fmt.Sprintf("%d %s", rec.MX.Preference, qualifyIfNeeded(exch))
 				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
 
@@ -381,7 +382,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 					rec.SRV.Priority,
 					rec.SRV.Weight,
 					rec.SRV.Port,
-					tgt,
+					qualifyIfNeeded(tgt),
 				)
 				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
@@ -405,7 +406,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			v := strings.TrimSpace(rec.NS.Content)
 			if v != "" {
 				r.Records = append(r.Records, rrsetRecord{
-					Content:  v,
+					Content:  qualifyIfNeeded(v),
 					Disabled: false,
 				})
 			}
@@ -449,20 +450,18 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			r.Records = []rrsetRecord{{Content: line, Disabled: false}}
 
 		case dnsv1alpha1.RRTypePTR:
-			// Adjust this once you have a typed PTR field in RecordEntry.
-			// For example, if you add:
-			//   PTR *PTRRecordSpec `json:"ptr,omitempty"`
-			// and PTRRecordSpec has Content string:
-			//
-			// if rec.PTR != nil {
-			//     v := strings.TrimSpace(rec.PTR.Content)
-			//     if v != "" {
-			//         r.Records = append(r.Records, rrsetRecord{
-			//             Content:  qualifyIfNeeded(v),
-			//             Disabled: false,
-			//         })
-			//     }
-			// }
+			if rec.PTR == nil {
+				continue
+			}
+			if rec.PTR != nil {
+				v := strings.TrimSpace(rec.PTR.Content)
+				if v != "" {
+					r.Records = append(r.Records, rrsetRecord{
+						Content:  qualifyIfNeeded(v),
+						Disabled: false,
+					})
+				}
+			}
 			continue
 
 		case dnsv1alpha1.RRTypeTLSA:

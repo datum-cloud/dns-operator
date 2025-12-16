@@ -450,22 +450,16 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			r.Records = []rrsetRecord{{Content: line, Disabled: false}}
 
 		case dnsv1alpha1.RRTypePTR:
-			// Adjust this once you have a typed PTR field in RecordEntry.
-			// For example, if you add:
-			//   PTR *PTRRecordSpec `json:"ptr,omitempty"`
-			// and PTRRecordSpec has Content string:
-			//
-			// if rec.PTR != nil {
-			//     v := strings.TrimSpace(rec.PTR.Content)
-			//     if v != "" {
-			//         r.Records = append(r.Records, rrsetRecord{
-			//             Content:  qualifyIfNeeded(v),
-			//             Disabled: false,
-			//         })
-			//     }
-			// }
-			continue
-
+			if rec.PTR == nil {
+				continue
+			}
+			v := strings.TrimSpace(rec.PTR.Content)
+			if v != "" {
+				r.Records = append(r.Records, rrsetRecord{
+					Content:  qualifyIfNeeded(v),
+					Disabled: false,
+				})
+			}
 		case dnsv1alpha1.RRTypeTLSA:
 			if rec.TLSA == nil {
 				continue

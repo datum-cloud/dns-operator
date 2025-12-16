@@ -344,7 +344,6 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 				continue
 			}
 			target := strings.TrimSpace(rec.CNAME.Content)
-			target = qualifyIfNeeded(target)
 			if target != "" {
 				// TODO: Technically this is a violation of the RFC, but we'll allow it for now.
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
@@ -367,7 +366,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			exch := strings.TrimSpace(rec.MX.Exchange)
 			if exch != "" {
-				line := fmt.Sprintf("%d %s", rec.MX.Preference, qualifyIfNeeded(exch))
+				line := fmt.Sprintf("%d %s", rec.MX.Preference, exch)
 				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
 
@@ -382,7 +381,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 					rec.SRV.Priority,
 					rec.SRV.Weight,
 					rec.SRV.Port,
-					qualifyIfNeeded(tgt),
+					tgt,
 				)
 				r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
 			}
@@ -406,7 +405,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			v := strings.TrimSpace(rec.NS.Content)
 			if v != "" {
 				r.Records = append(r.Records, rrsetRecord{
-					Content:  qualifyIfNeeded(v),
+					Content:  v,
 					Disabled: false,
 				})
 			}
@@ -416,7 +415,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 				continue
 			}
 
-			mname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.MName))
+			mname := strings.TrimSpace(rec.SOA.MName)
 			rname := qualifyIfNeeded(strings.TrimSpace(rec.SOA.RName))
 
 			serial := fmt.Sprintf("%s01", time.Now().Format("20060102"))
@@ -577,15 +576,8 @@ func encodeSvcbParams(m map[string]string) string {
 func encodeSvcbLine(priority uint16, target string, params map[string]string) string {
 	// target: "." for service-form with no alias; otherwise hostname (no trailing dot)
 	t := strings.TrimSpace(target)
-	switch t {
-	case ".":
-		// service-form: literal "." must be preserved
-		// (do not strip)
-	case "":
-		// default to service-form with no alias
+	if t == "" {
 		t = "."
-	default:
-		t = qualifyIfNeeded(t)
 	}
 
 	// alias form: priority 0 => MUST have a target and MUST NOT have params

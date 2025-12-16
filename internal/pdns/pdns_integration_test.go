@@ -297,9 +297,9 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 	}
 
 	// // PTR
-	// if got := get("PTR", "ptrhost"); len(got) != 1 || got[0] != "target."+zone+"." {
-	// 	t.Fatalf("PTR ptrhost got=%v", got)
-	// }
+	if got := get("PTR", "ptrhost"); len(got) != 1 || got[0] != "target."+zone+"." {
+		t.Fatalf("PTR ptrhost got=%v", got)
+	}
 
 	// TLSA
 	if got := get("TLSA", "_443._tcp"); len(got) != 1 || got[0] != "3 1 1 abcd" {

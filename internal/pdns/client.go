@@ -575,8 +575,14 @@ func encodeSvcbParams(m map[string]string) string {
 func encodeSvcbLine(priority uint16, target string, params map[string]string) string {
 	// target: "." for service-form with no alias; otherwise hostname (no trailing dot)
 	t := strings.TrimSpace(target)
-	if t == "" {
+	switch t {
+	case "":
 		t = "."
+	case ".":
+		// service-form: literal "." must be preserved
+		// (do not strip)
+	default:
+		t = qualifyIfNeeded(t)
 	}
 
 	// alias form: priority 0 => MUST have a target and MUST NOT have params

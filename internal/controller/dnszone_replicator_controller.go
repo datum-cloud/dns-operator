@@ -458,10 +458,15 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 
 	records := make([]dnsv1alpha1.RecordEntry, 0, len(upstream.Status.Nameservers))
 	for _, value := range upstream.Status.Nameservers {
+		// ensure trailing dot is added if not present
+		nsValue := value
+		if nsValue != "" && nsValue[len(nsValue)-1] != '.' {
+			nsValue += "."
+		}
 		records = append(records, dnsv1alpha1.RecordEntry{
 			Name: "@",
 			NS: &dnsv1alpha1.NSRecordSpec{
-				Content: value,
+				Content: nsValue,
 			},
 		})
 	}

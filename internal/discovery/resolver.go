@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	discoveryLookupConcurrency = 8
+	discoveryLookupConcurrency = 10
 	discoveryLookupTimeout     = 5 * time.Second
 )
 
@@ -151,7 +151,6 @@ func DiscoverZoneRecords(ctx context.Context, domain string) ([]dnsv1alpha1.Disc
 		sem := make(chan struct{}, discoveryLookupConcurrency)
 
 		for _, name := range candidateNames[1:] {
-			name := name
 			wg.Add(1)
 			go func() {
 				defer wg.Done()

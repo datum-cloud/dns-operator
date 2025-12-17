@@ -136,18 +136,8 @@ spec:
             domainRef:
               status:
                 nameservers:
-                - hostname: A.IANA-SERVERS.NET
-                  ips:
-                  - address: 199.43.135.53
-                    registrantName: ICANN
-                  - address: 2001:500:8f::53
-                    registrantName: ICANN
-                - hostname: B.IANA-SERVERS.NET
-                  ips:
-                  - address: 199.43.133.53
-                    registrantName: ICANN
-                  - address: 2001:500:8d::53
-                    registrantName: ICANN
+                - hostname: ELLIOTT.NS.CLOUDFLARE.COM
+                - hostname: HERA.NS.CLOUDFLARE.COM
             conditions:
             - type: Accepted
               status: "True"

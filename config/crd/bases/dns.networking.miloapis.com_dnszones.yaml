@@ -182,6 +182,7 @@ spec:
         type: object
     selectableFields:
     - jsonPath: .spec.domainName
+    - jsonPath: .status.domainRef.name
     served: true
     storage: true
     subresources:

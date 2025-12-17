@@ -60,6 +60,7 @@ type DNSZoneStatus struct {
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
 // +kubebuilder:printcolumn:name="Records",type=integer,JSONPath=.status.recordCount
 // +kubebuilder:selectablefield:JSONPath=".spec.domainName"
+// +kubebuilder:selectablefield:JSONPath=".status.domainRef.name"
 
 // DNSZone is the Schema for the dnszones API
 type DNSZone struct {

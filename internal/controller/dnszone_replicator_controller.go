@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,10 +36,7 @@ type DNSZoneReplicator struct {
 	AccountingNamespace string
 }
 
-const (
-	dnsZoneFinalizer               = "dns.networking.miloapis.com/finalize-dnszone"
-	verificationRecordRequeueDelay = 1 * time.Second
-)
+const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones/status,verbs=get;update;patch
@@ -240,19 +236,12 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
-	pendingVerificationTXT, err := r.ensureTXTRecordSet(ctx, upstreamCl.GetClient(), &upstream)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+
 	// Recompute status to set Programmed based on record presence
 	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-	}
-
-	if pendingVerificationTXT {
-		return ctrl.Result{RequeueAfter: verificationRecordRequeueDelay}, nil
 	}
 
 	return ctrl.Result{}, nil
@@ -486,162 +475,6 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 	}
 	log.FromContext(ctx).Info("creating default NS DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
 	return c.Create(ctx, &newObj)
-}
-
-// ensureTXTRecordSet programs the domain verification TXT record once available on the Domain status.
-// Returns requeue=true when verification data is not yet present so we can poll shortly.
-func (r *DNSZoneReplicator) ensureTXTRecordSet(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) (bool, error) {
-	lg := log.FromContext(ctx)
-
-	// Already ensured; nothing to do.
-	if apimeta.IsStatusConditionTrue(upstream.Status.Conditions, CondVerificationRecord) {
-		return false, nil
-	}
-
-	base := upstream.DeepCopy()
-	changed := false
-
-	var domains networkingv1alpha.DomainList
-	if err := c.List(
-		ctx,
-		&domains,
-		client.InNamespace(upstream.Namespace),
-		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", upstream.Spec.DomainName)},
-	); err != nil {
-		return false, err
-	}
-
-	if len(domains.Items) == 0 {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondVerificationRecord,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonVerificationRecordPending,
-			Message:            "Waiting for Domain to exist before programming verification TXT",
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-		if changed {
-			if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	}
-
-	var chosen *networkingv1alpha.Domain
-	for i := range domains.Items {
-		d := &domains.Items[i]
-		if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
-			chosen = d
-			break
-		}
-		if chosen == nil || d.CreationTimestamp.Before(&chosen.CreationTimestamp) {
-			chosen = d
-		}
-	}
-
-	if chosen == nil {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondVerificationRecord,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonVerificationRecordPending,
-			Message:            "Domain lookup returned no candidates",
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-		if changed {
-			if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	}
-
-	if apimeta.IsStatusConditionTrue(chosen.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondVerificationRecord,
-			Status:             metav1.ConditionTrue,
-			Reason:             ReasonVerificationDomainVerified,
-			Message:            fmt.Sprintf("Domain %q already verified", chosen.Name),
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-		if changed {
-			if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-		}
-		return false, nil
-	}
-
-	verification := chosen.Status.Verification
-	if verification == nil || verification.DNSRecord.Name == "" || verification.DNSRecord.Content == "" {
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondVerificationRecord,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonVerificationRecordPending,
-			Message:            fmt.Sprintf("Waiting for verification TXT on Domain %q", chosen.Name),
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
-			changed = true
-		}
-		if changed {
-			if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	}
-
-	rsName := "txt"
-	obj := dnsv1alpha1.DNSRecordSet{}
-	obj.SetNamespace(upstream.Namespace)
-	obj.SetName(fmt.Sprintf("%s-%s", upstream.Name, rsName))
-
-	// strip trailing domain name from verification.DNSRecord.Name
-	txtVerificationRecordName := strings.TrimSuffix(strings.TrimSuffix(verification.DNSRecord.Name, "."+upstream.Spec.DomainName), ".")
-
-	res, err := controllerutil.CreateOrPatch(ctx, c, &obj, func() error {
-		obj.Spec.DNSZoneRef = corev1.LocalObjectReference{Name: upstream.Name}
-		obj.Spec.RecordType = dnsv1alpha1.RRTypeTXT
-		obj.Spec.Records = []dnsv1alpha1.RecordEntry{{
-			Name: txtVerificationRecordName,
-			TXT:  &dnsv1alpha1.TXTRecordSpec{Content: verification.DNSRecord.Content},
-		}}
-		return nil
-	})
-	if err != nil {
-		return false, err
-	}
-	if res != controllerutil.OperationResultNone {
-		lg.Info("ensured verification TXT DNSRecordSet", "operation", res, "namespace", obj.Namespace, "name", obj.Name)
-	}
-
-	if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-		Type:               CondVerificationRecord,
-		Status:             metav1.ConditionTrue,
-		Reason:             ReasonVerificationRecordProgrammed,
-		Message:            fmt.Sprintf("Verification TXT ensured from Domain %q", chosen.Name),
-		ObservedGeneration: upstream.Generation,
-		LastTransitionTime: metav1.NewTime(time.Now()),
-	}) {
-		changed = true
-	}
-
-	if changed {
-		if err := c.Status().Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
-			return false, err
-		}
-	}
-
-	return false, nil
 }
 
 // updateStatus owns the upstream status synthesis: Accepted/Programmed, Nameservers.

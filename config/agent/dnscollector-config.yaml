@@ -1,0 +1,109 @@
+################################################
+# global configuration
+#  more details: https://github.com/dmachard/DNS-collector/blob/main/docs/configuration.md#global
+################################################
+global:
+  trace:
+    verbose: true
+    log-malformed: true
+    filename: ""
+    max-size: 10
+    max-backups: 10
+  server-identity: "dns-collector"
+  worker:
+    interval-monitor: 10
+    buffer-size: 8192
+  telemetry:
+    enabled: true
+    web-path: "/metrics"
+    web-listen: ":9165"
+    prometheus-prefix: "dnscollector_exporter"
+
+    # Optional TLS configuration
+    tls-support: false
+    tls-cert-file: ""
+    tls-key-file: ""
+    client-ca-file: ""
+
+    # Optional authentication
+    basic-auth-enable: false
+    basic-auth-login: admin
+    basic-auth-pwd: changeme
+
+################################################
+# Pipelining configuration
+#   more details: https://github.com/dmachard/DNS-collector/blob/main/docs/running_mode.md#pipelining
+#   workers: https://github.com/dmachard/DNS-collector/blob/main/docs/workers.md
+#   transformers: https://github.com/dmachard/DNS-collector/blob/main/docs/transformers.md
+################################################
+pipelines:
+  - name: tap
+    dnstap:
+      listen-ip: 0.0.0.0
+      listen-port: 6000
+    transforms:
+      normalize:
+        enable: true
+        qname-lowercase: true
+        rr-lowercase: true
+        qname-replace-nonprintable: true
+        add-tld: true
+        add-tld-plus-one: true
+        quiet-text: false
+      reordering:
+        enable: true
+        flush-interval: 30
+        max-buffer-size: 100
+      suspicious:
+        enable: true
+        threshold-qname-len: 100
+        threshold-packet-len: 1000
+        threshold-slow: 1.0
+        common-qtypes:
+          - A
+          - AAAA
+          - TXT
+          - CNAME
+          - PTR
+          - NAPTR
+          - DNSKEY
+          - SRV
+          - SOA
+          - NS
+          - MX
+          - DS
+          - HTTPS
+        unallowed-chars:
+          - '"'
+          - '=='
+          - '/'
+          - ':'
+        threshold-max-labels: 10
+        whitelist-domains:
+          - '\.ip6\.arpa'
+      latency:
+        enable: true
+        measure-latency: true
+        unanswered-queries: true
+        queries-timeout: 2
+    routing-policy:
+      forward: [ vector ]
+      dropped: [ ]
+
+  - name: vector
+    tcpclient:
+      transport: tcp
+      remote-address: 127.0.0.1
+      remote-port: 6001
+      connect-timeout: 5
+      retry-interval: 10
+      flush-interval: 30
+      tls-insecure: false
+      tls-min-version: 1.2
+      ca-file: ""
+      cert-file: ""
+      key-file: ""
+      mode: json
+      text-format: ""
+      buffer-size: 100
+      chan-buffer-size: 0

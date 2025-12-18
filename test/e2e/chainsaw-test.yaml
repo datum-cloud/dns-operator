@@ -404,3 +404,47 @@ spec:
             kind: DNSZoneClass
           check:
             ($error == null): true
+
+  - name: Verify Metrics - curl into vector pod and check for metrics
+    try:
+      - create:
+          cluster: downstream
+          resource:
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: vector-metrics-check
+              namespace: default
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: curl
+                  image: curlimages/curl:8.5.0
+                  command: ["sleep", "3600"]
+      - assert:
+          cluster: downstream
+          resource:
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              name: vector-metrics-check
+              namespace: default
+            status:
+              phase: Running
+      - sleep:
+          duration: 10s
+      - script:
+          cluster: downstream
+          content: |
+            set -euo pipefail
+            kubectl -n default exec pod/vector-metrics-check -- sh -c '
+              metrics=$(curl -fsS http://pdns-auth.dns-agent-system.svc.cluster.local:9598/metrics)
+              echo "Prometheus metrics:"
+              echo "$metrics" | awk "/^dns_/ { split(\$0,a,\"{\"); print a[1] }" | sort -u || true
+              total=$(echo "$metrics" | awk "/^dns_queries_total/ {print \$2; exit}")
+              if [ -z "${total:-}" ] || [ "$total" = "0" ]; then
+                echo "dns_queries_total is zero or missing" >&2
+                exit 1
+              fi
+              echo "dns_queries_total: $total"
+            '

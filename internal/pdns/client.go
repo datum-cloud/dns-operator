@@ -15,6 +15,22 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
+type Interface interface {
+	ReplaceRRSet(
+		ctx context.Context,
+		zone string,
+		recordType string,
+		ownerName string,
+		ttl int,
+		values []string,
+	) error
+
+	DeleteRRSet(
+		ctx context.Context,
+		zone, recordType, ownerName string,
+	) error
+}
+
 type Client struct {
 	BaseURL string
 	APIKey  string
@@ -173,6 +189,43 @@ func (c *Client) GetZoneRRSets(ctx context.Context, zone string) ([]zoneRRset, e
 	return zr.RRSets, nil
 }
 
+// BuildOwnerRRSet converts the provided record entries for a single owner name into PDNS payload data.
+func BuildOwnerRRSet(
+	zone string,
+	recordType dnsv1alpha1.RRType,
+	ownerName string,
+	entries []dnsv1alpha1.RecordEntry,
+) (OwnerRRSet, bool) {
+	if len(entries) == 0 {
+		return OwnerRRSet{}, false
+	}
+	rs := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: recordType,
+			Records:    entries,
+		},
+	}
+	rrsets := buildRRSets(zone, rs)
+	target := qualifyOwner(ownerName, zone)
+	for _, rr := range rrsets {
+		if rr.Name != target {
+			continue
+		}
+		values := make([]string, 0, len(rr.Records))
+		for _, rec := range rr.Records {
+			if rec.Disabled {
+				continue
+			}
+			values = append(values, rec.Content)
+		}
+		return OwnerRRSet{
+			TTL:     rr.TTL,
+			Records: values,
+		}, true
+	}
+	return OwnerRRSet{}, false
+}
+
 type rrsetRecord struct {
 	Content  string `json:"content"`
 	Disabled bool   `json:"disabled"`
@@ -188,6 +241,12 @@ type rrset struct {
 
 type patchZoneRequest struct {
 	RRSets []rrset `json:"rrsets"`
+}
+
+// OwnerRRSet captures the PDNS-ready view of a single owner name.
+type OwnerRRSet struct {
+	TTL     int
+	Records []string
 }
 
 // Structures for GET zone response parsing
@@ -269,6 +328,59 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 		return false
 	})
 
+	return c.applyRRSetPatch(ctx, zone, patch)
+}
+
+// ReplaceRRSet ensures a single (type, owner) RRset matches the provided values exactly.
+func (c *Client) ReplaceRRSet(
+	ctx context.Context,
+	zone string,
+	recordType string,
+	ownerName string,
+	ttl int,
+	values []string,
+) error {
+	records := make([]rrsetRecord, 0, len(values))
+	for _, v := range values {
+		if v == "" {
+			continue
+		}
+		records = append(records, rrsetRecord{Content: v, Disabled: false})
+	}
+	patch := []rrset{{
+		Name:       qualifyOwner(ownerName, zone),
+		Type:       recordType,
+		TTL:        ttl,
+		ChangeType: "REPLACE",
+		Records:    records,
+	}}
+	return c.applyRRSetPatch(ctx, zone, patch)
+}
+
+// DeleteRRSet removes the referenced (type, owner) RRset from PDNS.
+func (c *Client) DeleteRRSet(ctx context.Context, zone, recordType, ownerName string) error {
+	patch := []rrset{{
+		Name:       qualifyOwner(ownerName, zone),
+		Type:       recordType,
+		ChangeType: "DELETE",
+		Records:    []rrsetRecord{},
+	}}
+	return c.applyRRSetPatch(ctx, zone, patch)
+}
+
+func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset) error {
+	if len(patch) == 0 {
+		return nil
+	}
+	sort.Slice(patch, func(i, j int) bool {
+		if patch[i].Type != patch[j].Type {
+			return patch[i].Type < patch[j].Type
+		}
+		if patch[i].Name != patch[j].Name {
+			return patch[i].Name < patch[j].Name
+		}
+		return patch[i].ChangeType < patch[j].ChangeType
+	})
 	payload := patchZoneRequest{RRSets: patch}
 	body, _ := json.Marshal(payload)
 
@@ -286,7 +398,6 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 	}
 	if resp.StatusCode/100 != 2 {
 		errBody := readRespBody(resp, 64<<10) // closes Body
-		// include status + body so tests/logs show the real PDNS error
 		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
 	_ = resp.Body.Close()

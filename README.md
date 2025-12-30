@@ -128,6 +128,9 @@ kubectl apply -k config/overlays/replicator
 - `kind: DNSOperator` (internal config consumed by the binary via `--server-config`)
   - `discovery.mode`: `single` or `milo`
   - `downstreamResourceManagement.kubeconfigPath`: path inside the Pod to the downstream kubeconfig
+  - `controllers.dnsRecordSetPowerDNS.maxConcurrentReconciles`: concurrent reconciles for the PowerDNS recordset controller (default: 4)
+  - `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay`: exponential backoff base delay (default: `1s`)
+  - `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay`: exponential backoff max delay (default: `30s`)
 
 ### Development
 - Build: `make docker-build` (see `Makefile`)

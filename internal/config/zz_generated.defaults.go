@@ -6,6 +6,8 @@
 package config
 
 import (
+	json "encoding/json"
+
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -20,5 +22,18 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 func SetObjectDefaults_DNSOperator(in *DNSOperator) {
 	if in.DownstreamResourceManagement.DNSZoneAccountingNamespace == "" {
 		in.DownstreamResourceManagement.DNSZoneAccountingNamespace = "datum-downstream-dnszone-accounting"
+	}
+	if in.Controllers.DNSRecordSetPowerDNS.MaxConcurrentReconciles == 0 {
+		in.Controllers.DNSRecordSetPowerDNS.MaxConcurrentReconciles = 4
+	}
+	if in.Controllers.DNSRecordSetPowerDNS.RateLimiterBaseDelay == nil {
+		if err := json.Unmarshal([]byte(`"1s"`), &in.Controllers.DNSRecordSetPowerDNS.RateLimiterBaseDelay); err != nil {
+			panic(err)
+		}
+	}
+	if in.Controllers.DNSRecordSetPowerDNS.RateLimiterMaxDelay == nil {
+		if err := json.Unmarshal([]byte(`"30s"`), &in.Controllers.DNSRecordSetPowerDNS.RateLimiterMaxDelay); err != nil {
+			panic(err)
+		}
 	}
 }

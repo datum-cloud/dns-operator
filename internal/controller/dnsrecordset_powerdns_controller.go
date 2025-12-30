@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	operatorconfig "go.miloapis.com/dns-operator/internal/config"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 )
 
@@ -41,6 +41,10 @@ type DNSRecordSetPowerDNSReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	PDNS   pdnsclient.Interface
+
+	// Config controls controller concurrency and rate limiting.
+	// When constructed by the binary, defaults are applied via server config defaulting.
+	Config operatorconfig.DNSRecordSetPowerDNSControllerConfig
 }
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch
@@ -405,11 +409,21 @@ func (r *DNSRecordSetPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) erro
 		return err
 	}
 
-	rl := workqueue.NewTypedItemExponentialFailureRateLimiter[PowerDNSRecordSetReconcileRequest](1*time.Second, 30*time.Second)
+	maxConc := r.Config.MaxConcurrentReconciles
+	if r.Config.RateLimiterBaseDelay == nil {
+		return fmt.Errorf("rateLimiterBaseDelay is required")
+	}
+	baseDelay := r.Config.RateLimiterBaseDelay.Duration
+	if r.Config.RateLimiterMaxDelay == nil {
+		return fmt.Errorf("rateLimiterMaxDelay is required")
+	}
+	maxDelay := r.Config.RateLimiterMaxDelay.Duration
+
+	rl := workqueue.NewTypedItemExponentialFailureRateLimiter[PowerDNSRecordSetReconcileRequest](baseDelay, maxDelay)
 	c, err := controller.NewTyped("dnsrecordset-powerdns", mgr, controller.TypedOptions[PowerDNSRecordSetReconcileRequest]{
 		Reconciler:              r,
 		RateLimiter:             rl,
-		MaxConcurrentReconciles: 4,
+		MaxConcurrentReconciles: maxConc,
 	})
 	if err != nil {
 		return err

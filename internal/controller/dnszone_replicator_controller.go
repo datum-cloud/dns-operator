@@ -236,6 +236,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if err := r.ensureNSRecordSet(ctx, upstreamCl.GetClient(), &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
+
 	// Recompute status to set Programmed based on record presence
 	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) {

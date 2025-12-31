@@ -8,4 +8,10 @@ discovery:
 downstreamResourceManagement:
   kubeconfigPath: "/downstream/kubeconfig"
 
+controllers:
+  dnsRecordSetPowerDNS:
+    # maxConcurrentReconciles: 4
+    # rateLimiterBaseDelay: 1s
+    # rateLimiterMaxDelay: 30s
+
  

@@ -124,6 +124,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Ensure defaults are applied even if the decoded config was empty/partial.
+	// (The scheme defaulting may already have done this, but this makes it explicit.)
+	config.SetObjectDefaults_DNSOperator(&serverConfig)
+
 	setupLog.Info("server config", "config", serverConfig)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
@@ -216,6 +220,15 @@ func main() {
 		if err := (&controller.DNSRecordSetReconciler{Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
+			os.Exit(1)
+		}
+		pdnsControllerCfg := serverConfig.Controllers.DNSRecordSetPowerDNS
+		if err := (&controller.DNSRecordSetPowerDNSReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Config: pdnsControllerCfg,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSetPowerDNS")
 			os.Exit(1)
 		}
 

@@ -18,6 +18,32 @@ type DNSOperator struct {
 	Discovery DiscoveryConfig `json:"discovery"`
 
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
+
+	Controllers ControllersConfig `json:"controllers"`
+}
+
+// +k8s:deepcopy-gen=true
+type ControllersConfig struct {
+	DNSRecordSetPowerDNS DNSRecordSetPowerDNSControllerConfig `json:"dnsRecordSetPowerDNS"`
+}
+
+// +k8s:deepcopy-gen=true
+type DNSRecordSetPowerDNSControllerConfig struct {
+	// MaxConcurrentReconciles is the maximum number of concurrent reconciles for the
+	// dnsrecordset-powerdns controller.
+	//
+	// +default=4
+	MaxConcurrentReconciles int `json:"maxConcurrentReconciles"`
+
+	// RateLimiterBaseDelay is the base delay for the exponential failure rate limiter.
+	//
+	// +default="1s"
+	RateLimiterBaseDelay *metav1.Duration `json:"rateLimiterBaseDelay"`
+
+	// RateLimiterMaxDelay is the maximum delay for the exponential failure rate limiter.
+	//
+	// +default="30s"
+	RateLimiterMaxDelay *metav1.Duration `json:"rateLimiterMaxDelay"`
 }
 
 // +k8s:deepcopy-gen=true

@@ -186,11 +186,27 @@ type SOARecordSpec struct {
 }
 
 // DNSRecordSetStatus defines the observed state of DNSRecordSet.
+// +kubebuilder:default={conditions: {{type: "Accepted", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"},{type: "Programmed", status: "Unknown", reason:"Pending", message:"Waiting for controller", lastTransitionTime: "1970-01-01T00:00:00Z"}}}
 type DNSRecordSetStatus struct {
 	// Conditions includes Accepted and Programmed readiness.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// RecordSets captures per-owner (per name) status and conditions.
+	// +optional
+	RecordSets []RecordSetStatus `json:"recordSets,omitempty"`
+}
+
+type RecordSetStatus struct {
+	// Name is the owner name this status pertains to.
+	Name string `json:"name"`
+
+	// Conditions captures per-name readiness information such as RecordProgrammed.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 

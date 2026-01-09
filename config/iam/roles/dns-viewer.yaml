@@ -20,5 +20,8 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.list
     - dns.networking.miloapis.com/dnszonediscoveries.get
     - dns.networking.miloapis.com/dnszonediscoveries.watch
+    - dns.networking.miloapis.com/tsigkeys.list
+    - dns.networking.miloapis.com/tsigkeys.get
+    - dns.networking.miloapis.com/tsigkeys.watch
 
 

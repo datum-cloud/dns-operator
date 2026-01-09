@@ -1,0 +1,15 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: TSIGKey
+metadata:
+  name: example-com-xfr
+spec:
+  dnsZoneRef:
+    name: example-com
+  keyName: datum-example-com-xfr
+  # algorithm defaults to hmac-md5 (PowerDNS default); override if desired:
+  # algorithm: hmac-sha256
+  # Optional (BYO secret):
+  # secretRef:
+  #   name: existing-upstream-tsig
+
+

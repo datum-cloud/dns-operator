@@ -10,3 +10,4 @@ resources:
   - dnsrecordsets.yaml
   - dnszoneclasses.yaml
   - dnszonediscoveries.yaml
+  - tsigkeys.yaml

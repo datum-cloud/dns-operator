@@ -9,6 +9,8 @@ Lightweight observability stack for the DNS agent components.
 - **Prometheus**: Single instance scraping dnsdist, dnscollector, and vector
   metrics out of the box.
 - **Loki**: Single-binary log storage for dnstap/log forwarding from vector.
+- **Vector (central)**: Receives metrics from edge Vector and forwards to the
+  consumer-facing Victoria Metrics remote-write endpoint.
 - **Namespace**: `dns-monitoring` is created automatically.
 
 ## Deploy
@@ -30,6 +32,8 @@ open http://localhost:3000
 - Prometheus URL: `${PROMETHEUS_URL}` (default
   `http://prometheus.dns-monitoring.svc:9090`)
 - Loki URL: `${LOKI_URL}` (default `http://loki.dns-monitoring.svc:3100`)
+The central Vector instance uses `REMOTE_WRITE_ENDPOINT` (default
+`http://prometheus.dns-monitoring.svc:9090/api/v1/write`).
 
 If you want to use an existing cluster Prometheus instead of the bundled one,
 patch `PROMETHEUS_URL` and remove the `prometheus` entry from

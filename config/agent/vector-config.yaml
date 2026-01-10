@@ -134,10 +134,16 @@ sinks:
       codec: json
     inputs:
       - dnstap_tcp
+      - dnstap_metrics
+
+  central_vector:
+    type: vector
+    inputs:
+      - dnstap_metrics
+    address: ${VECTOR_CENTRAL_ADDRESS}
 
   prometheus:
     type: prometheus_exporter
     inputs:
-      - dnstap_metrics
       - internal_metrics
     address: 0.0.0.0:9598

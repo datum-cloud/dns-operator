@@ -284,6 +284,9 @@ spec:
           - --watch-config
           - --config-dir
           - /etc/vector/
+        env:
+          - name: VECTOR_CENTRAL_ADDRESS
+            value: vector.dns-monitoring.svc:9000
         volumeMounts:
           - name: vector-config
             mountPath: /etc/vector/vector-config.yaml

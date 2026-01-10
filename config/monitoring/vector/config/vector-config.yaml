@@ -1,0 +1,18 @@
+data_dir: /var/lib/vector
+
+api:
+  enabled: false
+
+sources:
+  edge_metrics:
+    type: vector
+    address: 0.0.0.0:9000
+
+sinks:
+  victoria_metrics:
+    type: prometheus_remote_write
+    inputs:
+      - edge_metrics
+    endpoint: ${REMOTE_WRITE_ENDPOINT}
+    healthcheck:
+      enabled: false

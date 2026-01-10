@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vector
+  labels:
+    app.kubernetes.io/name: vector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vector
+    spec:
+      containers:
+        - name: vector
+          image: timberio/vector:0.51.1-distroless-static
+          imagePullPolicy: IfNotPresent
+          args:
+            - --log-format=json
+            - --verbose
+            - --watch-config
+            - --config-dir
+            - /etc/vector/
+          env:
+            - name: REMOTE_WRITE_ENDPOINT
+              value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
+          ports:
+            - containerPort: 9000
+              name: vector
+              protocol: TCP
+          volumeMounts:
+            - name: vector-config
+              mountPath: /etc/vector/vector-config.yaml
+              subPath: vector-config.yaml
+            - name: vector-config-volume
+              mountPath: /etc/vector
+            - name: vector-data
+              mountPath: /var/lib/vector
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: vector-config
+          configMap:
+            name: vector-config
+        - name: vector-config-volume
+          emptyDir: {}
+        - name: vector-data
+          emptyDir: {}

@@ -26,16 +26,19 @@ transforms:
     inputs:
       - edge_metrics
     source: |
+      # Add tags if missing
+      if !exists(.tags) { .tags = {} }
+      
       # Get zone from metric tags
       zone = to_string(.tags.zone) ?? null
 
       if zone != null {
       
         # Lookup project from enrichment table
-        record = get_enrichment_table_record!("zone_project", {"zone": zone})
+        record, err = get_enrichment_table_record("zone_project", {"zone": zone})
       
         # Add project tag if found
-        if record != null && exists(record.project) {
+        if err == null && record != null && exists(record.project) {
           .tags.project = to_string(record.project) ?? record.project
         }
       }
@@ -48,3 +51,7 @@ sinks:
     endpoint: ${VICTORIA_METRICS_REMOTE_WRITE_URL}
     healthcheck:
       enabled: false
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block

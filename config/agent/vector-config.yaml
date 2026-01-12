@@ -141,6 +141,10 @@ sinks:
     inputs:
       - dnstap_metrics
     address: ${VECTOR_CENTRAL_ADDRESS}
+    buffer:
+      type: disk
+      max_size: 268435488
+      when_full: block
 
   prometheus:
     type: prometheus_exporter

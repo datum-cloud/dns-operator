@@ -3,16 +3,48 @@ data_dir: /var/lib/vector
 api:
   enabled: false
 
+enrichment_tables:
+  zone_project:
+    type: file
+    file:
+      path: /etc/vector/enrichment/zone_project.csv
+      encoding:
+        type: csv
+        delimiter: ","
+    schema:
+      zone: string
+      project: string
+
 sources:
   edge_metrics:
     type: vector
     address: 0.0.0.0:9000
 
+transforms:
+  add_project_tags:
+    type: remap
+    inputs:
+      - edge_metrics
+    source: |
+      # Get zone from metric tags
+      zone = to_string(.tags.zone) ?? null
+
+      if zone != null {
+      
+        # Lookup project from enrichment table
+        record = get_enrichment_table_record!("zone_project", {"zone": zone})
+      
+        # Add project tag if found
+        if record != null && exists(record.project) {
+          .tags.project = to_string(record.project) ?? record.project
+        }
+      }
+
 sinks:
   victoria_metrics:
     type: prometheus_remote_write
     inputs:
-      - edge_metrics
-    endpoint: ${REMOTE_WRITE_ENDPOINT}
+      - add_project_tags
+    endpoint: ${VICTORIA_METRICS_REMOTE_WRITE_URL}
     healthcheck:
       enabled: false

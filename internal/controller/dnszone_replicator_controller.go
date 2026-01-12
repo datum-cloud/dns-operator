@@ -323,6 +323,9 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 		newCM.Data = map[string]string{
 			"owner": owner,
 		}
+		newCM.Labels = map[string]string{
+			"datum.net/dnszone-accounting": "enabled",
+		}
 		if cerr := r.DownstreamClient.Create(ctx, &newCM); cerr != nil {
 			// A race can occur; if created by another, treat as not owned and let next reconcile decide
 			if apierrors.IsAlreadyExists(cerr) {

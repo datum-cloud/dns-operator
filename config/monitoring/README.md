@@ -32,7 +32,7 @@ open http://localhost:3000
 - Prometheus URL: `${PROMETHEUS_URL}` (default
   `http://prometheus.dns-monitoring.svc:9090`)
 - Loki URL: `${LOKI_URL}` (default `http://loki.dns-monitoring.svc:3100`)
-The central Vector instance uses `REMOTE_WRITE_ENDPOINT` (default
+The central Vector instance uses `VICTORIA_METRICS_REMOTE_WRITE_URL` (default
 `http://prometheus.dns-monitoring.svc:9090/api/v1/write`).
 
 If you want to use an existing cluster Prometheus instead of the bundled one,

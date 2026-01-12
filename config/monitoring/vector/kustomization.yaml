@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - deployment.yaml
   - service.yaml
+  - rbac.yaml
 
 generatorOptions:
   disableNameSuffixHash: true
@@ -12,3 +13,6 @@ configMapGenerator:
   - name: vector-config
     files:
       - config/vector-config.yaml
+  - name: vector-enrichment-scripts
+    files:
+      - scripts/build-zone-project.sh

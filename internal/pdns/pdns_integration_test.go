@@ -45,13 +45,15 @@ func writePDNSAuthWithSQLite(t *testing.T, dir, apiKey string) {
 	}
 }
 
-func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
+const integrationAPIKey = "itest-key"
+
+func startPDNS(t *testing.T) (baseURL string, terminate func()) {
 	t.Helper()
 
 	ctx := context.Background()
 	cfgDir := t.TempDir()
 	dataDir := t.TempDir()
-	writePDNSAuthWithSQLite(t, cfgDir, apiKey)
+	writePDNSAuthWithSQLite(t, cfgDir, integrationAPIKey)
 
 	// Use an official-ish PDNS authoritative image that reads /etc/powerdns/pdns.conf.
 	// You can pin a specific version if you prefer, e.g. powerdns/pdns-auth-46:latest
@@ -76,7 +78,7 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 			},
 			WaitingFor: wait.ForHTTP("/api/v1/servers/localhost").
 				WithPort("8081/tcp").
-				WithHeaders(map[string]string{"X-API-Key": apiKey}).
+				WithHeaders(map[string]string{"X-API-Key": integrationAPIKey}).
 				WithStartupTimeout(2 * time.Minute),
 		},
 		Started: true,
@@ -104,11 +106,10 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 
 func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 	// No t.Parallel(): we’re booting a container.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 
 	zone := "example.test"
 	// Create the zone with some NS via the API create call
@@ -328,11 +329,10 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 
 func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 	zone := "cleanup.test"
 
@@ -436,11 +436,10 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 
 func TestPDNS_TSIGKey_CreateWithSuppliedKey(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 
 	keyMaterial := base64.StdEncoding.EncodeToString([]byte("supersecret"))
@@ -461,11 +460,10 @@ func TestPDNS_TSIGKey_CreateWithSuppliedKey(t *testing.T) {
 
 func TestPDNS_TSIGKey_CreateAndDeleteByID(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 
 	keyMaterial := base64.StdEncoding.EncodeToString([]byte("supersecret"))
@@ -492,11 +490,10 @@ func TestPDNS_TSIGKey_CreateAndDeleteByID(t *testing.T) {
 
 func TestPDNS_TSIGKey_IDHasTrailingDot_AndDuplicateNameIsRejected(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 
 	// Use the same provider-visible name twice.
@@ -531,11 +528,10 @@ func TestPDNS_TSIGKey_IDHasTrailingDot_AndDuplicateNameIsRejected(t *testing.T) 
 
 func TestPDNS_TSIGKey_NameWithTrailingDot_IDHasSingleTrailingDot(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 
 	const nameWithDot = "mytsigkey-trailing-dot."
@@ -567,11 +563,10 @@ func TestPDNS_TSIGKey_NameWithTrailingDot_IDHasSingleTrailingDot(t *testing.T) {
 
 func TestPDNS_TSIGKey_DuplicateNameEvenWithIDFieldIsRejected(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 
 	const name = "mytsigkey-dup-with-id-field"

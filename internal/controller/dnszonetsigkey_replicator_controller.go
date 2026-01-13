@@ -121,12 +121,12 @@ func (r *DNSZoneTSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	// Ensure downstream shadow DNSZoneTSIGKey mirrors upstream spec.
-	if _, err := r.ensureDownstreamDNSZoneTSIGKey(ctx, req.ClusterName, strategy, &upstream); err != nil {
+	if err := r.ensureDownstreamDNSZoneTSIGKey(ctx, req.ClusterName, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// Ensure Secret is present upstream and replicated to downstream so PowerDNS can consume it.
-	if err := r.ensureSecretReplication(ctx, req.ClusterName, upstreamCluster.GetClient(), strategy, &upstream); err != nil {
+	if err := r.ensureSecretReplication(ctx, upstreamCluster.GetClient(), strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -199,10 +199,10 @@ func (r *DNSZoneTSIGKeyReplicator) handleDeletion(ctx context.Context, c client.
 	return true, nil
 }
 
-func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Context, upstreamClusterName string, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) (controllerutil.OperationResult, error) {
+func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Context, upstreamClusterName string, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
 	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
-		return controllerutil.OperationResultNone, err
+		return err
 	}
 
 	shadow := dnsv1alpha1.DNSZoneTSIGKey{}
@@ -224,10 +224,10 @@ func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Co
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
-		return res, cErr
+		return cErr
 	}
 	log.FromContext(ctx).Info("ensured downstream DNSZoneTSIGKey", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
-	return res, nil
+	return nil
 }
 
 func (r *DNSZoneTSIGKeyReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZoneTSIGKey, downstreamStatus *dnsv1alpha1.DNSZoneTSIGKeyStatus) error {
@@ -242,7 +242,7 @@ func (r *DNSZoneTSIGKeyReplicator) updateStatus(ctx context.Context, c client.Cl
 	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
 }
 
-func (r *DNSZoneTSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstreamClusterName string, upstreamClient client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
+func (r *DNSZoneTSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstreamClient client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
 	// Determine the source secret name.
 	secretName := upstream.Name
 	if upstream.Spec.SecretRef != nil && upstream.Spec.SecretRef.Name != "" {

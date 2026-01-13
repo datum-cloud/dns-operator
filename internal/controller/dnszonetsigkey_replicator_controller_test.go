@@ -23,7 +23,6 @@ func TestTsigKeySecretLen_EqualsHashOutputSize(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if got := tsigKeySecretLen(tc.alg); got != tc.want {

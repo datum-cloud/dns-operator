@@ -165,7 +165,7 @@ func (r *DNSZoneTSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	// Resolve key material from Secret (BYO) or generated secret.
-	secretName, keyMaterial, ok, err := r.resolveKeyMaterial(ctx, &tk, string(alg))
+	secretName, keyMaterial, ok, err := r.resolveKeyMaterial(ctx, &tk)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -269,7 +269,7 @@ func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveZoneClass(ctx context.Context,
 	return &zc, true, nil
 }
 
-func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveKeyMaterial(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey, algorithm string) (secretName string, keyMaterial string, ok bool, err error) {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveKeyMaterial(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey) (secretName string, keyMaterial string, ok bool, err error) {
 	// BYO secret: validate schema and do not mutate.
 	if tk.Spec.SecretRef != nil && tk.Spec.SecretRef.Name != "" {
 		var s corev1.Secret

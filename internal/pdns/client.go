@@ -67,16 +67,15 @@ func (e *pdnsAPIError) Error() string {
 	return fmt.Sprintf("error: status %d", e.Status)
 }
 
-func readRespBody(resp *http.Response, max int64) string {
+const maxErrorBodyBytes int64 = 64 << 10 // 64 KiB
+
+func readRespBody(resp *http.Response) string {
 	if resp == nil || resp.Body == nil {
 		return ""
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// don't blow up logs; cap at e.g. 16KB
-	if max <= 0 {
-		max = 16 << 10 // 16 KiB
-	}
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, max))
+	// don't blow up logs; cap response bodies
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 	return strings.TrimSpace(string(b))
 }
 
@@ -160,7 +159,7 @@ func (c *Client) ListTSIGKeys(ctx context.Context) ([]TSIGKey, error) {
 		return nil, err
 	}
 	if resp.StatusCode/100 != 2 {
-		errBody := readRespBody(resp, 64<<10) // closes Body
+		errBody := readRespBody(resp) // closes Body
 		return nil, &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -192,7 +191,7 @@ func (c *Client) CreateTSIGKey(ctx context.Context, name, algorithm, keyMaterial
 		return TSIGKey{}, err
 	}
 	if resp.StatusCode/100 != 2 {
-		errBody := readRespBody(resp, 64<<10) // closes Body
+		errBody := readRespBody(resp) // closes Body
 		return TSIGKey{}, &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -258,7 +257,7 @@ func (c *Client) DeleteTSIGKey(ctx context.Context, id string) error {
 		return nil
 	}
 	if resp.StatusCode/100 != 2 {
-		errBody := readRespBody(resp, 64<<10) // closes Body
+		errBody := readRespBody(resp) // closes Body
 		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
 	_ = resp.Body.Close()
@@ -536,7 +535,7 @@ func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		errBody := readRespBody(resp, 64<<10) // closes Body
+		errBody := readRespBody(resp) // closes Body
 		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}
 	_ = resp.Body.Close()

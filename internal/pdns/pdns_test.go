@@ -593,6 +593,8 @@ func TestTSIGKey_CRUD(t *testing.T) {
 	c := NewClient(srv.URL, "sekret")
 	ctx := context.Background()
 
+	const hmacSHA256 = "hmac-sha256"
+
 	// list
 	keys, err := c.ListTSIGKeys(ctx)
 	if err != nil || len(keys) != 1 || keys[0].Name != "existing" {
@@ -606,8 +608,8 @@ func TestTSIGKey_CRUD(t *testing.T) {
 	}
 
 	// create with key
-	created, err := c.CreateTSIGKey(ctx, "mykey", "hmac-sha256", "b64secret")
-	if err != nil || created.ID == "" || created.Name != "mykey" || created.Algorithm != "hmac-sha256" {
+	created, err := c.CreateTSIGKey(ctx, "mykey", hmacSHA256, "b64secret")
+	if err != nil || created.ID == "" || created.Name != "mykey" || created.Algorithm != hmacSHA256 {
 		t.Fatalf("CreateTSIGKey got=%#v err=%v", created, err)
 	}
 
@@ -618,8 +620,8 @@ func TestTSIGKey_CRUD(t *testing.T) {
 	}
 
 	// ensure recreates when algorithm differs (existing removed, new created)
-	ens2, err := c.EnsureTSIGKey(ctx, "existing", "hmac-sha256", "b64secret2")
-	if err != nil || ens2.ID != "newid" || ens2.Name != "existing" || ens2.Algorithm != "hmac-sha256" {
+	ens2, err := c.EnsureTSIGKey(ctx, "existing", hmacSHA256, "b64secret2")
+	if err != nil || ens2.ID != "newid" || ens2.Name != "existing" || ens2.Algorithm != hmacSHA256 {
 		t.Fatalf("EnsureTSIGKey recreate got=%#v err=%v", ens2, err)
 	}
 

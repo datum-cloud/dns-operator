@@ -121,7 +121,7 @@ func (r *DNSZoneTSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcil
 	}
 
 	// Ensure downstream shadow DNSZoneTSIGKey mirrors upstream spec.
-	if err := r.ensureDownstreamDNSZoneTSIGKey(ctx, req.ClusterName, strategy, &upstream); err != nil {
+	if err := r.ensureDownstreamDNSZoneTSIGKey(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -199,7 +199,7 @@ func (r *DNSZoneTSIGKeyReplicator) handleDeletion(ctx context.Context, c client.
 	return true, nil
 }
 
-func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Context, upstreamClusterName string, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
+func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Context, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
 	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
 		return err

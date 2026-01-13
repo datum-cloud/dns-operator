@@ -262,6 +262,7 @@ bootstrap-downstream: ## Create kind downstream and deploy agent with embedded P
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
 	# Install monitoring stack into downstream
 	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/monitoring $(MAKE) kustomize-apply
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/vector-metrics-gateway $(MAKE) kustomize-apply
 
 .PHONY: bootstrap-upstream
 bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to downstream

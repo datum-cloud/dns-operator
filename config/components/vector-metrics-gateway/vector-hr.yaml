@@ -1,0 +1,314 @@
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: vector-metrics-gateway
+  namespace: dns-agent-system
+spec:
+  interval: 5m
+  timeout: 1m
+
+  chart:
+    spec:
+      chart: vector
+      version: 0.49.x
+      sourceRef:
+        kind: HelmRepository
+        name: vector
+        namespace: dns-agent-system
+      interval: 1h
+  values:
+    fullnameOverride: vector
+    # Role: Aggregator (stateless, can run as Deployment)
+    role: Stateless-Aggregator
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    podDisruptionBudget:
+      enabled: true
+      minAvailable: 1
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 70
+      targetMemoryUtilizationPercentage: 80
+    service:
+      enabled: true
+      type: ClusterIP
+      ports:
+        - name: vector
+          port: 9000
+          targetPort: vector
+          protocol: TCP
+    podMonitor:
+      enabled: true
+      port: internal-promet
+
+    serviceAccount:
+      create: true
+      name: vector
+
+    containerPorts:
+      - name: vector
+        containerPort: 9000
+        protocol: TCP
+
+    serviceHeadless:
+      enabled: false
+
+    defaultVolumes: []
+    defaultVolumeMounts: []
+
+    extraVolumes:
+      - name: vector-enrichment
+        emptyDir: {}
+      - name: vector-enrichment-scripts
+        configMap:
+          name: vector-enrichment-scripts
+          defaultMode: 0555
+      - name: vector-data
+        emptyDir: {}
+
+    extraVolumeMounts:
+      - name: vector-enrichment
+        mountPath: /etc/vector/enrichment
+        readOnly: true
+      - name: vector-data
+        mountPath: /var/lib/vector
+
+    initContainers:
+      - name: init-enrichment-table
+        image: busybox:1.36
+        imagePullPolicy: IfNotPresent
+        command:
+          - sh
+          - -c
+          - |
+            set -eu
+            mkdir -p /enrichment/configmaps
+            # create a valid CSV with headers so Vector can compile VRL at startup
+            printf 'zone,project\n' > /enrichment/zone_project.csv
+        volumeMounts:
+          - name: vector-enrichment
+            mountPath: /enrichment
+
+    extraContainers:
+      - name: zone-accounting-sidecar
+        image: kiwigrid/k8s-sidecar:1.30.9
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: RESOURCE
+            value: configmap
+          - name: NAMESPACE
+            value: datum-downstream-dnszone-accounting
+          - name: LABEL
+            value: datum.net/dnszone-accounting
+          - name: LABEL_VALUE
+            value: enabled
+          - name: FOLDER
+            value: /tmp/
+          - name: UNIQUE_FILENAMES
+            value: "true"
+          - name: METHOD
+            value: WATCH
+          - name: SCRIPT
+            value: /scripts/build-zone-project.sh
+        volumeMounts:
+          - name: vector-enrichment
+            mountPath: /enrichment
+          - name: vector-enrichment-scripts
+            mountPath: /scripts
+            readOnly: true
+
+    customConfig:
+      data_dir: /var/lib/vector
+      api:
+        enabled: false
+      enrichment_tables:
+        zone_project:
+          type: file
+          file:
+            path: /etc/vector/enrichment/zone_project.csv
+            encoding:
+              type: csv
+              delimiter: ","
+          schema:
+            zone: string
+            project: string
+      sources:
+        edge_metrics:
+          type: vector
+          address: 0.0.0.0:9000
+        internal_metrics:
+          type: internal_metrics
+          namespace: vector
+      transforms:
+        add_project_tags:
+          type: remap
+          inputs:
+            - edge_metrics
+          source: |
+            # Add tags if missing
+            if !exists(.tags) { .tags = {} }
+
+            # Get zone from metric tags
+            zone = to_string(.tags.zone) ?? null
+
+            if zone != null {
+
+              # Lookup project from enrichment table
+              record, err = get_enrichment_table_record("zone_project", {"zone": zone})
+
+              # Add project tag if found
+              if err == null && record != null && exists(record.project) {
+                .tags.project = to_string(record.project) ?? record.project
+              }
+            }
+      sinks:
+        victoria_metrics:
+          type: prometheus_remote_write
+          inputs:
+            - add_project_tags
+          endpoint: ${VICTORIA_METRICS_REMOTE_WRITE_URL}
+          batch:
+            max_bytes: 10485760
+            max_events: 10000
+            timeout_secs: 10
+          buffer:
+            type: disk
+            max_size: 10737418240
+            when_full: block
+          request:
+            retry_attempts: 9999999
+            retry_initial_backoff_secs: 1
+            retry_max_duration_secs: 300
+            timeout_secs: 60
+          healthcheck:
+            enabled: true
+          compression: gzip
+
+        # Export metrics over prometheus
+        internal_prometheus:
+          type: prometheus_exporter
+          inputs:
+            - internal_metrics
+          address: 0.0.0.0:9091
+          default_namespace: vector_internal
+
+    extraObjects:
+      - apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: vector-enrichment-scripts
+          namespace: "{{ .Release.Namespace }}"
+        data:
+          build-zone-project.sh: |
+            #!/bin/sh
+            # Build zone_project.csv from datum-downstream-dnszone-accounting ConfigMaps.
+            #
+            # Input file example:
+            #   namespace_<ns>.configmap_<zone>.owner  (content: /<project>/<...>)
+            #
+            # Output CSV:
+            #   zone,project
+            #   <zone>,<project>
+
+            set -eu
+
+            SRC_DIR="${ENRICHMENT_CONFIGMAP_DIR:-/tmp}"
+            OUT_FILE="${ENRICHMENT_OUTPUT_FILE:-/enrichment/zone_project.csv}"
+
+            mkdir -p "$(dirname "$OUT_FILE")"
+
+            tmp="$(mktemp)"
+            trap 'rm -f "$tmp"' EXIT
+
+            # Always produce a valid CSV (header at minimum).
+            printf 'zone,project\n' > "$tmp"
+
+            # Nothing to do if input directory doesn't exist.
+            [ -d "$SRC_DIR" ] || { mv "$tmp" "$OUT_FILE"; exit 0; }
+
+            # Collect rows, then sort+dedupe for stable output.
+            rows="$(mktemp)"
+            trap 'rm -f "$tmp" "$rows"' EXIT
+            : > "$rows"
+
+            for f in "$SRC_DIR"/*.owner; do
+              [ -f "$f" ] || continue
+
+              base="$(basename "$f")"
+              # Expect: namespace_<ns>.configmap_<zone>.owner  -> extract <zone>
+              zone="${base#*configmap_}"
+              zone="${zone%.owner}"
+
+              # Skip if we can't infer zone.
+              [ -n "$zone" ] && [ "$zone" != "$base" ] || continue
+
+              owner="$(tr -d '\r\n' < "$f")"
+              owner="${owner#/}"                # trim leading /
+              project="${owner%%/*}"            # first segment
+
+              [ -n "$project" ] || continue
+
+              printf '%s,%s\n' "$zone" "$project" >> "$rows"
+            done
+
+            # Append sorted unique rows.
+            if [ -s "$rows" ]; then
+              sort "$rows" | uniq >> "$tmp"
+            fi
+
+            mv "$tmp" "$OUT_FILE"
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: vector-configmap-reader
+        rules:
+          - apiGroups: [""]
+            resources: ["configmaps"]
+            verbs: ["get", "list", "watch"]
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: vector-configmap-reader
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: vector-configmap-reader
+        subjects:
+          - kind: ServiceAccount
+            name: vector
+            namespace: "{{ .Release.Namespace }}"
+
+    env:
+      - name: VICTORIA_METRICS_REMOTE_WRITE_URL
+        value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
+      - name: VECTOR_LOG
+        value: "info"
+      - name: VECTOR_LOG_FORMAT
+        value: "json"
+
+    # Persistence for buffer
+    persistence:
+      enabled: true
+      storageClassName: ""  # Use default storage class
+      accessModes:
+        - ReadWriteOnce
+      size: 10Gi
+
+  install:
+    crds: Create
+    createNamespace: false
+
+  upgrade:
+    crds: CreateReplace
+
+  uninstall:
+    keepHistory: false

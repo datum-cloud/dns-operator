@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: tsigkeys.dns.networking.miloapis.com
+  name: dnszonetsigkeys.dns.networking.miloapis.com
 spec:
   group: dns.networking.miloapis.com
   names:
-    kind: TSIGKey
-    listKind: TSIGKeyList
-    plural: tsigkeys
+    kind: DNSZoneTSIGKey
+    listKind: DNSZoneTSIGKeyList
+    plural: dnszonetsigkeys
     shortNames:
     - tsig
-    singular: tsigkey
+    singular: dnszonetsigkey
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -26,7 +26,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: TSIGKey is the Schema for the TSIG keys API.
+        description: DNSZoneTSIGKey is the Schema for the DNSZone TSIG keys API.
         properties:
           apiVersion:
             description: |-
@@ -46,7 +46,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of TSIGKey
+            description: spec defines the desired state of DNSZoneTSIGKey
             properties:
               algorithm:
                 default: hmac-md5
@@ -114,7 +114,7 @@ spec:
             - keyName
             type: object
           status:
-            description: status defines the observed state of TSIGKey
+            description: status defines the observed state of DNSZoneTSIGKey
             properties:
               conditions:
                 description: Conditions tracks state such as Accepted and Programmed
@@ -181,8 +181,8 @@ spec:
                 description: SecretName is the name of the Secret used for this TSIG
                   key (generated or referenced).
                 type: string
-              tsigKeyID:
-                description: TSIGKeyID is the opaque provider identifier for the TSIG
+              tsigKeyName:
+                description: TSIGKeyName is the provider-visible name for this TSIG
                   key.
                 type: string
             type: object

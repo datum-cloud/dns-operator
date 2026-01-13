@@ -2,13 +2,13 @@
 apiVersion: iam.miloapis.com/v1alpha1
 kind: ProtectedResource
 metadata:
-  name: dns.networking.miloapis.com-tsigkey
+  name: dns.networking.miloapis.com-dnszonetsigkey
 spec:
   serviceRef:
     name: "dns.networking.miloapis.com"
-  kind: TSIGKey
-  plural: tsigkeys
-  singular: tsigkey
+  kind: DNSZoneTSIGKey
+  plural: dnszonetsigkeys
+  singular: dnszonetsigkey
   permissions:
     - list
     - get

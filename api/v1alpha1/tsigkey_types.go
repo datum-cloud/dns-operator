@@ -19,8 +19,8 @@ const (
 	TSIGAlgorithmHMACSHA512 TSIGAlgorithm = "hmac-sha512"
 )
 
-// TSIGKeySpec defines the desired state of TSIGKey.
-type TSIGKeySpec struct {
+// DNSZoneTSIGKeySpec defines the desired state of DNSZoneTSIGKey.
+type DNSZoneTSIGKeySpec struct {
 	// DNSZoneRef references the DNSZone (same namespace) this TSIG key is associated with.
 	// The controller derives provider configuration from the referenced zone.
 	// +kubebuilder:validation:Required
@@ -49,15 +49,15 @@ type TSIGKeySpec struct {
 	SecretRef *corev1.LocalObjectReference `json:"secretRef,omitempty"`
 }
 
-// TSIGKeyStatus defines the observed state of TSIGKey.
-type TSIGKeyStatus struct {
+// DNSZoneTSIGKeyStatus defines the observed state of DNSZoneTSIGKey.
+type DNSZoneTSIGKeyStatus struct {
 	// SecretName is the name of the Secret used for this TSIG key (generated or referenced).
 	// +optional
 	SecretName string `json:"secretName,omitempty"`
 
-	// TSIGKeyID is the opaque provider identifier for the TSIG key.
+	// TSIGKeyName is the provider-visible name for this TSIG key.
 	// +optional
-	TSIGKeyID string `json:"tsigKeyID,omitempty"`
+	TSIGKeyName string `json:"tsigKeyName,omitempty"`
 
 	// Conditions tracks state such as Accepted and Programmed readiness.
 	// +listType=map
@@ -71,34 +71,34 @@ type TSIGKeyStatus struct {
 // +kubebuilder:printcolumn:name="Accepted",type=string,JSONPath=.status.conditions[?(@.type=="Accepted")].status
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
 // +kubebuilder:selectablefield:JSONPath=".spec.dnsZoneRef.name"
-// +kubebuilder:resource:path=tsigkeys,shortName=tsig
+// +kubebuilder:resource:path=dnszonetsigkeys,shortName=tsig
 
-// TSIGKey is the Schema for the TSIG keys API.
-type TSIGKey struct {
+// DNSZoneTSIGKey is the Schema for the DNSZone TSIG keys API.
+type DNSZoneTSIGKey struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// metadata is a standard object metadata
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty,omitzero"`
 
-	// spec defines the desired state of TSIGKey
+	// spec defines the desired state of DNSZoneTSIGKey
 	// +required
-	Spec TSIGKeySpec `json:"spec"`
+	Spec DNSZoneTSIGKeySpec `json:"spec"`
 
-	// status defines the observed state of TSIGKey
+	// status defines the observed state of DNSZoneTSIGKey
 	// +optional
-	Status TSIGKeyStatus `json:"status,omitempty,omitzero"`
+	Status DNSZoneTSIGKeyStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
 
-// TSIGKeyList contains a list of TSIGKey.
-type TSIGKeyList struct {
+// DNSZoneTSIGKeyList contains a list of DNSZoneTSIGKey.
+type DNSZoneTSIGKeyList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []TSIGKey `json:"items"`
+	Items           []DNSZoneTSIGKey `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&TSIGKey{}, &TSIGKeyList{})
+	SchemeBuilder.Register(&DNSZoneTSIGKey{}, &DNSZoneTSIGKeyList{})
 }

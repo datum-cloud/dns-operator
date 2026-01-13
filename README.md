@@ -19,14 +19,14 @@ Kubernetes operator for managing DNS zones and records, with a pluggable backend
   - `status.nameservers`: authoritative nameservers (derived from class policy)
   - `status.conditions`: `Accepted`, `Programmed`
 
-- **`TSIGKey`** (namespaced)
+- **`DNSZoneTSIGKey`** (namespaced)
   - Models a DNS TSIG key for authenticating transfer/update operations (e.g., PowerDNS `tsigkeys` API).
   - `spec.dnsZoneRef`: `LocalObjectReference` to a `DNSZone` in the same namespace
   - `spec.keyName`: provider-visible TSIG key name (wire name); immutable
   - `spec.algorithm`: TSIG algorithm (`hmac-md5`, `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`); defaults to `hmac-md5`
   - `spec.secretRef`: optional `LocalObjectReference` to an existing Secret containing TSIG material (BYO secret)
   - `status.secretName`: secret used for this TSIG key (generated or referenced)
-  - `status.tsigKeyID`: provider ID
+  - `status.tsigKeyName`: provider-visible name
   - `status.conditions`: `Accepted`, `Programmed`
 
 - **`DNSRecordSet`** (namespaced)
@@ -117,10 +117,10 @@ spec:
         content: ["192.0.2.10", "192.0.2.11"]
       ttl: 300
 ```
-4. (Optional) Create a `TSIGKey` (see `config/samples/dns_v1alpha1_tsigkey.yaml`):
+4. (Optional) Create a `DNSZoneTSIGKey` (see `config/samples/dns_v1alpha1_dnszonetsigkey.yaml`):
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: TSIGKey
+kind: DNSZoneTSIGKey
 metadata:
   name: example-com-xfr
   namespace: default

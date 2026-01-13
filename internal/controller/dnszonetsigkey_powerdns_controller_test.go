@@ -16,20 +16,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-type fakeTSIGPDNS struct {
+type fakeDNSZoneTSIGPDNS struct {
 	ensureCalls []struct {
 		Name      string
 		Algorithm string
 		Key       string
 	}
-	deleteByIDCalls   []string
-	deleteByNameCalls []string
+	deleteByIDCalls []string
 
 	ensureResp pdnsclient.TSIGKey
 	ensureErr  error
 }
 
-func (f *fakeTSIGPDNS) EnsureTSIGKey(_ context.Context, name, algorithm, keyMaterial string) (pdnsclient.TSIGKey, error) {
+func (f *fakeDNSZoneTSIGPDNS) EnsureTSIGKey(_ context.Context, name, algorithm, keyMaterial string) (pdnsclient.TSIGKey, error) {
 	f.ensureCalls = append(f.ensureCalls, struct {
 		Name      string
 		Algorithm string
@@ -37,16 +36,12 @@ func (f *fakeTSIGPDNS) EnsureTSIGKey(_ context.Context, name, algorithm, keyMate
 	}{name, algorithm, keyMaterial})
 	return f.ensureResp, f.ensureErr
 }
-func (f *fakeTSIGPDNS) DeleteTSIGKey(_ context.Context, id string) error {
+func (f *fakeDNSZoneTSIGPDNS) DeleteTSIGKey(_ context.Context, id string) error {
 	f.deleteByIDCalls = append(f.deleteByIDCalls, id)
 	return nil
 }
-func (f *fakeTSIGPDNS) DeleteTSIGKeyByName(_ context.Context, name string) error {
-	f.deleteByNameCalls = append(f.deleteByNameCalls, name)
-	return nil
-}
 
-func newDNSOnlyScheme(t *testing.T) *runtime.Scheme {
+func newDNSOnlySchemeTSIG(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(s); err != nil {
@@ -58,10 +53,10 @@ func newDNSOnlyScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func TestTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
+func TestDNSZoneTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
 	t.Parallel()
 
-	scheme := newDNSOnlyScheme(t)
+	scheme := newDNSOnlySchemeTSIG(t)
 	zone, zc := newZoneAndClass("example-com")
 
 	secret := &corev1.Secret{
@@ -72,24 +67,25 @@ func TestTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
 		},
 	}
 
-	tk := &dnsv1alpha1.TSIGKey{
+	tk := &dnsv1alpha1.DNSZoneTSIGKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "xfr", Namespace: ns},
-		Spec: dnsv1alpha1.TSIGKeySpec{
+		Spec: dnsv1alpha1.DNSZoneTSIGKeySpec{
 			DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name},
-			KeyName:    "datum-example-com-xfr",
+			KeyName:    "xfr",
 			Algorithm:  dnsv1alpha1.TSIGAlgorithmHMACSHA256,
 			SecretRef:  &corev1.LocalObjectReference{Name: secret.Name},
 		},
 	}
 
-	pdns := &fakeTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: "pdns-id", Name: tk.Spec.KeyName, Algorithm: "hmac-sha256"}}
+	wantPDNSName := "xfr.example.com"
+	pdns := &fakeDNSZoneTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: wantPDNSName, Name: wantPDNSName, Algorithm: "hmac-sha256"}}
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&dnsv1alpha1.TSIGKey{}).
+		WithStatusSubresource(&dnsv1alpha1.DNSZoneTSIGKey{}).
 		WithObjects(zone, zc, secret, tk).
 		Build()
 
-	r := &controller.TSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
+	r := &controller.DNSZoneTSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
 	// Reconcile is multi-step (finalizer, ownerrefs, etc). Run a few times to converge.
 	for i := 0; i < 5; i++ {
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tk)})
@@ -98,7 +94,7 @@ func TestTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
 		}
 	}
 
-	var got dnsv1alpha1.TSIGKey
+	var got dnsv1alpha1.DNSZoneTSIGKey
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(tk), &got); err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -109,8 +105,8 @@ func TestTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
 	if cond := apimeta.FindStatusCondition(got.Status.Conditions, controller.CondProgrammed); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("Programmed not true: %#v", got.Status.Conditions)
 	}
-	if got.Status.TSIGKeyID != "pdns-id" {
-		t.Fatalf("expected tsigKeyID=pdns-id, got %q", got.Status.TSIGKeyID)
+	if got.Status.TSIGKeyName != wantPDNSName {
+		t.Fatalf("expected tsigKeyName=%q, got %q", wantPDNSName, got.Status.TSIGKeyName)
 	}
 	if got.Status.SecretName != secret.Name {
 		t.Fatalf("expected secretName=%q, got %q", secret.Name, got.Status.SecretName)
@@ -118,25 +114,28 @@ func TestTSIGKeyPowerDNS_ByoSecret_ValidatesAndPrograms(t *testing.T) {
 	if len(pdns.ensureCalls) < 1 {
 		t.Fatalf("expected at least 1 ensure call, got %d", len(pdns.ensureCalls))
 	}
+	if gotCall := pdns.ensureCalls[0].Name; gotCall != wantPDNSName {
+		t.Fatalf("expected EnsureTSIGKey name=%q, got %q", wantPDNSName, gotCall)
+	}
 }
 
-func TestTSIGKeyPowerDNS_ByoSecret_InvalidSchemaRejected(t *testing.T) {
+func TestDNSZoneTSIGKeyPowerDNS_ByoSecret_InvalidSchemaRejected(t *testing.T) {
 	t.Parallel()
 
-	scheme := newDNSOnlyScheme(t)
+	scheme := newDNSOnlySchemeTSIG(t)
 	zone, zc := newZoneAndClass("example-com")
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "byo", Namespace: ns},
 		Type:       corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
+		Data:       map[string][]byte{
 			// missing required secret key
 		},
 	}
 
-	tk := &dnsv1alpha1.TSIGKey{
+	tk := &dnsv1alpha1.DNSZoneTSIGKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "xfr", Namespace: ns},
-		Spec: dnsv1alpha1.TSIGKeySpec{
+		Spec: dnsv1alpha1.DNSZoneTSIGKeySpec{
 			DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name},
 			KeyName:    "datum-example-com-xfr",
 			Algorithm:  dnsv1alpha1.TSIGAlgorithmHMACSHA256,
@@ -144,14 +143,14 @@ func TestTSIGKeyPowerDNS_ByoSecret_InvalidSchemaRejected(t *testing.T) {
 		},
 	}
 
-	pdns := &fakeTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: "pdns-id"}}
+	pdns := &fakeDNSZoneTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: "pdns-id"}}
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&dnsv1alpha1.TSIGKey{}).
+		WithStatusSubresource(&dnsv1alpha1.DNSZoneTSIGKey{}).
 		WithObjects(zone, zc, secret, tk).
 		Build()
 
-	r := &controller.TSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
+	r := &controller.DNSZoneTSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
 	for i := 0; i < 5; i++ {
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tk)})
 		if err != nil {
@@ -159,7 +158,7 @@ func TestTSIGKeyPowerDNS_ByoSecret_InvalidSchemaRejected(t *testing.T) {
 		}
 	}
 
-	var got dnsv1alpha1.TSIGKey
+	var got dnsv1alpha1.DNSZoneTSIGKey
 	_ = c.Get(context.Background(), client.ObjectKeyFromObject(tk), &got)
 	cond := apimeta.FindStatusCondition(got.Status.Conditions, controller.CondAccepted)
 	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != controller.ReasonInvalidSecret {
@@ -170,17 +169,17 @@ func TestTSIGKeyPowerDNS_ByoSecret_InvalidSchemaRejected(t *testing.T) {
 	}
 }
 
-func TestTSIGKeyPowerDNS_GeneratesSecretAndPrograms(t *testing.T) {
+func TestDNSZoneTSIGKeyPowerDNS_GeneratesSecretAndPrograms(t *testing.T) {
 	t.Parallel()
 
-	scheme := newDNSOnlyScheme(t)
+	scheme := newDNSOnlySchemeTSIG(t)
 	zone, zc := newZoneAndClass("example-com")
 
-	tk := &dnsv1alpha1.TSIGKey{
+	tk := &dnsv1alpha1.DNSZoneTSIGKey{
 		ObjectMeta: metav1.ObjectMeta{Name: "xfr", Namespace: ns},
-		Spec: dnsv1alpha1.TSIGKeySpec{
+		Spec: dnsv1alpha1.DNSZoneTSIGKeySpec{
 			DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name},
-			KeyName:    "datum-example-com-xfr",
+			KeyName:    "xfr",
 			Algorithm:  dnsv1alpha1.TSIGAlgorithmHMACSHA256,
 			// SecretRef omitted => generated
 		},
@@ -196,14 +195,15 @@ func TestTSIGKeyPowerDNS_GeneratesSecretAndPrograms(t *testing.T) {
 		},
 	}
 
-	pdns := &fakeTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: "pdns-id", Name: tk.Spec.KeyName, Algorithm: "hmac-sha256"}}
+	wantPDNSName := "xfr.example.com"
+	pdns := &fakeDNSZoneTSIGPDNS{ensureResp: pdnsclient.TSIGKey{ID: wantPDNSName, Name: wantPDNSName, Algorithm: "hmac-sha256"}}
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
-		WithStatusSubresource(&dnsv1alpha1.TSIGKey{}).
+		WithStatusSubresource(&dnsv1alpha1.DNSZoneTSIGKey{}).
 		WithObjects(zone, zc, tk, secret).
 		Build()
 
-	r := &controller.TSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
+	r := &controller.DNSZoneTSIGKeyPowerDNSReconciler{Client: c, Scheme: scheme, PDNS: pdns}
 	for i := 0; i < 5; i++ {
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(tk)})
 		if err != nil {
@@ -211,7 +211,7 @@ func TestTSIGKeyPowerDNS_GeneratesSecretAndPrograms(t *testing.T) {
 		}
 	}
 
-	var got dnsv1alpha1.TSIGKey
+	var got dnsv1alpha1.DNSZoneTSIGKey
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(tk), &got); err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -221,6 +221,7 @@ func TestTSIGKeyPowerDNS_GeneratesSecretAndPrograms(t *testing.T) {
 	if len(pdns.ensureCalls) < 1 {
 		t.Fatalf("expected PDNS ensure called")
 	}
+	if gotCall := pdns.ensureCalls[0].Name; gotCall != wantPDNSName {
+		t.Fatalf("expected EnsureTSIGKey name=%q, got %q", wantPDNSName, gotCall)
+	}
 }
-
-

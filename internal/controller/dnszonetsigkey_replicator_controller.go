@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,21 +27,21 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-const tsigKeyFinalizer = "dns.networking.miloapis.com/finalize-tsigkey"
+const dnsZoneTSIGKeyFinalizer = "dns.networking.miloapis.com/finalize-dnszonetsigkey"
 
-// TSIGKeyReplicator mirrors TSIGKey resources into the downstream cluster and reflects downstream status back upstream.
-type TSIGKeyReplicator struct {
+// DNSZoneTSIGKeyReplicator mirrors DNSZoneTSIGKey resources into the downstream cluster and reflects downstream status back upstream.
+type DNSZoneTSIGKeyReplicator struct {
 	DownstreamClient client.Client
 
 	mgr mcmanager.Manager
 }
 
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys/finalizers,verbs=update
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 
-func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
+func (r *DNSZoneTSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
 	lg.Info("reconcile start")
@@ -52,7 +51,7 @@ func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
-	var upstream dnsv1alpha1.TSIGKey
+	var upstream dnsv1alpha1.DNSZoneTSIGKey
 	if err := upstreamCluster.GetClient().Get(ctx, req.NamespacedName, &upstream); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -60,9 +59,9 @@ func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
 	// Ensure upstream finalizer (non-deletion path)
-	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, tsigKeyFinalizer) {
+	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, dnsZoneTSIGKeyFinalizer) {
 		base := upstream.DeepCopy()
-		controllerutil.AddFinalizer(&upstream, tsigKeyFinalizer)
+		controllerutil.AddFinalizer(&upstream, dnsZoneTSIGKeyFinalizer)
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -121,8 +120,8 @@ func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure downstream shadow TSIGKey mirrors upstream spec.
-	if _, err := r.ensureDownstreamTSIGKey(ctx, req.ClusterName, strategy, &upstream); err != nil {
+	// Ensure downstream shadow DNSZoneTSIGKey mirrors upstream spec.
+	if _, err := r.ensureDownstreamDNSZoneTSIGKey(ctx, req.ClusterName, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -136,7 +135,7 @@ func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if mdErr != nil {
 		return ctrl.Result{}, mdErr
 	}
-	var shadow dnsv1alpha1.TSIGKey
+	var shadow dnsv1alpha1.DNSZoneTSIGKey
 	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -148,44 +147,65 @@ func (r *TSIGKeyReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	return ctrl.Result{}, nil
 }
 
-func (r *TSIGKeyReplicator) handleDeletion(ctx context.Context, c client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.TSIGKey) (done bool, err error) {
-	if !controllerutil.ContainsFinalizer(upstream, tsigKeyFinalizer) {
+func (r *DNSZoneTSIGKeyReplicator) handleDeletion(ctx context.Context, c client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) (done bool, err error) {
+	if !controllerutil.ContainsFinalizer(upstream, dnsZoneTSIGKeyFinalizer) {
 		return true, nil
+	}
+
+	// Best-effort explicit deletes.
+	secretName := upstream.Name
+	generatedSecret := true
+	if upstream.Spec.SecretRef != nil && upstream.Spec.SecretRef.Name != "" {
+		generatedSecret = false
+		secretName = upstream.Spec.SecretRef.Name
 	}
 
 	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
 		return false, err
 	}
-	var shadow dnsv1alpha1.TSIGKey
+
+	// Only delete the Secret in generated-secret mode. In BYO mode, multiple
+	// DNSZoneTSIGKeys can reference the same Secret name, so deleting it here
+	// would break other keys.
+	if generatedSecret {
+		var secret corev1.Secret
+		secret.SetNamespace(md.Namespace)
+		secret.SetName(secretName)
+		if err := r.DownstreamClient.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	}
+
+	// Then delete the downstream shadow.
+	var shadow dnsv1alpha1.DNSZoneTSIGKey
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 	if err := r.DownstreamClient.Delete(ctx, &shadow); err != nil && !apierrors.IsNotFound(err) {
 		return false, err
 	}
 
-	// Ensure it's gone before removing finalizer.
-	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err == nil {
-		return false, nil
-	} else if !apierrors.IsNotFound(err) {
+	// Finally delete the anchor ConfigMap for this upstream object. This drives GC for
+	// downstream artifacts (shadow + replicated Secret) that are owned via the anchor.
+	if err := strategy.DeleteAnchorForObject(ctx, upstream); err != nil {
 		return false, err
 	}
 
 	base := upstream.DeepCopy()
-	controllerutil.RemoveFinalizer(upstream, tsigKeyFinalizer)
+	controllerutil.RemoveFinalizer(upstream, dnsZoneTSIGKeyFinalizer)
 	if err := c.Patch(ctx, upstream, client.MergeFrom(base)); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func (r *TSIGKeyReplicator) ensureDownstreamTSIGKey(ctx context.Context, upstreamClusterName string, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.TSIGKey) (controllerutil.OperationResult, error) {
+func (r *DNSZoneTSIGKeyReplicator) ensureDownstreamDNSZoneTSIGKey(ctx context.Context, upstreamClusterName string, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) (controllerutil.OperationResult, error) {
 	md, err := strategy.ObjectMetaFromUpstreamObject(ctx, upstream)
 	if err != nil {
 		return controllerutil.OperationResultNone, err
 	}
 
-	shadow := dnsv1alpha1.TSIGKey{}
+	shadow := dnsv1alpha1.DNSZoneTSIGKey{}
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
@@ -200,17 +220,17 @@ func (r *TSIGKeyReplicator) ensureDownstreamTSIGKey(ctx context.Context, upstrea
 		}
 
 		// Set owner reference using the mapped-namespace strategy (anchor-based).
-		// NOTE: We intentionally do not manage anchor deletion here.
+		// Anchor deletion is handled in the upstream deletion path (handleDeletion).
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
 		return res, cErr
 	}
-	log.FromContext(ctx).Info("ensured downstream TSIGKey", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
+	log.FromContext(ctx).Info("ensured downstream DNSZoneTSIGKey", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
 	return res, nil
 }
 
-func (r *TSIGKeyReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.TSIGKey, downstreamStatus *dnsv1alpha1.TSIGKeyStatus) error {
+func (r *DNSZoneTSIGKeyReplicator) updateStatus(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZoneTSIGKey, downstreamStatus *dnsv1alpha1.DNSZoneTSIGKeyStatus) error {
 	if downstreamStatus == nil {
 		return nil
 	}
@@ -222,7 +242,7 @@ func (r *TSIGKeyReplicator) updateStatus(ctx context.Context, c client.Client, u
 	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
 }
 
-func (r *TSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstreamClusterName string, upstreamClient client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.TSIGKey) error {
+func (r *DNSZoneTSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstreamClusterName string, upstreamClient client.Client, strategy downstreamclient.ResourceStrategy, upstream *dnsv1alpha1.DNSZoneTSIGKey) error {
 	// Determine the source secret name.
 	secretName := upstream.Name
 	if upstream.Spec.SecretRef != nil && upstream.Spec.SecretRef.Name != "" {
@@ -258,7 +278,7 @@ func (r *TSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstrea
 					src.Data = map[string][]byte{}
 				}
 				if len(src.Data["secret"]) == 0 {
-					raw := make([]byte, 32)
+					raw := make([]byte, tsigKeySecretLen(alg))
 					if _, err := rand.Read(raw); err != nil {
 						return err
 					}
@@ -279,9 +299,9 @@ func (r *TSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstrea
 	}
 	dsClient := strategy.GetClient() // ensures downstream namespace exists on Create
 
-	// Fetch downstream TSIGKey shadow for owner reference (GC in downstream).
-	var shadow dnsv1alpha1.TSIGKey
-	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: upstream.Name}, &shadow); err != nil {
+	// Fetch downstream DNSZoneTSIGKey shadow for owner reference (GC in downstream).
+	var shadow dnsv1alpha1.DNSZoneTSIGKey
+	if err := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow); err != nil {
 		return err
 	}
 
@@ -296,51 +316,38 @@ func (r *TSIGKeyReplicator) ensureSecretReplication(ctx context.Context, upstrea
 		// Copy secret bytes exactly.
 		dst.Data["secret"] = append([]byte(nil), src.Data["secret"]...)
 
-		// GC: owned by downstream TSIGKey shadow.
-		if err := controllerutil.SetControllerReference(&shadow, dst, dsClient.Scheme()); err != nil {
-			// If the secret is already controlled by something else, leave it and error to surface issue.
+		// Set owner reference using the mapped-namespace strategy (anchor-based).
+		// Anchor deletion is handled in the upstream deletion path (handleDeletion).
+		if err := strategy.SetControllerReference(ctx, upstream, dst); err != nil {
 			return err
 		}
-
-		// Stamp upstream-owner labels WITHOUT adding the anchor ConfigMap ownerRef.
-		// The Secret must be GC'd when the downstream TSIGKey shadow is deleted.
-		labels := dst.GetLabels()
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		labels[downstreamclient.UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(upstreamClusterName, "/", "_"))
-		labels[downstreamclient.UpstreamOwnerGroupLabel] = dnsv1alpha1.GroupVersion.Group
-		labels[downstreamclient.UpstreamOwnerKindLabel] = "TSIGKey"
-		labels[downstreamclient.UpstreamOwnerNameLabel] = upstream.Name
-		labels[downstreamclient.UpstreamOwnerNamespaceLabel] = upstream.Namespace
-		dst.SetLabels(labels)
 
 		return nil
 	})
 	return err
 }
 
-func (r *TSIGKeyReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
+func (r *DNSZoneTSIGKeyReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl cluster.Cluster) error {
 	r.mgr = mgr
 
 	b := builder.ControllerManagedBy(mgr)
-	b = b.For(&dnsv1alpha1.TSIGKey{})
+	b = b.For(&dnsv1alpha1.DNSZoneTSIGKey{})
 
 	src := mcsource.TypedKind(
-		&dnsv1alpha1.TSIGKey{},
-		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.TSIGKey](&dnsv1alpha1.TSIGKey{}),
+		&dnsv1alpha1.DNSZoneTSIGKey{},
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.DNSZoneTSIGKey](&dnsv1alpha1.DNSZoneTSIGKey{}),
 	)
 	clusterSrc, err := src.ForCluster("", downstreamCl)
 	if err != nil {
-		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("TSIGKey").String(), err)
+		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("DNSZoneTSIGKey").String(), err)
 	}
 	b = b.WatchesRawSource(clusterSrc)
 
-	// Also watch downstream Secrets (generated or BYO replicated) to ensure upstream TSIGKey reconcile
+	// Also watch downstream Secrets (generated or BYO replicated) to ensure upstream DNSZoneTSIGKey reconcile
 	// happens when secret material changes (or is first created).
 	secretSrc := mcsource.TypedKind(
 		&corev1.Secret{},
-		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*corev1.Secret](&dnsv1alpha1.TSIGKey{}),
+		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*corev1.Secret](&dnsv1alpha1.DNSZoneTSIGKey{}),
 	)
 	secretClusterSrc, err := secretSrc.ForCluster("", downstreamCl)
 	if err != nil {
@@ -348,5 +355,27 @@ func (r *TSIGKeyReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 	}
 	b = b.WatchesRawSource(secretClusterSrc)
 
-	return b.Named("tsigkey-replicator").Complete(r)
+	return b.Named("dnszonetsigkey-replicator").Complete(r)
+}
+
+func tsigKeySecretLen(alg dnsv1alpha1.TSIGAlgorithm) int {
+	// Align with HMAC guidance: key length == hash output size.
+	// (RFC 2845 for TSIG; RFC 4635 adds the SHA2-based TSIG algorithms.)
+	switch alg {
+	case dnsv1alpha1.TSIGAlgorithmHMACMD5:
+		return 16
+	case dnsv1alpha1.TSIGAlgorithmHMACSHA1:
+		return 20
+	case dnsv1alpha1.TSIGAlgorithmHMACSHA224:
+		return 28
+	case dnsv1alpha1.TSIGAlgorithmHMACSHA256:
+		return 32
+	case dnsv1alpha1.TSIGAlgorithmHMACSHA384:
+		return 48
+	case dnsv1alpha1.TSIGAlgorithmHMACSHA512:
+		return 64
+	default:
+		// Unknown/empty algorithm: keep existing behavior (safe default).
+		return 32
+	}
 }

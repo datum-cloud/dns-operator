@@ -231,11 +231,11 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSetPowerDNS")
 			os.Exit(1)
 		}
-		if err := (&controller.TSIGKeyPowerDNSReconciler{
+		if err := (&controller.DNSZoneTSIGKeyPowerDNSReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
 		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "TSIGKeyPowerDNS")
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneTSIGKeyPowerDNS")
 			os.Exit(1)
 		}
 
@@ -313,10 +313,10 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscoveryReplicator")
 			os.Exit(1)
 		}
-		if err := (&controller.TSIGKeyReplicator{
+		if err := (&controller.DNSZoneTSIGKeyReplicator{
 			DownstreamClient: downstreamCluster.GetClient(),
 		}).SetupWithManager(mcmgr, downstreamCluster); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "TSIGKeyReplicator")
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneTSIGKeyReplicator")
 			os.Exit(1)
 		}
 

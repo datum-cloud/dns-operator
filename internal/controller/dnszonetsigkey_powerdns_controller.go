@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -22,61 +23,94 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const tsigKeyPowerDNSFinalizer = "dns.networking.miloapis.com/finalize-tsigkey-powerdns"
+const dnsZoneTSIGKeyPowerDNSFinalizer = "dns.networking.miloapis.com/finalize-dnszonetsigkey-powerdns"
 
-// TSIGKeyPDNS is the subset of the PowerDNS client used by the TSIGKey controller.
-type TSIGKeyPDNS interface {
+// DNSZoneTSIGKeyPDNS is the subset of the PowerDNS client used by the DNSZoneTSIGKey controller.
+type DNSZoneTSIGKeyPDNS interface {
 	EnsureTSIGKey(ctx context.Context, name, algorithm, keyMaterial string) (pdnsclient.TSIGKey, error)
 	DeleteTSIGKey(ctx context.Context, id string) error
-	DeleteTSIGKeyByName(ctx context.Context, name string) error
 }
 
-// TSIGKeyPowerDNSReconciler programs TSIG keys into PowerDNS.
-type TSIGKeyPowerDNSReconciler struct {
+// DNSZoneTSIGKeyPowerDNSReconciler programs TSIG keys into PowerDNS.
+type DNSZoneTSIGKeyPowerDNSReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
 	// PDNS is optional; when nil, SetupWithManager constructs one from env via pdnsclient.NewFromEnv().
-	PDNS TSIGKeyPDNS
+	PDNS DNSZoneTSIGKeyPDNS
 }
 
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=tsigkeys/finalizers,verbs=update
+func qualifyTSIGKeyName(keyName, zoneDomain string) string {
+	// PowerDNS TSIG keys are stored by (DNS) name. Ensure we always send an FQDN
+	// for the key name by appending the zone domain when keyName is not already
+	// zone-qualified.
+	//
+	// Trailing dots are optional; preserve whether the user supplied one.
+	keyName = strings.TrimSpace(keyName)
+	zoneDomain = strings.TrimSpace(zoneDomain)
+	if keyName == "" || zoneDomain == "" {
+		return keyName
+	}
+
+	hasTrailingDot := strings.HasSuffix(keyName, ".")
+	keyNoDot := strings.TrimSuffix(keyName, ".")
+	zoneNoDot := strings.TrimSuffix(zoneDomain, ".")
+
+	lKey := strings.ToLower(keyNoDot)
+	lZone := strings.ToLower(zoneNoDot)
+
+	// Already qualified for this zone (or equals zone itself).
+	if lKey == lZone || strings.HasSuffix(lKey, "."+lZone) {
+		if hasTrailingDot {
+			return keyNoDot + "."
+		}
+		return keyNoDot
+	}
+
+	qualified := keyNoDot + "." + zoneNoDot
+	if hasTrailingDot {
+		return qualified + "."
+	}
+	return qualified
+}
+
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonetsigkeys/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszoneclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
-func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx).WithValues("namespace", req.Namespace, "name", req.Name)
-	logger.Info("tsigkey powerdns reconcile start")
+	logger.Info("dnszonetsigkey powerdns reconcile start")
 
-	var tk dnsv1alpha1.TSIGKey
+	var tk dnsv1alpha1.DNSZoneTSIGKey
 	if err := r.Get(ctx, req.NamespacedName, &tk); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Deletion path: delete from PDNS, then drop finalizer.
 	if !tk.DeletionTimestamp.IsZero() {
-		if controllerutil.ContainsFinalizer(&tk, tsigKeyPowerDNSFinalizer) {
+		if controllerutil.ContainsFinalizer(&tk, dnsZoneTSIGKeyPowerDNSFinalizer) {
 			pdnsCli := r.PDNS
 			if pdnsCli == nil {
 				return ctrl.Result{}, fmt.Errorf("pdns client is nil (SetupWithManager not called?)")
 			}
 			// Best-effort cleanup by ID.
-			if tk.Status.TSIGKeyID != "" {
-				if err := pdnsCli.DeleteTSIGKey(ctx, tk.Status.TSIGKeyID); err != nil {
-					logger.Error(err, "failed to delete PDNS TSIG key by id; will retry", "id", tk.Status.TSIGKeyID)
+			if tk.Status.TSIGKeyName != "" {
+				if err := pdnsCli.DeleteTSIGKey(ctx, tk.Status.TSIGKeyName); err != nil {
+					logger.Error(err, "failed to delete PDNS TSIG key by id; will retry", "id", tk.Status.TSIGKeyName)
 					return ctrl.Result{}, err
 				}
 			} else {
 				// If we don't have a provider ID, we can't safely delete an external key.
 				// This commonly means the key was never successfully programmed.
-				logger.Info("skipping PDNS TSIG key delete (missing status.tsigKeyID)")
+				logger.Info("skipping PDNS TSIG key delete (missing status.tsigKeyName)")
 			}
 
 			base := tk.DeepCopy()
-			controllerutil.RemoveFinalizer(&tk, tsigKeyPowerDNSFinalizer)
+			controllerutil.RemoveFinalizer(&tk, dnsZoneTSIGKeyPowerDNSFinalizer)
 			if err := r.Patch(ctx, &tk, client.MergeFrom(base)); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -85,16 +119,16 @@ func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Ensure finalizer while active.
-	if !controllerutil.ContainsFinalizer(&tk, tsigKeyPowerDNSFinalizer) {
+	if !controllerutil.ContainsFinalizer(&tk, dnsZoneTSIGKeyPowerDNSFinalizer) {
 		base := tk.DeepCopy()
-		controllerutil.AddFinalizer(&tk, tsigKeyPowerDNSFinalizer)
+		controllerutil.AddFinalizer(&tk, dnsZoneTSIGKeyPowerDNSFinalizer)
 		if err := r.Patch(ctx, &tk, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	// Resolve zone + class and ensure this TSIGKey is for a PowerDNS zone.
+	// Resolve zone + class and ensure this DNSZoneTSIGKey is for a PowerDNS zone.
 	zone, ok, err := r.resolveZone(ctx, &tk)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -112,7 +146,7 @@ func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure the DNSZone is an owner of this TSIGKey so GC cascades on zone deletion.
+	// Ensure the DNSZone is an owner of this DNSZoneTSIGKey so GC cascades on zone deletion.
 	if !metav1.IsControlledBy(&tk, zone) {
 		base := tk.DeepCopy()
 		if err := controllerutil.SetControllerReference(zone, &tk, r.Scheme); err != nil {
@@ -135,12 +169,9 @@ func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !ok {
-		// invalid secret schema etc; Accepted updated
-		return ctrl.Result{}, nil
-	}
 
-	// Update status.secretName if needed.
+	// Update status.secretName if needed (even when the Secret is not present yet).
+	// This ensures Secret watch events can enqueue the owning DNSZoneTSIGKey.
 	if secretName != "" && tk.Status.SecretName != secretName {
 		base := tk.DeepCopy()
 		tk.Status.SecretName = secretName
@@ -149,21 +180,28 @@ func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		// re-fetch not required; continue
 	}
+	if !ok {
+		// invalid secret schema etc; Accepted updated
+		return ctrl.Result{}, nil
+	}
 
 	if err := r.setAcceptedCondition(ctx, &tk, metav1.ConditionTrue, ReasonAccepted, "Accepted for zone"); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	created, pdnsErr := r.PDNS.EnsureTSIGKey(ctx, tk.Spec.KeyName, string(alg), keyMaterial)
+	ensureName := qualifyTSIGKeyName(tk.Spec.KeyName, zone.Spec.DomainName)
+	created, pdnsErr := r.PDNS.EnsureTSIGKey(ctx, ensureName, string(alg), keyMaterial)
 	if pdnsErr != nil {
 		_ = r.setProgrammedCondition(ctx, &tk, metav1.ConditionFalse, ReasonPDNSError, pdnsErr.Error())
 		return ctrl.Result{}, pdnsErr
 	}
 
-	// Persist provider ID.
-	if created.ID != "" && tk.Status.TSIGKeyID != created.ID {
+	// Persist provider identifier (PowerDNS ID). This is 1:1 with the TSIG key name in PDNS,
+	// but we expose it under status.tsigKeyName to align with the upstream "wire name".
+	id := created.ID
+	if id != "" && tk.Status.TSIGKeyName != id {
 		base := tk.DeepCopy()
-		tk.Status.TSIGKeyID = created.ID
+		tk.Status.TSIGKeyName = id
 		if err := r.Status().Patch(ctx, &tk, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -173,11 +211,11 @@ func (r *TSIGKeyPowerDNSReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("tsigkey powerdns reconcile complete")
+	logger.Info("dnszonetsigkey powerdns reconcile complete")
 	return ctrl.Result{}, nil
 }
 
-func (r *TSIGKeyPowerDNSReconciler) resolveZone(ctx context.Context, tk *dnsv1alpha1.TSIGKey) (*dnsv1alpha1.DNSZone, bool, error) {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveZone(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey) (*dnsv1alpha1.DNSZone, bool, error) {
 	// Zone lookup
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, client.ObjectKey{Namespace: tk.Namespace, Name: tk.Spec.DNSZoneRef.Name}, &zone); err != nil {
@@ -200,7 +238,7 @@ func (r *TSIGKeyPowerDNSReconciler) resolveZone(ctx context.Context, tk *dnsv1al
 	return &zone, true, nil
 }
 
-func (r *TSIGKeyPowerDNSReconciler) resolveZoneClass(ctx context.Context, tk *dnsv1alpha1.TSIGKey, zone *dnsv1alpha1.DNSZone) (*dnsv1alpha1.DNSZoneClass, bool, error) {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveZoneClass(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey, zone *dnsv1alpha1.DNSZone) (*dnsv1alpha1.DNSZoneClass, bool, error) {
 	if zone.Spec.DNSZoneClassName == "" {
 		if err := r.setAcceptedCondition(ctx, tk, metav1.ConditionFalse, ReasonPending,
 			fmt.Sprintf("DNSZone %q has no class yet", zone.Name)); err != nil {
@@ -231,7 +269,7 @@ func (r *TSIGKeyPowerDNSReconciler) resolveZoneClass(ctx context.Context, tk *dn
 	return &zc, true, nil
 }
 
-func (r *TSIGKeyPowerDNSReconciler) resolveKeyMaterial(ctx context.Context, tk *dnsv1alpha1.TSIGKey, algorithm string) (secretName string, keyMaterial string, ok bool, err error) {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) resolveKeyMaterial(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey, algorithm string) (secretName string, keyMaterial string, ok bool, err error) {
 	// BYO secret: validate schema and do not mutate.
 	if tk.Spec.SecretRef != nil && tk.Spec.SecretRef.Name != "" {
 		var s corev1.Secret
@@ -271,7 +309,7 @@ func (r *TSIGKeyPowerDNSReconciler) resolveKeyMaterial(ctx context.Context, tk *
 	return secretName, base64.StdEncoding.EncodeToString(secB), true, nil
 }
 
-func (r *TSIGKeyPowerDNSReconciler) setAcceptedCondition(ctx context.Context, tk *dnsv1alpha1.TSIGKey, status metav1.ConditionStatus, reason, message string) error {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) setAcceptedCondition(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey, status metav1.ConditionStatus, reason, message string) error {
 	base := tk.DeepCopy()
 	cond := metav1.Condition{
 		Type:               CondAccepted,
@@ -287,7 +325,7 @@ func (r *TSIGKeyPowerDNSReconciler) setAcceptedCondition(ctx context.Context, tk
 	return r.Status().Patch(ctx, tk, client.MergeFrom(base))
 }
 
-func (r *TSIGKeyPowerDNSReconciler) setProgrammedCondition(ctx context.Context, tk *dnsv1alpha1.TSIGKey, status metav1.ConditionStatus, reason, message string) error {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) setProgrammedCondition(ctx context.Context, tk *dnsv1alpha1.DNSZoneTSIGKey, status metav1.ConditionStatus, reason, message string) error {
 	base := tk.DeepCopy()
 	cond := metav1.Condition{
 		Type:               CondProgrammed,
@@ -303,7 +341,7 @@ func (r *TSIGKeyPowerDNSReconciler) setProgrammedCondition(ctx context.Context, 
 	return r.Status().Patch(ctx, tk, client.MergeFrom(base))
 }
 
-func (r *TSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DNSZoneTSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Initialize PDNS client once at setup-time (unless injected, e.g. tests).
 	// This fails fast on bad env/config rather than failing on the first reconcile.
 	if r.PDNS == nil {
@@ -314,23 +352,23 @@ func (r *TSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.PDNS = cli
 	}
 
-	// index TSIGKey by dnsZoneRef for quick fan-out from a DNSZone event
+	// index DNSZoneTSIGKey by dnsZoneRef for quick fan-out from a DNSZone event
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
-		&dnsv1alpha1.TSIGKey{}, "spec.DNSZoneRef.Name",
+		&dnsv1alpha1.DNSZoneTSIGKey{}, "spec.DNSZoneRef.Name",
 		func(obj client.Object) []string {
-			tk := obj.(*dnsv1alpha1.TSIGKey)
+			tk := obj.(*dnsv1alpha1.DNSZoneTSIGKey)
 			return []string{tk.Spec.DNSZoneRef.Name}
 		},
 	); err != nil {
 		return err
 	}
 
-	// Index TSIGKey by the effective secret name stored in status.secretName.
+	// Index DNSZoneTSIGKey by the effective secret name stored in status.secretName.
 	// This is what the controller actually consumes (BYO secretRef or generated).
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
-		&dnsv1alpha1.TSIGKey{}, "status.secretName",
+		&dnsv1alpha1.DNSZoneTSIGKey{}, "status.secretName",
 		func(obj client.Object) []string {
-			tk := obj.(*dnsv1alpha1.TSIGKey)
+			tk := obj.(*dnsv1alpha1.DNSZoneTSIGKey)
 			if tk.Status.SecretName != "" {
 				return []string{tk.Status.SecretName}
 			}
@@ -341,13 +379,13 @@ func (r *TSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dnsv1alpha1.TSIGKey{}).
-		// When a DNSZone changes, enqueue its TSIGKeys.
+		For(&dnsv1alpha1.DNSZoneTSIGKey{}).
+		// When a DNSZone changes, enqueue its DNSZoneTSIGKeys.
 		Watches(
 			&dnsv1alpha1.DNSZone{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 				zone := obj.(*dnsv1alpha1.DNSZone)
-				var tks dnsv1alpha1.TSIGKeyList
+				var tks dnsv1alpha1.DNSZoneTSIGKeyList
 				_ = mgr.GetClient().List(ctx, &tks, client.InNamespace(zone.Namespace), client.MatchingFields{"spec.DNSZoneRef.Name": zone.Name})
 				out := make([]ctrl.Request, 0, len(tks.Items))
 				for i := range tks.Items {
@@ -356,12 +394,12 @@ func (r *TSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return out
 			}),
 		).
-		// When a BYO secret changes, enqueue the TSIGKeys referencing it.
+		// When a BYO secret changes, enqueue the DNSZoneTSIGKeys referencing it.
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 				sec := obj.(*corev1.Secret)
-				var tks dnsv1alpha1.TSIGKeyList
+				var tks dnsv1alpha1.DNSZoneTSIGKeyList
 				_ = mgr.GetClient().List(ctx, &tks, client.InNamespace(sec.Namespace), client.MatchingFields{"status.secretName": sec.Name})
 				out := make([]ctrl.Request, 0, len(tks.Items))
 				for i := range tks.Items {
@@ -370,6 +408,6 @@ func (r *TSIGKeyPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return out
 			}),
 		).
-		Named("tsigkey-powerdns").
+		Named("dnszonetsigkey-powerdns").
 		Complete(r)
 }

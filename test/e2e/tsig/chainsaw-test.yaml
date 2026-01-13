@@ -119,13 +119,13 @@ spec:
             name: example-com-tsig
             namespace: ($downstreamNamespaceName)
 
-  - name: Create generated TSIGKey upstream (no secretRef)
+  - name: Create generated DNSZoneTSIGKey upstream (no secretRef)
     try:
     - create:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
           spec:
@@ -137,7 +137,7 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
             ownerReferences:
@@ -145,7 +145,7 @@ spec:
               kind: DNSZone
               name: example-com-tsig
 
-  - name: Wait for generated TSIGKey Accepted/Programmed upstream
+  - name: Wait for generated DNSZoneTSIGKey Accepted/Programmed upstream
     try:
     - sleep:
         duration: 5s
@@ -153,10 +153,11 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
           status:
+            tsigKeyName: datum-example-com-tsig-gen.example-tsig.com.
             conditions:
             - type: Accepted
               status: "True"
@@ -173,7 +174,7 @@ spec:
           metadata:
             name: example-com-tsig-gen
 
-  - name: Confirm generated TSIGKey + Secret exist downstream
+  - name: Confirm generated DNSZoneTSIGKey + Secret exist downstream
     try:
     - script:
         cluster: upstream
@@ -188,7 +189,7 @@ spec:
         cluster: downstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
@@ -230,7 +231,7 @@ spec:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
 
-  - name: Delete downstream generated TSIGKey and ensure it + Secret are recreated
+  - name: Delete downstream generated DNSZoneTSIGKey and ensure it + Secret are recreated
     try:
     - script:
         cluster: upstream
@@ -246,17 +247,17 @@ spec:
         content: |
           set -euo pipefail
           # Find the mapped downstream namespace by label selector, then delete.
-          ns=$(kubectl get tsigkey -A \
+          ns=$(kubectl get dnszonetsigkeys -A \
             -l meta.datumapis.com/upstream-namespace="$NAMESPACE",meta.datumapis.com/upstream-name=example-com-tsig-gen \
             -o jsonpath='{.items[0].metadata.namespace}')
-          kubectl -n "$ns" delete tsigkey example-com-tsig-gen --wait=false --ignore-not-found=true
+          kubectl -n "$ns" delete dnszonetsigkey example-com-tsig-gen --wait=false --ignore-not-found=true
     - sleep:
         duration: 8s
     - assert:
         cluster: downstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
@@ -269,7 +270,7 @@ spec:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
 
-  - name: Delete upstream generated TSIGKey and ensure downstream TSIGKey + Secret are GC'd
+  - name: Delete upstream generated DNSZoneTSIGKey and ensure downstream DNSZoneTSIGKey + Secret are GC'd
     try:
     - script:
         cluster: upstream
@@ -284,7 +285,7 @@ spec:
         cluster: upstream
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           name: example-com-tsig-gen
     - sleep:
         duration: 10s
@@ -292,7 +293,7 @@ spec:
         cluster: downstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
@@ -305,7 +306,7 @@ spec:
             name: example-com-tsig-gen
             namespace: ($downstreamNamespaceName)
 
-  - name: Create BYO Secret + TSIGKey upstream
+  - name: Create BYO Secret + DNSZoneTSIGKey upstream
     try:
     - create:
         cluster: upstream
@@ -321,7 +322,7 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-byo
           spec:
@@ -332,7 +333,7 @@ spec:
             secretRef:
               name: byo-tsig
 
-  - name: Wait for BYO TSIGKey Accepted/Programmed upstream
+  - name: Wait for BYO DNSZoneTSIGKey Accepted/Programmed upstream
     try:
     - sleep:
         duration: 5s
@@ -340,10 +341,11 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-byo
           status:
+            tsigKeyName: datum-example-com-tsig-byo.example-tsig.com.
             conditions:
             - type: Accepted
               status: "True"
@@ -413,7 +415,7 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-bad
           spec:
@@ -429,7 +431,7 @@ spec:
         cluster: upstream
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           metadata:
             name: example-com-tsig-bad
           status:
@@ -444,19 +446,19 @@ spec:
         cluster: upstream
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           name: example-com-tsig-gen
     - delete:
         cluster: upstream
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           name: example-com-tsig-byo
     - delete:
         cluster: upstream
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
-          kind: TSIGKey
+          kind: DNSZoneTSIGKey
           name: example-com-tsig-bad
     - delete:
         cluster: upstream

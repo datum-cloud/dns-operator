@@ -45,7 +45,7 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets/finalizers
-  - tsigkeys/finalizers
+  - dnszonetsigkeys/finalizers
   verbs:
   - update
 - apiGroups:
@@ -54,7 +54,7 @@ rules:
   - dnsrecordsets/status
   - dnszonediscoveries/status
   - dnszones/status
-  - tsigkeys/status
+  - dnszonetsigkeys/status
   verbs:
   - get
   - patch
@@ -71,7 +71,7 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnszonediscoveries
-  - tsigkeys
+  - dnszonetsigkeys
   verbs:
   - get
   - list

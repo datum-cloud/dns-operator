@@ -412,10 +412,15 @@ chainsaw: ## Find or download chainsaw
 	$(call go-install-tool,$(CHAINSAW),github.com/kyverno/chainsaw,$(CHAINSAW_VERSION))
 
 .PHONY: chainsaw-test
-chainsaw-test: chainsaw chainsaw-prepare-kubeconfigs ## Run Chainsaw tests (requires dev/kind.*.kubeconfig to exist)
+CHAINSAW_TEST_DIR ?= .
+CHAINSAW_DEFAULT_ARGS ?=
+CHAINSAW_ARGS ?=
+
+.PHONY: chainsaw-test
+chainsaw-test: chainsaw chainsaw-prepare-kubeconfigs ## Run Chainsaw tests (set CHAINSAW_TEST_DIR=./tsig and/or CHAINSAW_ARGS="--include-test-regex <name>")
 	@test -f dev/kind.upstream.kubeconfig || { echo "Missing dev/kind.upstream.kubeconfig. Bootstrap clusters first."; exit 1; }
 	@test -f dev/kind.downstream.kubeconfig || { echo "Missing dev/kind.downstream.kubeconfig. Bootstrap clusters first."; exit 1; }
-	cd test/e2e && $(CHAINSAW) test .
+	cd test/e2e && $(CHAINSAW) test $(CHAINSAW_DEFAULT_ARGS) $(CHAINSAW_ARGS) $(CHAINSAW_TEST_DIR)
 
 .PHONY: chainsaw-prepare-kubeconfigs
 chainsaw-prepare-kubeconfigs: ## Copy dev kind kubeconfigs into test/e2e for stable relative resolution

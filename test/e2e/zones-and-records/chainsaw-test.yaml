@@ -2,13 +2,13 @@
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
-  name: dns-operator-end-to-end
+  name: dns-operator-zones-and-records
 spec:
   clusters:
     upstream:
-      kubeconfig: kubeconfig-upstream
+      kubeconfig: ../kubeconfig-upstream
     downstream:
-      kubeconfig: kubeconfig-downstream
+      kubeconfig: ../kubeconfig-downstream
   cluster: upstream
   steps:
   - name: Prereq - create DNSZoneClass in upstream
@@ -404,3 +404,4 @@ spec:
             kind: DNSZoneClass
           check:
             ($error == null): true
+

@@ -1,8 +1,13 @@
 package pdns
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,13 +45,15 @@ func writePDNSAuthWithSQLite(t *testing.T, dir, apiKey string) {
 	}
 }
 
-func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
+const integrationAPIKey = "itest-key"
+
+func startPDNS(t *testing.T) (baseURL string, terminate func()) {
 	t.Helper()
 
 	ctx := context.Background()
 	cfgDir := t.TempDir()
 	dataDir := t.TempDir()
-	writePDNSAuthWithSQLite(t, cfgDir, apiKey)
+	writePDNSAuthWithSQLite(t, cfgDir, integrationAPIKey)
 
 	// Use an official-ish PDNS authoritative image that reads /etc/powerdns/pdns.conf.
 	// You can pin a specific version if you prefer, e.g. powerdns/pdns-auth-46:latest
@@ -71,7 +78,7 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 			},
 			WaitingFor: wait.ForHTTP("/api/v1/servers/localhost").
 				WithPort("8081/tcp").
-				WithHeaders(map[string]string{"X-API-Key": apiKey}).
+				WithHeaders(map[string]string{"X-API-Key": integrationAPIKey}).
 				WithStartupTimeout(2 * time.Minute),
 		},
 		Started: true,
@@ -99,11 +106,10 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 
 func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 	// No t.Parallel(): we’re booting a container.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 
 	zone := "example.test"
 	// Create the zone with some NS via the API create call
@@ -323,11 +329,10 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 
 func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNS(t, apiKey)
+	baseURL, stop := startPDNS(t)
 	defer stop()
 
-	client := NewClient(baseURL, apiKey)
+	client := NewClient(baseURL, integrationAPIKey)
 	ctx := context.Background()
 	zone := "cleanup.test"
 
@@ -426,5 +431,176 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	}
 	if got := len(indexAfter[[2]string{"SOA", qualifyOwner("@", zone)}]); got != soaBefore {
 		t.Fatalf("SOA rrset count changed: before=%d after=%d", soaBefore, got)
+	}
+}
+
+func TestPDNS_TSIGKey_CreateWithSuppliedKey(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, stop := startPDNS(t)
+	defer stop()
+
+	client := NewClient(baseURL, integrationAPIKey)
+	ctx := context.Background()
+
+	keyMaterial := base64.StdEncoding.EncodeToString([]byte("supersecret"))
+	created, err := client.CreateTSIGKey(ctx, "mytsigkey", "hmac-sha256", keyMaterial)
+	if err != nil {
+		t.Fatalf("CreateTSIGKey: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatalf("expected non-empty id, got %#v", created)
+	}
+	if created.Name != "mytsigkey" {
+		t.Fatalf("expected name=mytsigkey, got %#v", created)
+	}
+	if created.Algorithm != "hmac-sha256" {
+		t.Fatalf("expected algorithm=hmac-sha256, got %#v", created)
+	}
+}
+
+func TestPDNS_TSIGKey_CreateAndDeleteByID(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, stop := startPDNS(t)
+	defer stop()
+
+	client := NewClient(baseURL, integrationAPIKey)
+	ctx := context.Background()
+
+	keyMaterial := base64.StdEncoding.EncodeToString([]byte("supersecret"))
+	created, err := client.CreateTSIGKey(ctx, "mytsigkey-delete", "hmac-sha256", keyMaterial)
+	if err != nil {
+		t.Fatalf("CreateTSIGKey: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatalf("expected non-empty id: %#v", created)
+	}
+
+	if err := client.DeleteTSIGKey(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteTSIGKey: %v", err)
+	}
+
+	found, err := client.FindTSIGKeyByName(ctx, "mytsigkey-delete")
+	if err != nil {
+		t.Fatalf("FindTSIGKeyByName: %v", err)
+	}
+	if found != nil {
+		t.Fatalf("expected key deleted, found %#v", found)
+	}
+}
+
+func TestPDNS_TSIGKey_IDHasTrailingDot_AndDuplicateNameIsRejected(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, stop := startPDNS(t)
+	defer stop()
+
+	client := NewClient(baseURL, integrationAPIKey)
+	ctx := context.Background()
+
+	// Use the same provider-visible name twice.
+	const name = "mytsigkey-duplicate"
+
+	k1, err := client.CreateTSIGKey(ctx, name, "hmac-sha256", base64.StdEncoding.EncodeToString([]byte("supersecret-1")))
+	if err != nil {
+		t.Fatalf("CreateTSIGKey #1: %v", err)
+	}
+	t.Cleanup(func() { _ = client.DeleteTSIGKey(context.Background(), k1.ID) })
+
+	if k1.Name != name {
+		t.Fatalf("expected name=%q, got %#v", name, k1)
+	}
+	if k1.ID == "" {
+		t.Fatalf("expected non-empty id, got %#v", k1)
+	}
+	if !strings.HasSuffix(k1.ID, ".") {
+		t.Fatalf("expected PDNS TSIGKey ID to have trailing dot, got %q", k1.ID)
+	}
+
+	// PowerDNS enforces name uniqueness; creating a second key with the same name should be rejected.
+	_, err = client.CreateTSIGKey(ctx, name, "hmac-sha256", base64.StdEncoding.EncodeToString([]byte("supersecret-2")))
+	if err == nil {
+		t.Fatalf("expected CreateTSIGKey #2 to fail with conflict, but got nil error")
+	}
+	var apiErr *pdnsAPIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		t.Fatalf("expected 409 Conflict from CreateTSIGKey #2, got err=%T %v", err, err)
+	}
+}
+
+func TestPDNS_TSIGKey_NameWithTrailingDot_IDHasSingleTrailingDot(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, stop := startPDNS(t)
+	defer stop()
+
+	client := NewClient(baseURL, integrationAPIKey)
+	ctx := context.Background()
+
+	const nameWithDot = "mytsigkey-trailing-dot."
+	created, err := client.CreateTSIGKey(ctx, nameWithDot, "hmac-sha256", base64.StdEncoding.EncodeToString([]byte("supersecret")))
+	if err != nil {
+		t.Fatalf("CreateTSIGKey: %v", err)
+	}
+	t.Cleanup(func() { _ = client.DeleteTSIGKey(context.Background(), created.ID) })
+
+	// PowerDNS normalizes TSIGKey.Name by stripping a trailing dot.
+	wantName := strings.TrimSuffix(nameWithDot, ".")
+	if created.Name != wantName {
+		t.Fatalf("expected created.Name=%q, got %#v", wantName, created)
+	}
+
+	if created.ID == "" {
+		t.Fatalf("expected non-empty id, got %#v", created)
+	}
+	if !strings.HasSuffix(created.ID, ".") {
+		t.Fatalf("expected id to have trailing dot, got %q", created.ID)
+	}
+	if strings.HasSuffix(created.ID, "..") {
+		t.Fatalf("expected id to not end with two trailing dots, got %q", created.ID)
+	}
+	if created.ID != created.Name+"." {
+		t.Fatalf("expected id to equal name + trailing dot, got name=%q id=%q", created.Name, created.ID)
+	}
+}
+
+func TestPDNS_TSIGKey_DuplicateNameEvenWithIDFieldIsRejected(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, stop := startPDNS(t)
+	defer stop()
+
+	client := NewClient(baseURL, integrationAPIKey)
+	ctx := context.Background()
+
+	const name = "mytsigkey-dup-with-id-field"
+
+	created, err := client.CreateTSIGKey(ctx, name, "hmac-sha256", base64.StdEncoding.EncodeToString([]byte("supersecret-1")))
+	if err != nil {
+		t.Fatalf("CreateTSIGKey #1: %v", err)
+	}
+	t.Cleanup(func() { _ = client.DeleteTSIGKey(context.Background(), created.ID) })
+
+	// Try to create the same name again, but include an explicit ID field in the request body.
+	// PowerDNS should still reject duplicate names.
+	payload := map[string]string{
+		"name":      name,
+		"algorithm": "hmac-sha256",
+		"key":       base64.StdEncoding.EncodeToString([]byte("supersecret-2")),
+		"id":        "some-explicit-id-that-should-not-matter.",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.BaseURL+"/api/v1/servers/localhost/tsigkeys", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("X-API-Key", client.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.HTTP.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for duplicate name even with id field, got %d", resp.StatusCode)
 	}
 }

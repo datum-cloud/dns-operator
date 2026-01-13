@@ -8,6 +8,7 @@ const (
 	ReasonAccepted            = "Accepted"
 	ReasonPending             = "Pending"
 	ReasonInvalidDNSRecordSet = "InvalidDNSRecordSet"
+	ReasonInvalidSecret       = "InvalidSecret"
 	ReasonProgrammed          = "Programmed"
 	ReasonDiscovered          = "Discovered"
 	ReasonDNSZoneInUse        = "DNSZoneInUse"

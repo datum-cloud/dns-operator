@@ -532,6 +532,107 @@ func TestNewFromEnv(t *testing.T) {
 	}
 }
 
+func TestTSIGKey_CRUD(t *testing.T) {
+	t.Parallel()
+
+	type state struct {
+		keys []TSIGKey
+	}
+	st := &state{
+		keys: []TSIGKey{
+			{Name: "existing", ID: "k1", Algorithm: "hmac-md5", Type: "TSIGKey"},
+		},
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/tsigkeys", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(st.keys)
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			var req map[string]string
+			_ = json.Unmarshal(body, &req)
+			created := TSIGKey{
+				Name:      req["name"],
+				Algorithm: req["algorithm"],
+				ID:        "newid",
+				Type:      "TSIGKey",
+			}
+			if k := req["key"]; k != "" {
+				created.Key = k
+			}
+			// Append to state so a subsequent list would show it.
+			st.keys = append(st.keys, created)
+			_ = json.NewEncoder(w).Encode(created)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/v1/servers/localhost/tsigkeys/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/servers/localhost/tsigkeys/")
+		// Remove from state
+		out := st.keys[:0]
+		for _, k := range st.keys {
+			if k.ID == id {
+				continue
+			}
+			out = append(out, k)
+		}
+		st.keys = out
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "sekret")
+	ctx := context.Background()
+
+	// list
+	keys, err := c.ListTSIGKeys(ctx)
+	if err != nil || len(keys) != 1 || keys[0].Name != "existing" {
+		t.Fatalf("ListTSIGKeys got=%v err=%v", keys, err)
+	}
+
+	// find
+	found, err := c.FindTSIGKeyByName(ctx, "existing")
+	if err != nil || found == nil || found.ID != "k1" {
+		t.Fatalf("FindTSIGKeyByName got=%#v err=%v", found, err)
+	}
+
+	// create with key
+	created, err := c.CreateTSIGKey(ctx, "mykey", "hmac-sha256", "b64secret")
+	if err != nil || created.ID == "" || created.Name != "mykey" || created.Algorithm != "hmac-sha256" {
+		t.Fatalf("CreateTSIGKey got=%#v err=%v", created, err)
+	}
+
+	// ensure returns existing when matches
+	ens, err := c.EnsureTSIGKey(ctx, "existing", "hmac-md5", "ignored")
+	if err != nil || ens.ID != "k1" {
+		t.Fatalf("EnsureTSIGKey existing got=%#v err=%v", ens, err)
+	}
+
+	// ensure recreates when algorithm differs (existing removed, new created)
+	ens2, err := c.EnsureTSIGKey(ctx, "existing", "hmac-sha256", "b64secret2")
+	if err != nil || ens2.ID != "newid" || ens2.Name != "existing" || ens2.Algorithm != "hmac-sha256" {
+		t.Fatalf("EnsureTSIGKey recreate got=%#v err=%v", ens2, err)
+	}
+
+	// delete by name
+	if err := c.DeleteTSIGKeyByName(ctx, "existing"); err != nil {
+		t.Fatalf("DeleteTSIGKeyByName err=%v", err)
+	}
+	after, _ := c.FindTSIGKeyByName(ctx, "existing")
+	if after != nil {
+		t.Fatalf("expected existing deleted, got %#v", after)
+	}
+}
+
 func TestSOASerialAutoChangesPerDay(t *testing.T) {
 	t.Parallel()
 

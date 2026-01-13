@@ -8,6 +8,7 @@ rules:
   - ""
   resources:
   - configmaps
+  - secrets
   verbs:
   - create
   - delete
@@ -44,6 +45,7 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnsrecordsets/finalizers
+  - tsigkeys/finalizers
   verbs:
   - update
 - apiGroups:
@@ -52,6 +54,7 @@ rules:
   - dnsrecordsets/status
   - dnszonediscoveries/status
   - dnszones/status
+  - tsigkeys/status
   verbs:
   - get
   - patch
@@ -68,6 +71,7 @@ rules:
   - dns.networking.miloapis.com
   resources:
   - dnszonediscoveries
+  - tsigkeys
   verbs:
   - get
   - list

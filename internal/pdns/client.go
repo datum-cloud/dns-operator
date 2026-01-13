@@ -45,6 +45,16 @@ func NewClient(baseURL, apiKey string) *Client {
 	}
 }
 
+// TSIGKey represents a PowerDNS TSIGKey object.
+// Note: the "key" field is typically empty when listing keys.
+type TSIGKey struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Algorithm string `json:"algorithm"`
+	Key       string `json:"key,omitempty"`
+	Type      string `json:"type,omitempty"`
+}
+
 type pdnsAPIError struct {
 	Status int
 	Body   string
@@ -136,6 +146,135 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 		return "", err
 	}
 	return zoneResponse.Name, nil
+}
+
+// ListTSIGKeys lists all TSIG keys in the server.
+func (c *Client) ListTSIGKeys(ctx context.Context) ([]TSIGKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/v1/servers/localhost/tsigkeys", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode/100 != 2 {
+		errBody := readRespBody(resp, 64<<10) // closes Body
+		return nil, &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out []TSIGKey
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateTSIGKey creates a TSIG key in PowerDNS. keyMaterial may be empty to let the server generate it.
+func (c *Client) CreateTSIGKey(ctx context.Context, name, algorithm, keyMaterial string) (TSIGKey, error) {
+	payload := map[string]string{
+		"name":      name,
+		"algorithm": algorithm,
+	}
+	if keyMaterial != "" {
+		payload["key"] = keyMaterial
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/v1/servers/localhost/tsigkeys", bytes.NewReader(body))
+	if err != nil {
+		return TSIGKey{}, err
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return TSIGKey{}, err
+	}
+	if resp.StatusCode/100 != 2 {
+		errBody := readRespBody(resp, 64<<10) // closes Body
+		return TSIGKey{}, &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out TSIGKey
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return TSIGKey{}, err
+	}
+	return out, nil
+}
+
+// FindTSIGKeyByName finds a TSIG key by name, returning nil when not found.
+func (c *Client) FindTSIGKeyByName(ctx context.Context, name string) (*TSIGKey, error) {
+	keys, err := c.ListTSIGKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range keys {
+		if keys[i].Name == name {
+			k := keys[i]
+			return &k, nil
+		}
+	}
+	return nil, nil
+}
+
+// EnsureTSIGKey ensures a TSIG key exists with the given name/algorithm. If a key exists
+// with a different algorithm, it will be deleted and recreated.
+func (c *Client) EnsureTSIGKey(ctx context.Context, name, algorithm, keyMaterial string) (TSIGKey, error) {
+	existing, err := c.FindTSIGKeyByName(ctx, name)
+	if err != nil {
+		return TSIGKey{}, err
+	}
+	if existing != nil {
+		if existing.Algorithm == algorithm {
+			return *existing, nil
+		}
+		// Recreate when algorithm differs.
+		if existing.ID != "" {
+			if err := c.DeleteTSIGKey(ctx, existing.ID); err != nil {
+				return TSIGKey{}, err
+			}
+		}
+	}
+	return c.CreateTSIGKey(ctx, name, algorithm, keyMaterial)
+}
+
+// DeleteTSIGKey deletes a TSIG key by ID.
+func (c *Client) DeleteTSIGKey(ctx context.Context, id string) error {
+	if id == "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.BaseURL+"/api/v1/servers/localhost/tsigkeys/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		_ = resp.Body.Close()
+		return nil
+	}
+	if resp.StatusCode/100 != 2 {
+		errBody := readRespBody(resp, 64<<10) // closes Body
+		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// DeleteTSIGKeyByName deletes a TSIG key by name (no-op if not found).
+func (c *Client) DeleteTSIGKeyByName(ctx context.Context, name string) error {
+	existing, err := c.FindTSIGKeyByName(ctx, name)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return nil
+	}
+	return c.DeleteTSIGKey(ctx, existing.ID)
 }
 
 // in package pdns (same file as CreateZone/GetZone)

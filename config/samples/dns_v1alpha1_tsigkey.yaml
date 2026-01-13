@@ -10,6 +10,6 @@ spec:
   # algorithm: hmac-sha256
   # Optional (BYO secret):
   # secretRef:
-  #   name: existing-upstream-tsig
+  #   name: existing-upstream
 
 

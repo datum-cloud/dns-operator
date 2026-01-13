@@ -183,7 +183,7 @@ spec:
                 type: string
               tsigKeyID:
                 description: TSIGKeyID is the opaque provider identifier for the TSIG
-                  key (e.g., PowerDNS TSIG key ID).
+                  key.
                 type: string
             type: object
         required:

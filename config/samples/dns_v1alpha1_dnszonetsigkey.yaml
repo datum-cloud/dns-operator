@@ -1,5 +1,5 @@
 apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: TSIGKey
+kind: DNSZoneTSIGKey
 metadata:
   name: example-com-xfr
 spec:
@@ -11,5 +11,4 @@ spec:
   # Optional (BYO secret):
   # secretRef:
   #   name: existing-upstream-tsig
-
 

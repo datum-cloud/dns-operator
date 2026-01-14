@@ -151,8 +151,8 @@ spec:
             method: newline_delimited
           auth:
             strategy: basic
-            username: ${VECTOR_HTTP_AUTH_USERNAME}
-            password: ${VECTOR_HTTP_AUTH_PASSWORD}
+            username: vector
+            password: ${VECTOR_METRICS_GATEWAY_PASSWORD}
         internal_metrics:
           type: internal_metrics
           namespace: vector
@@ -298,15 +298,10 @@ spec:
     env:
       - name: VICTORIA_METRICS_REMOTE_WRITE_URL
         value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
-      - name: VECTOR_HTTP_AUTH_USERNAME
+      - name: VECTOR_METRICS_GATEWAY_PASSWORD
         valueFrom:
           secretKeyRef:
-            name: vector-http-auth
-            key: username
-      - name: VECTOR_HTTP_AUTH_PASSWORD
-        valueFrom:
-          secretKeyRef:
-            name: vector-http-auth
+            name: vector-metrics-gateway-password
             key: password
       - name: VECTOR_LOG
         value: "info"

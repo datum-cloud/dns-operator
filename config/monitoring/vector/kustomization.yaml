@@ -18,7 +18,6 @@ configMapGenerator:
       - scripts/build-zone-project.sh
 
 secretGenerator:
-  - name: vector-http-auth
+  - name: vector-metrics-gateway-password
     literals:
-      - username=admin
-      - password=admin
+      - password=password

@@ -25,8 +25,8 @@ sources:
       method: newline_delimited
     auth:
       strategy: basic
-      username: ${VECTOR_HTTP_AUTH_USERNAME}
-      password: ${VECTOR_HTTP_AUTH_PASSWORD}
+      username: vector
+      password: ${VECTOR_METRICS_GATEWAY_PASSWORD}
 
 transforms:
   add_project_tags:

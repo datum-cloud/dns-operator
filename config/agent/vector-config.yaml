@@ -140,7 +140,7 @@ sinks:
     type: http
     inputs:
       - dnstap_metrics
-    uri: ${VECTOR_CENTRAL_ADDRESS}
+    uri: ${VECTOR_METRICS_GATEWAY_ADDRESS}
     encoding:
       codec: native_json
     framing:
@@ -149,8 +149,8 @@ sinks:
       enabled: true
     auth:
       strategy: basic
-      user: ${VECTOR_HTTP_AUTH_USERNAME}
-      password: ${VECTOR_HTTP_AUTH_PASSWORD}
+      user: vector
+      password: ${VECTOR_METRICS_GATEWAY_PASSWORD}
     buffer:
       type: disk
       max_size: 268435488

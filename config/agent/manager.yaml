@@ -286,7 +286,17 @@ spec:
           - /etc/vector/
         env:
           - name: VECTOR_CENTRAL_ADDRESS
-            value: vector:9000
+            value: http://vector:9000
+          - name: VECTOR_HTTP_AUTH_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: vector-http-auth
+                key: username
+          - name: VECTOR_HTTP_AUTH_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: vector-http-auth
+                key: password
         volumeMounts:
           - name: vector-config
             mountPath: /etc/vector/vector-config.yaml

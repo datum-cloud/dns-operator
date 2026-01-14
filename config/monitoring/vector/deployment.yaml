@@ -43,6 +43,16 @@ spec:
           env:
             - name: VICTORIA_METRICS_REMOTE_WRITE_URL
               value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
+            - name: VECTOR_HTTP_AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: vector-http-auth
+                  key: username
+            - name: VECTOR_HTTP_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: vector-http-auth
+                  key: password
           ports:
             - containerPort: 9000
               name: vector

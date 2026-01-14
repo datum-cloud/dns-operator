@@ -137,10 +137,20 @@ sinks:
       - dnstap_metrics
 
   central_vector:
-    type: vector
+    type: http
     inputs:
       - dnstap_metrics
-    address: ${VECTOR_CENTRAL_ADDRESS}
+    uri: ${VECTOR_CENTRAL_ADDRESS}
+    encoding:
+      codec: native_json
+    framing:
+      method: newline_delimited
+    healthcheck:
+      enabled: true
+    auth:
+      strategy: basic
+      user: ${VECTOR_HTTP_AUTH_USERNAME}
+      password: ${VECTOR_HTTP_AUTH_PASSWORD}
     buffer:
       type: disk
       max_size: 268435488

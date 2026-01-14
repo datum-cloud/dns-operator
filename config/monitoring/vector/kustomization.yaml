@@ -16,3 +16,9 @@ configMapGenerator:
   - name: vector-enrichment-scripts
     files:
       - scripts/build-zone-project.sh
+
+secretGenerator:
+  - name: vector-http-auth
+    literals:
+      - username=admin
+      - password=admin

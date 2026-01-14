@@ -52,6 +52,14 @@ transforms:
       }
 
 sinks:
+  console:
+    type: console
+    target: stdout
+    encoding:
+      codec: json
+    inputs:
+      - add_project_tags
+
   victoria_metrics:
     type: prometheus_remote_write
     inputs:

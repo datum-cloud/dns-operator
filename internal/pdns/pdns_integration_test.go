@@ -148,6 +148,10 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 	apply(dnsv1alpha1.RRTypeCNAME,
 		dnsv1alpha1.RecordEntry{Name: "alias", TTL: &ttl, CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "www." + zone + "."}},
 	)
+	// ALIAS
+	apply(dnsv1alpha1.RRTypeALIAS,
+		dnsv1alpha1.RecordEntry{Name: "@", TTL: &ttl, ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "www." + zone + "."}},
+	)
 	// TXT (quoted)
 	apply(dnsv1alpha1.RRTypeTXT,
 		dnsv1alpha1.RecordEntry{Name: "txt", TTL: &ttl, TXT: &dnsv1alpha1.TXTRecordSpec{Content: "hello world"}},
@@ -260,6 +264,11 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 	// CNAME
 	if got := get("CNAME", "alias"); len(got) != 1 || stripTrailingDot(got[0]) != "www."+zone {
 		t.Fatalf("CNAME alias got=%v", got)
+	}
+
+	// ALIAS
+	if got := get("ALIAS", "@"); len(got) != 1 || stripTrailingDot(got[0]) != "www."+zone {
+		t.Fatalf("ALIAS @ got=%v", got)
 	}
 
 	// TXT (we compare without quotes)

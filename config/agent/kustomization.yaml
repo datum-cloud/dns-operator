@@ -21,6 +21,7 @@ configMapGenerator:
 - name: pdns-config
   files:
     - pdns.conf
+    - recursor.conf
 
 images:
 - name: ghcr.io/datum-cloud/dns-operator

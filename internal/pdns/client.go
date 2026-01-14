@@ -597,6 +597,17 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			line := encodeSvcbLine(rec.SVCB.Priority, rec.SVCB.Target, rec.SVCB.Params)
 			r.Records = append(r.Records, rrsetRecord{Content: line, Disabled: false})
+
+		case dnsv1alpha1.RRTypeALIAS:
+			if rec.ALIAS == nil {
+				continue
+			}
+			target := strings.TrimSpace(rec.ALIAS.Content)
+			target = qualifyIfNeeded(target)
+			if target != "" {
+				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
+			}
+
 		}
 	}
 

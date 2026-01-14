@@ -1,0 +1,229 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-alias
+spec:
+  timeouts:
+    # Our validation runs a couple of external DNS queries; default exec timeout (5s) is too tight.
+    exec: 30s
+  clusters:
+    upstream:
+      kubeconfig: ../kubeconfig-upstream
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static-alias
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static-alias
+
+  - name: Prereq - create DNSZoneClass in downstream
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static-alias
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-static-alias
+
+  - name: Create DNSZone upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-test
+          spec:
+            domainName: example.test
+            dnsZoneClassName: powerdns-static-alias
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-test
+
+  - name: Confirm DNSZone replicated downstream
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-test
+            namespace: ($downstreamNamespaceName)
+
+  - name: Wait for DNSZone Accepted/Programmed upstream
+    try:
+    - sleep:
+        duration: 5s
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: example-test
+          status:
+            conditions:
+            - type: Accepted
+              status: "True"
+            - type: Programmed
+              status: "True"
+
+  - name: Create ALIAS DNSRecordSet upstream (apex -> example.com)
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: example-test-alias-apex
+          spec:
+            dnsZoneRef:
+              name: example-test
+            recordType: ALIAS
+            records:
+            - name: "@"
+              ttl: 5
+              alias:
+                content: example.com.
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: example-test-alias-apex
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: example-test
+
+  - name: Wait for ALIAS DNSRecordSet Accepted/Programmed upstream
+    try:
+    - sleep:
+        duration: 8s
+    - script:
+        cluster: upstream
+        content: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            acc="$(kubectl -n "$NAMESPACE" get dnsrecordset example-test-alias-apex -o jsonpath='{.status.conditions[?(@.type=="Accepted")].status}' 2>/dev/null || true)"
+            prog="$(kubectl -n "$NAMESPACE" get dnsrecordset example-test-alias-apex -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}' 2>/dev/null || true)"
+            if [ "$acc" = "True" ] && [ "$prog" = "True" ]; then
+              echo "Accepted=True and Programmed=True"
+              exit 0
+            fi
+            echo "waiting: Accepted=$acc Programmed=$prog"
+            sleep 2
+          done
+          echo "timed out waiting for Accepted/Programmed conditions" >&2
+          kubectl -n "$NAMESPACE" get dnsrecordset example-test-alias-apex -o yaml >&2 || true
+          exit 1
+  - name: DNS query from downstream to PDNS (ALIAS expands to example.com A)
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-alias
+            namespace: default
+          spec:
+            restartPolicy: Never
+            containers:
+            - name: dns
+              image: infoblox/dnstools:latest
+              command: ["sleep","3600"]
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-alias
+            namespace: default
+          status:
+            phase: Running
+    - sleep:
+        duration: 3s
+    - script:
+        cluster: downstream
+        content: |
+          set -euo pipefail
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-alias
+          # ALIAS is provider-internal; clients query A/AAAA for the owner name.
+          # Validate expansion by comparing A answers to a public resolver (dynamic, no hard-coded IPs).
+          kubectl -n default exec pod/dnsutils-alias -- sh -lc '
+            set -euo pipefail
+            expected="$(dig @1.1.1.1 example.com A +short +tries=1 +time=2 | sort -u)"
+            [ -n "$expected" ] || { echo "expected A set is empty" >&2; exit 1; }
+            got="$(dig @pdns-auth.dns-agent-system.svc.cluster.local example.test A +short +tries=2 +time=2 | sort -u)"
+            echo "expected(example.com A):"
+            echo "$expected"
+            echo "got(example.test A via ALIAS):"
+            echo "$got"
+            [ -n "$got" ] || { echo "got A set is empty" >&2; exit 1; }
+            # Ensure every returned IP is in the expected set.
+            for ip in $got; do
+              echo "$expected" | grep -Fxq "$ip" || { echo "unexpected IP: $ip" >&2; exit 1; }
+            done
+          '

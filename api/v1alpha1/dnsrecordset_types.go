@@ -7,12 +7,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=A;AAAA;CNAME;TXT;MX;SRV;CAA;NS;SOA;PTR;TLSA;HTTPS;SVCB
+// +kubebuilder:validation:Enum=A;AAAA;ALIAS;CNAME;TXT;MX;SRV;CAA;NS;SOA;PTR;TLSA;HTTPS;SVCB
 type RRType string
 
 const (
 	RRTypeA     RRType = "A"
 	RRTypeAAAA  RRType = "AAAA"
+	RRTypeALIAS RRType = "ALIAS"
 	RRTypeCNAME RRType = "CNAME"
 	RRTypeTXT   RRType = "TXT"
 	RRTypeMX    RRType = "MX"
@@ -61,6 +62,8 @@ type RecordEntry struct {
 	// +optional
 	CNAME *CNAMERecordSpec `json:"cname,omitempty"`
 	// +optional
+	ALIAS *ALIASRecordSpec `json:"alias,omitempty"`
+	// +optional
 	NS *NSRecordSpec `json:"ns,omitempty"`
 	// +optional
 	TXT *TXTRecordSpec `json:"txt,omitempty"`
@@ -102,6 +105,15 @@ type AAAARecordSpec struct {
 }
 
 type CNAMERecordSpec struct {
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$`
+	// +kubebuilder:validation:MinLength=1
+	Content string `json:"content"`
+}
+
+// ALIASRecordSpec is like CNAME but intended for providers that implement an ALIAS/ANAME-style record.
+// The content is a hostname (FQDN or relative) with an optional trailing dot.
+type ALIASRecordSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$`
 	// +kubebuilder:validation:MinLength=1

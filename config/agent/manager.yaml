@@ -190,11 +190,11 @@ spec:
             - "ALL"
         resources:
           limits:
-            cpu: 200m
-            memory: 128Mi
+            cpu: 500m
+            memory: 256Mi
           requests:
-            cpu: 5m
-            memory: 32Mi
+            cpu: 50m
+            memory: 64Mi
         volumeMounts:
           - name: pdns-shared
             mountPath: /run/pdns

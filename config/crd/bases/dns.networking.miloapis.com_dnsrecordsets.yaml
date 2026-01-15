@@ -69,6 +69,7 @@ spec:
                 enum:
                 - A
                 - AAAA
+                - ALIAS
                 - CNAME
                 - TXT
                 - MX
@@ -101,6 +102,19 @@ spec:
                       properties:
                         content:
                           format: ipv6
+                          type: string
+                      required:
+                      - content
+                      type: object
+                    alias:
+                      description: |-
+                        ALIASRecordSpec is like CNAME but intended for providers that implement an ALIAS/ANAME-style record.
+                        The content is a hostname (FQDN or relative) with an optional trailing dot.
+                      properties:
+                        content:
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?)(?:\.([A-Za-z0-9_](?:[-A-Za-z0-9_]{0,61}[A-Za-z0-9_])?))*\.?$
                           type: string
                       required:
                       - content

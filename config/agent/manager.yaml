@@ -51,7 +51,7 @@ spec:
           mountPath: /run/pdns
         securityContext:
           runAsUser: 65532
-      - name: init-lmdb-perms
+      - name: init-dirs
         image: busybox:1.36
         command: ["/bin/sh","-c"]
         args:
@@ -60,6 +60,10 @@ spec:
             mkdir -p /lmdb
             chown -R 953:953 /lmdb
             chmod 0775 /lmdb
+            # PDNS (auth + recursor) need writable runtime dirs on a read-only root filesystem.
+            mkdir -p /run/pdns /run/pdns/recursor
+            chown -R 953:953 /run/pdns
+            chmod 0755 /run/pdns /run/pdns/recursor
             if [ -f /run/pdns/api-key ]; then chmod 0444 /run/pdns/api-key; fi
         securityContext:
           runAsUser: 0
@@ -163,6 +167,40 @@ spec:
             drop:
             - "ALL"
             add: ["NET_BIND_SERVICE"]
+      - name: pdns-recursor
+        image: powerdns/pdns-recursor-51:latest
+        imagePullPolicy: IfNotPresent
+        # Recursor is only used by pdns-auth via localhost for ALIAS expansion.
+        ports:
+          - containerPort: 8083
+            name: recursor
+            protocol: TCP
+        command: ["/bin/sh","-c"]
+        args:
+          - |
+            set -eu;
+            exec pdns_recursor --config-dir=/etc/powerdns
+        securityContext:
+          runAsUser: 953
+          runAsGroup: 953
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        volumeMounts:
+          - name: pdns-shared
+            mountPath: /run/pdns
+          - name: pdns-config
+            mountPath: /etc/powerdns
+            readOnly: true
       - name: lightningstream
         image: powerdns/lightningstream:main
         imagePullPolicy: IfNotPresent

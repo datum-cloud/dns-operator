@@ -43,11 +43,6 @@ spec:
           env:
             - name: VICTORIA_METRICS_REMOTE_WRITE_URL
               value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
-            - name: VECTOR_METRICS_GATEWAY_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: vector-metrics-gateway-password
-                  key: password
           ports:
             - containerPort: 9000
               name: vector
@@ -81,7 +76,7 @@ spec:
             - name: LABEL
               value: datum.net/dnszone-accounting
             - name: LABEL_VALUE
-              value: enabled
+              value: ""
             - name: FOLDER
               value: /tmp/
             - name: UNIQUE_FILENAMES

@@ -286,12 +286,7 @@ spec:
           - /etc/vector/
         env:
           - name: VECTOR_METRICS_GATEWAY_ADDRESS
-            value: http://vector:9000
-          - name: VECTOR_METRICS_GATEWAY_PASSWORD
-            valueFrom:
-              secretKeyRef:
-                name: vector-metrics-gateway-password
-                key: password
+            value: vector:9000
         volumeMounts:
           - name: vector-config
             mountPath: /etc/vector/vector-config.yaml

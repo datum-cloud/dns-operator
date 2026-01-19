@@ -17,16 +17,8 @@ enrichment_tables:
 
 sources:
   edge_metrics:
-    type: http_server
+    type: vector
     address: 0.0.0.0:9000
-    decoding:
-      codec: native_json
-    framing:
-      method: newline_delimited
-    auth:
-      strategy: basic
-      username: vector
-      password: ${VECTOR_METRICS_GATEWAY_PASSWORD}
 
 transforms:
   add_project_tags:

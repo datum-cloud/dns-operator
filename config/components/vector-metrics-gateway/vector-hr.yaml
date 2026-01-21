@@ -181,10 +181,10 @@ spec:
           inputs:
             - add_project_tags
           endpoint: ${VICTORIA_METRICS_REMOTE_WRITE_URL}
-#          batch:
-#            max_bytes: 10485760
-#            max_events: 10000
-#            timeout_secs: 10
+          batch:
+            max_bytes: 1048576
+            max_events: 2000
+            timeout_secs: 10
           buffer:
             type: disk
             max_size: 10737418240
@@ -193,10 +193,10 @@ spec:
             retry_attempts: 9999999
             retry_initial_backoff_secs: 1
             retry_max_duration_secs: 300
-            timeout_secs: 60
+            timeout_secs: 120
           healthcheck:
             enabled: true
-#          compression: gzip
+          compression: gzip
 
         # Export metrics over prometheus
         internal_prometheus:

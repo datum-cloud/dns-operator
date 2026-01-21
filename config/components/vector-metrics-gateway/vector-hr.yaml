@@ -18,7 +18,7 @@ spec:
         namespace: dns-agent-system
       interval: 1h
   values:
-    fullnameOverride: vector
+    fullnameOverride: vector-metrics-gateway
     # Role: Aggregator (stateless, can run as Deployment)
     role: Stateless-Aggregator
     replicas: 2

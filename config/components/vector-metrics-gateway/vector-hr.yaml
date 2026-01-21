@@ -182,9 +182,9 @@ spec:
             - add_project_tags
           endpoint: ${VICTORIA_METRICS_REMOTE_WRITE_URL}
           batch:
-            max_bytes: 1048576
-            max_events: 2000
-            timeout_secs: 10
+            max_bytes: 262144
+            max_events: 500
+            timeout_secs: 5
           buffer:
             type: disk
             max_size: 10737418240
@@ -193,7 +193,7 @@ spec:
             retry_attempts: 9999999
             retry_initial_backoff_secs: 1
             retry_max_duration_secs: 300
-            timeout_secs: 120
+            timeout_secs: 300
           healthcheck:
             enabled: true
           compression: gzip

@@ -492,8 +492,10 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 			shadow.SetNamespace(md.Namespace)
 			shadow.SetName(md.Name)
 			if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow); err == nil {
-				if !equality.Semantic.DeepEqual(upstream.Status.Nameservers, shadow.Status.Nameservers) {
-					upstream.Status.Nameservers = append([]string(nil), shadow.Status.Nameservers...)
+				currentNS := normalizeStringSlice(upstream.Status.Nameservers)
+				desiredNS := normalizeStringSlice(shadow.Status.Nameservers)
+				if !equality.Semantic.DeepEqual(currentNS, desiredNS) {
+					upstream.Status.Nameservers = desiredNS
 					changed = true
 				}
 			}
@@ -525,11 +527,11 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 		newRef = &dnsv1alpha1.DomainRef{
 			Name: d.Name,
 			Status: dnsv1alpha1.DomainRefStatus{
-				Nameservers: append([]networkingv1alpha.Nameserver(nil), d.Status.Nameservers...),
+				Nameservers: normalizeDomainNameservers(d.Status.Nameservers),
 			},
 		}
 	}
-	if !equality.Semantic.DeepEqual(upstream.Status.DomainRef, newRef) {
+	if !equality.Semantic.DeepEqual(normalizeDomainRef(upstream.Status.DomainRef), newRef) {
 		upstream.Status.DomainRef = newRef
 		changed = true
 	}

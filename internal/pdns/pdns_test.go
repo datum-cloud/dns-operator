@@ -182,6 +182,24 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		t.Fatalf("CNAME rrset unexpected: %#v", rr)
 	}
 
+	// ALIAS (like CNAME, but different type)
+	rsALIAS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeALIAS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name:  "root",
+					TTL:   &ttl,
+					ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "target.example.net"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsALIAS)
+	if rr[0].Type != "ALIAS" || rr[0].Records[0].Content != "target.example.net." {
+		t.Fatalf("ALIAS rrset unexpected: %#v", rr)
+	}
+
 	// TXT: quoted
 	rsTXT := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{

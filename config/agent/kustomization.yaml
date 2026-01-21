@@ -21,6 +21,7 @@ configMapGenerator:
 - name: pdns-config
   files:
     - pdns.conf
+    - recursor.conf
 - name: dnsdist-config
   files:
     - dnsdist.yml=dnsdist-config.yaml

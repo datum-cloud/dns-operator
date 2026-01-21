@@ -72,15 +72,11 @@ spec:
         configMap:
           name: vector-enrichment-scripts
           defaultMode: 0555
-      - name: vector-data
-        emptyDir: {}
 
     extraVolumeMounts:
       - name: vector-enrichment
         mountPath: /etc/vector/enrichment
         readOnly: true
-      - name: vector-data
-        mountPath: /var/lib/vector
 
     initContainers:
       - name: init-enrichment-table

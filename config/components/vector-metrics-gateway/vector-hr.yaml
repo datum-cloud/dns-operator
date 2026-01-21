@@ -58,6 +58,9 @@ spec:
       - name: vector
         containerPort: 9000
         protocol: TCP
+      - name: vector-tls
+        containerPort: 9443
+        protocol: TCP
 
     serviceHeadless:
       enabled: false

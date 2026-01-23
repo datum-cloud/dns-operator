@@ -318,7 +318,7 @@ func TestReconcile_SingleOwner_PDNSError(t *testing.T) {
 	if prog == nil {
 		t.Fatalf("expected aggregate CondProgrammed condition")
 	}
-	if prog.Status != metav1.ConditionFalse || prog.Reason != controller.ReasonPDNSError {
+	if prog.Status != metav1.ConditionFalse || prog.Reason != controller.ReasonPending {
 		t.Fatalf("unexpected aggregate condition: %+v", prog)
 	}
 }

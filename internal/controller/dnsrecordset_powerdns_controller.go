@@ -305,13 +305,8 @@ func refreshProgrammedCondition(rs *dnsv1alpha1.DNSRecordSet) {
 		recordCond := apimeta.FindStatusCondition(status.Conditions, CondProgrammed)
 		if recordCond == nil || recordCond.Status != metav1.ConditionTrue {
 			allTrue = false
-			if recordCond == nil {
-				reason = ReasonPending
-				message = fmt.Sprintf("Record %q pending", name)
-			} else {
-				reason = recordCond.Reason
-				message = fmt.Sprintf("Record %q: %s", name, recordCond.Message)
-			}
+			reason = ReasonPending
+			message = "One or more records not yet programmed"
 			break
 		}
 	}

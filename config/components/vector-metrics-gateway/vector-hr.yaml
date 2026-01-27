@@ -196,7 +196,7 @@ spec:
             timeout_secs: 300
           healthcheck:
             enabled: true
-          compression: gzip
+          compression: snappy
 
         # Export metrics over prometheus
         internal_prometheus:

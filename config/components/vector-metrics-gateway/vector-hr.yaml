@@ -22,6 +22,16 @@ spec:
     # Role: Aggregator (stateless, can run as Deployment)
     role: Stateless-Aggregator
     replicas: 2
+    image:
+      repository: timberio/vector
+      tag: 0.52.0-distroless-libc
+      pullPolicy: IfNotPresent
+    args:
+      - --log-format=json
+      - --verbose
+      - --watch-config
+      - --config-dir
+      - /etc/vector/
     resources:
       requests:
         cpu: 200m
@@ -295,10 +305,6 @@ spec:
     env:
       - name: VICTORIA_METRICS_REMOTE_WRITE_URL
         value: http://prometheus.dns-monitoring.svc:9090/api/v1/write
-      - name: VECTOR_LOG
-        value: "info"
-      - name: VECTOR_LOG_FORMAT
-        value: "json"
 
     # Persistence for buffer
     persistence:

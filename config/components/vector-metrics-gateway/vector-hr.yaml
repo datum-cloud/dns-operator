@@ -104,7 +104,7 @@ spec:
           - name: NAMESPACE
             value: datum-downstream-dnszone-accounting
           - name: LABEL
-            value: datum.net/dnszone-accounting
+            value: datum.net/dnszone-owner
           - name: LABEL_VALUE
             value: ""
           - name: FOLDER

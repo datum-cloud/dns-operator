@@ -23,7 +23,7 @@ config/**/charts
 coverage.*
 *.coverprofile
 profile.cov
-
+test/e2e/kubeconfig-*
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -35,5 +35,5 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
+.idea/
 # .vscode/

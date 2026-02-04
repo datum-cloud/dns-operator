@@ -1,5 +1,7 @@
+# TODO(cristhian): Make sure we block api access from outside the cluster.
 webserver:
-  listen_address: 0.0.0.0:8083
+  listen_addresses: 
+   - "0.0.0.0:8083"
   password: ""
   api_key: ""
   acl:

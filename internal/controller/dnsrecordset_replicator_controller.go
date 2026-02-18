@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -52,6 +53,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Obtain a per-cluster event recorder so events are written to the upstream
+	// (user-facing) cluster API server, not just the deployment cluster.
+	recorder := upstreamCluster.GetEventRecorderFor("dns-operator")
+
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
 	// Ensure upstream finalizer (non-deletion path; replaces webhook defaulter)
@@ -82,7 +87,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, nil
 	}
 
-	// Gate on referenced DNSZone early and update status when missing
+	// Gate on referenced DNSZone early and update status when missing.
+	// We fetch the zone before emitting the spec-update event so we can include
+	// the domain name annotation.
 	var zone dnsv1alpha1.DNSZone
 	if err := upstreamCluster.GetClient().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -139,10 +146,53 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
+	// Capture the Programmed condition before the status update so we can detect
+	// a transition after the update completes.
+	prevProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	var prevProgrammedCopy *metav1.Condition
+	if prevProgrammed != nil {
+		c := *prevProgrammed
+		prevProgrammedCopy = &c
+	}
+
 	// Update upstream status by mirroring downstream when present
 	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, shadow.Status.DeepCopy()); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Emit Programmed/ProgrammingFailed events on condition transitions.
+	// updateStatus mutates upstream.Status in-memory, so the in-memory state
+	// already reflects the new condition after the call.
+	currProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	if programmedConditionTransitioned(prevProgrammedCopy, currProgrammed) {
+		if currProgrammed.Status == metav1.ConditionTrue {
+			recordRecordSetActivityEventWithData(recorder,
+				RecordSetEventData{
+					RecordSet:  &upstream,
+					DomainName: zone.Spec.DomainName,
+				},
+				corev1.EventTypeNormal,
+				EventReasonRecordSetProgrammed,
+				ActivityTypeRecordSetProgrammed,
+				"DNSRecordSet %q successfully programmed to DNS provider",
+				upstream.Name,
+			)
+		} else if currProgrammed.Status == metav1.ConditionFalse &&
+			prevProgrammedCopy != nil && prevProgrammedCopy.Status == metav1.ConditionTrue {
+			recordRecordSetActivityEventWithData(recorder,
+				RecordSetEventData{
+					RecordSet:  &upstream,
+					DomainName: zone.Spec.DomainName,
+					FailReason: currProgrammed.Message,
+				},
+				corev1.EventTypeWarning,
+				EventReasonRecordSetProgrammingFailed,
+				ActivityTypeRecordSetProgrammingFailed,
+				"DNSRecordSet %q programming failed: %s",
+				upstream.Name, currProgrammed.Message,
+			)
 		}
 	}
 

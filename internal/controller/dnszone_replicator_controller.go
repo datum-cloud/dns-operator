@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -64,6 +65,10 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Obtain a per-cluster event recorder so events are written to the upstream
+	// (user-facing) cluster API server, not just the deployment cluster.
+	recorder := upstreamCl.GetEventRecorderFor("dns-operator")
+
 	// --- Ensure finalizer on creation/update (non-deletion path) ---
 	if upstream.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
@@ -77,6 +82,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			// Re-run with updated object
 			return ctrl.Result{}, nil
 		}
+
 	} else {
 		// Deletion guard: ensure downstream is gone before removing finalizer
 		if controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
@@ -237,10 +243,50 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Capture the Programmed condition before the final status update so we can
+	// detect a transition after the update completes.
+	prevProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	var prevProgrammedCopy *metav1.Condition
+	if prevProgrammed != nil {
+		c := *prevProgrammed
+		prevProgrammedCopy = &c
+	}
+
 	// Recompute status to set Programmed based on record presence
 	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Emit Programmed/ProgrammingFailed events on condition transitions.
+	currProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	if programmedConditionTransitioned(prevProgrammedCopy, currProgrammed) {
+		if currProgrammed.Status == metav1.ConditionTrue {
+			recordZoneActivityEventWithData(recorder,
+				ZoneEventData{
+					Zone:        &upstream,
+					Nameservers: upstream.Status.Nameservers,
+				},
+				corev1.EventTypeNormal,
+				EventReasonZoneProgrammed,
+				ActivityTypeZoneProgrammed,
+				"DNSZone %q successfully programmed with nameservers: %s",
+				upstream.Name, strings.Join(upstream.Status.Nameservers, ", "),
+			)
+		} else if currProgrammed.Status == metav1.ConditionFalse &&
+			prevProgrammedCopy != nil && prevProgrammedCopy.Status == metav1.ConditionTrue {
+			recordZoneActivityEventWithData(recorder,
+				ZoneEventData{
+					Zone:       &upstream,
+					FailReason: currProgrammed.Message,
+				},
+				corev1.EventTypeWarning,
+				EventReasonZoneProgrammingFailed,
+				ActivityTypeZoneProgrammingFailed,
+				"DNSZone %q programming failed: %s",
+				upstream.Name, currProgrammed.Message,
+			)
 		}
 	}
 

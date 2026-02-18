@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# ActivityPolicy for DNSRecordSet resources.
+# Defines how DNSRecordSet API operations and controller events appear in activity timelines.
+#
+# Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
+# Event rules handle async controller events for programming outcomes.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: dns.networking.miloapis.com-dnsrecordset
+spec:
+  resource:
+    apiGroup: dns.networking.miloapis.com
+    kind: DNSRecordSet
+
+  # Audit log rules for CRUD operations.
+  # These are automatically captured by the API server and don't require controller code.
+  auditRules:
+    - match: "audit.verb == 'create'"
+      summary: "{{ actor }} created {{ audit.responseObject.spec.recordType }} record {{ link(audit.objectRef.name, audit.responseObject) }} in zone {{ audit.responseObject.spec.dnsZoneRef.name }}"
+
+    - match: "audit.verb == 'delete'"
+      summary: "{{ actor }} deleted DNS record {{ audit.objectRef.name }}"
+
+    - match: "audit.verb in ['update', 'patch'] && !audit.objectRef.subresource"
+      summary: "{{ actor }} updated {{ audit.requestObject.spec.recordType }} record {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+    # Status subresource updates are system-initiated and typically not shown to users,
+    # but can be enabled if needed for debugging.
+    # - match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
+    #   summary: "System updated status of DNS record {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+  # Event rules for controller-emitted Kubernetes events.
+  # These capture async outcomes that audit logs cannot represent.
+  #
+  # A DNSRecordSet can contain multiple records with potentially different names
+  # (e.g., "www" and "api" A records in one set). The annotations reflect this:
+  #   - record-count: total number of record entries
+  #   - record-names: comma-separated unique names (e.g., "www" or "www,api")
+  #   - ip-addresses: all IPs for A/AAAA types (may span multiple names)
+  eventRules:
+    # RecordSetProgrammed: DNS records successfully programmed to the DNS provider.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.recordset.programmed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/record-type: A
+    #   dns.networking.miloapis.com/record-names: www (or "www,api" for multi-name)
+    #   dns.networking.miloapis.com/record-count: 2
+    #   dns.networking.miloapis.com/ip-addresses: 192.168.1.1,192.168.1.2  (A/AAAA only)
+    #   dns.networking.miloapis.com/zone-ref: my-zone
+    #   dns.networking.miloapis.com/resource-name: my-recordset
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+
+    # Single A/AAAA record (most common case): show name and IPs
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA'] && event.annotations['dns.networking.miloapis.com/record-count'] == '1'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }} -> {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}) is now active"
+
+    # Multiple A/AAAA records: show count and names
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA'] && event.annotations['dns.networking.miloapis.com/record-count'] != '1'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-count'] }} {{ event.annotations['dns.networking.miloapis.com/record-type'] }} records {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) are now active"
+
+    # Single non-IP record: show name
+    - match: "event.reason == 'RecordSetProgrammed' && !(event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']) && event.annotations['dns.networking.miloapis.com/record-count'] == '1'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) is now active"
+
+    # Multiple non-IP records: show count and names
+    - match: "event.reason == 'RecordSetProgrammed' && !(event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']) && event.annotations['dns.networking.miloapis.com/record-count'] != '1'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-count'] }} {{ event.annotations['dns.networking.miloapis.com/record-type'] }} records {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) are now active"
+
+    # RecordSetProgrammingFailed: DNS record programming failed after previous success.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.recordset.programming_failed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/record-type: A
+    #   dns.networking.miloapis.com/record-names: www
+    #   dns.networking.miloapis.com/failure-reason: Provider API error
+    #   dns.networking.miloapis.com/zone-ref: my-zone
+    #   dns.networking.miloapis.com/resource-name: my-recordset
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+    - match: "event.reason == 'RecordSetProgrammingFailed'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} programming failed: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

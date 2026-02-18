@@ -689,8 +689,8 @@ func TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations(t *tes
 	if got := ann[AnnotationRecordCount]; got != "2" {
 		t.Errorf("%s = %q, want %q", AnnotationRecordCount, got, "2")
 	}
-	if got := ann[AnnotationRecordName]; got != "www" {
-		t.Errorf("%s = %q, want %q", AnnotationRecordName, got, "www")
+	if got := ann[AnnotationRecordNames]; got != "www,api" {
+		t.Errorf("%s = %q, want %q", AnnotationRecordNames, got, "www,api")
 	}
 }
 

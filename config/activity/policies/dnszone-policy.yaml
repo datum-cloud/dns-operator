@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# ActivityPolicy for DNSZone resources.
+# Defines how DNSZone API operations and controller events appear in activity timelines.
+#
+# Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
+# Event rules handle async controller events for programming outcomes.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: dns.networking.miloapis.com-dnszone
+spec:
+  resource:
+    apiGroup: dns.networking.miloapis.com
+    kind: DNSZone
+
+  # Audit log rules for CRUD operations.
+  # These are automatically captured by the API server and don't require controller code.
+  auditRules:
+    - match: "audit.verb == 'create'"
+      summary: "{{ actor }} created DNS zone {{ link(audit.objectRef.name, audit.responseObject) }} for domain {{ audit.responseObject.spec.domainName }}"
+
+    - match: "audit.verb == 'delete'"
+      summary: "{{ actor }} deleted DNS zone {{ audit.objectRef.name }}"
+
+    - match: "audit.verb in ['update', 'patch'] && !audit.objectRef.subresource"
+      summary: "{{ actor }} updated DNS zone {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+    # Status subresource updates are system-initiated and typically not shown to users,
+    # but can be enabled if needed for debugging.
+    # - match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
+    #   summary: "System updated status of DNS zone {{ link(audit.objectRef.name, audit.objectRef) }}"
+
+  # Event rules for controller-emitted Kubernetes events.
+  # These capture async outcomes that audit logs cannot represent.
+  eventRules:
+    # ZoneProgrammed: DNS zone successfully programmed to the DNS provider.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.zone.programmed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/zone-class: production
+    #   dns.networking.miloapis.com/nameservers: ns1.example.com,ns2.example.com
+    #   dns.networking.miloapis.com/resource-name: my-zone
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+    - match: "event.reason == 'ZoneProgrammed'"
+      summary: "DNS zone {{ link(event.regarding.name, event.regarding) }} for {{ event.annotations['dns.networking.miloapis.com/domain-name'] }} is now active with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
+
+    # ZoneProgrammingFailed: DNS zone programming failed after previous success.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.zone.programming_failed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/failure-reason: Provider API error
+    #   dns.networking.miloapis.com/resource-name: my-zone
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+    - match: "event.reason == 'ZoneProgrammingFailed'"
+      summary: "DNS zone {{ link(event.regarding.name, event.regarding) }} programming failed: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

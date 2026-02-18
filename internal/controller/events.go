@@ -32,7 +32,7 @@ const (
 	// DNSRecordSet-specific annotations.
 	AnnotationZoneRef     = "dns.networking.miloapis.com/zone-ref"
 	AnnotationRecordCount = "dns.networking.miloapis.com/record-count"
-	AnnotationRecordName  = "dns.networking.miloapis.com/record-name"
+	AnnotationRecordNames = "dns.networking.miloapis.com/record-names"
 	AnnotationIPAddresses = "dns.networking.miloapis.com/ip-addresses"
 
 	// Shared failure annotation.
@@ -169,8 +169,8 @@ func recordRecordSetActivityEventWithData(
 	}
 	if len(rs.Spec.Records) > 0 {
 		annotations[AnnotationRecordCount] = strconv.Itoa(len(rs.Spec.Records))
-		// Use the first record entry's name as the record name annotation.
-		annotations[AnnotationRecordName] = rs.Spec.Records[0].Name
+		// Collect unique record names preserving order of first occurrence.
+		annotations[AnnotationRecordNames] = strings.Join(uniqueRecordNames(rs), ",")
 	}
 	// Extract IP addresses for A/AAAA record types.
 	if ips := extractIPAddresses(rs); len(ips) > 0 {
@@ -180,6 +180,22 @@ func recordRecordSetActivityEventWithData(
 		annotations[AnnotationFailureReason] = data.FailReason
 	}
 	recorder.AnnotatedEventf(rs, annotations, eventType, reason, messageFmt, args...)
+}
+
+// uniqueRecordNames returns a deduplicated list of record names from the
+// DNSRecordSet, preserving the order of first occurrence. This handles the
+// common case where multiple records share the same name (e.g., round-robin A
+// records) as well as the less common case of different names in one set.
+func uniqueRecordNames(rs *dnsv1alpha1.DNSRecordSet) []string {
+	seen := make(map[string]struct{})
+	var names []string
+	for _, r := range rs.Spec.Records {
+		if _, ok := seen[r.Name]; !ok {
+			seen[r.Name] = struct{}{}
+			names = append(names, r.Name)
+		}
+	}
+	return names
 }
 
 // extractIPAddresses collects IP address content values from A and AAAA record

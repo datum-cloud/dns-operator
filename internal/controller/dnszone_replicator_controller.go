@@ -210,6 +210,18 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
 				return ctrl.Result{}, perr
 			}
+			// Emit activity event so users get real-time feedback about the conflict.
+			recordZoneActivityEventWithData(recorder,
+				ZoneEventData{
+					Zone:       &upstream,
+					FailReason: "DNSZone claimed by another resource",
+				},
+				corev1.EventTypeWarning,
+				EventReasonZoneProgrammingFailed,
+				ActivityTypeZoneProgrammingFailed,
+				"DNSZone %q programming failed: domain already claimed by another DNSZone",
+				upstream.Name,
+			)
 		}
 		return ctrl.Result{}, nil
 	}

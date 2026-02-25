@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,18 @@ const (
 	AnnotationRecordCount = "dns.networking.miloapis.com/record-count"
 	AnnotationRecordNames = "dns.networking.miloapis.com/record-names"
 	AnnotationIPAddresses = "dns.networking.miloapis.com/ip-addresses"
+
+	// Display annotations for human-readable activity summaries.
+	// These are set on DNSRecordSet resources by the controller for use in
+	// ActivityPolicy audit rule templates. They provide pre-formatted
+	// user-friendly values that would be complex to compute in CEL.
+	AnnotationDisplayName  = "dns.networking.miloapis.com/display-name"
+	AnnotationDisplayValue = "dns.networking.miloapis.com/display-value"
+
+	// Type-specific event annotations for record values.
+	// These supplement ip-addresses for non-IP record types.
+	AnnotationCNAMETarget = "dns.networking.miloapis.com/cname-target"
+	AnnotationMXHosts     = "dns.networking.miloapis.com/mx-hosts"
 
 	// Shared failure annotation.
 	AnnotationFailureReason = "dns.networking.miloapis.com/failure-reason"
@@ -176,6 +189,21 @@ func recordRecordSetActivityEventWithData(
 	if ips := extractIPAddresses(rs); len(ips) > 0 {
 		annotations[AnnotationIPAddresses] = strings.Join(ips, ",")
 	}
+	// Extract type-specific record values for activity summaries.
+	switch rs.Spec.RecordType {
+	case dnsv1alpha1.RRTypeCNAME:
+		if target := extractCNAMETarget(rs); target != "" {
+			annotations[AnnotationCNAMETarget] = target
+		}
+	case dnsv1alpha1.RRTypeMX:
+		if hosts := extractMXHosts(rs); hosts != "" {
+			annotations[AnnotationMXHosts] = hosts
+		}
+	}
+	// Add display-name annotation (pre-computed FQDN) for easier template usage.
+	if data.DomainName != "" {
+		annotations[AnnotationDisplayName] = computeDisplayName(rs, data.DomainName)
+	}
 	if data.FailReason != "" {
 		annotations[AnnotationFailureReason] = data.FailReason
 	}
@@ -221,6 +249,134 @@ func extractIPAddresses(rs *dnsv1alpha1.DNSRecordSet) []string {
 	default:
 		return nil
 	}
+}
+
+// extractCNAMETarget returns the CNAME target from the first record entry.
+// Returns empty string if not a CNAME record or if no valid target exists.
+func extractCNAMETarget(rs *dnsv1alpha1.DNSRecordSet) string {
+	if rs.Spec.RecordType != dnsv1alpha1.RRTypeCNAME {
+		return ""
+	}
+	if len(rs.Spec.Records) > 0 && rs.Spec.Records[0].CNAME != nil {
+		return rs.Spec.Records[0].CNAME.Content
+	}
+	return ""
+}
+
+// extractMXHosts returns a formatted string of MX hosts with their preferences.
+// Format: "10 mail.example.com, 20 mail2.example.com"
+func extractMXHosts(rs *dnsv1alpha1.DNSRecordSet) string {
+	if rs.Spec.RecordType != dnsv1alpha1.RRTypeMX {
+		return ""
+	}
+	var hosts []string
+	for _, r := range rs.Spec.Records {
+		if r.MX != nil && r.MX.Exchange != "" {
+			hosts = append(hosts, fmt.Sprintf("%d %s", r.MX.Preference, r.MX.Exchange))
+		}
+	}
+	return strings.Join(hosts, ", ")
+}
+
+// computeDisplayName returns a human-friendly name for the DNSRecordSet.
+// For most records this is the FQDN (e.g., "www.example.com").
+// For multiple unique names, returns comma-separated FQDNs.
+func computeDisplayName(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) string {
+	names := uniqueRecordNames(rs)
+	if len(names) == 0 {
+		return ""
+	}
+	var fqdns []string
+	for _, name := range names {
+		fqdn := buildFQDN(name, zoneDomainName)
+		fqdns = append(fqdns, fqdn)
+	}
+	return strings.Join(fqdns, ", ")
+}
+
+// computeDisplayValue returns a human-friendly value for the DNSRecordSet
+// based on its record type. This is used in activity summaries to show
+// what the record points to (IP addresses, CNAME targets, MX hosts, etc.).
+func computeDisplayValue(rs *dnsv1alpha1.DNSRecordSet) string {
+	const maxLength = 200
+
+	switch rs.Spec.RecordType {
+	case dnsv1alpha1.RRTypeA, dnsv1alpha1.RRTypeAAAA:
+		ips := extractIPAddresses(rs)
+		result := strings.Join(ips, ", ")
+		if len(result) > maxLength {
+			return result[:maxLength-3] + "..."
+		}
+		return result
+
+	case dnsv1alpha1.RRTypeCNAME:
+		return extractCNAMETarget(rs)
+
+	case dnsv1alpha1.RRTypeALIAS:
+		if len(rs.Spec.Records) > 0 && rs.Spec.Records[0].ALIAS != nil {
+			return rs.Spec.Records[0].ALIAS.Content
+		}
+		return ""
+
+	case dnsv1alpha1.RRTypeMX:
+		result := extractMXHosts(rs)
+		if len(result) > maxLength {
+			return result[:maxLength-3] + "..."
+		}
+		return result
+
+	case dnsv1alpha1.RRTypeTXT:
+		if len(rs.Spec.Records) > 0 && rs.Spec.Records[0].TXT != nil {
+			content := rs.Spec.Records[0].TXT.Content
+			if len(content) > 60 {
+				return fmt.Sprintf("\"%s...\"", content[:57])
+			}
+			return fmt.Sprintf("\"%s\"", content)
+		}
+		return ""
+
+	case dnsv1alpha1.RRTypeNS:
+		var servers []string
+		for _, r := range rs.Spec.Records {
+			if r.NS != nil && r.NS.Content != "" {
+				servers = append(servers, r.NS.Content)
+			}
+		}
+		result := strings.Join(servers, ", ")
+		if len(result) > maxLength {
+			return result[:maxLength-3] + "..."
+		}
+		return result
+
+	case dnsv1alpha1.RRTypeSRV:
+		var entries []string
+		for _, r := range rs.Spec.Records {
+			if r.SRV != nil {
+				entries = append(entries, fmt.Sprintf("%d %d %d %s",
+					r.SRV.Priority, r.SRV.Weight, r.SRV.Port, r.SRV.Target))
+			}
+		}
+		result := strings.Join(entries, ", ")
+		if len(result) > maxLength {
+			return result[:maxLength-3] + "..."
+		}
+		return result
+
+	default:
+		if len(rs.Spec.Records) > 1 {
+			return fmt.Sprintf("%d records", len(rs.Spec.Records))
+		}
+		return "(see details)"
+	}
+}
+
+// buildFQDN constructs a fully-qualified domain name from a record name
+// and zone domain. Handles the special "@" name for zone apex.
+func buildFQDN(recordName, zoneDomainName string) string {
+	if recordName == "@" {
+		return zoneDomainName
+	}
+	return recordName + "." + zoneDomainName
 }
 
 // programmedConditionTransitioned returns true when the Programmed condition changed

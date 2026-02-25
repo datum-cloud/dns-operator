@@ -5,6 +5,21 @@
 #
 # Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
 # Event rules handle async controller events for programming outcomes.
+#
+# Design principles:
+# - Use FQDNs (www.example.com) as display text, not resource names
+# - Show record values (IPs, CNAME targets, MX hosts) where available
+# - Action-oriented language ("added", "removed", "is now resolving to")
+# - Type-specific phrasing for common record types
+#
+# Controller-provided annotations on resource (for audit rules):
+#   dns.networking.miloapis.com/display-name: www.example.com
+#   dns.networking.miloapis.com/display-value: 192.0.2.10
+#
+# Controller-provided annotations on events:
+#   dns.networking.miloapis.com/display-name: www.example.com
+#   dns.networking.miloapis.com/cname-target: api.internal.example.com
+#   dns.networking.miloapis.com/mx-hosts: 10 mail.example.com, 20 mail2.example.com
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -15,68 +30,98 @@ spec:
     kind: DNSRecordSet
 
   # Audit log rules for CRUD operations.
-  # These are automatically captured by the API server and don't require controller code.
+  # These use display-name and display-value annotations set by the controller.
+  # Rules are ordered from most specific to fallback.
   auditRules:
+    # ----- CREATE RULES (type-specific) -----
+    # A/AAAA records: "added www.example.com pointing to 192.0.2.10"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType in ['A', 'AAAA']"
+      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} pointing to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    # CNAME records: "added api.example.com as an alias for api.internal.example.com"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType == 'CNAME'"
+      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    # ALIAS records: "added example.com as an alias for lb.example.com"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType == 'ALIAS'"
+      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    # MX records: "configured mail for example.com using 10 mail.example.com"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType == 'MX'"
+      summary: "{{ actor }} configured mail for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} using {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    # TXT records: "added TXT record for example.com"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType == 'TXT'"
+      summary: "{{ actor }} added TXT record for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }}"
+
+    # NS records: "added nameservers for sub.example.com"
+    - match: "audit.verb == 'create' && audit.responseObject.spec.recordType == 'NS'"
+      summary: "{{ actor }} added nameservers for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }}"
+
+    # Generic create fallback: "added SRV record for _sip._tcp.example.com"
     - match: "audit.verb == 'create'"
-      summary: "{{ actor }} created {{ audit.responseObject.spec.recordType }} record {{ link(audit.objectRef.name, audit.responseObject) }} in zone {{ audit.responseObject.spec.dnsZoneRef.name }}"
+      summary: "{{ actor }} added {{ audit.responseObject.spec.recordType }} record for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }}"
 
+    # ----- DELETE RULES -----
+    # Use request object for delete (response may be empty)
     - match: "audit.verb == 'delete'"
-      summary: "{{ actor }} deleted DNS record {{ audit.objectRef.name }}"
+      summary: "{{ actor }} removed {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} ({{ audit.responseObject.spec.recordType }})"
 
-    - match: "audit.verb in ['update', 'patch'] && !audit.objectRef.subresource"
-      summary: "{{ actor }} updated {{ audit.requestObject.spec.recordType }} record {{ link(audit.objectRef.name, audit.objectRef) }}"
+    # ----- UPDATE RULES (type-specific) -----
+    # A/AAAA records: "updated www.example.com to point to 192.0.2.20"
+    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseObject.spec.recordType in ['A', 'AAAA']"
+      summary: "{{ actor }} updated {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} to point to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
-    # Status subresource updates are system-initiated and typically not shown to users,
-    # but can be enabled if needed for debugging.
+    # CNAME records: "updated api.example.com to alias api.v2.example.com"
+    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && audit.responseObject.spec.recordType == 'CNAME'"
+      summary: "{{ actor }} updated {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }} to alias {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    # Generic update fallback
+    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }}"
+
+    # Status subresource updates are system-initiated and typically not shown to users
     # - match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
-    #   summary: "System updated status of DNS record {{ link(audit.objectRef.name, audit.objectRef) }}"
+    #   summary: "System updated status of {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.responseObject) }}"
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.
   #
-  # A DNSRecordSet can contain multiple records with potentially different names
-  # (e.g., "www" and "api" A records in one set). The annotations reflect this:
-  #   - record-count: total number of record entries
-  #   - record-names: comma-separated unique names (e.g., "www" or "www,api")
-  #   - ip-addresses: all IPs for A/AAAA types (may span multiple names)
+  # Available annotations on all events:
+  #   dns.networking.miloapis.com/event-type: dns.recordset.programmed
+  #   dns.networking.miloapis.com/domain-name: example.com
+  #   dns.networking.miloapis.com/record-type: A
+  #   dns.networking.miloapis.com/record-names: www
+  #   dns.networking.miloapis.com/record-count: 1
+  #   dns.networking.miloapis.com/display-name: www.example.com
+  #
+  # Type-specific annotations:
+  #   dns.networking.miloapis.com/ip-addresses: 192.0.2.10 (A/AAAA only)
+  #   dns.networking.miloapis.com/cname-target: target.example.com (CNAME only)
+  #   dns.networking.miloapis.com/mx-hosts: 10 mail.example.com (MX only)
   eventRules:
-    # RecordSetProgrammed: DNS records successfully programmed to the DNS provider.
-    # Annotations available:
-    #   dns.networking.miloapis.com/event-type: dns.recordset.programmed
-    #   dns.networking.miloapis.com/domain-name: example.com
-    #   dns.networking.miloapis.com/record-type: A
-    #   dns.networking.miloapis.com/record-names: www (or "www,api" for multi-name)
-    #   dns.networking.miloapis.com/record-count: 2
-    #   dns.networking.miloapis.com/ip-addresses: 192.168.1.1,192.168.1.2  (A/AAAA only)
-    #   dns.networking.miloapis.com/zone-ref: my-zone
-    #   dns.networking.miloapis.com/resource-name: my-recordset
-    #   dns.networking.miloapis.com/resource-namespace: my-project
+    # ----- PROGRAMMED EVENTS (type-specific) -----
+    # A/AAAA records: "www.example.com is now resolving to 192.0.2.10"
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']"
+      summary: "{{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now resolving to {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
 
-    # Single A/AAAA record (most common case): show name and IPs
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA'] && event.annotations['dns.networking.miloapis.com/record-count'] == '1'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }} -> {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}) is now active"
+    # CNAME records: "api.example.com is now resolving to api.internal.example.com"
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'CNAME'"
+      summary: "{{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now resolving to {{ event.annotations['dns.networking.miloapis.com/cname-target'] }}"
 
-    # Multiple A/AAAA records: show count and names
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA'] && event.annotations['dns.networking.miloapis.com/record-count'] != '1'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-count'] }} {{ event.annotations['dns.networking.miloapis.com/record-type'] }} records {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) are now active"
+    # MX records: "Mail for example.com is now routing to 10 mail.example.com"
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'MX'"
+      summary: "Mail for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now routing to {{ event.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
 
-    # Single non-IP record: show name
-    - match: "event.reason == 'RecordSetProgrammed' && !(event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']) && event.annotations['dns.networking.miloapis.com/record-count'] == '1'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) is now active"
+    # TXT records: "TXT record for example.com is now active"
+    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'TXT'"
+      summary: "TXT record for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now active"
 
-    # Multiple non-IP records: show count and names
-    - match: "event.reason == 'RecordSetProgrammed' && !(event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']) && event.annotations['dns.networking.miloapis.com/record-count'] != '1'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-count'] }} {{ event.annotations['dns.networking.miloapis.com/record-type'] }} records {{ link(event.regarding.name, event.regarding) }} ({{ event.annotations['dns.networking.miloapis.com/record-names'] }}.{{ event.annotations['dns.networking.miloapis.com/domain-name'] }}) are now active"
+    # Generic programmed fallback: "NS record for sub.example.com is now active"
+    - match: "event.reason == 'RecordSetProgrammed'"
+      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now active"
 
-    # RecordSetProgrammingFailed: DNS record programming failed after previous success.
-    # Annotations available:
-    #   dns.networking.miloapis.com/event-type: dns.recordset.programming_failed
-    #   dns.networking.miloapis.com/domain-name: example.com
-    #   dns.networking.miloapis.com/record-type: A
-    #   dns.networking.miloapis.com/record-names: www
-    #   dns.networking.miloapis.com/failure-reason: Provider API error
-    #   dns.networking.miloapis.com/zone-ref: my-zone
-    #   dns.networking.miloapis.com/resource-name: my-recordset
-    #   dns.networking.miloapis.com/resource-namespace: my-project
+    # ----- PROGRAMMING FAILED EVENTS -----
+    # "Failed to apply www.example.com: Provider API error"
     - match: "event.reason == 'RecordSetProgrammingFailed'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record {{ link(event.regarding.name, event.regarding) }} programming failed: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "Failed to apply {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

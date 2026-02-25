@@ -5,6 +5,11 @@
 #
 # Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
 # Event rules handle async controller events for programming outcomes.
+#
+# Design principles:
+# - Use domain names (example.com) as display text, not resource names (example-com)
+# - Action-oriented language ("created zone", not "created DNS zone")
+# - Show relevant DNS data (nameservers) where available
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -17,19 +22,22 @@ spec:
   # Audit log rules for CRUD operations.
   # These are automatically captured by the API server and don't require controller code.
   auditRules:
+    # Zone creation - use domain name as display text in link
     - match: "audit.verb == 'create'"
-      summary: "{{ actor }} created DNS zone {{ link(audit.objectRef.name, audit.responseObject) }} for domain {{ audit.responseObject.spec.domainName }}"
+      summary: "{{ actor }} created zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
 
+    # Zone deletion - use domain name from request object (response may be empty)
     - match: "audit.verb == 'delete'"
-      summary: "{{ actor }} deleted DNS zone {{ audit.objectRef.name }}"
+      summary: "{{ actor }} deleted zone {{ audit.requestObject.spec.domainName }}"
 
-    - match: "audit.verb in ['update', 'patch'] && !audit.objectRef.subresource"
-      summary: "{{ actor }} updated DNS zone {{ link(audit.objectRef.name, audit.objectRef) }}"
+    # Zone update - use domain name as display text
+    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      summary: "{{ actor }} updated zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
 
     # Status subresource updates are system-initiated and typically not shown to users,
     # but can be enabled if needed for debugging.
     # - match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
-    #   summary: "System updated status of DNS zone {{ link(audit.objectRef.name, audit.objectRef) }}"
+    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.
@@ -43,7 +51,7 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - match: "event.reason == 'ZoneProgrammed'"
-      summary: "DNS zone {{ link(event.regarding.name, event.regarding) }} for {{ event.annotations['dns.networking.miloapis.com/domain-name'] }} is now active with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
+      summary: "Zone {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is now active with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
 
     # ZoneProgrammingFailed: DNS zone programming failed after previous success.
     # Annotations available:
@@ -53,4 +61,4 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - match: "event.reason == 'ZoneProgrammingFailed'"
-      summary: "DNS zone {{ link(event.regarding.name, event.regarding) }} programming failed: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "Failed to configure zone {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

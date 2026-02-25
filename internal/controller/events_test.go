@@ -947,6 +947,320 @@ func TestExtractIPAddresses(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Display annotation helper tests
+// --------------------------------------------------------------------------
+
+// TestExtractCNAMETarget verifies extraction of CNAME targets.
+func TestExtractCNAMETarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rs   *dnsv1alpha1.DNSRecordSet
+		want string
+	}{
+		{
+			name: "CNAME record returns target",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeCNAME,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "api", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "api.internal.example.com"}},
+					},
+				},
+			},
+			want: "api.internal.example.com",
+		},
+		{
+			name: "A record returns empty",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}},
+					},
+				},
+			},
+			want: "",
+		},
+		{
+			name: "CNAME with nil spec returns empty",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeCNAME,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "api", CNAME: nil}},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractCNAMETarget(tt.rs)
+			if got != tt.want {
+				t.Errorf("extractCNAMETarget() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExtractMXHosts verifies extraction of MX hosts with preferences.
+func TestExtractMXHosts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rs   *dnsv1alpha1.DNSRecordSet
+		want string
+	}{
+		{
+			name: "single MX record",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeMX,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "@", MX: &dnsv1alpha1.MXRecordSpec{Preference: 10, Exchange: "mail.example.com"}},
+					},
+				},
+			},
+			want: "10 mail.example.com",
+		},
+		{
+			name: "multiple MX records",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeMX,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "@", MX: &dnsv1alpha1.MXRecordSpec{Preference: 10, Exchange: "mail.example.com"}},
+						{Name: "@", MX: &dnsv1alpha1.MXRecordSpec{Preference: 20, Exchange: "mail2.example.com"}},
+					},
+				},
+			},
+			want: "10 mail.example.com, 20 mail2.example.com",
+		},
+		{
+			name: "non-MX record returns empty",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "@", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}}},
+				},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := extractMXHosts(tt.rs)
+			if got != tt.want {
+				t.Errorf("extractMXHosts() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildFQDN verifies FQDN construction from record name and zone domain.
+func TestBuildFQDN(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		recordName string
+		zoneDomain string
+		want       string
+	}{
+		{
+			name:       "subdomain",
+			recordName: "www",
+			zoneDomain: "example.com",
+			want:       "www.example.com",
+		},
+		{
+			name:       "apex record",
+			recordName: "@",
+			zoneDomain: "example.com",
+			want:       "example.com",
+		},
+		{
+			name:       "nested subdomain",
+			recordName: "api.v2",
+			zoneDomain: "example.com",
+			want:       "api.v2.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildFQDN(tt.recordName, tt.zoneDomain)
+			if got != tt.want {
+				t.Errorf("buildFQDN(%q, %q) = %q, want %q", tt.recordName, tt.zoneDomain, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeDisplayName verifies FQDN computation for display annotations.
+func TestComputeDisplayName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		rs         *dnsv1alpha1.DNSRecordSet
+		zoneDomain string
+		want       string
+	}{
+		{
+			name: "single record",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					Records: []dnsv1alpha1.RecordEntry{{Name: "www"}},
+				},
+			},
+			zoneDomain: "example.com",
+			want:       "www.example.com",
+		},
+		{
+			name: "multiple records same name",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www"},
+						{Name: "www"},
+					},
+				},
+			},
+			zoneDomain: "example.com",
+			want:       "www.example.com",
+		},
+		{
+			name: "multiple records different names",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www"},
+						{Name: "api"},
+					},
+				},
+			},
+			zoneDomain: "example.com",
+			want:       "www.example.com, api.example.com",
+		},
+		{
+			name: "apex record",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					Records: []dnsv1alpha1.RecordEntry{{Name: "@"}},
+				},
+			},
+			zoneDomain: "example.com",
+			want:       "example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := computeDisplayName(tt.rs, tt.zoneDomain)
+			if got != tt.want {
+				t.Errorf("computeDisplayName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestComputeDisplayValue verifies display value computation for different record types.
+func TestComputeDisplayValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rs   *dnsv1alpha1.DNSRecordSet
+		want string
+	}{
+		{
+			name: "A record single IP",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}}},
+				},
+			},
+			want: "192.0.2.10",
+		},
+		{
+			name: "A record multiple IPs",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}},
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.11"}},
+					},
+				},
+			},
+			want: "192.0.2.10, 192.0.2.11",
+		},
+		{
+			name: "CNAME record",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeCNAME,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "api", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "api.internal.example.com"}}},
+				},
+			},
+			want: "api.internal.example.com",
+		},
+		{
+			name: "MX records",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeMX,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "@", MX: &dnsv1alpha1.MXRecordSpec{Preference: 10, Exchange: "mail.example.com"}},
+					},
+				},
+			},
+			want: "10 mail.example.com",
+		},
+		{
+			name: "TXT record short",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeTXT,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "@", TXT: &dnsv1alpha1.TXTRecordSpec{Content: "v=spf1 include:_spf.example.com ~all"}}},
+				},
+			},
+			want: "\"v=spf1 include:_spf.example.com ~all\"",
+		},
+		{
+			name: "NS record",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					RecordType: dnsv1alpha1.RRTypeNS,
+					Records:    []dnsv1alpha1.RecordEntry{{Name: "sub", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.com"}}},
+				},
+			},
+			want: "ns1.example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := computeDisplayValue(tt.rs)
+			if got != tt.want {
+				t.Errorf("computeDisplayValue() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// --------------------------------------------------------------------------
 // test helpers
 // --------------------------------------------------------------------------
 

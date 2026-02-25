@@ -119,11 +119,17 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure OwnerReference to upstream DNSZone (same ns)
-	if !metav1.IsControlledBy(&upstream, &zone) {
+	// Ensure display annotations and OwnerReference are set.
+	// Display annotations provide human-friendly names for ActivityPolicy templates.
+	needsOwnerRef := !metav1.IsControlledBy(&upstream, &zone)
+	needsAnnotations := ensureDisplayAnnotations(&upstream, zone.Spec.DomainName)
+
+	if needsOwnerRef || needsAnnotations {
 		base := upstream.DeepCopy()
-		if err := controllerutil.SetControllerReference(&zone, &upstream, upstreamCluster.GetScheme()); err != nil {
-			return ctrl.Result{}, err
+		if needsOwnerRef {
+			if err := controllerutil.SetControllerReference(&zone, &upstream, upstreamCluster.GetScheme()); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
@@ -303,6 +309,30 @@ func (r *DNSRecordSetReplicator) updateStatus(
 	base := upstream.DeepCopy()
 	upstream.Status = *downstreamStatus
 	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
+}
+
+// ensureDisplayAnnotations sets the display-name and display-value annotations
+// on the DNSRecordSet if they are missing or outdated. These annotations provide
+// human-friendly values for ActivityPolicy audit rule templates.
+// Returns true if annotations were modified (caller should patch the object).
+func ensureDisplayAnnotations(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) bool {
+	expectedDisplayName := computeDisplayName(rs, zoneDomainName)
+	expectedDisplayValue := computeDisplayValue(rs)
+
+	if rs.Annotations == nil {
+		rs.Annotations = make(map[string]string)
+	}
+
+	currentDisplayName := rs.Annotations[AnnotationDisplayName]
+	currentDisplayValue := rs.Annotations[AnnotationDisplayValue]
+
+	if currentDisplayName == expectedDisplayName && currentDisplayValue == expectedDisplayValue {
+		return false
+	}
+
+	rs.Annotations[AnnotationDisplayName] = expectedDisplayName
+	rs.Annotations[AnnotationDisplayValue] = expectedDisplayValue
+	return true
 }
 
 // ---- Watches / mapping helpers -------------------------

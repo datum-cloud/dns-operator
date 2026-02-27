@@ -41,6 +41,7 @@ spec:
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.
+  # Uses conversational tone for system-initiated events.
   eventRules:
     # ZoneProgrammed: DNS zone successfully programmed to the DNS provider.
     # Annotations available:
@@ -51,7 +52,7 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - match: "event.reason == 'ZoneProgrammed'"
-      summary: "Zone {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is now active with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
+      summary: "Your zone is ready! {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is live with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
 
     # ZoneProgrammingFailed: DNS zone programming failed after previous success.
     # Annotations available:
@@ -61,4 +62,4 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - match: "event.reason == 'ZoneProgrammingFailed'"
-      summary: "Failed to configure zone {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "We hit a snag configuring {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

@@ -115,28 +115,28 @@ spec:
   #   dns.networking.miloapis.com/cname-target: target.example.com (CNAME only)
   #   dns.networking.miloapis.com/mx-hosts: 10 mail.example.com (MX only)
   eventRules:
-    # ----- PROGRAMMED EVENTS (type-specific) -----
-    # A/AAAA records: "www.example.com is now resolving to 192.0.2.10"
+    # ----- PROGRAMMED EVENTS (type-specific, conversational tone) -----
+    # A/AAAA records: "Your record is live! www.example.com resolves to 192.0.2.10"
     - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']"
-      summary: "{{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now resolving to {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
+      summary: "Your record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} resolves to {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
 
-    # CNAME records: "api.example.com is now resolving to api.internal.example.com"
+    # CNAME records: "Your record is live! api.example.com resolves to api.internal.example.com"
     - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'CNAME'"
-      summary: "{{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now resolving to {{ event.annotations['dns.networking.miloapis.com/cname-target'] }}"
+      summary: "Your record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} resolves to {{ event.annotations['dns.networking.miloapis.com/cname-target'] }}"
 
-    # MX records: "Mail for example.com is now routing to 10 mail.example.com"
+    # MX records: "Mail is ready! example.com routes to 10 mail.example.com"
     - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'MX'"
-      summary: "Mail for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now routing to {{ event.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
+      summary: "Mail is ready! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} routes to {{ event.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
 
-    # TXT records: "TXT record for example.com is now active"
+    # TXT records: "Your TXT record is live! example.com"
     - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'TXT'"
-      summary: "TXT record for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now active"
+      summary: "Your TXT record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}"
 
-    # Generic programmed fallback: "NS record for sub.example.com is now active"
+    # Generic programmed fallback: "Your NS record is live! sub.example.com"
     - match: "event.reason == 'RecordSetProgrammed'"
-      summary: "{{ event.annotations['dns.networking.miloapis.com/record-type'] }} record for {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now active"
+      summary: "Your {{ event.annotations['dns.networking.miloapis.com/record-type'] }} record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}"
 
     # ----- PROGRAMMING FAILED EVENTS -----
-    # "Failed to apply www.example.com: Provider API error"
+    # "We hit a snag configuring www.example.com: Provider API error"
     - match: "event.reason == 'RecordSetProgrammingFailed'"
-      summary: "Failed to apply {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "We hit a snag configuring {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

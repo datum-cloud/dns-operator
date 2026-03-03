@@ -222,7 +222,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 	shadow.SetName(md.Name)
 
 	res, cErr := controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
-		shadow.Labels = md.Labels
+		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
 		}

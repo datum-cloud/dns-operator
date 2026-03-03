@@ -54,8 +54,8 @@ func (c *mappedNamespaceResourceStrategy) ObjectMetaFromUpstreamObject(ctx conte
 	return metav1.ObjectMeta{
 		Name:      obj.GetName(),
 		Namespace: downstreamNamespaceName,
-		Labels: map[string]string{
-			UpstreamOwnerNamespaceLabel: obj.GetNamespace(),
+		Annotations: map[string]string{
+			UpstreamOwnerNamespaceAnnotation: obj.GetNamespace(),
 		},
 	}, nil
 }
@@ -93,15 +93,15 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 	}
 
 	_, err := controllerutil.CreateOrUpdate(ctx, c.downstreamClient, downstreamNamespace, func() error {
-		if downstreamNamespace.Labels == nil {
-			downstreamNamespace.Labels = make(map[string]string)
+		if downstreamNamespace.Annotations == nil {
+			downstreamNamespace.Annotations = make(map[string]string)
 		}
 
-		downstreamNamespace.Labels[UpstreamOwnerClusterNameLabel] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		downstreamNamespace.Annotations[UpstreamOwnerClusterNameAnnotation] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
 
-		labels := obj.GetLabels()
-		if v, ok := labels[UpstreamOwnerNamespaceLabel]; ok {
-			downstreamNamespace.Labels[UpstreamOwnerNamespaceLabel] = v
+		annotations := obj.GetAnnotations()
+		if v, ok := annotations[UpstreamOwnerNamespaceAnnotation]; ok {
+			downstreamNamespace.Annotations[UpstreamOwnerNamespaceAnnotation] = v
 		}
 
 		return nil
@@ -114,11 +114,11 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 }
 
 const (
-	UpstreamOwnerClusterNameLabel = "meta.datumapis.com/upstream-cluster-name"
-	UpstreamOwnerGroupLabel       = "meta.datumapis.com/upstream-group"
-	UpstreamOwnerKindLabel        = "meta.datumapis.com/upstream-kind"
-	UpstreamOwnerNameLabel        = "meta.datumapis.com/upstream-name"
-	UpstreamOwnerNamespaceLabel   = "meta.datumapis.com/upstream-namespace"
+	UpstreamOwnerClusterNameAnnotation = "meta.datumapis.com/upstream-cluster-name"
+	UpstreamOwnerGroupAnnotation       = "meta.datumapis.com/upstream-group"
+	UpstreamOwnerKindAnnotation        = "meta.datumapis.com/upstream-kind"
+	UpstreamOwnerNameAnnotation        = "meta.datumapis.com/upstream-name"
+	UpstreamOwnerNamespaceAnnotation   = "meta.datumapis.com/upstream-namespace"
 )
 
 func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Context, owner, controlled metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
@@ -138,12 +138,12 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
-	anchorLabels := map[string]string{
-		UpstreamOwnerClusterNameLabel: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_")),
-		UpstreamOwnerGroupLabel:       gvk.Group,
-		UpstreamOwnerKindLabel:        gvk.Kind,
-		UpstreamOwnerNameLabel:        owner.GetName(),
-		UpstreamOwnerNamespaceLabel:   owner.GetNamespace(),
+	anchorAnnotations := map[string]string{
+		UpstreamOwnerClusterNameAnnotation: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_")),
+		UpstreamOwnerGroupAnnotation:       gvk.Group,
+		UpstreamOwnerKindAnnotation:        gvk.Kind,
+		UpstreamOwnerNameAnnotation:        owner.GetName(),
+		UpstreamOwnerNamespaceAnnotation:   owner.GetNamespace(),
 	}
 
 	downstreamClient := c.GetClient()
@@ -155,7 +155,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 
 	if anchorConfigMap.CreationTimestamp.IsZero() {
 		anchorConfigMap.Name = anchorName
-		anchorConfigMap.Labels = anchorLabels
+		anchorConfigMap.Annotations = anchorAnnotations
 		anchorConfigMap.Namespace = controlled.GetNamespace()
 		if err := downstreamClient.Create(ctx, &anchorConfigMap); err != nil {
 			return fmt.Errorf("failed creating anchor configmap: %w", err)
@@ -166,17 +166,17 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 		return fmt.Errorf("failed setting anchor owner reference: %w", err)
 	}
 
-	labels := controlled.GetLabels()
-	if labels == nil {
-		labels = map[string]string{}
+	annotations := controlled.GetAnnotations()
+	if annotations == nil {
+		annotations = map[string]string{}
 	}
 
-	labels[UpstreamOwnerClusterNameLabel] = anchorLabels[UpstreamOwnerClusterNameLabel]
-	labels[UpstreamOwnerGroupLabel] = anchorLabels[UpstreamOwnerGroupLabel]
-	labels[UpstreamOwnerKindLabel] = anchorLabels[UpstreamOwnerKindLabel]
-	labels[UpstreamOwnerNameLabel] = anchorLabels[UpstreamOwnerNameLabel]
-	labels[UpstreamOwnerNamespaceLabel] = anchorLabels[UpstreamOwnerNamespaceLabel]
-	controlled.SetLabels(labels)
+	annotations[UpstreamOwnerClusterNameAnnotation] = anchorAnnotations[UpstreamOwnerClusterNameAnnotation]
+	annotations[UpstreamOwnerGroupAnnotation] = anchorAnnotations[UpstreamOwnerGroupAnnotation]
+	annotations[UpstreamOwnerKindAnnotation] = anchorAnnotations[UpstreamOwnerKindAnnotation]
+	annotations[UpstreamOwnerNameAnnotation] = anchorAnnotations[UpstreamOwnerNameAnnotation]
+	annotations[UpstreamOwnerNamespaceAnnotation] = anchorAnnotations[UpstreamOwnerNamespaceAnnotation]
+	controlled.SetAnnotations(annotations)
 
 	return nil
 }

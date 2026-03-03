@@ -273,7 +273,7 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 	shadow.SetName(md.Name)
 
 	res, cErr := controllerutil.CreateOrPatch(ctx, strategy.GetClient(), &shadow, func() error {
-		shadow.Labels = md.Labels
+		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
 		}

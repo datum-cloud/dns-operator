@@ -25,7 +25,7 @@ type empty struct{}
 
 // TypedEnqueueRequestForUpstreamOwner enqueues Requests for the upstream Owners of an object.
 //
-// This handler depends on the `compute.datumapis.com/upstream-namespace` label
+// This handler depends on the `meta.datumapis.com/upstream-*` annotations
 // to exist on the resource for the event.
 func TypedEnqueueRequestForUpstreamOwner[object client.Object](ownerType client.Object) mchandler.TypedEventHandlerFunc[object, mcreconcile.Request] {
 
@@ -106,17 +106,32 @@ func (e *enqueueRequestForOwner[object]) parseOwnerTypeGroupKind(scheme *runtime
 // getOwnerReconcileRequest looks at object and builds a map of reconcile.Request to reconcile
 // owners of object that match e.OwnerType.
 func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Object, result map[mcreconcile.Request]empty) {
-	labels := obj.GetLabels()
-	if labels[UpstreamOwnerKindLabel] == e.groupKind.Kind && labels[UpstreamOwnerGroupLabel] == e.groupKind.Group {
+	meta := upstreamOwnerMeta(obj)
+
+	if meta[UpstreamOwnerKindAnnotation] == e.groupKind.Kind && meta[UpstreamOwnerGroupAnnotation] == e.groupKind.Group {
 		request := mcreconcile.Request{
 			Request: reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      labels[UpstreamOwnerNameLabel],
-					Namespace: labels[UpstreamOwnerNamespaceLabel],
+					Name:      meta[UpstreamOwnerNameAnnotation],
+					Namespace: meta[UpstreamOwnerNamespaceAnnotation],
 				},
 			},
-			ClusterName: strings.TrimPrefix(strings.ReplaceAll(labels[UpstreamOwnerClusterNameLabel], "_", "/"), "cluster-"),
+			ClusterName: strings.TrimPrefix(strings.ReplaceAll(meta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-"),
 		}
 		result[request] = empty{}
 	}
+}
+
+// upstreamOwnerMeta returns upstream owner metadata from the object,
+// preferring annotations but falling back to labels for backwards
+// compatibility with resources created before the labels-to-annotations
+// migration.
+func upstreamOwnerMeta(obj metav1.Object) map[string]string {
+	if annotations := obj.GetAnnotations(); annotations[UpstreamOwnerKindAnnotation] != "" {
+		return annotations
+	}
+	if labels := obj.GetLabels(); labels[UpstreamOwnerKindAnnotation] != "" {
+		return labels
+	}
+	return nil
 }

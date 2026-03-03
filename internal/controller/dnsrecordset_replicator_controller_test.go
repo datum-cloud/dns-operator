@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -186,5 +187,303 @@ func TestEnsureDownstreamRecordSet_ExistingLabelsPreserved(t *testing.T) {
 	if shadow.Annotations[downstreamclient.UpstreamOwnerNameAnnotation] != "short-name" {
 		t.Errorf("expected name annotation to be set, got %q",
 			shadow.Annotations[downstreamclient.UpstreamOwnerNameAnnotation])
+	}
+}
+
+// TestEnsureDisplayAnnotations_SetsAnnotationsCorrectly verifies that
+// ensureDisplayAnnotations correctly computes and sets display-name and
+// display-value annotations on DNSRecordSet resources.
+func TestEnsureDisplayAnnotations_SetsAnnotationsCorrectly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		rs               *dnsv1alpha1.DNSRecordSet
+		zoneDomainName   string
+		wantDisplayName  string
+		wantDisplayValue string
+		wantModified     bool
+	}{
+		{
+			name: "A record without annotations sets display name and value",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "www-record", Namespace: "default"},
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}},
+					},
+				},
+			},
+			zoneDomainName:   "example.com",
+			wantDisplayName:  "www.example.com",
+			wantDisplayValue: "192.0.2.10",
+			wantModified:     true,
+		},
+		{
+			name: "CNAME record sets target as display value",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "api-record", Namespace: "default"},
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+					RecordType: dnsv1alpha1.RRTypeCNAME,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "api", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "api.internal.example.com"}},
+					},
+				},
+			},
+			zoneDomainName:   "example.com",
+			wantDisplayName:  "api.example.com",
+			wantDisplayValue: "api.internal.example.com",
+			wantModified:     true,
+		},
+		{
+			name: "apex record uses zone domain as display name",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "apex-record", Namespace: "default"},
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "@", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}},
+					},
+				},
+			},
+			zoneDomainName:   "example.com",
+			wantDisplayName:  "example.com",
+			wantDisplayValue: "192.0.2.1",
+			wantModified:     true,
+		},
+		{
+			name: "already correct annotations returns false",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "www-record",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationDisplayName:  "www.example.com",
+						AnnotationDisplayValue: "192.0.2.10",
+					},
+				},
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}},
+					},
+				},
+			},
+			zoneDomainName:   "example.com",
+			wantDisplayName:  "www.example.com",
+			wantDisplayValue: "192.0.2.10",
+			wantModified:     false,
+		},
+		{
+			name: "outdated annotations are updated",
+			rs: &dnsv1alpha1.DNSRecordSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "www-record",
+					Namespace: "default",
+					Annotations: map[string]string{
+						AnnotationDisplayName:  "www.example.com",
+						AnnotationDisplayValue: "192.0.2.99", // old IP
+					},
+				},
+				Spec: dnsv1alpha1.DNSRecordSetSpec{
+					DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+					RecordType: dnsv1alpha1.RRTypeA,
+					Records: []dnsv1alpha1.RecordEntry{
+						{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}}, // new IP
+					},
+				},
+			},
+			zoneDomainName:   "example.com",
+			wantDisplayName:  "www.example.com",
+			wantDisplayValue: "192.0.2.10",
+			wantModified:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rs := tt.rs.DeepCopy()
+			modified := ensureDisplayAnnotations(rs, tt.zoneDomainName)
+
+			if modified != tt.wantModified {
+				t.Errorf("ensureDisplayAnnotations() modified = %v, want %v", modified, tt.wantModified)
+			}
+			if got := rs.Annotations[AnnotationDisplayName]; got != tt.wantDisplayName {
+				t.Errorf("display-name = %q, want %q", got, tt.wantDisplayName)
+			}
+			if got := rs.Annotations[AnnotationDisplayValue]; got != tt.wantDisplayValue {
+				t.Errorf("display-value = %q, want %q", got, tt.wantDisplayValue)
+			}
+		})
+	}
+}
+
+// TestEnsureDisplayAnnotations_IdempotentAfterFirstCall verifies that
+// calling ensureDisplayAnnotations twice in a row returns false on the
+// second call (no modifications needed), which is critical for avoiding
+// infinite reconciliation loops.
+func TestEnsureDisplayAnnotations_IdempotentAfterFirstCall(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "www-record", Namespace: "default"},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}},
+			},
+		},
+	}
+
+	// First call should modify
+	firstCall := ensureDisplayAnnotations(rs, "example.com")
+	if !firstCall {
+		t.Fatal("first call should return true (annotations were set)")
+	}
+
+	// Second call with same data should NOT modify
+	secondCall := ensureDisplayAnnotations(rs, "example.com")
+	if secondCall {
+		t.Fatal("second call should return false (no changes needed)")
+	}
+}
+
+// trackingClient wraps a client.Client to track Create/Patch operations.
+// Used to verify that downstream operations occur even when annotations are updated.
+type trackingClient struct {
+	client.Client
+	createCount int
+	patchCount  int
+}
+
+func (c *trackingClient) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	c.createCount++
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func (c *trackingClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	c.patchCount++
+	return c.Client.Patch(ctx, obj, patch, opts...)
+}
+
+// TestDNSRecordSetReplicator_EnsureDownstreamRecordSet_WorksWithAnnotationUpdates
+// verifies that ensureDownstreamRecordSet works correctly when called after
+// display annotations are updated. This test validates the components work
+// together but does NOT test the Reconcile control flow directly.
+//
+// NOTE: A full integration test that calls Reconcile() would be needed to catch
+// control flow bugs (like early returns). Such a test would require mocking the
+// multicluster runtime manager. This test serves as a unit test for the
+// individual components.
+func TestDNSRecordSetReplicator_EnsureDownstreamRecordSet_CalledAfterAnnotationUpdate(t *testing.T) {
+	t.Parallel()
+
+	scheme := newTestScheme(t)
+
+	// Create zone and recordset without display annotations
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-zone",
+			Namespace: "default",
+		},
+		Spec: dnsv1alpha1.DNSZoneSpec{
+			DomainName:       "example.com",
+			DNSZoneClassName: "pdns",
+		},
+	}
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "www-record",
+			Namespace: "default",
+			// NO annotations - this triggers the annotation update path
+		},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name},
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}},
+			},
+		},
+	}
+
+	upstreamClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dnsv1alpha1.DNSRecordSet{}).
+		WithObjects(zone, rs).
+		Build()
+
+	downstreamBase := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dnsv1alpha1.DNSRecordSet{}).
+		Build()
+	downstreamClient := &trackingClient{Client: downstreamBase}
+
+	strategy := fakeStrategy{
+		namespace: "downstream",
+		name:      "shadow-www-record",
+		client:    downstreamClient,
+	}
+
+	r := &DNSRecordSetReplicator{
+		DownstreamClient: downstreamClient,
+	}
+
+	// Simulate what happens in Reconcile:
+	// 1. Fetch upstream recordset
+	// 2. Check/set display annotations (this used to cause early return)
+	// 3. Call ensureDownstreamRecordSet
+
+	ctx := context.Background()
+
+	// Re-fetch to get current state
+	var upstream dnsv1alpha1.DNSRecordSet
+	if err := upstreamClient.Get(ctx, client.ObjectKeyFromObject(rs), &upstream); err != nil {
+		t.Fatalf("get upstream: %v", err)
+	}
+
+	// Step 1: Check annotations - should need update
+	base := upstream.DeepCopy()
+	needsAnnotations := ensureDisplayAnnotations(&upstream, zone.Spec.DomainName)
+	if !needsAnnotations {
+		t.Fatal("expected annotations to need update for new recordset")
+	}
+
+	// Step 2: Patch annotations (simulating what Reconcile does)
+	if err := upstreamClient.Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+		t.Fatalf("patch annotations: %v", err)
+	}
+
+	// Step 3: THIS IS THE CRITICAL CHECK - ensure downstream is still created
+	// In the buggy code, we would have returned early before reaching this point
+	_, err := r.ensureDownstreamRecordSet(ctx, strategy, &upstream)
+	if err != nil {
+		t.Fatalf("ensureDownstreamRecordSet: %v", err)
+	}
+
+	// Verify downstream object was created
+	if downstreamClient.createCount == 0 && downstreamClient.patchCount == 0 {
+		t.Fatal("ensureDownstreamRecordSet did not create or patch downstream object")
+	}
+
+	// Verify annotations are set on upstream
+	var updated dnsv1alpha1.DNSRecordSet
+	if err := upstreamClient.Get(ctx, client.ObjectKeyFromObject(rs), &updated); err != nil {
+		t.Fatalf("get updated: %v", err)
+	}
+
+	if updated.Annotations[AnnotationDisplayName] != "www.example.com" {
+		t.Errorf("display-name = %q, want %q", updated.Annotations[AnnotationDisplayName], "www.example.com")
+	}
+	if updated.Annotations[AnnotationDisplayValue] != "192.0.2.10" {
+		t.Errorf("display-value = %q, want %q", updated.Annotations[AnnotationDisplayValue], "192.0.2.10")
 	}
 }

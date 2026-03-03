@@ -1,0 +1,59 @@
+name: E2E Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  e2e:
+    name: Run Chainsaw E2E Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Bootstrap e2e environment
+        run: make bootstrap-e2e
+
+      - name: Wait for controllers to be ready
+        run: |
+          kubectl --context kind-dns-upstream -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=120s
+          kubectl --context kind-dns-downstream -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
+
+      - name: Prepare kubeconfigs for Chainsaw
+        run: make chainsaw-prepare-kubeconfigs
+
+      - name: Run Chainsaw tests
+        run: make chainsaw-test
+
+      - name: Collect diagnostic logs
+        if: failure()
+        run: |
+          echo "=== Upstream controller logs ==="
+          kubectl --context kind-dns-upstream -n dns-replicator-system logs deployment/dns-operator-controller-manager --tail=200 || true
+          echo ""
+          echo "=== Upstream controller describe ==="
+          kubectl --context kind-dns-upstream -n dns-replicator-system describe deployment/dns-operator-controller-manager || true
+          echo ""
+          echo "=== Downstream agent logs ==="
+          kubectl --context kind-dns-downstream -n dns-agent-system logs statefulset/pdns-auth --tail=100 || true
+          echo ""
+          echo "=== DNSZones in upstream ==="
+          kubectl --context kind-dns-upstream get dnszones -A || true
+          echo ""
+          echo "=== DNSZones in downstream ==="
+          kubectl --context kind-dns-downstream get dnszones -A || true

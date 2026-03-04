@@ -257,6 +257,7 @@ secret-from-file: ## Create or update a secret from a file in NAMESPACE on CONTE
 bootstrap-downstream: ## Create kind downstream and deploy agent with embedded PowerDNS
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-create
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) kind-load-image
+	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) $(MAKE) install-dns-operator-crds
 	CONTEXT=kind-$(DOWNSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/agent-powerdns $(MAKE) kustomize-apply
 	# Export external kubeconfig for downstream cluster (reachable from host/other containers)
 	CLUSTER=$(DOWNSTREAM_CLUSTER_NAME) OUT=dev/kind.downstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
@@ -458,6 +459,11 @@ install-networking-crds: controller-gen ## Generate and install networking servi
 	  paths="go.datum.net/network-services-operator/api/v1alpha" \
 	  output:crd:dir=dev/crds/network-services
 	$(KUBECTL) --context $(CONTEXT) apply -f dev/crds/network-services
+
+.PHONY: install-dns-operator-crds
+install-dns-operator-crds: kustomize ## Install DNS operator CRDs into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(DOWNSTREAM_CLUSTER_NAME))"; exit 1; }
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) --context $(CONTEXT) apply -f -
 
 .PHONY: install-gateway-api-crds
 install-gateway-api-crds: ## Install Kubernetes Gateway API CRDs into CONTEXT

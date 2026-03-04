@@ -23,21 +23,21 @@ spec:
   # These are automatically captured by the API server and don't require controller code.
   auditRules:
     # Zone creation - use domain name as display text in link
-    - match: "audit.verb == 'create'"
-      summary: "{{ actor }} created zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+    - match: "verb == 'create'"
+      summary: "{{ actor }} created zone {{ link(responseObject.spec.domainName, responseObject) }}"
 
     # Zone deletion - use domain name from request object (response may be empty)
-    - match: "audit.verb == 'delete'"
-      summary: "{{ actor }} deleted zone {{ audit.requestObject.spec.domainName }}"
+    - match: "verb == 'delete'"
+      summary: "{{ actor }} deleted zone {{ requestObject.spec.domainName }}"
 
     # Zone update - use domain name as display text
-    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
-      summary: "{{ actor }} updated zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+    - match: "verb in ['update', 'patch'] && !has(objectRef.subresource)"
+      summary: "{{ actor }} updated zone {{ link(responseObject.spec.domainName, responseObject) }}"
 
     # Status subresource updates are system-initiated and typically not shown to users,
     # but can be enabled if needed for debugging.
-    # - match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
-    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+    # - match: "verb in ['update', 'patch'] && objectRef.subresource == 'status'"
+    #   summary: "System updated status of zone {{ link(responseObject.spec.domainName, responseObject) }}"
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.

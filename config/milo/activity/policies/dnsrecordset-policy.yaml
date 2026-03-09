@@ -37,65 +37,80 @@ spec:
   auditRules:
     # ----- CREATE RULES (type-specific with display annotations) -----
     # A/AAAA records with display annotations: "added www.example.com pointing to 192.0.2.10"
-    - match: "verb == 'create' && responseObject.spec.recordType in ['A', 'AAAA'] && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-a-aaaa
+      match: "verb == 'create' && responseObject.spec.recordType in ['A', 'AAAA'] && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} pointing to {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # CNAME records with display annotations: "added api.example.com as an alias for api.internal.example.com"
-    - match: "verb == 'create' && responseObject.spec.recordType == 'CNAME' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-cname
+      match: "verb == 'create' && responseObject.spec.recordType == 'CNAME' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} as an alias for {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # ALIAS records with display annotations: "added example.com as an alias for lb.example.com"
-    - match: "verb == 'create' && responseObject.spec.recordType == 'ALIAS' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-alias
+      match: "verb == 'create' && responseObject.spec.recordType == 'ALIAS' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} as an alias for {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # MX records with display annotations: "configured mail for example.com using 10 mail.example.com"
-    - match: "verb == 'create' && responseObject.spec.recordType == 'MX' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-mx
+      match: "verb == 'create' && responseObject.spec.recordType == 'MX' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} configured mail for {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} using {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # TXT records with display annotations: "added TXT record for example.com"
-    - match: "verb == 'create' && responseObject.spec.recordType == 'TXT' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-txt
+      match: "verb == 'create' && responseObject.spec.recordType == 'TXT' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added TXT record for {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }}"
 
     # NS records with display annotations: "added nameservers for sub.example.com"
-    - match: "verb == 'create' && responseObject.spec.recordType == 'NS' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-ns
+      match: "verb == 'create' && responseObject.spec.recordType == 'NS' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added nameservers for {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }}"
 
     # Generic create with display annotations: "added SRV record for _sip._tcp.example.com"
-    - match: "verb == 'create' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: create-other
+      match: "verb == 'create' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} added {{ responseObject.spec.recordType }} record for {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }}"
 
     # Create fallback (no display annotations): "added A record my-recordset"
-    - match: "verb == 'create'"
+    - name: create-fallback
+      match: "verb == 'create'"
       summary: "{{ actor }} added {{ responseObject.spec.recordType }} record {{ link(objectRef.name, responseObject) }}"
 
     # ----- DELETE RULES -----
     # Delete with display annotations available
-    - match: "verb == 'delete' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: delete
+      match: "verb == 'delete' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} removed {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} ({{ responseObject.spec.recordType }})"
 
     # Delete fallback (no display annotations): "removed A record my-recordset"
-    - match: "verb == 'delete'"
+    - name: delete-fallback
+      match: "verb == 'delete'"
       summary: "{{ actor }} removed {{ responseObject.spec.recordType }} record {{ link(objectRef.name, objectRef) }}"
 
     # ----- UPDATE RULES (type-specific with display annotations) -----
     # A/AAAA records with display annotations: "updated www.example.com to point to 192.0.2.20"
-    - match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && responseObject.spec.recordType in ['A', 'AAAA'] && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: update-a-aaaa
+      match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && responseObject.spec.recordType in ['A', 'AAAA'] && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} updated {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} to point to {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # CNAME records with display annotations: "updated api.example.com to alias api.v2.example.com"
-    - match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && responseObject.spec.recordType == 'CNAME' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: update-cname
+      match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && responseObject.spec.recordType == 'CNAME' && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} updated {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }} to alias {{ responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # Generic update with display annotations
-    - match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
+    - name: update-other
+      match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && has(responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in responseObject.metadata.annotations"
       summary: "{{ actor }} updated {{ responseObject.spec.recordType }} record {{ link(responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], responseObject) }}"
 
     # Update fallback (no display annotations): "updated A record my-recordset"
-    - match: "verb in ['update', 'patch'] && !has(objectRef.subresource)"
+    - name: update-fallback
+      match: "verb in ['update', 'patch'] && !has(objectRef.subresource)"
       summary: "{{ actor }} updated {{ responseObject.spec.recordType }} record {{ link(objectRef.name, responseObject) }}"
 
     # Status subresource updates are system-initiated and typically not shown to users
-    # - match: "verb in ['update', 'patch'] && objectRef.subresource == 'status'"
+    # - name: update-status
+    #   match: "verb in ['update', 'patch'] && objectRef.subresource == 'status'"
     #   summary: "System updated status of {{ link(objectRef.name, responseObject) }}"
 
   # Event rules for controller-emitted Kubernetes events.
@@ -117,26 +132,32 @@ spec:
   eventRules:
     # ----- PROGRAMMED EVENTS (type-specific, conversational tone) -----
     # A/AAAA records: "Your record is live! www.example.com resolves to 192.0.2.10"
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']"
+    - name: programmed-a-aaaa
+      match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']"
       summary: "Your record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} resolves to {{ event.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
 
     # CNAME records: "Your record is live! api.example.com resolves to api.internal.example.com"
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'CNAME'"
+    - name: programmed-cname
+      match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'CNAME'"
       summary: "Your record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} resolves to {{ event.annotations['dns.networking.miloapis.com/cname-target'] }}"
 
     # MX records: "Mail is ready! example.com routes to 10 mail.example.com"
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'MX'"
+    - name: programmed-mx
+      match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'MX'"
       summary: "Mail is ready! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} routes to {{ event.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
 
     # TXT records: "Your TXT record is live! example.com"
-    - match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'TXT'"
+    - name: programmed-txt
+      match: "event.reason == 'RecordSetProgrammed' && event.annotations['dns.networking.miloapis.com/record-type'] == 'TXT'"
       summary: "Your TXT record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}"
 
     # Generic programmed fallback: "Your NS record is live! sub.example.com"
-    - match: "event.reason == 'RecordSetProgrammed'"
+    - name: programmed-other
+      match: "event.reason == 'RecordSetProgrammed'"
       summary: "Your {{ event.annotations['dns.networking.miloapis.com/record-type'] }} record is live! {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}"
 
     # ----- PROGRAMMING FAILED EVENTS -----
     # "We hit a snag configuring www.example.com: Provider API error"
-    - match: "event.reason == 'RecordSetProgrammingFailed'"
+    - name: programming-failed
+      match: "event.reason == 'RecordSetProgrammingFailed'"
       summary: "We hit a snag configuring {{ link(event.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"

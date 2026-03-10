@@ -10,6 +10,10 @@
 # - Use domain names (example.com) as display text, not resource names (example-com)
 # - Action-oriented language ("created zone", not "created DNS zone")
 # - Show relevant DNS data (nameservers) where available
+# - Graceful fallback when responseObject.spec is unavailable
+#
+# IMPORTANT: For DELETE operations, requestObject is a DeleteOptions (not the resource),
+# so we use responseObject.spec.domainName with has() guards, falling back to objectRef.name.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -22,20 +26,35 @@ spec:
   # Audit log rules for CRUD operations.
   # These are automatically captured by the API server and don't require controller code.
   auditRules:
-    # Zone creation - use domain name as display text in link
+    # Zone creation with spec available - use domain name as display text in link
     - name: create
+      match: "verb == 'create' && has(requestObject.spec)"
+      summary: "{{ actor }} created zone {{ link(requestObject.spec.domainName, responseObject) }}"
+
+    # Zone creation fallback (no spec)
+    - name: create-fallback
       match: "verb == 'create'"
-      summary: "{{ actor }} created zone {{ link(responseObject.spec.domainName, responseObject) }}"
+      summary: "{{ actor }} created {{ link('a DNS zone', objectRef) }}"
 
-    # Zone deletion - use domain name from request object (response may be empty)
+    # Zone deletion with responseObject.spec available (response contains the deleted resource)
     - name: delete
-      match: "verb == 'delete'"
-      summary: "{{ actor }} deleted zone {{ requestObject.spec.domainName }}"
+      match: "verb == 'delete' && has(responseObject.spec)"
+      summary: "{{ actor }} deleted zone {{ responseObject.spec.domainName }}"
 
-    # Zone update - use domain name as display text
+    # Zone deletion fallback (no spec on response)
+    - name: delete-fallback
+      match: "verb == 'delete'"
+      summary: "{{ actor }} deleted a DNS zone"
+
+    # Zone update with spec available - use domain name as display text
     - name: update
+      match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && has(requestObject.spec)"
+      summary: "{{ actor }} updated zone {{ link(requestObject.spec.domainName, responseObject) }}"
+
+    # Zone update fallback (no spec)
+    - name: update-fallback
       match: "verb in ['update', 'patch'] && !has(objectRef.subresource)"
-      summary: "{{ actor }} updated zone {{ link(responseObject.spec.domainName, responseObject) }}"
+      summary: "{{ actor }} updated {{ link('a DNS zone', objectRef) }}"
 
     # Status subresource updates are system-initiated and typically not shown to users,
     # but can be enabled if needed for debugging.
@@ -56,8 +75,8 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - name: zone-programmed
-      match: "event.reason == 'ZoneProgrammed'"
-      summary: "Your zone is ready! {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is live with nameservers {{ event.annotations['dns.networking.miloapis.com/nameservers'] }}"
+      match: "reason == 'ZoneProgrammed'"
+      summary: "Your zone is ready! {{ link(metadata.annotations['dns.networking.miloapis.com/domain-name'], regarding) }} is live with nameservers {{ metadata.annotations['dns.networking.miloapis.com/nameservers'] }}"
 
     # ZoneProgrammingFailed: DNS zone programming failed after previous success.
     # Annotations available:
@@ -67,5 +86,5 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - name: zone-programming-failed
-      match: "event.reason == 'ZoneProgrammingFailed'"
-      summary: "We hit a snag configuring {{ link(event.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}: {{ event.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      match: "reason == 'ZoneProgrammingFailed'"
+      summary: "We hit a snag configuring {{ link(metadata.annotations['dns.networking.miloapis.com/domain-name'], regarding) }} — {{ metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"

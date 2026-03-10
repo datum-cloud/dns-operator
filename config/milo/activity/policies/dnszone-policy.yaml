@@ -10,10 +10,10 @@
 # - Use domain names (example.com) as display text, not resource names (example-com)
 # - Action-oriented language ("created zone", not "created DNS zone")
 # - Show relevant DNS data (nameservers) where available
-# - Graceful fallback when responseObject.spec is unavailable
+# - Graceful fallback when audit.responseObject.spec is unavailable
 #
-# IMPORTANT: For DELETE operations, requestObject is a DeleteOptions (not the resource),
-# so we use responseObject.spec.domainName with has() guards, falling back to objectRef.name.
+# IMPORTANT: For DELETE operations, audit.requestObject is a DeleteOptions (not the resource),
+# so we use audit.responseObject.spec.domainName with has() guards, falling back to audit.objectRef.name.
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
@@ -28,39 +28,39 @@ spec:
   auditRules:
     # Zone creation with spec available - use domain name as display text in link
     - name: create
-      match: "verb == 'create' && has(requestObject.spec)"
-      summary: "{{ actor }} created zone {{ link(requestObject.spec.domainName, responseObject) }}"
+      match: "audit.verb == 'create' && has(audit.requestObject.spec)"
+      summary: "{{ actor }} created zone {{ link(audit.requestObject.spec.domainName, audit.responseObject) }}"
 
     # Zone creation fallback (no spec)
     - name: create-fallback
-      match: "verb == 'create'"
-      summary: "{{ actor }} created {{ link('a DNS zone', objectRef) }}"
+      match: "audit.verb == 'create'"
+      summary: "{{ actor }} created {{ link('a DNS zone', audit.objectRef) }}"
 
-    # Zone deletion with responseObject.spec available (response contains the deleted resource)
+    # Zone deletion with audit.responseObject.spec available (response contains the deleted resource)
     - name: delete
-      match: "verb == 'delete' && has(responseObject.spec)"
-      summary: "{{ actor }} deleted zone {{ responseObject.spec.domainName }}"
+      match: "audit.verb == 'delete' && has(audit.responseObject.spec)"
+      summary: "{{ actor }} deleted zone {{ audit.responseObject.spec.domainName }}"
 
     # Zone deletion fallback (no spec on response)
     - name: delete-fallback
-      match: "verb == 'delete'"
+      match: "audit.verb == 'delete'"
       summary: "{{ actor }} deleted a DNS zone"
 
     # Zone update with spec available - use domain name as display text
     - name: update
-      match: "verb in ['update', 'patch'] && !has(objectRef.subresource) && has(requestObject.spec)"
-      summary: "{{ actor }} updated zone {{ link(requestObject.spec.domainName, responseObject) }}"
+      match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      summary: "{{ actor }} updated zone {{ link(audit.requestObject.spec.domainName, audit.responseObject) }}"
 
     # Zone update fallback (no spec)
     - name: update-fallback
-      match: "verb in ['update', 'patch'] && !has(objectRef.subresource)"
-      summary: "{{ actor }} updated {{ link('a DNS zone', objectRef) }}"
+      match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      summary: "{{ actor }} updated {{ link('a DNS zone', audit.objectRef) }}"
 
     # Status subresource updates are system-initiated and typically not shown to users,
     # but can be enabled if needed for debugging.
     # - name: update-status
-    #   match: "verb in ['update', 'patch'] && objectRef.subresource == 'status'"
-    #   summary: "System updated status of zone {{ link(responseObject.spec.domainName, responseObject) }}"
+    #   match: "audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
+    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.
@@ -75,8 +75,8 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - name: zone-programmed
-      match: "reason == 'ZoneProgrammed'"
-      summary: "Your zone is ready! {{ link(metadata.annotations['dns.networking.miloapis.com/domain-name'], regarding) }} is live with nameservers {{ metadata.annotations['dns.networking.miloapis.com/nameservers'] }}"
+      match: "event.reason == 'ZoneProgrammed'"
+      summary: "Your zone is ready! {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is live with nameservers {{ event.metadata.annotations['dns.networking.miloapis.com/nameservers'] }}"
 
     # ZoneProgrammingFailed: DNS zone programming failed after previous success.
     # Annotations available:
@@ -86,5 +86,5 @@ spec:
     #   dns.networking.miloapis.com/resource-name: my-zone
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - name: zone-programming-failed
-      match: "reason == 'ZoneProgrammingFailed'"
-      summary: "We hit a snag configuring {{ link(metadata.annotations['dns.networking.miloapis.com/domain-name'], regarding) }} — {{ metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      match: "event.reason == 'ZoneProgrammingFailed'"
+      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} — {{ event.metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"

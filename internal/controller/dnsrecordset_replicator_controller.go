@@ -11,6 +11,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -37,6 +38,7 @@ const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
@@ -53,9 +55,18 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Obtain a per-cluster event recorder so events are written to the upstream
-	// (user-facing) cluster API server, not just the deployment cluster.
-	recorder := upstreamCluster.GetEventRecorderFor("dns-operator")
+	// Build a typed clientset from the upstream cluster REST config so we can
+	// create events.k8s.io/v1 Event objects directly. Event emission is
+	// best-effort: if clientset construction fails we log and continue.
+	upstreamClientset, err := kubernetes.NewForConfig(upstreamCluster.GetConfig())
+	if err != nil {
+		lg.Error(err, "failed to build upstream clientset; event emission will be skipped")
+		upstreamClientset = nil
+	}
+	var eventClient EventClient
+	if upstreamClientset != nil {
+		eventClient = upstreamClientset.EventsV1().Events(req.Namespace)
+	}
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
@@ -182,9 +193,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	currProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
 	if programmedConditionTransitioned(prevProgrammedCopy, currProgrammed) {
 		if currProgrammed.Status == metav1.ConditionTrue {
-			recordRecordSetActivityEventWithData(recorder,
+			emitRecordSetEvent(ctx, eventClient,
 				RecordSetEventData{
 					RecordSet:  &upstream,
+					Zone:       &zone,
 					DomainName: zone.Spec.DomainName,
 				},
 				corev1.EventTypeNormal,
@@ -195,9 +207,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			)
 		} else if currProgrammed.Status == metav1.ConditionFalse &&
 			prevProgrammedCopy != nil && prevProgrammedCopy.Status == metav1.ConditionTrue {
-			recordRecordSetActivityEventWithData(recorder,
+			emitRecordSetEvent(ctx, eventClient,
 				RecordSetEventData{
 					RecordSet:  &upstream,
+					Zone:       &zone,
 					DomainName: zone.Spec.DomainName,
 					FailReason: currProgrammed.Message,
 				},

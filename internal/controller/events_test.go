@@ -3,13 +3,15 @@
 package controller
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"testing"
 
+	eventsv1 "k8s.io/api/events/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/apimachinery/pkg/types"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
@@ -112,13 +114,13 @@ func TestProgrammedConditionTransitioned(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// recordZoneActivityEvent tests
+// emitZoneEvent tests
 // --------------------------------------------------------------------------
 
-// TestRecordZoneActivityEvent_NilRecorder verifies that recordZoneActivityEvent
-// does not panic when called with a nil recorder, so callers that omit the
-// recorder (e.g. in unit tests or during startup) are safe.
-func TestRecordZoneActivityEvent_NilRecorder(t *testing.T) {
+// TestEmitZoneEvent_NilClient verifies that emitZoneEvent does not panic when
+// called with a nil EventClient, so callers that omit the client (e.g. in unit
+// tests or during startup) are safe.
+func TestEmitZoneEvent_NilClient(t *testing.T) {
 	t.Parallel()
 
 	zone := &dnsv1alpha1.DNSZone{
@@ -133,8 +135,8 @@ func TestRecordZoneActivityEvent_NilRecorder(t *testing.T) {
 		},
 	}
 
-	// Should not panic with nil recorder.
-	recordZoneActivityEvent(nil, zone,
+	// Should not panic with nil client.
+	emitZoneEvent(context.Background(), nil, ZoneEventData{Zone: zone},
 		corev1.EventTypeNormal,
 		EventReasonZoneProgrammed,
 		ActivityTypeZoneProgrammed,
@@ -143,12 +145,12 @@ func TestRecordZoneActivityEvent_NilRecorder(t *testing.T) {
 	)
 }
 
-// TestRecordZoneActivityEvent_EmitsWithCorrectAnnotations verifies that
-// recordZoneActivityEvent emits exactly one AnnotatedEventf call and that the
-// resulting event carries the correct eventType, reason, activity-type
-// annotation, domain-name annotation, observed-generation annotation, and does
-// NOT include the record-type annotation (which is exclusive to record-set events).
-func TestRecordZoneActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) {
+// TestEmitZoneEvent_EmitsWithCorrectAnnotations verifies that emitZoneEvent
+// creates exactly one event and that the resulting event carries the correct
+// eventType, reason, activity-type annotation, domain-name annotation,
+// observed-generation annotation, and does NOT include the record-type
+// annotation (which is exclusive to record-set events).
+func TestEmitZoneEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 	t.Parallel()
 
 	zone := &dnsv1alpha1.DNSZone{
@@ -163,9 +165,6 @@ func TestRecordZoneActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 		},
 	}
 
-	// Each case exercises a different event reason/activity-type combination for
-	// a DNSZone. The assertions after the call check both the Kubernetes event
-	// fields (eventType, reason) and the activity annotations attached to it.
 	tests := []struct {
 		name           string
 		eventType      string
@@ -208,11 +207,9 @@ func TestRecordZoneActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fakeRecorder := record.NewFakeRecorder(10)
-			// Capture annotations via a wrapping recorder that records annotated calls.
-			annotatedRecorder := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+			fc := &fakeEventClient{}
 
-			recordZoneActivityEvent(annotatedRecorder, zone,
+			emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
 				tt.eventType,
 				tt.reason,
 				tt.activityType,
@@ -220,38 +217,37 @@ func TestRecordZoneActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 				zone.Name,
 			)
 
-			if len(annotatedRecorder.calls) != 1 {
-				t.Fatalf("expected 1 annotated event call, got %d", len(annotatedRecorder.calls))
+			if len(fc.events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(fc.events))
 			}
-			call := annotatedRecorder.calls[0]
+			evt := fc.events[0]
 
-			if call.annotations[AnnotationEventType] != tt.wantActvType {
-				t.Errorf("annotation %q = %q, want %q", AnnotationEventType, call.annotations[AnnotationEventType], tt.wantActvType)
+			if evt.Annotations[AnnotationEventType] != tt.wantActvType {
+				t.Errorf("annotation %q = %q, want %q", AnnotationEventType, evt.Annotations[AnnotationEventType], tt.wantActvType)
 			}
-			if call.annotations[AnnotationObservedGeneration] != tt.wantGeneration {
-				t.Errorf("annotation %q = %q, want %q", AnnotationObservedGeneration, call.annotations[AnnotationObservedGeneration], tt.wantGeneration)
+			if evt.Annotations[AnnotationObservedGeneration] != tt.wantGeneration {
+				t.Errorf("annotation %q = %q, want %q", AnnotationObservedGeneration, evt.Annotations[AnnotationObservedGeneration], tt.wantGeneration)
 			}
-			if call.annotations[AnnotationDomainName] != tt.wantDomainName {
-				t.Errorf("annotation %q = %q, want %q", AnnotationDomainName, call.annotations[AnnotationDomainName], tt.wantDomainName)
+			if evt.Annotations[AnnotationDomainName] != tt.wantDomainName {
+				t.Errorf("annotation %q = %q, want %q", AnnotationDomainName, evt.Annotations[AnnotationDomainName], tt.wantDomainName)
 			}
-			if _, hasRecordType := call.annotations[AnnotationRecordType]; hasRecordType {
+			if _, hasRecordType := evt.Annotations[AnnotationRecordType]; hasRecordType {
 				t.Errorf("zone event should not have %q annotation", AnnotationRecordType)
 			}
-			if call.eventType != tt.wantEventType {
-				t.Errorf("eventType = %q, want %q", call.eventType, tt.wantEventType)
+			if evt.Type != tt.wantEventType {
+				t.Errorf("Type = %q, want %q", evt.Type, tt.wantEventType)
 			}
-			if call.reason != tt.wantReason {
-				t.Errorf("reason = %q, want %q", call.reason, tt.wantReason)
+			if evt.Reason != tt.wantReason {
+				t.Errorf("Reason = %q, want %q", evt.Reason, tt.wantReason)
 			}
 		})
 	}
 }
 
-// TestRecordZoneActivityEvent_GenerationInAnnotation verifies that the
+// TestEmitZoneEvent_GenerationInAnnotation verifies that the
 // observed-generation annotation is populated from the DNSZone's
-// ObjectMeta.Generation field, confirming the annotation tracks spec
-// revisions correctly across updates.
-func TestRecordZoneActivityEvent_GenerationInAnnotation(t *testing.T) {
+// ObjectMeta.Generation field.
+func TestEmitZoneEvent_GenerationInAnnotation(t *testing.T) {
 	t.Parallel()
 
 	zone := &dnsv1alpha1.DNSZone{
@@ -266,10 +262,9 @@ func TestRecordZoneActivityEvent_GenerationInAnnotation(t *testing.T) {
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	annotatedRecorder := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordZoneActivityEvent(annotatedRecorder, zone,
+	emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
 		corev1.EventTypeNormal,
 		EventReasonZoneProgrammed,
 		ActivityTypeZoneProgrammed,
@@ -277,23 +272,219 @@ func TestRecordZoneActivityEvent_GenerationInAnnotation(t *testing.T) {
 		zone.Name,
 	)
 
-	if len(annotatedRecorder.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(annotatedRecorder.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
 	wantGen := strconv.FormatInt(42, 10)
-	if got := annotatedRecorder.calls[0].annotations[AnnotationObservedGeneration]; got != wantGen {
+	if got := fc.events[0].Annotations[AnnotationObservedGeneration]; got != wantGen {
 		t.Errorf("observed-generation annotation = %q, want %q", got, wantGen)
 	}
 }
 
+// TestEmitZoneEvent_ResourceIdentityAnnotations verifies that the
+// resource-name and resource-namespace annotations are set from the zone
+// object and that zone-class is set when DNSZoneClassName is non-empty.
+func TestEmitZoneEvent_ResourceIdentityAnnotations(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "my-zone",
+			Namespace:  "project-ns",
+			Generation: 2,
+		},
+		Spec: dnsv1alpha1.DNSZoneSpec{
+			DomainName:       "example.com",
+			DNSZoneClassName: "pdns",
+		},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
+		corev1.EventTypeNormal,
+		EventReasonZoneProgrammed,
+		ActivityTypeZoneProgrammed,
+		"DNSZone %q successfully programmed",
+		zone.Name,
+	)
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	ann := fc.events[0].Annotations
+
+	if got := ann[AnnotationResourceName]; got != "my-zone" {
+		t.Errorf("%s = %q, want %q", AnnotationResourceName, got, "my-zone")
+	}
+	if got := ann[AnnotationResourceNamespace]; got != "project-ns" {
+		t.Errorf("%s = %q, want %q", AnnotationResourceNamespace, got, "project-ns")
+	}
+	if got := ann[AnnotationZoneClass]; got != "pdns" {
+		t.Errorf("%s = %q, want %q", AnnotationZoneClass, got, "pdns")
+	}
+	if _, ok := ann[AnnotationNameservers]; ok {
+		t.Errorf("%s should be absent when no nameservers are supplied", AnnotationNameservers)
+	}
+	if _, ok := ann[AnnotationFailureReason]; ok {
+		t.Errorf("%s should be absent when no fail reason is supplied", AnnotationFailureReason)
+	}
+}
+
+// TestEmitZoneEvent_ZoneClassAbsentWhenEmpty verifies that the zone-class
+// annotation is omitted when DNSZoneClassName is not set.
+func TestEmitZoneEvent_ZoneClassAbsentWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: ""},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
+		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed, "msg")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	if _, ok := fc.events[0].Annotations[AnnotationZoneClass]; ok {
+		t.Errorf("%s should be absent when DNSZoneClassName is empty", AnnotationZoneClass)
+	}
+}
+
+// TestEmitZoneEvent_NameserversAnnotation verifies that the nameservers
+// annotation is set as a comma-separated list when provided.
+func TestEmitZoneEvent_NameserversAnnotation(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc,
+		ZoneEventData{
+			Zone:        zone,
+			Nameservers: []string{"ns1.example.com", "ns2.example.com"},
+		},
+		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed,
+		"programmed",
+	)
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	got := fc.events[0].Annotations[AnnotationNameservers]
+	want := "ns1.example.com,ns2.example.com"
+	if got != want {
+		t.Errorf("%s = %q, want %q", AnnotationNameservers, got, want)
+	}
+}
+
+// TestEmitZoneEvent_FailReasonAnnotation verifies that the failure-reason
+// annotation is set when FailReason is non-empty.
+func TestEmitZoneEvent_FailReasonAnnotation(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc,
+		ZoneEventData{
+			Zone:       zone,
+			FailReason: "upstream provider rejected the zone",
+		},
+		corev1.EventTypeWarning,
+		EventReasonZoneProgrammingFailed,
+		ActivityTypeZoneProgrammingFailed,
+		"programming failed",
+	)
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	got := fc.events[0].Annotations[AnnotationFailureReason]
+	want := "upstream provider rejected the zone"
+	if got != want {
+		t.Errorf("%s = %q, want %q", AnnotationFailureReason, got, want)
+	}
+}
+
+// TestEmitZoneEvent_RegardingIsZone verifies that event.regarding is set to the
+// DNSZone ObjectReference.
+func TestEmitZoneEvent_RegardingIsZone(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-zone",
+			Namespace: "default",
+			UID:       types.UID("zone-uid-123"),
+		},
+		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
+		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	ref := fc.events[0].Regarding
+	if ref.Kind != "DNSZone" {
+		t.Errorf("Regarding.Kind = %q, want %q", ref.Kind, "DNSZone")
+	}
+	if ref.Name != "my-zone" {
+		t.Errorf("Regarding.Name = %q, want %q", ref.Name, "my-zone")
+	}
+	if ref.Namespace != "default" {
+		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, "default")
+	}
+	if ref.UID != "zone-uid-123" {
+		t.Errorf("Regarding.UID = %q, want %q", ref.UID, "zone-uid-123")
+	}
+}
+
+// TestEmitZoneEvent_RelatedIsAlwaysNil verifies that event.related is nil for
+// zone events (zones already identify themselves via Regarding).
+func TestEmitZoneEvent_RelatedIsAlwaysNil(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitZoneEvent(context.Background(), fc, ZoneEventData{Zone: zone},
+		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	if fc.events[0].Related != nil {
+		t.Errorf("Related = %v, want nil for zone events", fc.events[0].Related)
+	}
+}
+
 // --------------------------------------------------------------------------
-// recordRecordSetActivityEvent tests
+// emitRecordSetEvent tests
 // --------------------------------------------------------------------------
 
-// TestRecordRecordSetActivityEvent_NilRecorder verifies that
-// recordRecordSetActivityEvent does not panic when called with a nil recorder,
-// matching the same nil-safety guarantee provided for zone events.
-func TestRecordRecordSetActivityEvent_NilRecorder(t *testing.T) {
+// TestEmitRecordSetEvent_NilClient verifies that emitRecordSetEvent does not
+// panic when called with a nil EventClient.
+func TestEmitRecordSetEvent_NilClient(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -311,8 +502,8 @@ func TestRecordRecordSetActivityEvent_NilRecorder(t *testing.T) {
 		},
 	}
 
-	// Should not panic with nil recorder.
-	recordRecordSetActivityEvent(nil, rs,
+	// Should not panic with nil client.
+	emitRecordSetEvent(context.Background(), nil, RecordSetEventData{RecordSet: rs},
 		corev1.EventTypeNormal,
 		EventReasonRecordSetProgrammed,
 		ActivityTypeRecordSetProgrammed,
@@ -321,12 +512,12 @@ func TestRecordRecordSetActivityEvent_NilRecorder(t *testing.T) {
 	)
 }
 
-// TestRecordRecordSetActivityEvent_EmitsWithCorrectAnnotations verifies that
-// recordRecordSetActivityEvent emits exactly one AnnotatedEventf call carrying
-// the correct eventType, reason, activity-type annotation, record-type
-// annotation, and observed-generation annotation, and does NOT include the
-// domain-name annotation (which is exclusive to zone events).
-func TestRecordRecordSetActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) {
+// TestEmitRecordSetEvent_EmitsWithCorrectAnnotations verifies that
+// emitRecordSetEvent creates exactly one event carrying the correct eventType,
+// reason, activity-type annotation, record-type annotation, and
+// observed-generation annotation, and does NOT include the domain-name
+// annotation when not provided.
+func TestEmitRecordSetEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -344,9 +535,6 @@ func TestRecordRecordSetActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) 
 		},
 	}
 
-	// Each case exercises a different event reason/activity-type combination for
-	// a DNSRecordSet. Assertions confirm both the Kubernetes event fields and the
-	// activity annotations, including the record-type annotation that zone events omit.
 	tests := []struct {
 		name           string
 		eventType      string
@@ -389,10 +577,9 @@ func TestRecordRecordSetActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fakeRecorder := record.NewFakeRecorder(10)
-			annotatedRecorder := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+			fc := &fakeEventClient{}
 
-			recordRecordSetActivityEvent(annotatedRecorder, rs,
+			emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
 				tt.eventType,
 				tt.reason,
 				tt.activityType,
@@ -400,38 +587,37 @@ func TestRecordRecordSetActivityEvent_EmitsWithCorrectAnnotations(t *testing.T) 
 				rs.Name,
 			)
 
-			if len(annotatedRecorder.calls) != 1 {
-				t.Fatalf("expected 1 annotated event call, got %d", len(annotatedRecorder.calls))
+			if len(fc.events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(fc.events))
 			}
-			call := annotatedRecorder.calls[0]
+			evt := fc.events[0]
 
-			if call.annotations[AnnotationEventType] != tt.wantActvType {
-				t.Errorf("annotation %q = %q, want %q", AnnotationEventType, call.annotations[AnnotationEventType], tt.wantActvType)
+			if evt.Annotations[AnnotationEventType] != tt.wantActvType {
+				t.Errorf("annotation %q = %q, want %q", AnnotationEventType, evt.Annotations[AnnotationEventType], tt.wantActvType)
 			}
-			if call.annotations[AnnotationObservedGeneration] != tt.wantGeneration {
-				t.Errorf("annotation %q = %q, want %q", AnnotationObservedGeneration, call.annotations[AnnotationObservedGeneration], tt.wantGeneration)
+			if evt.Annotations[AnnotationObservedGeneration] != tt.wantGeneration {
+				t.Errorf("annotation %q = %q, want %q", AnnotationObservedGeneration, evt.Annotations[AnnotationObservedGeneration], tt.wantGeneration)
 			}
-			if call.annotations[AnnotationRecordType] != tt.wantRecordType {
-				t.Errorf("annotation %q = %q, want %q", AnnotationRecordType, call.annotations[AnnotationRecordType], tt.wantRecordType)
+			if evt.Annotations[AnnotationRecordType] != tt.wantRecordType {
+				t.Errorf("annotation %q = %q, want %q", AnnotationRecordType, evt.Annotations[AnnotationRecordType], tt.wantRecordType)
 			}
-			if _, hasDomainName := call.annotations[AnnotationDomainName]; hasDomainName {
-				t.Errorf("recordset event should not have %q annotation", AnnotationDomainName)
+			if _, hasDomainName := evt.Annotations[AnnotationDomainName]; hasDomainName {
+				t.Errorf("recordset event should not have %q annotation when no domain name provided", AnnotationDomainName)
 			}
-			if call.eventType != tt.wantEventType {
-				t.Errorf("eventType = %q, want %q", call.eventType, tt.wantEventType)
+			if evt.Type != tt.wantEventType {
+				t.Errorf("Type = %q, want %q", evt.Type, tt.wantEventType)
 			}
-			if call.reason != tt.wantReason {
-				t.Errorf("reason = %q, want %q", call.reason, tt.wantReason)
+			if evt.Reason != tt.wantReason {
+				t.Errorf("Reason = %q, want %q", evt.Reason, tt.wantReason)
 			}
 		})
 	}
 }
 
-// TestRecordRecordSetActivityEvent_RecordTypePropagated verifies that the
-// record-type annotation reflects the DNSRecordSet's Spec.RecordType for every
-// supported RRType value, ensuring the annotation is not hardcoded and correctly
-// follows whatever type the caller specifies.
-func TestRecordRecordSetActivityEvent_RecordTypePropagated(t *testing.T) {
+// TestEmitRecordSetEvent_RecordTypePropagated verifies that the record-type
+// annotation reflects the DNSRecordSet's Spec.RecordType for every supported
+// RRType value.
+func TestEmitRecordSetEvent_RecordTypePropagated(t *testing.T) {
 	t.Parallel()
 
 	recordTypes := []dnsv1alpha1.RRType{
@@ -461,10 +647,9 @@ func TestRecordRecordSetActivityEvent_RecordTypePropagated(t *testing.T) {
 				},
 			}
 
-			fakeRecorder := record.NewFakeRecorder(10)
-			annotatedRecorder := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+			fc := &fakeEventClient{}
 
-			recordRecordSetActivityEvent(annotatedRecorder, rs,
+			emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
 				corev1.EventTypeNormal,
 				EventReasonRecordSetProgrammed,
 				ActivityTypeRecordSetProgrammed,
@@ -472,10 +657,10 @@ func TestRecordRecordSetActivityEvent_RecordTypePropagated(t *testing.T) {
 				rs.Name,
 			)
 
-			if len(annotatedRecorder.calls) != 1 {
-				t.Fatalf("expected 1 event, got %d", len(annotatedRecorder.calls))
+			if len(fc.events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(fc.events))
 			}
-			got := annotatedRecorder.calls[0].annotations[AnnotationRecordType]
+			got := fc.events[0].Annotations[AnnotationRecordType]
 			if got != string(rt) {
 				t.Errorf("record-type annotation = %q, want %q", got, string(rt))
 			}
@@ -483,160 +668,11 @@ func TestRecordRecordSetActivityEvent_RecordTypePropagated(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------------------
-// recordZoneActivityEventWithData tests
-// --------------------------------------------------------------------------
-
-// TestRecordZoneActivityEventWithData_ResourceIdentityAnnotations verifies that the
-// resource-name and resource-namespace annotations are set from the zone object
-// and that zone-class is set when DNSZoneClassName is non-empty.
-func TestRecordZoneActivityEventWithData_ResourceIdentityAnnotations(t *testing.T) {
-	t.Parallel()
-
-	zone := &dnsv1alpha1.DNSZone{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "my-zone",
-			Namespace:  "project-ns",
-			Generation: 2,
-		},
-		Spec: dnsv1alpha1.DNSZoneSpec{
-			DomainName:       "example.com",
-			DNSZoneClassName: "pdns",
-		},
-	}
-
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
-
-	recordZoneActivityEventWithData(ar, ZoneEventData{Zone: zone},
-		corev1.EventTypeNormal,
-		EventReasonZoneProgrammed,
-		ActivityTypeZoneProgrammed,
-		"DNSZone %q successfully programmed",
-		zone.Name,
-	)
-
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
-	}
-	ann := ar.calls[0].annotations
-
-	if got := ann[AnnotationResourceName]; got != "my-zone" {
-		t.Errorf("%s = %q, want %q", AnnotationResourceName, got, "my-zone")
-	}
-	if got := ann[AnnotationResourceNamespace]; got != "project-ns" {
-		t.Errorf("%s = %q, want %q", AnnotationResourceNamespace, got, "project-ns")
-	}
-	if got := ann[AnnotationZoneClass]; got != "pdns" {
-		t.Errorf("%s = %q, want %q", AnnotationZoneClass, got, "pdns")
-	}
-	if _, ok := ann[AnnotationNameservers]; ok {
-		t.Errorf("%s should be absent when no nameservers are supplied", AnnotationNameservers)
-	}
-	if _, ok := ann[AnnotationFailureReason]; ok {
-		t.Errorf("%s should be absent when no fail reason is supplied", AnnotationFailureReason)
-	}
-}
-
-// TestRecordZoneActivityEventWithData_ZoneClassAbsentWhenEmpty verifies that the
-// zone-class annotation is omitted when DNSZoneClassName is not set.
-func TestRecordZoneActivityEventWithData_ZoneClassAbsentWhenEmpty(t *testing.T) {
-	t.Parallel()
-
-	zone := &dnsv1alpha1.DNSZone{
-		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
-		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: ""},
-	}
-
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
-
-	recordZoneActivityEventWithData(ar, ZoneEventData{Zone: zone},
-		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed, "msg")
-
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
-	}
-	if _, ok := ar.calls[0].annotations[AnnotationZoneClass]; ok {
-		t.Errorf("%s should be absent when DNSZoneClassName is empty", AnnotationZoneClass)
-	}
-}
-
-// TestRecordZoneActivityEventWithData_NameserversAnnotation verifies that the
-// nameservers annotation is set as a comma-separated list when provided.
-func TestRecordZoneActivityEventWithData_NameserversAnnotation(t *testing.T) {
-	t.Parallel()
-
-	zone := &dnsv1alpha1.DNSZone{
-		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
-		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
-	}
-
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
-
-	recordZoneActivityEventWithData(ar,
-		ZoneEventData{
-			Zone:        zone,
-			Nameservers: []string{"ns1.example.com", "ns2.example.com"},
-		},
-		corev1.EventTypeNormal, EventReasonZoneProgrammed, ActivityTypeZoneProgrammed,
-		"programmed",
-	)
-
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
-	}
-	got := ar.calls[0].annotations[AnnotationNameservers]
-	want := "ns1.example.com,ns2.example.com"
-	if got != want {
-		t.Errorf("%s = %q, want %q", AnnotationNameservers, got, want)
-	}
-}
-
-// TestRecordZoneActivityEventWithData_FailReasonAnnotation verifies that the
-// failure-reason annotation is set when FailReason is non-empty.
-func TestRecordZoneActivityEventWithData_FailReasonAnnotation(t *testing.T) {
-	t.Parallel()
-
-	zone := &dnsv1alpha1.DNSZone{
-		ObjectMeta: metav1.ObjectMeta{Name: "z", Namespace: "ns", Generation: 1},
-		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
-	}
-
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
-
-	recordZoneActivityEventWithData(ar,
-		ZoneEventData{
-			Zone:       zone,
-			FailReason: "upstream provider rejected the zone",
-		},
-		corev1.EventTypeWarning,
-		EventReasonZoneProgrammingFailed,
-		ActivityTypeZoneProgrammingFailed,
-		"programming failed",
-	)
-
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
-	}
-	got := ar.calls[0].annotations[AnnotationFailureReason]
-	want := "upstream provider rejected the zone"
-	if got != want {
-		t.Errorf("%s = %q, want %q", AnnotationFailureReason, got, want)
-	}
-}
-
-// --------------------------------------------------------------------------
-// recordRecordSetActivityEventWithData tests
-// --------------------------------------------------------------------------
-
-// TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations verifies
-// that resource-name, resource-namespace, and zone-ref annotations are always
-// present, that record-count and record-name are set when records exist, and
+// TestEmitRecordSetEvent_ResourceIdentityAnnotations verifies that
+// resource-name, resource-namespace, and zone-ref annotations are always
+// present, that record-count and record-names are set when records exist, and
 // that domain-name is present only when DomainName is supplied.
-func TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations(t *testing.T) {
+func TestEmitRecordSetEvent_ResourceIdentityAnnotations(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -655,10 +691,9 @@ func TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations(t *tes
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordRecordSetActivityEventWithData(ar,
+	emitRecordSetEvent(context.Background(), fc,
 		RecordSetEventData{
 			RecordSet:  rs,
 			DomainName: "example.com",
@@ -669,10 +704,10 @@ func TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations(t *tes
 		"programmed",
 	)
 
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
-	ann := ar.calls[0].annotations
+	ann := fc.events[0].Annotations
 
 	if got := ann[AnnotationResourceName]; got != "www-records" {
 		t.Errorf("%s = %q, want %q", AnnotationResourceName, got, "www-records")
@@ -694,9 +729,9 @@ func TestRecordRecordSetActivityEventWithData_ResourceIdentityAnnotations(t *tes
 	}
 }
 
-// TestRecordRecordSetActivityEventWithData_DomainNameAbsentWhenEmpty verifies
-// that the domain-name annotation is omitted when DomainName is empty.
-func TestRecordRecordSetActivityEventWithData_DomainNameAbsentWhenEmpty(t *testing.T) {
+// TestEmitRecordSetEvent_DomainNameAbsentWhenEmpty verifies that the
+// domain-name annotation is omitted when DomainName is empty and Zone is nil.
+func TestEmitRecordSetEvent_DomainNameAbsentWhenEmpty(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -708,25 +743,24 @@ func TestRecordRecordSetActivityEventWithData_DomainNameAbsentWhenEmpty(t *testi
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordRecordSetActivityEventWithData(ar,
+	emitRecordSetEvent(context.Background(), fc,
 		RecordSetEventData{RecordSet: rs},
 		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed",
 	)
 
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
-	if _, ok := ar.calls[0].annotations[AnnotationDomainName]; ok {
-		t.Errorf("%s should be absent when DomainName is empty", AnnotationDomainName)
+	if _, ok := fc.events[0].Annotations[AnnotationDomainName]; ok {
+		t.Errorf("%s should be absent when DomainName is empty and Zone is nil", AnnotationDomainName)
 	}
 }
 
-// TestRecordRecordSetActivityEventWithData_IPAddressesForARecords verifies that
-// the ip-addresses annotation is set to a comma-separated list of A record IPs.
-func TestRecordRecordSetActivityEventWithData_IPAddressesForARecords(t *testing.T) {
+// TestEmitRecordSetEvent_IPAddressesForARecords verifies that the ip-addresses
+// annotation is set to a comma-separated list of A record IPs.
+func TestEmitRecordSetEvent_IPAddressesForARecords(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -741,26 +775,25 @@ func TestRecordRecordSetActivityEventWithData_IPAddressesForARecords(t *testing.
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordRecordSetActivityEventWithData(ar, RecordSetEventData{RecordSet: rs},
+	emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
 		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed",
 	)
 
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
-	got := ar.calls[0].annotations[AnnotationIPAddresses]
+	got := fc.events[0].Annotations[AnnotationIPAddresses]
 	want := "10.0.0.1,10.0.0.2"
 	if got != want {
 		t.Errorf("%s = %q, want %q", AnnotationIPAddresses, got, want)
 	}
 }
 
-// TestRecordRecordSetActivityEventWithData_IPAddressesForAAAARecords verifies
-// that the ip-addresses annotation is set correctly for AAAA record types.
-func TestRecordRecordSetActivityEventWithData_IPAddressesForAAAARecords(t *testing.T) {
+// TestEmitRecordSetEvent_IPAddressesForAAAARecords verifies that the
+// ip-addresses annotation is set correctly for AAAA record types.
+func TestEmitRecordSetEvent_IPAddressesForAAAARecords(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -775,27 +808,25 @@ func TestRecordRecordSetActivityEventWithData_IPAddressesForAAAARecords(t *testi
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordRecordSetActivityEventWithData(ar, RecordSetEventData{RecordSet: rs},
+	emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
 		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed",
 	)
 
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
-	got := ar.calls[0].annotations[AnnotationIPAddresses]
+	got := fc.events[0].Annotations[AnnotationIPAddresses]
 	want := "2001:db8::1,2001:db8::2"
 	if got != want {
 		t.Errorf("%s = %q, want %q", AnnotationIPAddresses, got, want)
 	}
 }
 
-// TestRecordRecordSetActivityEventWithData_IPAddressesAbsentForNonIPRecords
-// verifies that the ip-addresses annotation is omitted for record types that
-// are not A or AAAA.
-func TestRecordRecordSetActivityEventWithData_IPAddressesAbsentForNonIPRecords(t *testing.T) {
+// TestEmitRecordSetEvent_IPAddressesAbsentForNonIPRecords verifies that the
+// ip-addresses annotation is omitted for record types that are not A or AAAA.
+func TestEmitRecordSetEvent_IPAddressesAbsentForNonIPRecords(t *testing.T) {
 	t.Parallel()
 
 	nonIPTypes := []dnsv1alpha1.RRType{
@@ -818,26 +849,25 @@ func TestRecordRecordSetActivityEventWithData_IPAddressesAbsentForNonIPRecords(t
 				},
 			}
 
-			fakeRecorder := record.NewFakeRecorder(10)
-			ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+			fc := &fakeEventClient{}
 
-			recordRecordSetActivityEventWithData(ar, RecordSetEventData{RecordSet: rs},
+			emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
 				corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed",
 			)
 
-			if len(ar.calls) != 1 {
-				t.Fatalf("expected 1 event, got %d", len(ar.calls))
+			if len(fc.events) != 1 {
+				t.Fatalf("expected 1 event, got %d", len(fc.events))
 			}
-			if _, ok := ar.calls[0].annotations[AnnotationIPAddresses]; ok {
+			if _, ok := fc.events[0].Annotations[AnnotationIPAddresses]; ok {
 				t.Errorf("%s should be absent for %s record type", AnnotationIPAddresses, rt)
 			}
 		})
 	}
 }
 
-// TestRecordRecordSetActivityEventWithData_FailReasonAnnotation verifies that
-// the failure-reason annotation is set when FailReason is non-empty.
-func TestRecordRecordSetActivityEventWithData_FailReasonAnnotation(t *testing.T) {
+// TestEmitRecordSetEvent_FailReasonAnnotation verifies that the failure-reason
+// annotation is set when FailReason is non-empty.
+func TestEmitRecordSetEvent_FailReasonAnnotation(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
@@ -849,10 +879,9 @@ func TestRecordRecordSetActivityEventWithData_FailReasonAnnotation(t *testing.T)
 		},
 	}
 
-	fakeRecorder := record.NewFakeRecorder(10)
-	ar := &annotationCapturingRecorder{FakeRecorder: fakeRecorder}
+	fc := &fakeEventClient{}
 
-	recordRecordSetActivityEventWithData(ar,
+	emitRecordSetEvent(context.Background(), fc,
 		RecordSetEventData{
 			RecordSet:  rs,
 			FailReason: "provider API returned 503",
@@ -863,15 +892,248 @@ func TestRecordRecordSetActivityEventWithData_FailReasonAnnotation(t *testing.T)
 		"programming failed",
 	)
 
-	if len(ar.calls) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(ar.calls))
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
-	got := ar.calls[0].annotations[AnnotationFailureReason]
+	got := fc.events[0].Annotations[AnnotationFailureReason]
 	want := "provider API returned 503"
 	if got != want {
 		t.Errorf("%s = %q, want %q", AnnotationFailureReason, got, want)
 	}
 }
+
+// TestEmitRecordSetEvent_RegardingIsRecordSet verifies that event.regarding is
+// set to the DNSRecordSet ObjectReference.
+func TestEmitRecordSetEvent_RegardingIsRecordSet(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "www-records",
+			Namespace: "default",
+			UID:       types.UID("rs-uid-456"),
+		},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitRecordSetEvent(context.Background(), fc, RecordSetEventData{RecordSet: rs},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed,
+		"DNSRecordSet %q programmed", rs.Name)
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	ref := fc.events[0].Regarding
+	if ref.Kind != "DNSRecordSet" {
+		t.Errorf("Regarding.Kind = %q, want %q", ref.Kind, "DNSRecordSet")
+	}
+	if ref.Name != "www-records" {
+		t.Errorf("Regarding.Name = %q, want %q", ref.Name, "www-records")
+	}
+	if ref.Namespace != "default" {
+		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, "default")
+	}
+	if ref.UID != "rs-uid-456" {
+		t.Errorf("Regarding.UID = %q, want %q", ref.UID, "rs-uid-456")
+	}
+}
+
+// TestEmitRecordSetEvent_RelatedIsZone verifies that event.related is set to
+// the parent DNSZone ObjectReference when Zone is provided.
+func TestEmitRecordSetEvent_RelatedIsZone(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "www-records", Namespace: "default"},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-zone",
+			Namespace: "default",
+			UID:       types.UID("zone-uid-789"),
+		},
+		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs, Zone: zone},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed,
+		"DNSRecordSet %q programmed", rs.Name)
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	related := fc.events[0].Related
+	if related == nil {
+		t.Fatal("Related = nil, want non-nil DNSZone reference")
+	}
+	if related.Kind != "DNSZone" {
+		t.Errorf("Related.Kind = %q, want %q", related.Kind, "DNSZone")
+	}
+	if related.Name != "my-zone" {
+		t.Errorf("Related.Name = %q, want %q", related.Name, "my-zone")
+	}
+	if related.Namespace != "default" {
+		t.Errorf("Related.Namespace = %q, want %q", related.Namespace, "default")
+	}
+	if related.UID != "zone-uid-789" {
+		t.Errorf("Related.UID = %q, want %q", related.UID, "zone-uid-789")
+	}
+}
+
+// TestEmitRecordSetEvent_RelatedNilWhenZoneIsNil verifies that event.related is
+// nil when Zone is nil in RecordSetEventData.
+func TestEmitRecordSetEvent_RelatedNilWhenZoneIsNil(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs, Zone: nil},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	if fc.events[0].Related != nil {
+		t.Errorf("Related = %v, want nil when Zone is nil", fc.events[0].Related)
+	}
+}
+
+// TestEmitRecordSetEvent_CreateErrorIsSwallowed verifies that Create errors are
+// swallowed (no panic, no error return).
+func TestEmitRecordSetEvent_CreateErrorIsSwallowed(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+
+	fc := &fakeEventClient{err: errFakeCreate}
+
+	// Should not panic or propagate the error.
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed")
+	// No assertion needed — absence of panic is the assertion.
+}
+
+// TestEmitRecordSetEvent_EventTimePopulated verifies that EventTime is
+// populated (non-zero).
+func TestEmitRecordSetEvent_EventTimePopulated(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	if fc.events[0].EventTime.IsZero() {
+		t.Error("EventTime is zero, want non-zero")
+	}
+}
+
+// TestEmitRecordSetEvent_ReportingControllerSet verifies that
+// ReportingController is set to the expected value.
+func TestEmitRecordSetEvent_ReportingControllerSet(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+
+	fc := &fakeEventClient{}
+
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	want := "dns.networking.miloapis.com/dns-operator"
+	if got := fc.events[0].ReportingController; got != want {
+		t.Errorf("ReportingController = %q, want %q", got, want)
+	}
+}
+
+// TestEmitRecordSetEvent_DomainNameFromZone verifies that DomainName is derived
+// from Zone.Spec.DomainName when the DomainName field is empty.
+func TestEmitRecordSetEvent_DomainNameFromZone(t *testing.T) {
+	t.Parallel()
+
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records:    []dnsv1alpha1.RecordEntry{{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}}},
+		},
+	}
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "ns"},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "zone-derived.example.com", DNSZoneClassName: "pdns"},
+	}
+
+	fc := &fakeEventClient{}
+
+	// DomainName is empty; should be derived from Zone.Spec.DomainName.
+	emitRecordSetEvent(context.Background(), fc,
+		RecordSetEventData{RecordSet: rs, Zone: zone, DomainName: ""},
+		corev1.EventTypeNormal, EventReasonRecordSetProgrammed, ActivityTypeRecordSetProgrammed, "programmed")
+
+	if len(fc.events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(fc.events))
+	}
+	got := fc.events[0].Annotations[AnnotationDomainName]
+	want := "zone-derived.example.com"
+	if got != want {
+		t.Errorf("%s = %q, want %q", AnnotationDomainName, got, want)
+	}
+}
+
+// --------------------------------------------------------------------------
+// extractIPAddresses tests (pure helper — no recorder dependency)
+// --------------------------------------------------------------------------
 
 // TestExtractIPAddresses verifies the extractIPAddresses helper for all covered
 // record types, including both A and AAAA, and for non-IP types.
@@ -1264,40 +1526,25 @@ func TestComputeDisplayValue(t *testing.T) {
 // test helpers
 // --------------------------------------------------------------------------
 
-// annotatedCall records a single invocation of AnnotatedEventf so tests can
-// assert on the annotation map and event fields without inspecting a raw string
-// channel.
-type annotatedCall struct {
-	annotations map[string]string
-	eventType   string
-	reason      string
-	messageFmt  string
+// errFakeCreate is a sentinel error returned by fakeEventClient when configured
+// to simulate Create failures.
+var errFakeCreate = fmt.Errorf("fake create error")
+
+// fakeEventClient implements EventClient for testing.
+// It captures created events and can be configured to return errors.
+type fakeEventClient struct {
+	events []*eventsv1.Event
+	err    error
 }
 
-// annotationCapturingRecorder wraps record.FakeRecorder and additionally
-// captures the annotations passed to AnnotatedEventf so tests can assert on them.
-type annotationCapturingRecorder struct {
-	*record.FakeRecorder
-	calls []annotatedCall
-}
-
-func (r *annotationCapturingRecorder) AnnotatedEventf(
-	object runtime.Object,
-	annotations map[string]string,
-	eventType, reason, messageFmt string,
-	args ...interface{},
-) {
-	// Copy annotations so the caller cannot mutate our captured copy.
-	copied := make(map[string]string, len(annotations))
-	for k, v := range annotations {
-		copied[k] = v
+func (f *fakeEventClient) Create(
+	_ context.Context,
+	event *eventsv1.Event,
+	_ metav1.CreateOptions,
+) (*eventsv1.Event, error) {
+	if f.err != nil {
+		return nil, f.err
 	}
-	r.calls = append(r.calls, annotatedCall{
-		annotations: copied,
-		eventType:   eventType,
-		reason:      reason,
-		messageFmt:  messageFmt,
-	})
-	// Also delegate to FakeRecorder so the Events channel receives something.
-	r.FakeRecorder.AnnotatedEventf(object, annotations, eventType, reason, messageFmt, args...)
+	f.events = append(f.events, event.DeepCopy())
+	return event, nil
 }

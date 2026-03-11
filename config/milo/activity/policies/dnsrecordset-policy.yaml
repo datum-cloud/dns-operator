@@ -161,30 +161,30 @@ spec:
     # A/AAAA records: "Your record is live! www.example.com now resolves to 192.0.2.10"
     - name: programmed-a-aaaa
       match: "event.reason == 'RecordSetProgrammed' && event.metadata.annotations['dns.networking.miloapis.com/record-type'] in ['A', 'AAAA']"
-      summary: "Your record is live! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} now resolves to {{ event.metadata.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
+      summary: "Your record is live! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} now resolves to {{ event.metadata.annotations['dns.networking.miloapis.com/ip-addresses'] }}"
 
     # CNAME records: "Your record is live! api.example.com is now an alias for api.internal.example.com"
     - name: programmed-cname
       match: "event.reason == 'RecordSetProgrammed' && event.metadata.annotations['dns.networking.miloapis.com/record-type'] == 'CNAME'"
-      summary: "Your record is live! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now an alias for {{ event.metadata.annotations['dns.networking.miloapis.com/cname-target'] }}"
+      summary: "Your record is live! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} is now an alias for {{ event.metadata.annotations['dns.networking.miloapis.com/cname-target'] }}"
 
     # MX records: "Mail is ready! example.com now routes to 10 mail.example.com"
     - name: programmed-mx
       match: "event.reason == 'RecordSetProgrammed' && event.metadata.annotations['dns.networking.miloapis.com/record-type'] == 'MX'"
-      summary: "Mail is ready! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} now routes to {{ event.metadata.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
+      summary: "Mail is ready! {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} now routes to {{ event.metadata.annotations['dns.networking.miloapis.com/mx-hosts'] }}"
 
     # TXT records: "Your TXT record for example.com is now live"
     - name: programmed-txt
       match: "event.reason == 'RecordSetProgrammed' && event.metadata.annotations['dns.networking.miloapis.com/record-type'] == 'TXT'"
-      summary: "Your TXT record for {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now live"
+      summary: "Your TXT record for {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} is now live"
 
     # Generic programmed fallback: "Your NS record for sub.example.com is now live"
     - name: programmed-other
       match: "event.reason == 'RecordSetProgrammed'"
-      summary: "Your {{ event.metadata.annotations['dns.networking.miloapis.com/record-type'] }} record for {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} is now live"
+      summary: "Your {{ event.metadata.annotations['dns.networking.miloapis.com/record-type'] }} record for {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} is now live"
 
     # ----- PROGRAMMING FAILED EVENTS -----
     # "We hit a snag configuring www.example.com — Provider API error"
     - name: programming-failed
       match: "event.reason == 'RecordSetProgrammingFailed'"
-      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.regarding) }} — {{ event.metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} — {{ event.metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"

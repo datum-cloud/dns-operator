@@ -3,12 +3,17 @@
 package controller
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	eventsv1 "k8s.io/api/events/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
@@ -80,6 +85,13 @@ const (
 	ActivityTypeRecordSetProgrammingFailed = "dns.recordset.programming_failed"
 )
 
+// EventClient is the minimal interface for creating events.k8s.io/v1 Events.
+// Obtained via kubernetes.Clientset.EventsV1().Events(namespace).
+// Defined as an interface to allow test fakes without a live API server.
+type EventClient interface {
+	Create(ctx context.Context, event *eventsv1.Event, opts metav1.CreateOptions) (*eventsv1.Event, error)
+}
+
 // ZoneEventData holds all the data needed to emit an annotated activity event
 // for a DNSZone. Nameservers and FailReason are optional and only used for
 // specific event types (programmed and programming_failed respectively).
@@ -89,38 +101,97 @@ type ZoneEventData struct {
 	FailReason  string   // for programming_failed events; from condition Message
 }
 
-// RecordSetEventData holds all the data needed to emit an annotated activity
-// event for a DNSRecordSet. DomainName and FailReason are optional.
+// RecordSetEventData holds all the data needed to emit a direct events.k8s.io/v1
+// Event for a DNSRecordSet. Zone is required for setting event.related.
 type RecordSetEventData struct {
 	RecordSet  *dnsv1alpha1.DNSRecordSet
-	DomainName string // parent zone's domain; from zone.Spec.DomainName
-	FailReason string // for programming_failed events; from condition Message
+	Zone       *dnsv1alpha1.DNSZone // parent zone; populates event.related
+	DomainName string               // from zone.Spec.DomainName; optional if Zone is set
+	FailReason string               // for programming_failed events; from condition Message
 }
 
-// recordZoneActivityEvent emits an annotated Kubernetes event for a DNSZone.
-// It attaches resource identity, domain-name, zone-class, and (where available)
-// nameservers and failure-reason annotations so the DNS service ActivityPolicy
-// can filter, route and template the event.
-func recordZoneActivityEvent(
-	recorder record.EventRecorder,
-	zone *dnsv1alpha1.DNSZone,
+// emitRecordSetEvent creates an events.k8s.io/v1 Event for a DNSRecordSet.
+// The event.regarding is set to the DNSRecordSet; event.related is set to the
+// parent DNSZone so activity timeline links navigate to the zone detail page.
+// If eventClient is nil or if Create fails, the error is logged and swallowed.
+func emitRecordSetEvent(
+	ctx context.Context,
+	eventClient EventClient,
+	data RecordSetEventData,
 	eventType, reason, activityType string,
 	messageFmt string,
-	args ...interface{},
+	args ...any,
 ) {
-	recordZoneActivityEventWithData(recorder, ZoneEventData{Zone: zone}, eventType, reason, activityType, messageFmt, args...)
+	if eventClient == nil {
+		return
+	}
+	rs := data.RecordSet
+	domainName := data.DomainName
+	if domainName == "" && data.Zone != nil {
+		domainName = data.Zone.Spec.DomainName
+	}
+
+	annotations := map[string]string{
+		AnnotationEventType:          activityType,
+		AnnotationObservedGeneration: strconv.FormatInt(rs.Generation, 10),
+		AnnotationRecordType:         string(rs.Spec.RecordType),
+		AnnotationResourceName:       rs.Name,
+		AnnotationResourceNamespace:  rs.Namespace,
+		AnnotationZoneRef:            rs.Spec.DNSZoneRef.Name,
+	}
+	if domainName != "" {
+		annotations[AnnotationDomainName] = domainName
+	}
+	if len(rs.Spec.Records) > 0 {
+		annotations[AnnotationRecordCount] = strconv.Itoa(len(rs.Spec.Records))
+		annotations[AnnotationRecordNames] = strings.Join(uniqueRecordNames(rs), ",")
+	}
+	if ips := extractIPAddresses(rs); len(ips) > 0 {
+		annotations[AnnotationIPAddresses] = strings.Join(ips, ",")
+	}
+	switch rs.Spec.RecordType {
+	case dnsv1alpha1.RRTypeCNAME:
+		if target := extractCNAMETarget(rs); target != "" {
+			annotations[AnnotationCNAMETarget] = target
+		}
+	case dnsv1alpha1.RRTypeMX:
+		if hosts := extractMXHosts(rs); hosts != "" {
+			annotations[AnnotationMXHosts] = hosts
+		}
+	}
+	if domainName != "" {
+		annotations[AnnotationDisplayName] = computeDisplayName(rs, domainName)
+	}
+	if data.FailReason != "" {
+		annotations[AnnotationFailureReason] = data.FailReason
+	}
+
+	evt := buildEvent(rs.Namespace, rs.Name, annotations, eventType, reason,
+		fmt.Sprintf(messageFmt, args...))
+	evt.Regarding = recordSetObjectRef(rs)
+	if data.Zone != nil {
+		zRef := zoneObjectRef(data.Zone)
+		evt.Related = &zRef
+	}
+
+	if _, err := eventClient.Create(ctx, evt, metav1.CreateOptions{}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to emit RecordSet event",
+			"reason", reason, "recordset", rs.Name)
+	}
 }
 
-// recordZoneActivityEventWithData is the full-featured variant that accepts a
-// ZoneEventData struct containing optional nameservers and failure reason.
-func recordZoneActivityEventWithData(
-	recorder record.EventRecorder,
+// emitZoneEvent creates an events.k8s.io/v1 Event for a DNSZone.
+// The event.regarding is set to the DNSZone; event.related is nil.
+// If eventClient is nil or if Create fails, the error is logged and swallowed.
+func emitZoneEvent(
+	ctx context.Context,
+	eventClient EventClient,
 	data ZoneEventData,
 	eventType, reason, activityType string,
 	messageFmt string,
-	args ...interface{},
+	args ...any,
 ) {
-	if recorder == nil {
+	if eventClient == nil {
 		return
 	}
 	zone := data.Zone
@@ -140,74 +211,68 @@ func recordZoneActivityEventWithData(
 	if data.FailReason != "" {
 		annotations[AnnotationFailureReason] = data.FailReason
 	}
-	recorder.AnnotatedEventf(zone, annotations, eventType, reason, messageFmt, args...)
+
+	evt := buildEvent(zone.Namespace, zone.Name, annotations, eventType, reason,
+		fmt.Sprintf(messageFmt, args...))
+	evt.Regarding = zoneObjectRef(zone)
+
+	if _, err := eventClient.Create(ctx, evt, metav1.CreateOptions{}); err != nil {
+		log.FromContext(ctx).Error(err, "failed to emit Zone event",
+			"reason", reason, "zone", zone.Name)
+	}
 }
 
-// recordRecordSetActivityEvent emits an annotated Kubernetes event for a
-// DNSRecordSet. It attaches resource identity and record-type annotations so
-// the DNS service ActivityPolicy can filter events by DNS record type.
-func recordRecordSetActivityEvent(
-	recorder record.EventRecorder,
-	rs *dnsv1alpha1.DNSRecordSet,
-	eventType, reason, activityType string,
-	messageFmt string,
-	args ...interface{},
-) {
-	recordRecordSetActivityEventWithData(recorder, RecordSetEventData{RecordSet: rs}, eventType, reason, activityType, messageFmt, args...)
+// buildEvent constructs an eventsv1.Event with a unique name and common fields.
+// Regarding and Related must be set by the caller.
+func buildEvent(
+	namespace, subjectName string,
+	annotations map[string]string,
+	eventType, reason, note string,
+) *eventsv1.Event {
+	// Unique name: <subject>.<nanosecond-hex> avoids conflicts on rapid re-emission.
+	name := fmt.Sprintf("%s.%x", subjectName, time.Now().UnixNano())
+	// Kubernetes name length limit is 253 characters. Trim the subject prefix if needed.
+	if len(name) > 253 {
+		name = name[len(name)-253:]
+	}
+	return &eventsv1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: annotations,
+		},
+		EventTime:           metav1.NewMicroTime(time.Now()),
+		Action:              reason,
+		Reason:              reason,
+		Note:                note,
+		Type:                eventType,
+		ReportingController: "dns.networking.miloapis.com/dns-operator",
+		ReportingInstance:   os.Getenv("POD_NAME"),
+	}
 }
 
-// recordRecordSetActivityEventWithData is the full-featured variant that accepts
-// a RecordSetEventData struct containing optional domain name and failure reason.
-func recordRecordSetActivityEventWithData(
-	recorder record.EventRecorder,
-	data RecordSetEventData,
-	eventType, reason, activityType string,
-	messageFmt string,
-	args ...interface{},
-) {
-	if recorder == nil {
-		return
+// recordSetObjectRef builds a corev1.ObjectReference for a DNSRecordSet using
+// hardcoded GVK values (stable and known for this operator).
+func recordSetObjectRef(rs *dnsv1alpha1.DNSRecordSet) corev1.ObjectReference {
+	return corev1.ObjectReference{
+		APIVersion: dnsv1alpha1.GroupVersion.String(),
+		Kind:       "DNSRecordSet",
+		Namespace:  rs.Namespace,
+		Name:       rs.Name,
+		UID:        rs.UID,
 	}
-	rs := data.RecordSet
-	annotations := map[string]string{
-		AnnotationEventType:          activityType,
-		AnnotationObservedGeneration: strconv.FormatInt(rs.Generation, 10),
-		AnnotationRecordType:         string(rs.Spec.RecordType),
-		AnnotationResourceName:       rs.Name,
-		AnnotationResourceNamespace:  rs.Namespace,
-		AnnotationZoneRef:            rs.Spec.DNSZoneRef.Name,
+}
+
+// zoneObjectRef builds a corev1.ObjectReference for a DNSZone using hardcoded
+// GVK values (stable and known for this operator).
+func zoneObjectRef(zone *dnsv1alpha1.DNSZone) corev1.ObjectReference {
+	return corev1.ObjectReference{
+		APIVersion: dnsv1alpha1.GroupVersion.String(),
+		Kind:       "DNSZone",
+		Namespace:  zone.Namespace,
+		Name:       zone.Name,
+		UID:        zone.UID,
 	}
-	if data.DomainName != "" {
-		annotations[AnnotationDomainName] = data.DomainName
-	}
-	if len(rs.Spec.Records) > 0 {
-		annotations[AnnotationRecordCount] = strconv.Itoa(len(rs.Spec.Records))
-		// Collect unique record names preserving order of first occurrence.
-		annotations[AnnotationRecordNames] = strings.Join(uniqueRecordNames(rs), ",")
-	}
-	// Extract IP addresses for A/AAAA record types.
-	if ips := extractIPAddresses(rs); len(ips) > 0 {
-		annotations[AnnotationIPAddresses] = strings.Join(ips, ",")
-	}
-	// Extract type-specific record values for activity summaries.
-	switch rs.Spec.RecordType {
-	case dnsv1alpha1.RRTypeCNAME:
-		if target := extractCNAMETarget(rs); target != "" {
-			annotations[AnnotationCNAMETarget] = target
-		}
-	case dnsv1alpha1.RRTypeMX:
-		if hosts := extractMXHosts(rs); hosts != "" {
-			annotations[AnnotationMXHosts] = hosts
-		}
-	}
-	// Add display-name annotation (pre-computed FQDN) for easier template usage.
-	if data.DomainName != "" {
-		annotations[AnnotationDisplayName] = computeDisplayName(rs, data.DomainName)
-	}
-	if data.FailReason != "" {
-		annotations[AnnotationFailureReason] = data.FailReason
-	}
-	recorder.AnnotatedEventf(rs, annotations, eventType, reason, messageFmt, args...)
 }
 
 // uniqueRecordNames returns a deduplicated list of record names from the

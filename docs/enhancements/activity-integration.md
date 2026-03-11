@@ -88,11 +88,11 @@ Activities should use human-friendly display names (e.g., "example.com" not "exa
 
 ### Overview
 
-The Activity Service translates audit logs and Kubernetes events into human-readable activities using CEL-based `ActivityPolicy` resources. We will:
+The Activity Service translates audit logs and Kubernetes events into human-readable activities using CEL-based `ActivityPolicy` resources. We:
 
 1. Define ActivityPolicy resources for each DNS resource type
-2. Update controllers to emit Kubernetes Events for status transitions
-3. Deploy policies alongside the DNS operator
+2. Emit `events.k8s.io/v1` Events from controllers for async status transitions
+3. Deploy policies alongside the DNS operator via Kustomize component
 
 ### Data Sources
 
@@ -101,249 +101,22 @@ Activities are generated from two sources:
 | Source | Use Case | Available Data |
 |--------|----------|----------------|
 | **Audit Logs** | User actions (create, update, delete) | Full resource spec, user info, response status |
-| **Kubernetes Events** | System state changes (Accepted, Programmed, errors) | Event reason, message, object reference (name only) |
+| **Kubernetes Events** | System state changes (Programmed, errors) | Event reason, annotations, regarding/related refs |
 
-### ActivityPolicy Resources
+### ActivityPolicy Approach
 
-#### DNSZone Policy
+Each DNS resource type has an `ActivityPolicy` with:
 
-```yaml
-apiVersion: activity.miloapis.com/v1alpha1
-kind: ActivityPolicy
-metadata:
-  name: dns-dnszone
-spec:
-  resource:
-    apiGroup: dns.networking.miloapis.com
-    kind: DNSZone
+- **Audit rules** for CRUD operations — these have access to the full resource via `audit.responseObject`, so summaries can reference `spec.domainName` and display annotations directly.
+- **Event rules** for async controller outcomes — these use annotations on the `events.k8s.io/v1` Event object (prefixed `dns.networking.miloapis.com/`) for structured data like domain names, record types, and failure reasons.
 
-  # Audit rules have access to full resource - use spec.domainName for display
-  auditRules:
-    - match: "audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+RecordSet event rules use `event.related` (the parent DNSZone) as the link target so activity timeline entries navigate to the zone detail page. Zone event rules use `event.regarding` (the zone itself).
 
-    - match: "audit.verb == 'delete' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} deleted zone {{ audit.requestObject.spec.domainName }}"
+The actual policy manifests live in `config/milo/activity/policies/`.
 
-    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
-      summary: "{{ actor }} updated zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+### Controller Event Emission
 
-  # Event rules - use annotations for structured data
-  # Annotation: dns.datumapis.com/domain-name
-  eventRules:
-    - match: "event.reason == 'Accepted'"
-      summary: "Zone {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }} is now active"
-
-    - match: "event.reason == 'Programmed'"
-      summary: "Zone {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }} is ready with default SOA and NS records"
-
-    - match: "event.reason == 'DNSZoneInUse'"
-      summary: "Zone {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }} conflicts with an existing zone"
-
-    - match: "event.reason == 'Pending'"
-      summary: "Zone {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }} is waiting for dependencies"
-```
-
-#### DNSRecordSet Policy
-
-Since audit logs contain the full resource, we can access record details directly via CEL. However, constructing human-friendly strings for multiple records is complex in CEL.
-
-**Recommended approach:** Add a `dns.datumapis.com/display-summary` annotation to DNSRecordSet resources that controllers populate with a human-friendly description (e.g., "www.example.com pointing to 192.0.2.10"). This keeps formatting logic in Go where it's easier to handle.
-
-```yaml
-apiVersion: activity.miloapis.com/v1alpha1
-kind: ActivityPolicy
-metadata:
-  name: dns-dnsrecordset
-spec:
-  resource:
-    apiGroup: dns.networking.miloapis.com
-    kind: DNSRecordSet
-
-  auditRules:
-    # Use the display-summary annotation for human-friendly output
-    - match: "audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} added {{ audit.responseObject.metadata.annotations['dns.datumapis.com/display-summary'] }}"
-
-    - match: "audit.verb == 'delete' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} removed {{ audit.requestObject.metadata.annotations['dns.datumapis.com/display-summary'] }}"
-
-    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
-      summary: "{{ actor }} updated {{ audit.responseObject.metadata.annotations['dns.datumapis.com/display-summary'] }}"
-
-  # Event rules - use annotations for structured data
-  # Annotations: dns.datumapis.com/fqdn, dns.datumapis.com/value, dns.datumapis.com/record-type
-  eventRules:
-    - match: "event.reason == 'Programmed'"
-      summary: "{{ event.metadata.annotations['dns.datumapis.com/fqdn'] }} is now resolving to {{ event.metadata.annotations['dns.datumapis.com/value'] }}"
-
-    - match: "event.reason == 'NotOwner'"
-      summary: "{{ event.metadata.annotations['dns.datumapis.com/fqdn'] }} pointing to {{ event.metadata.annotations['dns.datumapis.com/value'] }} won't take effect because another record already controls this name"
-
-    - match: "event.reason == 'BackendError'"
-      summary: "Failed to apply {{ event.metadata.annotations['dns.datumapis.com/fqdn'] }}"
-
-    - match: "event.reason == 'Pending'"
-      summary: "{{ event.metadata.annotations['dns.datumapis.com/fqdn'] }} is waiting for zone to be ready"
-```
-
-**Controller responsibility:** The DNS operator must set the `dns.datumapis.com/display-summary` annotation on DNSRecordSet resources with a human-readable description:
-
-```go
-// Example annotation values by record type:
-// A:     "www.example.com pointing to 192.0.2.10"
-// AAAA:  "www.example.com pointing to 2001:db8::1"
-// CNAME: "api.example.com as an alias for api.internal.example.com"
-// MX:    "mail for example.com using mail.example.com, mail2.example.com"
-// TXT:   "TXT record for example.com"
-```
-
-#### DNSZoneClass Policy
-
-```yaml
-apiVersion: activity.miloapis.com/v1alpha1
-kind: ActivityPolicy
-metadata:
-  name: dns-dnszoneclass
-spec:
-  resource:
-    apiGroup: dns.networking.miloapis.com
-    kind: DNSZoneClass
-
-  auditRules:
-    - match: "audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} created DNSZoneClass {{ link(audit.responseObject.metadata.name, audit.responseObject) }}"
-
-    - match: "audit.verb == 'delete' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} deleted DNSZoneClass {{ audit.objectRef.name }}"
-
-    - match: "audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
-      summary: "{{ actor }} updated DNSZoneClass {{ link(audit.responseObject.metadata.name, audit.responseObject) }}"
-```
-
-#### DNSZoneDiscovery Policy
-
-```yaml
-apiVersion: activity.miloapis.com/v1alpha1
-kind: ActivityPolicy
-metadata:
-  name: dns-dnszonediscovery
-spec:
-  resource:
-    apiGroup: dns.networking.miloapis.com
-    kind: DNSZoneDiscovery
-
-  auditRules:
-    # dnsZoneRef.name is the resource name, but event.message will have the domain name
-    - match: "audit.verb == 'create' && audit.responseStatus.code >= 200 && audit.responseStatus.code < 300"
-      summary: "{{ actor }} started discovering existing records"
-
-  # Annotation: dns.datumapis.com/domain-name
-  eventRules:
-    - match: "event.reason == 'Discovered'"
-      summary: "Finished discovering existing records for {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }}"
-
-    - match: "event.reason == 'Pending'"
-      summary: "Discovery for {{ event.metadata.annotations['dns.datumapis.com/domain-name'] }} is waiting for zone to be ready"
-```
-
-### Controller Changes
-
-Controllers must:
-1. Set a `dns.datumapis.com/display-summary` annotation on DNSRecordSet with a human-friendly description
-2. Emit Kubernetes Events with human-friendly messages for status transitions
-
-**Why annotations?** The Activity Service's CEL templates can access annotations from audit logs. This lets us format complex record information in Go code rather than CEL.
-
-**Why event messages?** The `event.regarding` field only contains an ObjectReference (name, namespace, kind) - not the full resource. The `event.message` field carries the human-friendly context.
-
-**Files to modify:**
-- `internal/controller/dnszone_replicator_controller.go`
-- `internal/controller/dnsrecordset_replicator_controller.go`
-- `internal/controller/dnsrecordset_powerdns_controller.go`
-- `internal/controller/dnszonediscovery_controller.go`
-
-**1. Display summary annotation for DNSRecordSet:**
-
-```go
-// Set during reconciliation, before any status updates
-func buildDisplaySummary(rs *v1alpha1.DNSRecordSet, zoneDomainName string) string {
-    record := rs.Spec.Records[0] // Primary record
-    fqdn := buildFQDN(record.Name, zoneDomainName)
-
-    switch rs.Spec.RecordType {
-    case "A", "AAAA":
-        return fmt.Sprintf("%s pointing to %s", fqdn, record.A.Content)
-    case "CNAME":
-        return fmt.Sprintf("%s as an alias for %s", fqdn, record.CNAME.Content)
-    case "MX":
-        return fmt.Sprintf("mail for %s", fqdn)
-    default:
-        return fmt.Sprintf("%s record for %s", rs.Spec.RecordType, fqdn)
-    }
-}
-
-// Apply to resource
-rs.Annotations["dns.datumapis.com/display-summary"] = buildDisplaySummary(rs, zone.Spec.DomainName)
-```
-
-**2. Events with annotations:**
-
-Kubernetes Events have ObjectMeta, so we can set annotations on the Event itself. This allows templates to access structured data via `event.metadata.annotations['...']`.
-
-```go
-// Helper to emit events with annotations
-func (r *Reconciler) emitEvent(obj runtime.Object, eventType, reason, message string, annotations map[string]string) {
-    event := &eventsv1.Event{
-        ObjectMeta: metav1.ObjectMeta{
-            GenerateName: obj.GetName() + "-",
-            Namespace:    obj.GetNamespace(),
-            Annotations:  annotations,
-        },
-        Regarding:           corev1.ObjectReference{...},
-        Reason:              reason,
-        Note:                message,
-        Type:                eventType,
-        EventTime:           metav1.NowMicro(),
-        ReportingController: "dns-operator",
-        ReportingInstance:   r.podName,
-        Action:              reason,
-    }
-    r.EventClient.Create(ctx, event)
-}
-
-// Zone events
-r.emitEvent(zone, corev1.EventTypeNormal, "Accepted", "Zone is now active", map[string]string{
-    "dns.datumapis.com/domain-name": zone.Spec.DomainName,
-})
-r.emitEvent(zone, corev1.EventTypeNormal, "Programmed", "Default records created", map[string]string{
-    "dns.datumapis.com/domain-name": zone.Spec.DomainName,
-})
-r.emitEvent(zone, corev1.EventTypeWarning, "DNSZoneInUse", "Zone conflicts", map[string]string{
-    "dns.datumapis.com/domain-name": zone.Spec.DomainName,
-})
-
-// RecordSet events - include structured data for template flexibility
-r.emitEvent(rs, corev1.EventTypeNormal, "Programmed", "Record is now resolving", map[string]string{
-    "dns.datumapis.com/fqdn":        fqdn,                       // "www.example.com"
-    "dns.datumapis.com/record-type": string(rs.Spec.RecordType), // "A"
-    "dns.datumapis.com/value":       recordValue,                // "192.0.2.10"
-    "dns.datumapis.com/zone":        zone.Spec.DomainName,       // "example.com"
-})
-
-// Discovery events
-r.emitEvent(disc, corev1.EventTypeNormal, "Discovered", "Discovery complete", map[string]string{
-    "dns.datumapis.com/domain-name": zone.Spec.DomainName,
-})
-```
-
-This allows templates to construct summaries flexibly:
-
-```yaml
-eventRules:
-  - match: "event.reason == 'Programmed'"
-    summary: "{{ event.metadata.annotations['dns.datumapis.com/fqdn'] }} is now resolving to {{ event.metadata.annotations['dns.datumapis.com/value'] }}"
-```
+Controllers emit `events.k8s.io/v1` Events directly via a typed client (`EventsV1().Events(ns).Create`) rather than the legacy `record.EventRecorder`. This gives full control over `regarding`, `related`, and `annotations` fields. Event emission is best-effort — failures are logged and swallowed.
 
 ### Directory Structure
 

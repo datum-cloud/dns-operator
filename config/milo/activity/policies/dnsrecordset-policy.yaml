@@ -184,7 +184,7 @@ spec:
       summary: "Your {{ event.metadata.annotations['dns.networking.miloapis.com/record-type'] }} record for {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} is now live"
 
     # ----- PROGRAMMING FAILED EVENTS -----
-    # "We hit a snag configuring www.example.com — Provider API error"
+    # "We hit a snag configuring www.example.com, but we'll keep retrying automatically — no action needed on your end."
     - name: programming-failed
       match: "event.reason == 'RecordSetProgrammingFailed'"
-      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }} — {{ event.metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/display-name'], event.related) }}, but we'll keep retrying automatically — no action needed on your end."

@@ -89,4 +89,4 @@ spec:
     #   dns.networking.miloapis.com/resource-namespace: my-project
     - name: zone-programming-failed
       match: "event.reason == 'ZoneProgrammingFailed'"
-      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} — {{ event.metadata.annotations['dns.networking.miloapis.com/failure-reason'] }}"
+      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}, but we'll keep retrying automatically — no action needed on your end."

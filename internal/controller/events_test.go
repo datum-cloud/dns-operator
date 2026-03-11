@@ -8,12 +8,17 @@ import (
 	"strconv"
 	"testing"
 
-	eventsv1 "k8s.io/api/events/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+)
+
+const (
+	testZoneName  = "my-zone"
+	testNamespace = "default"
 )
 
 // --------------------------------------------------------------------------
@@ -126,7 +131,7 @@ func TestEmitZoneEvent_NilClient(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-zone",
-			Namespace:  "default",
+			Namespace:  testNamespace,
 			Generation: 1,
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{
@@ -155,8 +160,8 @@ func TestEmitZoneEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "my-zone",
-			Namespace:  "default",
+			Name:       testZoneName,
+			Namespace:  testNamespace,
 			Generation: 3,
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{
@@ -253,7 +258,7 @@ func TestEmitZoneEvent_GenerationInAnnotation(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "gen-zone",
-			Namespace:  "default",
+			Namespace:  testNamespace,
 			Generation: 42,
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{
@@ -289,7 +294,7 @@ func TestEmitZoneEvent_ResourceIdentityAnnotations(t *testing.T) {
 
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       "my-zone",
+			Name:       testZoneName,
 			Namespace:  "project-ns",
 			Generation: 2,
 		},
@@ -314,8 +319,8 @@ func TestEmitZoneEvent_ResourceIdentityAnnotations(t *testing.T) {
 	}
 	ann := fc.events[0].Annotations
 
-	if got := ann[AnnotationResourceName]; got != "my-zone" {
-		t.Errorf("%s = %q, want %q", AnnotationResourceName, got, "my-zone")
+	if got := ann[AnnotationResourceName]; got != testZoneName {
+		t.Errorf("%s = %q, want %q", AnnotationResourceName, got, testZoneName)
 	}
 	if got := ann[AnnotationResourceNamespace]; got != "project-ns" {
 		t.Errorf("%s = %q, want %q", AnnotationResourceNamespace, got, "project-ns")
@@ -425,8 +430,8 @@ func TestEmitZoneEvent_RegardingIsZone(t *testing.T) {
 
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-zone",
-			Namespace: "default",
+			Name:      testZoneName,
+			Namespace: testNamespace,
 			UID:       types.UID("zone-uid-123"),
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
@@ -444,11 +449,11 @@ func TestEmitZoneEvent_RegardingIsZone(t *testing.T) {
 	if ref.Kind != "DNSZone" {
 		t.Errorf("Regarding.Kind = %q, want %q", ref.Kind, "DNSZone")
 	}
-	if ref.Name != "my-zone" {
-		t.Errorf("Regarding.Name = %q, want %q", ref.Name, "my-zone")
+	if ref.Name != testZoneName {
+		t.Errorf("Regarding.Name = %q, want %q", ref.Name, testZoneName)
 	}
-	if ref.Namespace != "default" {
-		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, "default")
+	if ref.Namespace != testNamespace {
+		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, testNamespace)
 	}
 	if ref.UID != "zone-uid-123" {
 		t.Errorf("Regarding.UID = %q, want %q", ref.UID, "zone-uid-123")
@@ -490,7 +495,7 @@ func TestEmitRecordSetEvent_NilClient(t *testing.T) {
 	rs := &dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-rs",
-			Namespace:  "default",
+			Namespace:  testNamespace,
 			Generation: 1,
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -523,11 +528,11 @@ func TestEmitRecordSetEvent_EmitsWithCorrectAnnotations(t *testing.T) {
 	rs := &dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "www-records",
-			Namespace:  "default",
+			Namespace:  testNamespace,
 			Generation: 5,
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			DNSZoneRef: corev1.LocalObjectReference{Name: testZoneName},
 			RecordType: dnsv1alpha1.RRTypeA,
 			Records: []dnsv1alpha1.RecordEntry{
 				{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}},
@@ -635,7 +640,7 @@ func TestEmitRecordSetEvent_RecordTypePropagated(t *testing.T) {
 			rs := &dnsv1alpha1.DNSRecordSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-rs",
-					Namespace:  "default",
+					Namespace:  testNamespace,
 					Generation: 1,
 				},
 				Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -682,7 +687,7 @@ func TestEmitRecordSetEvent_ResourceIdentityAnnotations(t *testing.T) {
 			Generation: 3,
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			DNSZoneRef: corev1.LocalObjectReference{Name: testZoneName},
 			RecordType: dnsv1alpha1.RRTypeA,
 			Records: []dnsv1alpha1.RecordEntry{
 				{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}},
@@ -715,8 +720,8 @@ func TestEmitRecordSetEvent_ResourceIdentityAnnotations(t *testing.T) {
 	if got := ann[AnnotationResourceNamespace]; got != "project-ns" {
 		t.Errorf("%s = %q, want %q", AnnotationResourceNamespace, got, "project-ns")
 	}
-	if got := ann[AnnotationZoneRef]; got != "my-zone" {
-		t.Errorf("%s = %q, want %q", AnnotationZoneRef, got, "my-zone")
+	if got := ann[AnnotationZoneRef]; got != testZoneName {
+		t.Errorf("%s = %q, want %q", AnnotationZoneRef, got, testZoneName)
 	}
 	if got := ann[AnnotationDomainName]; got != "example.com" {
 		t.Errorf("%s = %q, want %q", AnnotationDomainName, got, "example.com")
@@ -910,11 +915,11 @@ func TestEmitRecordSetEvent_RegardingIsRecordSet(t *testing.T) {
 	rs := &dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "www-records",
-			Namespace: "default",
+			Namespace: testNamespace,
 			UID:       types.UID("rs-uid-456"),
 		},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			DNSZoneRef: corev1.LocalObjectReference{Name: testZoneName},
 			RecordType: dnsv1alpha1.RRTypeA,
 		},
 	}
@@ -935,8 +940,8 @@ func TestEmitRecordSetEvent_RegardingIsRecordSet(t *testing.T) {
 	if ref.Name != "www-records" {
 		t.Errorf("Regarding.Name = %q, want %q", ref.Name, "www-records")
 	}
-	if ref.Namespace != "default" {
-		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, "default")
+	if ref.Namespace != testNamespace {
+		t.Errorf("Regarding.Namespace = %q, want %q", ref.Namespace, testNamespace)
 	}
 	if ref.UID != "rs-uid-456" {
 		t.Errorf("Regarding.UID = %q, want %q", ref.UID, "rs-uid-456")
@@ -949,16 +954,16 @@ func TestEmitRecordSetEvent_RelatedIsZone(t *testing.T) {
 	t.Parallel()
 
 	rs := &dnsv1alpha1.DNSRecordSet{
-		ObjectMeta: metav1.ObjectMeta{Name: "www-records", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "www-records", Namespace: testNamespace},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			DNSZoneRef: corev1.LocalObjectReference{Name: testZoneName},
 			RecordType: dnsv1alpha1.RRTypeA,
 		},
 	}
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "my-zone",
-			Namespace: "default",
+			Name:      testZoneName,
+			Namespace: testNamespace,
 			UID:       types.UID("zone-uid-789"),
 		},
 		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "pdns"},
@@ -981,11 +986,11 @@ func TestEmitRecordSetEvent_RelatedIsZone(t *testing.T) {
 	if related.Kind != "DNSZone" {
 		t.Errorf("Related.Kind = %q, want %q", related.Kind, "DNSZone")
 	}
-	if related.Name != "my-zone" {
-		t.Errorf("Related.Name = %q, want %q", related.Name, "my-zone")
+	if related.Name != testZoneName {
+		t.Errorf("Related.Name = %q, want %q", related.Name, testZoneName)
 	}
-	if related.Namespace != "default" {
-		t.Errorf("Related.Namespace = %q, want %q", related.Namespace, "default")
+	if related.Namespace != testNamespace {
+		t.Errorf("Related.Namespace = %q, want %q", related.Namespace, testNamespace)
 	}
 	if related.UID != "zone-uid-789" {
 		t.Errorf("Related.UID = %q, want %q", related.UID, "zone-uid-789")
@@ -1104,13 +1109,13 @@ func TestEmitRecordSetEvent_DomainNameFromZone(t *testing.T) {
 	rs := &dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "ns", Generation: 1},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
-			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			DNSZoneRef: corev1.LocalObjectReference{Name: testZoneName},
 			RecordType: dnsv1alpha1.RRTypeA,
 			Records:    []dnsv1alpha1.RecordEntry{{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"}}},
 		},
 	}
 	zone := &dnsv1alpha1.DNSZone{
-		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "ns"},
+		ObjectMeta: metav1.ObjectMeta{Name: testZoneName, Namespace: "ns"},
 		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "zone-derived.example.com", DNSZoneClassName: "pdns"},
 	}
 

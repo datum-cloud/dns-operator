@@ -31,7 +31,7 @@ spec:
     # Zone creation with spec available - use domain name as display text in link
     - name: create
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
-      summary: "{{ actor }} created zone {{ link(audit.requestObject.spec.domainName, audit.responseObject) }}"
+      summary: "{{ actor }} created zone {{ link(audit.requestObject.spec.domainName, audit.objectRef) }}"
 
     # Zone creation fallback (no spec)
     - name: create-fallback
@@ -51,7 +51,7 @@ spec:
     # Zone update with spec available - use domain name as display text
     - name: update
       match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
-      summary: "{{ actor }} updated zone {{ link(audit.requestObject.spec.domainName, audit.responseObject) }}"
+      summary: "{{ actor }} updated zone {{ link(audit.requestObject.spec.domainName, audit.objectRef) }}"
 
     # Zone update fallback (no spec)
     - name: update-fallback
@@ -62,7 +62,7 @@ spec:
     # but can be enabled if needed for debugging.
     # - name: update-status
     #   match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
-    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.responseObject) }}"
+    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.objectRef) }}"
 
   # Event rules for controller-emitted Kubernetes events.
   # These capture async outcomes that audit logs cannot represent.

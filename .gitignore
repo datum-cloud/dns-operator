@@ -37,3 +37,6 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local claude settings
+.claude/settings.local.json

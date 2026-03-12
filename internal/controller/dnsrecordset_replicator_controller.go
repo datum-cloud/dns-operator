@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -36,6 +38,7 @@ const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
@@ -50,6 +53,19 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	upstream, err := r.fetchUpstream(ctx, upstreamCluster, req.NamespacedName)
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// Build a typed clientset from the upstream cluster REST config so we can
+	// create events.k8s.io/v1 Event objects directly. Event emission is
+	// best-effort: if clientset construction fails we log and continue.
+	upstreamClientset, err := kubernetes.NewForConfig(upstreamCluster.GetConfig())
+	if err != nil {
+		lg.Error(err, "failed to build upstream clientset; event emission will be skipped")
+		upstreamClientset = nil
+	}
+	var eventClient EventClient
+	if upstreamClientset != nil {
+		eventClient = upstreamClientset.EventsV1().Events(req.Namespace)
 	}
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
@@ -82,7 +98,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, nil
 	}
 
-	// Gate on referenced DNSZone early and update status when missing
+	// Gate on referenced DNSZone early and update status when missing.
+	// We fetch the zone before emitting the spec-update event so we can include
+	// the domain name annotation.
 	var zone dnsv1alpha1.DNSZone
 	if err := upstreamCluster.GetClient().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -112,7 +130,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure OwnerReference to upstream DNSZone (same ns)
+	// Ensure OwnerReference to upstream DNSZone (same ns).
+	// We return early after setting OwnerReference to ensure we reconcile with
+	// the fresh object that has the updated owner metadata.
 	if !metav1.IsControlledBy(&upstream, &zone) {
 		base := upstream.DeepCopy()
 		if err := controllerutil.SetControllerReference(&zone, &upstream, upstreamCluster.GetScheme()); err != nil {
@@ -121,8 +141,20 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
-		// ensure we continue with the updated object
+		// Return to reconcile with updated owner metadata
 		return ctrl.Result{}, nil
+	}
+
+	// Ensure display annotations are set for ActivityPolicy templates.
+	// Unlike OwnerReference, annotation changes don't require a fresh reconcile,
+	// so we patch and continue with downstream processing.
+	// Take base copy BEFORE modifying, so the patch captures the changes.
+	base := upstream.DeepCopy()
+	if ensureDisplayAnnotations(&upstream, zone.Spec.DomainName) {
+		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Continue with downstream processing - don't return early
 	}
 	// Ensure the downstream recordset object mirrors the upstream spec
 	if _, err = r.ensureDownstreamRecordSet(ctx, strategy, &upstream); err != nil {
@@ -139,10 +171,55 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, err
 	}
 
+	// Capture the Programmed condition before the status update so we can detect
+	// a transition after the update completes.
+	prevProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	var prevProgrammedCopy *metav1.Condition
+	if prevProgrammed != nil {
+		c := *prevProgrammed
+		prevProgrammedCopy = &c
+	}
+
 	// Update upstream status by mirroring downstream when present
 	if err := r.updateStatus(ctx, upstreamCluster.GetClient(), &upstream, shadow.Status.DeepCopy()); err != nil {
 		if !apierrors.IsNotFound(err) { // tolerate races
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Emit Programmed/ProgrammingFailed events on condition transitions.
+	// updateStatus mutates upstream.Status in-memory, so the in-memory state
+	// already reflects the new condition after the call.
+	currProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	if programmedConditionTransitioned(prevProgrammedCopy, currProgrammed) {
+		if currProgrammed.Status == metav1.ConditionTrue {
+			emitRecordSetEvent(ctx, eventClient,
+				RecordSetEventData{
+					RecordSet:  &upstream,
+					Zone:       &zone,
+					DomainName: zone.Spec.DomainName,
+				},
+				corev1.EventTypeNormal,
+				EventReasonRecordSetProgrammed,
+				ActivityTypeRecordSetProgrammed,
+				"DNSRecordSet %q successfully programmed to DNS provider",
+				upstream.Name,
+			)
+		} else if currProgrammed.Status == metav1.ConditionFalse &&
+			prevProgrammedCopy != nil && prevProgrammedCopy.Status == metav1.ConditionTrue {
+			emitRecordSetEvent(ctx, eventClient,
+				RecordSetEventData{
+					RecordSet:  &upstream,
+					Zone:       &zone,
+					DomainName: zone.Spec.DomainName,
+					FailReason: currProgrammed.Message,
+				},
+				corev1.EventTypeWarning,
+				EventReasonRecordSetProgrammingFailed,
+				ActivityTypeRecordSetProgrammingFailed,
+				"DNSRecordSet %q programming failed: %s",
+				upstream.Name, currProgrammed.Message,
+			)
 		}
 	}
 
@@ -253,6 +330,30 @@ func (r *DNSRecordSetReplicator) updateStatus(
 	base := upstream.DeepCopy()
 	upstream.Status = *downstreamStatus
 	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
+}
+
+// ensureDisplayAnnotations sets the display-name and display-value annotations
+// on the DNSRecordSet if they are missing or outdated. These annotations provide
+// human-friendly values for ActivityPolicy audit rule templates.
+// Returns true if annotations were modified (caller should patch the object).
+func ensureDisplayAnnotations(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) bool {
+	expectedDisplayName := computeDisplayName(rs, zoneDomainName)
+	expectedDisplayValue := computeDisplayValue(rs)
+
+	if rs.Annotations == nil {
+		rs.Annotations = make(map[string]string)
+	}
+
+	currentDisplayName := rs.Annotations[AnnotationDisplayName]
+	currentDisplayValue := rs.Annotations[AnnotationDisplayValue]
+
+	if currentDisplayName == expectedDisplayName && currentDisplayValue == expectedDisplayValue {
+		return false
+	}
+
+	rs.Annotations[AnnotationDisplayName] = expectedDisplayName
+	rs.Annotations[AnnotationDisplayValue] = expectedDisplayValue
+	return true
 }
 
 // ---- Watches / mapping helpers -------------------------

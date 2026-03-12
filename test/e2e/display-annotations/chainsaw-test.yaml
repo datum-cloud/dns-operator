@@ -1,0 +1,239 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-display-annotations
+spec:
+  description: |
+    Verifies that DNSRecordSet resources get display annotations set AND are
+    replicated to the downstream cluster. This test catches a bug where the
+    controller returned early after patching annotations, skipping downstream
+    replication.
+  clusters:
+    upstream:
+      kubeconfig: ../kubeconfig-upstream
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-annotations-test
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-annotations-test
+
+  - name: Prereq - create DNSZoneClass in downstream
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-annotations-test
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-annotations-test
+
+  - name: Create DNSZone upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: annotations-test-zone
+          spec:
+            domainName: annotations-test.example.com
+            dnsZoneClassName: powerdns-annotations-test
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: annotations-test-zone
+
+  - name: Wait for DNSZone to be ready
+    try:
+    - assert:
+        cluster: upstream
+        timeout: 60s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: annotations-test-zone
+          status:
+            conditions:
+            - type: Accepted
+              status: "True"
+
+  - name: Create DNSRecordSet upstream (A record)
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-annotations-test
+          spec:
+            dnsZoneRef:
+              name: annotations-test-zone
+            recordType: A
+            records:
+            - name: www
+              ttl: 300
+              a:
+                content: 192.0.2.42
+
+  - name: Assert display annotations are set on upstream DNSRecordSet
+    description: |
+      The controller must set display-name and display-value annotations
+      for ActivityPolicy templates to render human-friendly summaries.
+    try:
+    - assert:
+        cluster: upstream
+        timeout: 30s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-annotations-test
+            annotations:
+              dns.networking.miloapis.com/display-name: www.annotations-test.example.com
+              dns.networking.miloapis.com/display-value: "192.0.2.42"
+
+  - name: Confirm DNSRecordSet replicated downstream
+    description: |
+      CRITICAL: This step catches the bug where the controller returned early
+      after patching annotations, skipping ensureDownstreamRecordSet().
+      If annotations are set but downstream replication is missing, this fails.
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        timeout: 30s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-annotations-test
+            namespace: ($downstreamNamespaceName)
+
+  - name: Verify DNSRecordSet becomes Programmed
+    try:
+    - assert:
+        cluster: upstream
+        timeout: 60s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-annotations-test
+          status:
+            conditions:
+            - type: Accepted
+              status: "True"
+            - type: Programmed
+              status: "True"
+
+  - name: Teardown - delete resources
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: www-annotations-test
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSRecordSet
+          check:
+            ($error == null): true
+    - sleep:
+        duration: 5s
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: annotations-test-zone
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            ($error == null): true
+    - sleep:
+        duration: 5s
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-annotations-test
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-annotations-test
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true

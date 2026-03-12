@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# ActivityPolicy for DNSZone resources.
+# Defines how DNSZone API operations and controller events appear in activity timelines.
+#
+# Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
+# Event rules handle async controller events for programming outcomes.
+#
+# Design principles:
+# - Use domain names (example.com) as display text, not resource names (example-com)
+# - Action-oriented language ("created zone", not "created DNS zone")
+# - Show relevant DNS data (nameservers) where available
+# - Graceful fallback when audit.responseObject.spec is unavailable
+#
+# IMPORTANT: For DELETE operations, audit.requestObject is a DeleteOptions (not the resource),
+# so we use audit.responseObject.spec.domainName with has() guards, falling back to audit.objectRef.name.
+apiVersion: activity.miloapis.com/v1alpha1
+kind: ActivityPolicy
+metadata:
+  name: dns.networking.miloapis.com-dnszone
+spec:
+  resource:
+    apiGroup: dns.networking.miloapis.com
+    kind: DNSZone
+
+  # Audit log rules for CRUD operations.
+  # These are automatically captured by the API server and don't require controller code.
+  # All rules exclude system components (!audit.user.username.startsWith('system:'))
+  # so controller reconciliation doesn't generate activity noise.
+  auditRules:
+    # Zone creation with spec available - use domain name as display text in link
+    - name: create
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec)"
+      summary: "{{ actor }} created zone {{ link(audit.requestObject.spec.domainName, audit.objectRef) }}"
+
+    # Zone creation fallback (no spec)
+    - name: create-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'create'"
+      summary: "{{ actor }} created {{ link('a DNS zone', audit.objectRef) }}"
+
+    # Zone deletion with audit.responseObject.spec available (response contains the deleted resource)
+    - name: delete
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete' && has(audit.responseObject.spec)"
+      summary: "{{ actor }} deleted zone {{ audit.responseObject.spec.domainName }}"
+
+    # Zone deletion fallback (no spec on response)
+    - name: delete-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb == 'delete'"
+      summary: "{{ actor }} deleted a DNS zone"
+
+    # Zone update with spec available - use domain name as display text
+    - name: update
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec)"
+      summary: "{{ actor }} updated zone {{ link(audit.requestObject.spec.domainName, audit.objectRef) }}"
+
+    # Zone update fallback (no spec)
+    - name: update-fallback
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource)"
+      summary: "{{ actor }} updated {{ link('a DNS zone', audit.objectRef) }}"
+
+    # Status subresource updates are system-initiated and typically not shown to users,
+    # but can be enabled if needed for debugging.
+    # - name: update-status
+    #   match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && audit.objectRef.subresource == 'status'"
+    #   summary: "System updated status of zone {{ link(audit.responseObject.spec.domainName, audit.objectRef) }}"
+
+  # Event rules for controller-emitted Kubernetes events.
+  # These capture async outcomes that audit logs cannot represent.
+  # Uses conversational tone for system-initiated events.
+  eventRules:
+    # ZoneProgrammed: DNS zone successfully programmed to the DNS provider.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.zone.programmed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/zone-class: production
+    #   dns.networking.miloapis.com/nameservers: ns1.example.com,ns2.example.com
+    #   dns.networking.miloapis.com/resource-name: my-zone
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+    - name: zone-programmed
+      match: "event.reason == 'ZoneProgrammed'"
+      summary: "Your zone is ready! {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }} is live with nameservers {{ event.metadata.annotations['dns.networking.miloapis.com/nameservers'] }}"
+
+    # ZoneProgrammingFailed: DNS zone programming failed after previous success.
+    # Annotations available:
+    #   dns.networking.miloapis.com/event-type: dns.zone.programming_failed
+    #   dns.networking.miloapis.com/domain-name: example.com
+    #   dns.networking.miloapis.com/failure-reason: Provider API error
+    #   dns.networking.miloapis.com/resource-name: my-zone
+    #   dns.networking.miloapis.com/resource-namespace: my-project
+    - name: zone-programming-failed
+      match: "event.reason == 'ZoneProgrammingFailed'"
+      summary: "We hit a snag configuring {{ link(event.metadata.annotations['dns.networking.miloapis.com/domain-name'], event.regarding) }}, but we'll keep retrying automatically — no action needed on your end."

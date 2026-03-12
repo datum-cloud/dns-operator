@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 package controller
 
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -47,6 +51,7 @@ const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 // +kubebuilder:rbac:groups=networking.datumapis.com,resources=domains/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
@@ -64,6 +69,19 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Build a typed clientset from the upstream cluster REST config so we can
+	// create events.k8s.io/v1 Event objects directly. Event emission is
+	// best-effort: if clientset construction fails we log and continue.
+	upstreamClientset, err := kubernetes.NewForConfig(upstreamCl.GetConfig())
+	if err != nil {
+		lg.Error(err, "failed to build upstream clientset; event emission will be skipped")
+		upstreamClientset = nil
+	}
+	var eventClient EventClient
+	if upstreamClientset != nil {
+		eventClient = upstreamClientset.EventsV1().Events(req.Namespace)
+	}
+
 	// --- Ensure finalizer on creation/update (non-deletion path) ---
 	if upstream.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
@@ -77,6 +95,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			// Re-run with updated object
 			return ctrl.Result{}, nil
 		}
+
 	} else {
 		// Deletion guard: ensure downstream is gone before removing finalizer
 		if controllerutil.ContainsFinalizer(&upstream, dnsZoneFinalizer) {
@@ -93,7 +112,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			md, mdErr := strategy.ObjectMetaFromUpstreamObject(ctx, &upstream)
 			if mdErr != nil {
 				lg.Error(mdErr, "failed to compute downstream metadata; will retry")
-				return ctrl.Result{}, err
+				return ctrl.Result{}, mdErr
 			}
 			var shadow dnsv1alpha1.DNSZone
 			shadow.SetNamespace(md.Namespace)
@@ -106,7 +125,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			if !apierrors.IsNotFound(getErr) {
 				// Transient error; retry
 				lg.Error(getErr, "failed to check downstream deletion; will retry")
-				return ctrl.Result{}, err
+				return ctrl.Result{}, getErr
 			}
 
 			// Cleanup zone accounting configmap once downstream is confirmed gone
@@ -114,7 +133,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			owner := fmt.Sprintf("%s/%s/%s", req.ClusterName, upstream.Namespace, upstream.Name)
 			if cerr := r.cleanupZoneAccounting(ctx, &upstream, owner); cerr != nil && !apierrors.IsNotFound(cerr) {
 				lg.Error(cerr, "failed to cleanup accounting configmap; will retry")
-				return ctrl.Result{}, err
+				return ctrl.Result{}, cerr
 			}
 			lg.Info("cleaned up accounting configmap for DNSZone", "domain", upstream.Spec.DomainName)
 
@@ -204,6 +223,18 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
 				return ctrl.Result{}, perr
 			}
+			// Emit activity event so users get real-time feedback about the conflict.
+			emitZoneEvent(ctx, eventClient,
+				ZoneEventData{
+					Zone:       &upstream,
+					FailReason: "DNSZone claimed by another resource",
+				},
+				corev1.EventTypeWarning,
+				EventReasonZoneProgrammingFailed,
+				ActivityTypeZoneProgrammingFailed,
+				"DNSZone %q programming failed: domain already claimed by another DNSZone",
+				upstream.Name,
+			)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -237,10 +268,50 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Capture the Programmed condition before the final status update so we can
+	// detect a transition after the update completes.
+	prevProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	var prevProgrammedCopy *metav1.Condition
+	if prevProgrammed != nil {
+		c := *prevProgrammed
+		prevProgrammedCopy = &c
+	}
+
 	// Recompute status to set Programmed based on record presence
 	if err := r.updateStatus(ctx, upstreamCl.GetClient(), strategy, &upstream); err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
+		}
+	}
+
+	// Emit Programmed/ProgrammingFailed events on condition transitions.
+	currProgrammed := apimeta.FindStatusCondition(upstream.Status.Conditions, CondProgrammed)
+	if programmedConditionTransitioned(prevProgrammedCopy, currProgrammed) {
+		if currProgrammed.Status == metav1.ConditionTrue {
+			emitZoneEvent(ctx, eventClient,
+				ZoneEventData{
+					Zone:        &upstream,
+					Nameservers: upstream.Status.Nameservers,
+				},
+				corev1.EventTypeNormal,
+				EventReasonZoneProgrammed,
+				ActivityTypeZoneProgrammed,
+				"DNSZone %q successfully programmed with nameservers: %s",
+				upstream.Name, strings.Join(upstream.Status.Nameservers, ", "),
+			)
+		} else if currProgrammed.Status == metav1.ConditionFalse &&
+			prevProgrammedCopy != nil && prevProgrammedCopy.Status == metav1.ConditionTrue {
+			emitZoneEvent(ctx, eventClient,
+				ZoneEventData{
+					Zone:       &upstream,
+					FailReason: currProgrammed.Message,
+				},
+				corev1.EventTypeWarning,
+				EventReasonZoneProgrammingFailed,
+				ActivityTypeZoneProgrammingFailed,
+				"DNSZone %q programming failed: %s",
+				upstream.Name, currProgrammed.Message,
+			)
 		}
 	}
 

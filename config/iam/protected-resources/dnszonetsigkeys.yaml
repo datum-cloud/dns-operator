@@ -1,0 +1,23 @@
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnszonetsigkey
+spec:
+  serviceRef:
+    name: "dns.networking.miloapis.com"
+  kind: DNSZoneTSIGKey
+  plural: dnszonetsigkeys
+  singular: dnszonetsigkey
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+

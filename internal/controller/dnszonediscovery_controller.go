@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -84,7 +85,9 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 			return ctrl.Result{}, err
 		}
 		logger.Info("set controller OwnerReference to DNSZone", "dnsZone", zone.Name)
-		return ctrl.Result{}, nil
+		// Requeue explicitly; GenerationChangedPredicate filters metadata-only
+		// updates so the watch will not re-enqueue for us.
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	// Mark Accepted true if not already
@@ -134,7 +137,7 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 func (r *DNSZoneDiscoveryReplicator) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&dnsv1alpha1.DNSZoneDiscovery{}).
-		Named("dnszonediscovery-replicator").
+		For(&dnsv1alpha1.DNSZoneDiscovery{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Named("dnszonediscovery").
 		Complete(r)
 }

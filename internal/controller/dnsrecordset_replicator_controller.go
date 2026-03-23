@@ -17,7 +17,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -80,9 +79,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			return ctrl.Result{}, err
 		}
 		lg.Info("added upstream finalizer", "finalizer", rsFinalizer)
-		// Requeue explicitly; GenerationChangedPredicate filters metadata-only
-		// updates so the watch will not re-enqueue for us.
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 
 	// Deletion path: downstream-first via finalizer
@@ -144,9 +141,8 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
-		// Requeue explicitly; GenerationChangedPredicate filters metadata-only
-		// updates so the watch will not re-enqueue for us.
-		return ctrl.Result{Requeue: true}, nil
+		// Return to reconcile with updated owner metadata
+		return ctrl.Result{}, nil
 	}
 
 	// Ensure display annotations are set for ActivityPolicy templates.
@@ -366,10 +362,8 @@ func (r *DNSRecordSetReplicator) SetupWithManager(mgr mcmanager.Manager, downstr
 
 	b := mcbuilder.ControllerManagedBy(mgr)
 
-	// Upstream watch: GenerationChangedPredicate prevents our own status
-	// patches from re-enqueuing the reconciler (status updates don't bump
-	// generation). Downstream watches still fire on status changes.
-	b = b.For(&dnsv1alpha1.DNSRecordSet{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	// Upstream watch (desired spec)
+	b = b.For(&dnsv1alpha1.DNSRecordSet{})
 
 	// Downstream watch (realized status → wake upstream owner)
 	src := mcsource.TypedKind(

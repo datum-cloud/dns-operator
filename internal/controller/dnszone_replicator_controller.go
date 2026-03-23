@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -93,9 +92,8 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 				return ctrl.Result{}, err
 			}
 			lg.Info("added upstream finalizer", "finalizer", dnsZoneFinalizer)
-			// Requeue explicitly; GenerationChangedPredicate filters metadata-only
-			// updates so the watch will not re-enqueue for us.
-			return ctrl.Result{Requeue: true}, nil
+			// Re-run with updated object
+			return ctrl.Result{}, nil
 		}
 
 	} else {
@@ -775,13 +773,8 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 
 	b := mcbuilder.ControllerManagedBy(mgr)
 
-	// Upstream watches: GenerationChangedPredicate prevents our own status
-	// patches from re-enqueuing the reconciler (status updates don't bump
-	// generation). On Owns, it also prevents owned recordset status mirrors
-	// from triggering zone reconciliation — the zone only needs to react to
-	// recordset creates, deletes, and spec changes.
-	genPred := mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})
-	b = b.For(&dnsv1alpha1.DNSZone{}, genPred).Owns(&dnsv1alpha1.DNSRecordSet{}, genPred)
+	// Upstream watch
+	b = b.For(&dnsv1alpha1.DNSZone{}).Owns(&dnsv1alpha1.DNSRecordSet{})
 
 	// Watch upstream Domain objects and enqueue only if a matching DNSZone exists.
 	b = b.Watches(&networkingv1alpha.Domain{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {

@@ -36,9 +36,19 @@ func TestFriendlyMessage(t *testing.T) {
 			want: "A conflicting record already exists for this name. Remove the existing record and try again.",
 		},
 		{
+			name: "422 invalid character in TXT record content",
+			err:  &pdnsAPIError{Status: 422, Body: `{"error": "Invalid character ';' in record content '\"=DMARC1; p=none; rua=mailto:admin@example.com\"'"}`},
+			want: "The record content contains an invalid character. TXT records containing semicolons or special characters must be properly quoted.",
+		},
+		{
 			name: "422 not in zone",
 			err:  &pdnsAPIError{Status: 422, Body: `{"error": "Not in zone"}`},
 			want: "The record name is outside the zone. Check that the name belongs to this DNS zone.",
+		},
+		{
+			name: "422 empty body falls back to generic 422 message",
+			err:  &pdnsAPIError{Status: 422, Body: ""},
+			want: "The DNS record was rejected as invalid. Check the record type and value.",
 		},
 		{
 			name: "422 unknown body falls back to generic 422 message",

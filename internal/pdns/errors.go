@@ -39,6 +39,8 @@ func FriendlyMessage(err error) string {
 	switch {
 	case strings.Contains(detail, "Conflicts with pre-existing RRset"):
 		return "A conflicting record already exists for this name. Remove the existing record and try again."
+	case strings.Contains(detail, "Invalid character"):
+		return "The record content contains an invalid character. TXT records containing semicolons or special characters must be properly quoted."
 	case strings.Contains(detail, "Not in zone"):
 		return "The record name is outside the zone. Check that the name belongs to this DNS zone."
 	case strings.Contains(detail, "RRset") && strings.Contains(detail, "IN CNAME"):

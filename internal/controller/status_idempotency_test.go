@@ -55,7 +55,7 @@ func (s annotatingZoneStrategy) SetControllerReference(_ context.Context, owner,
 	}
 	annotations["meta.datumapis.com/upstream-cluster-name"] = "cluster-test"
 	annotations["meta.datumapis.com/upstream-group"] = "dns.networking.miloapis.com"
-	annotations["meta.datumapis.com/upstream-kind"] = "DNSZone"
+	annotations["meta.datumapis.com/upstream-kind"] = kindDNSZone
 	annotations["meta.datumapis.com/upstream-name"] = owner.GetName()
 	annotations["meta.datumapis.com/upstream-namespace"] = owner.GetNamespace()
 	controlled.SetAnnotations(annotations)
@@ -938,7 +938,7 @@ func TestZoneReplicator_SteadyState_NoWrites(t *testing.T) {
 				"meta.datumapis.com/upstream-namespace":    "default",
 				"meta.datumapis.com/upstream-cluster-name": "cluster-test",
 				"meta.datumapis.com/upstream-group":        "dns.networking.miloapis.com",
-				"meta.datumapis.com/upstream-kind":         "DNSZone",
+				"meta.datumapis.com/upstream-kind":         kindDNSZone,
 				"meta.datumapis.com/upstream-name":         "zone-a",
 			},
 		},

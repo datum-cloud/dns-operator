@@ -757,13 +757,20 @@ func quoteIfNeeded(s string) string {
 	return fmt.Sprintf("\"%s\"", escapeTXTContent(s))
 }
 
-// escapeTXTContent escapes characters that are special in PowerDNS zone-file
-// presentation format. Inside a quoted TXT string, backslashes must be doubled
-// and semicolons escaped so PowerDNS doesn't treat them as comment delimiters.
+// escapeTXTContent escapes semicolons that are special in PowerDNS zone-file
+// presentation format. If the user already escaped a semicolon as \; we leave
+// it alone to be idempotent.
 func escapeTXTContent(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `;`, `\;`)
-	return s
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == ';' && (i == 0 || s[i-1] != '\\') {
+			b.WriteString(`\;`)
+		} else {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func stripTrailingDot(s string) string {

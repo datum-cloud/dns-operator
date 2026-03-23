@@ -238,23 +238,23 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		t.Fatalf("TXT semicolon escaping unexpected: %q", got)
 	}
 
-	// TXT: backslashes are escaped before semicolons
-	rsTXTBackslash := dnsv1alpha1.DNSRecordSet{
+	// TXT: user already escaped semicolons — don't double-escape
+	rsTXTPreEscaped := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeTXT,
 			Records: []dnsv1alpha1.RecordEntry{
 				{
 					Name: "test",
 					TTL:  &ttl,
-					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: `path\to\file; done`},
+					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: `v=DKIM1\; k=rsa\; p=abc`},
 				},
 			},
 		},
 	}
-	rr = buildRRSets("example.com", rsTXTBackslash)
+	rr = buildRRSets("example.com", rsTXTPreEscaped)
 	got = rr[0].Records[0].Content
-	if got != `"path\\to\\file\; done"` {
-		t.Fatalf("TXT backslash+semicolon escaping unexpected: %q", got)
+	if got != `"v=DKIM1\; k=rsa\; p=abc"` {
+		t.Fatalf("TXT pre-escaped semicolons should not be double-escaped: %q", got)
 	}
 
 	// TXT: pre-quoted content is left as-is (user handles escaping)

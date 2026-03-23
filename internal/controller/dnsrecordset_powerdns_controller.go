@@ -200,7 +200,7 @@ func (r *DNSRecordSetPowerDNSReconciler) setRecordProgrammedCondition(
 	case pdnsErr != nil:
 		newCond.Status = metav1.ConditionFalse
 		newCond.Reason = ReasonPDNSError
-		newCond.Message = pdnsErr.Error()
+		newCond.Message = pdnsclient.FriendlyMessage(pdnsErr)
 	default:
 		newCond.Status = metav1.ConditionTrue
 		newCond.Reason = ReasonProgrammed

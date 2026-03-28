@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: grafana-dashboard-providers
+    files:
+      - dashboards/dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - dashboards/dns_workbench.json
+  - name: grafana-datasources
+    files:
+      - datasources/datasources.yaml
+
+secretGenerator:
+  - name: grafana-admin
+    literals:
+      - admin-user=admin
+      - admin-password=admin

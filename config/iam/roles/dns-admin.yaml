@@ -22,5 +22,9 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.update
     - dns.networking.miloapis.com/dnszonediscoveries.patch
     - dns.networking.miloapis.com/dnszonediscoveries.delete
+    - dns.networking.miloapis.com/dnszonetsigkeys.create
+    - dns.networking.miloapis.com/dnszonetsigkeys.update
+    - dns.networking.miloapis.com/dnszonetsigkeys.patch
+    - dns.networking.miloapis.com/dnszonetsigkeys.delete
 
 

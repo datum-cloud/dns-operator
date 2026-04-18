@@ -61,6 +61,7 @@ type DNSZoneStatus struct {
 // +kubebuilder:printcolumn:name="Records",type=integer,JSONPath=.status.recordCount
 // +kubebuilder:selectablefield:JSONPath=".spec.domainName"
 // +kubebuilder:selectablefield:JSONPath=".status.domainRef.name"
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // DNSZone is the Schema for the dnszones API
 type DNSZone struct {

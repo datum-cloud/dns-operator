@@ -1,0 +1,379 @@
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: dns-metrics
+spec:
+  generators:
+    # DNSZone generators
+    - name: dns-zone-owner
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].kind : ''
+                - name: owner_name
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].name : ''
+                - name: owner_uid
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].uid : ''
+                - name: controller
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
+                      string(object.metadata.ownerReferences[0].controller) : ''
+
+    - name: dns-zone-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_info
+          help: "DNSZone information"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: domain_name
+                  value: "object.spec.domainName"
+
+    - name: dns-zone-created
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_created
+          help: "created timestamp"
+          type: gauge
+          metrics:
+            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: dns-zone-deleted
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_deleted
+          help: "deletion timestamp"
+          type: gauge
+          metrics:
+            - value: |
+                has(object.metadata.deletionTimestamp) ? double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: dns-zone-status-condition
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_status_condition
+          help: "The current status conditions of the Domains"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Accepted') ?
+                  (object.status.conditions.filter(c, c.type == 'Accepted')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Accepted'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Programmed') ?
+                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Programmed'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
+
+    - name: dns-zone-status-condition-last-transition-time
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Accepted') ?
+                  double(timestamp(object.status.conditions.filter(c, c.type == 'Accepted')[0].lastTransitionTime).getSeconds()) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: type
+                  value: "'Accepted'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Programmed') ?
+                  double(timestamp(object.status.conditions.filter(c, c.type == 'Programmed')[0].lastTransitionTime).getSeconds()) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: type
+                  value: "'Programmed'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
+
+    # DNSRecordSet generators
+    - name: dns-record-set-owner
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_owner
+          help: "Owner information"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: owner_kind
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].kind : ''
+                - name: owner_name
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].name : ''
+                - name: owner_uid
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 ?
+                      object.metadata.ownerReferences[0].uid : ''
+                - name: controller
+                  value: |
+                    has(object.metadata.ownerReferences) && object.metadata.ownerReferences.size() > 0 && has(object.metadata.ownerReferences[0].controller) ?
+                      string(object.metadata.ownerReferences[0].controller) : ''
+
+    - name: dns-record-set-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_info
+          help: "DNSRecordSet information"
+          type: gauge
+          metrics:
+            - labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: uid
+                  value: "object.metadata.uid"
+                - name: dns_zone_name
+                  value: "object.spec.dnsZoneRef.name"
+                - name: record_type
+                  value: "object.spec.recordType"
+
+    - name: dns-record-set-created
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_created
+          help: "created timestamp"
+          type: gauge
+          metrics:
+            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: dns-record-set-deleted
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_deleted
+          help: "deletion timestamp"
+          type: gauge
+          metrics:
+            - value: |
+                has(object.metadata.deletionTimestamp) ? double(timestamp(object.metadata.deletionTimestamp).getSeconds()) : 0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+
+    - name: dns-record-set-status-condition
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_status_condition
+          help: "The current status conditions of the Domains"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Accepted') ?
+                  (object.status.conditions.filter(c, c.type == 'Accepted')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Accepted'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Programmed') ?
+                  (object.status.conditions.filter(c, c.type == 'Programmed')[0].status == 'True' ? 1.0 : 0.0) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: condition
+                  value: "'Programmed'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''
+
+    - name: dns-record-set-status-condition-last-transition-time
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_status_condition_last_transition_time
+          help: "last transition time for status conditions"
+          type: gauge
+          metrics:
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Accepted') ?
+                  double(timestamp(object.status.conditions.filter(c, c.type == 'Accepted')[0].lastTransitionTime).getSeconds()) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: type
+                  value: "'Accepted'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Accepted') ?
+                      object.status.conditions.filter(c, c.type == 'Accepted')[0].status : ''
+            - value: |
+                object.status.conditions.exists(c, c.type == 'Programmed') ?
+                  double(timestamp(object.status.conditions.filter(c, c.type == 'Programmed')[0].lastTransitionTime).getSeconds()) :
+                  0.0
+              labels:
+                - name: name
+                  value: "object.metadata.name"
+                - name: namespace
+                  value: "object.metadata.namespace"
+                - name: type
+                  value: "'Programmed'"
+                - name: reason
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].reason : ''
+                - name: status
+                  value: |
+                    object.status.conditions.exists(c, c.type == 'Programmed') ?
+                      object.status.conditions.filter(c, c.type == 'Programmed')[0].status : ''

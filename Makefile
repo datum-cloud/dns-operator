@@ -188,8 +188,12 @@ NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
 NSO_NAMESPACE ?= network-services-operator-system
 NSO_DEPLOY ?= false
 
-# Host to rewrite kubeconfig servers for in-cluster access (Docker Desktop/macOS default)
-KIND_KUBECONFIG_HOST ?= host.docker.internal
+# Host to rewrite kubeconfig servers for in-cluster access.
+# Defaults to the Docker network IP of the Kind control-plane container so the
+# kubeconfig is reachable from within other Kind pods (e.g. on GitHub Actions
+# Linux runners where host.docker.internal does not resolve). Override by
+# setting KIND_KUBECONFIG_HOST explicitly, e.g. for Docker Desktop on macOS.
+KIND_KUBECONFIG_HOST ?= $(shell docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(CLUSTER)-control-plane 2>/dev/null | head -1)
 
 .PHONY: kind-create
 kind-create: ## Create a kind cluster with name CLUSTER

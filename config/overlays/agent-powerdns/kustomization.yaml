@@ -10,6 +10,9 @@ resources:
   - minio-pvc.yaml
   - minio-credentials.yaml
 
+components:
+  - ../../agent/components/namespace
+
 # Patch the replica count to 2
 patches:
   - target:

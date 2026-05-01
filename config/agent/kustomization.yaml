@@ -3,7 +3,6 @@ namespace: dns-agent-system
 resources:
 - ../crd
 - ../rbac
-- namespace.yaml
 - manager.yaml
 - pdns-service.yaml
 - pdns-headless-service.yaml

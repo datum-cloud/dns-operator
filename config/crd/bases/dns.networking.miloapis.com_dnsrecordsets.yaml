@@ -4,6 +4,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
+    discovery.miloapis.com/parent-contexts: Project
   name: dnsrecordsets.dns.networking.miloapis.com
 spec:
   group: dns.networking.miloapis.com

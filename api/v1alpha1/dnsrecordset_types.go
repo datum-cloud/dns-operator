@@ -228,6 +228,7 @@ type RecordSetStatus struct {
 // +kubebuilder:printcolumn:name="Programmed",type=string,JSONPath=.status.conditions[?(@.type=="Programmed")].status
 // +kubebuilder:selectablefield:JSONPath=".spec.dnsZoneRef.name"
 // +kubebuilder:selectablefield:JSONPath=".spec.recordType"
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // DNSRecordSet is the Schema for the dnsrecordsets API
 type DNSRecordSet struct {

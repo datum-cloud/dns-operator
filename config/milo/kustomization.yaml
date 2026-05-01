@@ -10,3 +10,4 @@ kind: Component
 
 resources:
   - activity/
+  - resource-metrics/

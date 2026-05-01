@@ -19,6 +19,7 @@ jobs:
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
     with:
       image-name: dns-operator
+      platforms: linux/amd64,linux/arm64
     secrets: inherit
 
   publish-kustomize-bundles:

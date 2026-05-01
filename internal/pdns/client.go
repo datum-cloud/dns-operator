@@ -754,7 +754,23 @@ func quoteIfNeeded(s string) string {
 	if len(s) >= 2 && (s[0] == '"' && s[len(s)-1] == '"') {
 		return s
 	}
-	return fmt.Sprintf("\"%s\"", s)
+	return fmt.Sprintf("\"%s\"", escapeTXTContent(s))
+}
+
+// escapeTXTContent escapes semicolons that are special in PowerDNS zone-file
+// presentation format. If the user already escaped a semicolon as \; we leave
+// it alone to be idempotent.
+func escapeTXTContent(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == ';' && (i == 0 || s[i-1] != '\\') {
+			b.WriteString(`\;`)
+		} else {
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 func stripTrailingDot(s string) string {

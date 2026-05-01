@@ -27,7 +27,7 @@ patches:
   - path: patch-namespace.yaml
     target:
       kind: ClusterRoleBinding
-      name: metrics-auth-rolebinding
+      name: dns-operator-metrics-auth-rolebinding
   - path: patch-namespace.yaml
     target:
       kind: RoleBinding

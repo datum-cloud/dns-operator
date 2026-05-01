@@ -219,6 +219,63 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		t.Fatalf("TXT quoting unexpected: %q", got)
 	}
 
+	// TXT: semicolons are escaped for PowerDNS zone-file format
+	rsTXTSemicolon := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeTXT,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "_dmarc",
+					TTL:  &ttl,
+					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: "v=DMARC1; p=none; rua=mailto:user@example.com"},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsTXTSemicolon)
+	got = rr[0].Records[0].Content
+	if got != `"v=DMARC1\; p=none\; rua=mailto:user@example.com"` {
+		t.Fatalf("TXT semicolon escaping unexpected: %q", got)
+	}
+
+	// TXT: user already escaped semicolons — don't double-escape
+	rsTXTPreEscaped := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeTXT,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "test",
+					TTL:  &ttl,
+					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: `v=DKIM1\; k=rsa\; p=abc`},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsTXTPreEscaped)
+	got = rr[0].Records[0].Content
+	if got != `"v=DKIM1\; k=rsa\; p=abc"` {
+		t.Fatalf("TXT pre-escaped semicolons should not be double-escaped: %q", got)
+	}
+
+	// TXT: pre-quoted content is left as-is (user handles escaping)
+	rsTXTPreQuoted := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeTXT,
+			Records: []dnsv1alpha1.RecordEntry{
+				{
+					Name: "pre",
+					TTL:  &ttl,
+					TXT:  &dnsv1alpha1.TXTRecordSpec{Content: `"already quoted; content"`},
+				},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsTXTPreQuoted)
+	got = rr[0].Records[0].Content
+	if got != `"already quoted; content"` {
+		t.Fatalf("TXT pre-quoted should be left as-is: %q", got)
+	}
+
 	// MX: PDNS payload uses absolute exchange (trailing dot)
 	rsMX := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{

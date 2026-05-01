@@ -48,6 +48,7 @@ type DNSZoneDiscoveryStatus struct {
 // +kubebuilder:printcolumn:name="Discovered",type=string,JSONPath=.status.conditions[?(@.type=="Discovered")].status
 // +kubebuilder:selectablefield:JSONPath=".spec.dnsZoneRef.name"
 // +kubebuilder:resource:path=dnszonediscoveries,shortName=dnszd
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 
 // DNSZoneDiscovery is the Schema for the DNSZone discovery API.
 type DNSZoneDiscovery struct {

@@ -312,7 +312,7 @@ func main() {
 			os.Exit(1)
 		}
 		if err := (&controller.DNSZoneDiscoveryReplicator{}).SetupWithManager(mcmgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscoveryReplicator")
+			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscovery")
 			os.Exit(1)
 		}
 

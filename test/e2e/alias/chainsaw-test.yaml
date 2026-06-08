@@ -120,11 +120,10 @@ spec:
           metadata:
             name: example-test
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
-            - type: Programmed
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
 
   - name: Create ALIAS DNSRecordSet upstream (apex -> example.com)
     try:

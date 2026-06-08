@@ -140,11 +140,10 @@ spec:
           # conditions and (in the next step) the DNSZoneClass-derived
           # nameservers.
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
-            - type: Programmed
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
 
   - name: Assert upstream DNSZone nameservers
     try:
@@ -220,11 +219,10 @@ spec:
           metadata:
             name: www-example-com
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
-            - type: Programmed
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
 
   - name: DNS queries from downstream to PDNS (SOA/NS/A)
     try:

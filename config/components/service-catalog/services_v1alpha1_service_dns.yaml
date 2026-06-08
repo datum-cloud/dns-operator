@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: dns-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dns-networking-miloapis-com
+spec:
+  serviceName: dns.networking.miloapis.com
+  phase: Published
+  displayName: DNS
+  description: |
+    Managed authoritative DNS for Datum Cloud. Model zones, record sets,
+    and zone classes as Kubernetes resources and have them programmed
+    into a DNS backend (PowerDNS). Billed via the
+    dns.networking.miloapis.com meter family declared by this service's
+    ServiceConfiguration.
+  owner:
+    producerProjectRef:
+      name: datum-cloud

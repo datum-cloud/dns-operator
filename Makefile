@@ -188,12 +188,19 @@ NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
 NSO_NAMESPACE ?= network-services-operator-system
 NSO_DEPLOY ?= false
 
-# Host to rewrite kubeconfig servers for in-cluster access.
+# Host/port to rewrite kubeconfig servers for in-cluster access.
 # Defaults to the Docker network IP of the Kind control-plane container so the
 # kubeconfig is reachable from within other Kind pods (e.g. on GitHub Actions
 # Linux runners where host.docker.internal does not resolve). Override by
 # setting KIND_KUBECONFIG_HOST explicitly, e.g. for Docker Desktop on macOS.
 KIND_KUBECONFIG_HOST ?= $(shell docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $(CLUSTER)-control-plane 2>/dev/null | head -1)
+# `kind get kubeconfig` reports the host-published port (a random port mapped
+# to the control-plane container). That port is only valid on the host; from
+# within the Docker network the API server listens on 6443. When we rewrite the
+# server to the container's network IP we must rewrite the port to 6443 too,
+# otherwise other Kind pods get "connection refused". Override alongside
+# KIND_KUBECONFIG_HOST if pointing at a host-published endpoint instead.
+KIND_KUBECONFIG_PORT ?= 6443
 
 .PHONY: kind-create
 kind-create: ## Create a kind cluster with name CLUSTER
@@ -232,8 +239,10 @@ export-kind-kubeconfig: ## Export kind kubeconfig for CLUSTER to OUT and rewrite
 	@test -n "$(OUT)" || { echo "OUT is required"; exit 1; }
 	@mkdir -p $(dir $(OUT))
 	$(KIND) get kubeconfig --name $(CLUSTER) > $(OUT).raw
-	# Replace server host with $(KIND_KUBECONFIG_HOST) to be reachable from other Docker containers
-	sed -E "s#(server:[[:space:]]*https://)[^:]+(:[0-9]+)#\1$(KIND_KUBECONFIG_HOST)\2#g" $(OUT).raw > $(OUT)
+	# Replace server host:port with $(KIND_KUBECONFIG_HOST):$(KIND_KUBECONFIG_PORT)
+	# so it is reachable from other Docker containers on the Kind network. The
+	# port must be the in-container API port (6443), not the host-published port.
+	sed -E "s#(server:[[:space:]]*https://)[^:]+:[0-9]+#\1$(KIND_KUBECONFIG_HOST):$(KIND_KUBECONFIG_PORT)#g" $(OUT).raw > $(OUT)
 	@if [ "$(KIND_KUBECONFIG_INSECURE)" = "true" ]; then \
 		echo "Rewriting kubeconfig to skip TLS verify (dev only)"; \
 		sed -E "s#^([[:space:]]*)certificate-authority-data:.*#\1insecure-skip-tls-verify: true#" $(OUT) > $(OUT).tmp; \

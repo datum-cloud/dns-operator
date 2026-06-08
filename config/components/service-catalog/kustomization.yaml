@@ -10,10 +10,9 @@ kind: Kustomization
 #
 #   1. The `Service` itself (`dns-networking-miloapis-com`), which carries
 #      identity (`serviceName`), display metadata, and producer owner.
-#      (Phase 1 — service registration.)
 #   2. A single `ServiceConfiguration` (same name, different Kind) that
-#      will declare the DNS MonitoredResourceTypes, metrics, and billing
-#      routing. (Phase 2 — metering; not yet authored.)
+#      declares the DNS MonitoredResourceTypes, metrics, and billing
+#      routing.
 #
 # Per billing's `emitting-usage.md`, the `ServiceConfiguration` is the
 # *only* document a producer authors for billing: the services-operator
@@ -27,4 +26,4 @@ kind: Kustomization
 # repo, the same way other services publish their catalog entries.
 resources:
   - services_v1alpha1_service_dns.yaml
-  # - services_v1alpha1_serviceconfiguration_dns.yaml  # added in Phase 2
+  - services_v1alpha1_serviceconfiguration_dns.yaml

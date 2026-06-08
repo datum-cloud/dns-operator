@@ -68,6 +68,13 @@ spec:
         image: ghcr.io/datum-cloud/dns-operator:latest
         imagePullPolicy: IfNotPresent
         name: manager
+        # POD_NAME is used as the reportingInstance on emitted events.k8s.io/v1
+        # Events, which the API server requires to be non-empty.
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         ports: []
         securityContext:
           readOnlyRootFilesystem: true

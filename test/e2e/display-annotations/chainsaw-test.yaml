@@ -100,10 +100,12 @@ spec:
           kind: DNSZone
           metadata:
             name: annotations-test-zone
+          # The DNSZone carries both Accepted and Programmed conditions; assert
+          # only that the Accepted condition is True without requiring the slice
+          # to match exactly (a bare list would force a length match).
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
 
   - name: Create DNSRecordSet upstream (A record)
     try:

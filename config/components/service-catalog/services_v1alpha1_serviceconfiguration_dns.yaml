@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# DNS metering. The services-operator fans this out into billing
+# MeterDefinition/MonitoredResourceType objects; don't author those directly.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  labels:
+    app.kubernetes.io/name: dns-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dns-networking-miloapis-com
+spec:
+  serviceRef:
+    name: dns-networking-miloapis-com
+  phase: Published
+  version: v1
+  monitoredResourceTypes:
+    - type: dns.networking.miloapis.com/DNSZone
+      displayName: DNS Zone
+      description: |
+        An authoritative DNS zone, billed on per-zone footprint (zone/hosted)
+        and authoritative query volume (zone/queries).
+      gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSZone
+      labels:
+        - name: location
+          description: Datum point-of-presence / region serving the zone or query.
+        - name: rcode
+          description: DNS response code for answered queries (NOERROR, NXDOMAIN, SERVFAIL).
+        - name: record_type
+          description: Queried record type (A, AAAA, CNAME, TXT, MX, ...).
+    - type: dns.networking.miloapis.com/DNSRecordSet
+      displayName: DNS Record Set
+      description: A set of records of one type under a zone, billed as managed inventory.
+      gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSRecordSet
+      labels:
+        - name: location
+          description: Datum point-of-presence / region hosting the record set.
+        - name: record_type
+          description: Record type of the set (A, AAAA, CNAME, TXT, MX, ...).
+  metrics:
+    - name: dns.networking.miloapis.com/zone/queries
+      displayName: DNS Queries
+      description: Authoritative queries answered for a zone (primary consumption signal).
+      kind: Delta
+      unit: "{query}"
+      dimensions:
+        - rcode
+        - record_type
+        - location
+    - name: dns.networking.miloapis.com/zone/hosted
+      displayName: Hosted DNS Zones
+      description: Active hosted-zone footprint (gauge, 1 per active DNSZone).
+      kind: Gauge
+      unit: "{zone}"
+      dimensions:
+        - location
+    - name: dns.networking.miloapis.com/recordset/active
+      displayName: Active DNS Record Sets
+      description: Record sets under management (gauge, 1 per active DNSRecordSet).
+      kind: Gauge
+      unit: "{recordset}"
+      dimensions:
+        - record_type
+        - location
+  billing:
+    consumerDestinations:
+      - monitoredResourceType: dns.networking.miloapis.com/DNSZone
+        metrics:
+          - dns.networking.miloapis.com/zone/queries
+          - dns.networking.miloapis.com/zone/hosted
+      - monitoredResourceType: dns.networking.miloapis.com/DNSRecordSet
+        metrics:
+          - dns.networking.miloapis.com/recordset/active

@@ -100,10 +100,12 @@ spec:
           kind: DNSZone
           metadata:
             name: annotations-test-zone
+          # The DNSZone carries both Accepted and Programmed conditions; assert
+          # only that the Accepted condition is True without requiring the slice
+          # to match exactly (a bare list would force a length match).
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
 
   - name: Create DNSRecordSet upstream (A record)
     try:
@@ -176,12 +178,14 @@ spec:
           kind: DNSRecordSet
           metadata:
             name: www-annotations-test
+          # Assert both conditions are True without depending on their order in
+          # the slice (chainsaw matches bare lists positionally; the DNSRecordSet
+          # emits them as [Programmed, Accepted]).
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
-            - type: Programmed
-              status: "True"
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
 
   - name: Teardown - delete resources
     try:

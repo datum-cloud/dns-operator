@@ -247,8 +247,29 @@ func buildEvent(
 		Note:                note,
 		Type:                eventType,
 		ReportingController: "dns.networking.miloapis.com/dns-operator",
-		ReportingInstance:   os.Getenv("POD_NAME"),
+		ReportingInstance:   reportingInstance(),
 	}
+}
+
+// reportingInstance returns a non-empty identifier for the reporting pod.
+// events.k8s.io/v1 requires reportingInstance to be set (1-128 chars), so we
+// fall back through POD_NAME -> hostname -> a constant when the downward-API
+// env var is unset (e.g. in tests or misconfigured deployments). The result is
+// truncated to the 128-character API limit.
+func reportingInstance() string {
+	name := os.Getenv("POD_NAME")
+	if name == "" {
+		if h, err := os.Hostname(); err == nil {
+			name = h
+		}
+	}
+	if name == "" {
+		name = "dns-operator"
+	}
+	if len(name) > 128 {
+		name = name[:128]
+	}
+	return name
 }
 
 // recordSetObjectRef builds a corev1.ObjectReference for a DNSRecordSet using

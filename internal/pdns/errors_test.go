@@ -51,9 +51,9 @@ func TestFriendlyMessage(t *testing.T) {
 			want: "The DNS record was rejected as invalid. Check the record type and value.",
 		},
 		{
-			name: "422 unknown body falls back to generic 422 message",
+			name: "422 unknown body surfaces the specific pdns detail",
 			err:  &pdnsAPIError{Status: 422, Body: `{"error": "Some other validation error"}`},
-			want: "The DNS record was rejected as invalid. Check the record type and value.",
+			want: "The DNS record was rejected as invalid: Some other validation error",
 		},
 		{
 			name: "404",

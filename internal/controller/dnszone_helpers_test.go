@@ -28,6 +28,14 @@ func TestNormalizeStringSlice(t *testing.T) {
 	if reflect.DeepEqual(in, want) {
 		t.Fatalf("expected input slice to remain unsorted")
 	}
+
+	// Duplicates are removed: a class listing each nameserver twice must not
+	// produce a doubled NS RRset (PowerDNS rejects duplicate records, 422).
+	dupIn := []string{"ns2", "ns1", "ns2", "ns1", "ns1"}
+	dupWant := []string{"ns1", "ns2"}
+	if dupGot := normalizeStringSlice(dupIn); !reflect.DeepEqual(dupGot, dupWant) {
+		t.Fatalf("expected dedup: got=%v want=%v", dupGot, dupWant)
+	}
 }
 
 func TestNormalizeDomainNameservers(t *testing.T) {

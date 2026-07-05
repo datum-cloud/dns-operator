@@ -677,6 +677,35 @@ func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 	}
 }
 
+// Duplicate NS content (including trailing-dot variants) must collapse to a
+// single record; PowerDNS rejects an RRset with duplicate records (422).
+func TestBuildRRSets_NSDedup(t *testing.T) {
+	t.Parallel()
+	rs := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeNS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net."}},
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net"}}, // trailing-dot variant
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net."}}, // exact dup
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns2.example.net."}},
+			},
+		},
+	}
+	rr := buildRRSets("example.com", rs)
+	if len(rr) != 1 {
+		t.Fatalf("expected 1 rrset, got %#v", rr)
+	}
+	got := []string{}
+	for _, rec := range rr[0].Records {
+		got = append(got, rec.Content)
+	}
+	want := []string{"ns1.example.net.", "ns2.example.net."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("NS dedup: got %#v want %#v", got, want)
+	}
+}
+
 // sanity: makeSimpleRRSet keeps values verbatim (used after we normalize)
 func TestMakeSimpleRRSet(t *testing.T) {
 	t.Parallel()

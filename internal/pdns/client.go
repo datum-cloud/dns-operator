@@ -80,6 +80,7 @@ type createZoneRequest struct {
 func (c *Client) CreateZone(ctx context.Context, zone string, nameservers []string) error {
 	// PDNS expects absolute nameserver hostnames (trailing dot)
 	nsAbs := make([]string, 0, len(nameservers))
+	seen := make(map[string]struct{}, len(nameservers))
 	for _, ns := range nameservers {
 		if ns == "" {
 			continue
@@ -87,6 +88,10 @@ func (c *Client) CreateZone(ctx context.Context, zone string, nameservers []stri
 		if ns[len(ns)-1] != '.' {
 			ns += "."
 		}
+		if _, ok := seen[ns]; ok {
+			continue
+		}
+		seen[ns] = struct{}{}
 		nsAbs = append(nsAbs, ns)
 	}
 	payload := createZoneRequest{
@@ -516,10 +521,15 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			v := strings.TrimSpace(rec.NS.Content)
 			if v != "" {
-				r.Records = append(r.Records, rrsetRecord{
-					Content:  qualifyIfNeeded(v),
-					Disabled: false,
-				})
+				// Dedupe by qualified content: PowerDNS rejects an RRset with
+				// duplicate records (422), and duplicates reach here when the
+				// nameserver source lists an NS twice, including trailing-dot
+				// variants (ns1.example.net vs ns1.example.net.) that collapse
+				// to identical content only after qualifyIfNeeded.
+				content := qualifyIfNeeded(v)
+				if !recordContentExists(r.Records, content) {
+					r.Records = append(r.Records, rrsetRecord{Content: content, Disabled: false})
+				}
 			}
 
 		case dnsv1alpha1.RRTypeSOA:
@@ -728,6 +738,15 @@ func makeSimpleRRSet(name, typ string, ttl int, values []string) rrset {
 		ChangeType: "REPLACE",
 		Records:    recs,
 	}
+}
+
+func recordContentExists(recs []rrsetRecord, content string) bool {
+	for _, r := range recs {
+		if r.Content == content {
+			return true
+		}
+	}
+	return false
 }
 
 func qualifyOwner(owner, zone string) string {

@@ -686,7 +686,7 @@ func TestBuildRRSets_NSDedup(t *testing.T) {
 			RecordType: dnsv1alpha1.RRTypeNS,
 			Records: []dnsv1alpha1.RecordEntry{
 				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net."}},
-				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net"}}, // trailing-dot variant
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net"}},  // trailing-dot variant
 				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net."}}, // exact dup
 				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns2.example.net."}},
 			},

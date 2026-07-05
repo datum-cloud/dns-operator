@@ -352,7 +352,7 @@ func (c *Client) ReplaceRRSet(
 		Type:       recordType,
 		TTL:        ttl,
 		ChangeType: "REPLACE",
-		Records:    records,
+		Records:    dedupeRecords(records),
 	}}
 	return c.applyRRSetPatch(ctx, zone, patch)
 }
@@ -619,7 +619,29 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 	}
 	sort.Strings(owners)
 	for _, owner := range owners {
-		out = append(out, *setsByOwner[owner])
+		r := setsByOwner[owner]
+		r.Records = dedupeRecords(r.Records)
+		out = append(out, *r)
+	}
+	return out
+}
+
+// dedupeRecords removes records with duplicate Content within a single RRset,
+// preserving first-seen order. PowerDNS rejects the whole RRset with HTTP 422
+// ("duplicate record with content ...") if the same content appears twice, so
+// the payload must be de-duplicated before it is sent.
+func dedupeRecords(in []rrsetRecord) []rrsetRecord {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := in[:0]
+	for _, rec := range in {
+		if _, ok := seen[rec.Content]; ok {
+			continue
+		}
+		seen[rec.Content] = struct{}{}
+		out = append(out, rec)
 	}
 	return out
 }

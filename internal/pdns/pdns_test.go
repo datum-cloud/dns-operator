@@ -685,3 +685,46 @@ func TestMakeSimpleRRSet(t *testing.T) {
 		t.Fatalf("unexpected rrset: %#v", rr)
 	}
 }
+
+func TestBuildRRSets_DeduplicatesRecords(t *testing.T) {
+	t.Parallel()
+
+	// Duplicate NS content on one owner (regression: PowerDNS 422 "duplicate
+	// record with content ..." rejected the whole RRset, blocking every zone).
+	rsNS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeNS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.datumdns.net"}},
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.datumdns.net"}},
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns2.datumdns.net"}},
+				{Name: "@", NS: &dnsv1alpha1.NSRecordSpec{Content: "ns1.datumdns.net"}},
+			},
+		},
+	}
+	rr := buildRRSets("example.com", rsNS)
+	if len(rr) != 1 {
+		t.Fatalf("expected 1 rrset, got %d: %#v", len(rr), rr)
+	}
+	if got := len(rr[0].Records); got != 2 {
+		t.Fatalf("expected NS records deduped to 2, got %d: %#v", got, rr[0].Records)
+	}
+	if rr[0].Records[0].Content != "ns1.datumdns.net." || rr[0].Records[1].Content != "ns2.datumdns.net." {
+		t.Fatalf("expected first-seen order preserved, got %#v", rr[0].Records)
+	}
+
+	// Duplicate CNAME content collapses to a single record (CNAME is single-valued).
+	rsCNAME := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeCNAME,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsCNAME)
+	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != "target.example.net." {
+		t.Fatalf("expected CNAME deduped to single record, got %#v", rr)
+	}
+}

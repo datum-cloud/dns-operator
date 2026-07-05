@@ -13,7 +13,15 @@ func normalizeStringSlice(in []string) []string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := append([]string(nil), in...)
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
 	sort.Strings(out)
 	return out
 }
@@ -31,16 +39,22 @@ func normalizeDomainNameservers(in []networkingv1alpha.Nameserver) []networkingv
 	if len(in) == 0 {
 		return nil
 	}
-	out := make([]networkingv1alpha.Nameserver, len(in))
+	seen := make(map[string]struct{}, len(in))
+	out := make([]networkingv1alpha.Nameserver, 0, len(in))
 	for i := range in {
-		out[i] = in[i]
-		if len(out[i].IPs) > 0 {
-			ips := append([]networkingv1alpha.NameserverIP(nil), out[i].IPs...)
+		if _, ok := seen[in[i].Hostname]; ok {
+			continue
+		}
+		seen[in[i].Hostname] = struct{}{}
+		ns := in[i]
+		if len(ns.IPs) > 0 {
+			ips := append([]networkingv1alpha.NameserverIP(nil), ns.IPs...)
 			sort.Slice(ips, func(a, b int) bool {
 				return ips[a].Address < ips[b].Address
 			})
-			out[i].IPs = ips
+			ns.IPs = ips
 		}
+		out = append(out, ns)
 	}
 	sort.Slice(out, func(a, b int) bool {
 		return out[a].Hostname < out[b].Hostname

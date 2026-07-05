@@ -456,8 +456,10 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			target := strings.TrimSpace(rec.CNAME.Content)
 			target = qualifyIfNeeded(target)
-			if target != "" {
-				// TODO: Technically this is a violation of the RFC, but we'll allow it for now.
+			if target != "" && len(r.Records) == 0 {
+				// CNAME is single-valued (RFC 1034): keep exactly one record.
+				// First non-empty entry wins; extras/duplicates are dropped, as
+				// PowerDNS rejects a multi-valued or duplicate CNAME RRset (422).
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
 			}
 
@@ -604,7 +606,9 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			target := strings.TrimSpace(rec.ALIAS.Content)
 			target = qualifyIfNeeded(target)
-			if target != "" {
+			if target != "" && len(r.Records) == 0 {
+				// ALIAS is single-valued at an owner name: keep one record.
+				// First non-empty entry wins; extras/duplicates are dropped.
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
 			}
 

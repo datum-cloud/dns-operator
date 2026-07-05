@@ -57,3 +57,22 @@ func FriendlyMessage(err error) string {
 		return "Failed to apply DNS record. It will be retried automatically."
 	}
 }
+
+// IsConflict reports whether err is a PowerDNS rejection caused by a record
+// coexistence conflict — a CNAME or ALIAS RRset that cannot share an owner name
+// with a pre-existing RRset. This is distinct from a malformed payload: the
+// record is well-formed but conflicts with existing data at the same name.
+func IsConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *pdnsAPIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 422 {
+		return false
+	}
+	var body pdnsErrorBody
+	if apiErr.Body != "" {
+		_ = json.Unmarshal([]byte(apiErr.Body), &body)
+	}
+	return strings.Contains(body.Error, "Conflicts with pre-existing RRset")
+}

@@ -28,6 +28,13 @@ func TestNormalizeStringSlice(t *testing.T) {
 	if reflect.DeepEqual(in, want) {
 		t.Fatalf("expected input slice to remain unsorted")
 	}
+
+	// Duplicates are collapsed (duplicate nameservers previously produced a
+	// duplicate-record RRset that PowerDNS rejected with HTTP 422).
+	dup := []string{"ns2", "ns1", "ns2", "ns1"}
+	if got := normalizeStringSlice(dup); !reflect.DeepEqual(got, []string{"ns1", "ns2"}) {
+		t.Fatalf("expected duplicates removed, got=%v", got)
+	}
 }
 
 func TestNormalizeDomainNameservers(t *testing.T) {
@@ -69,6 +76,15 @@ func TestNormalizeDomainNameservers(t *testing.T) {
 	// Ensure input not mutated
 	if reflect.DeepEqual(in, want) {
 		t.Fatalf("expected input slice to remain unsorted")
+	}
+
+	// Nameservers with a duplicate hostname collapse to one entry.
+	dup := []networkingv1alpha.Nameserver{
+		{Hostname: "ns1.example.com", IPs: []networkingv1alpha.NameserverIP{{Address: "192.0.2.5"}}},
+		{Hostname: "ns1.example.com", IPs: []networkingv1alpha.NameserverIP{{Address: "192.0.2.5"}}},
+	}
+	if got := normalizeDomainNameservers(dup); len(got) != 1 || got[0].Hostname != "ns1.example.com" {
+		t.Fatalf("expected duplicate hostname collapsed, got=%v", got)
 	}
 }
 

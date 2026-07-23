@@ -39,6 +39,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
+	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -284,10 +285,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Multicluster manager
+		// Multicluster manager (serves mutating webhook for display annotations)
+		webhookServer := webhook.NewServer(webhookServerOptions)
 		mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
+			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
 			LeaderElectionID:       "1813fe7c.datum.cloud",
@@ -313,6 +316,11 @@ func main() {
 		}
 		if err := (&controller.DNSZoneDiscoveryReplicator{}).SetupWithManager(mcmgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZoneDiscoveryReplicator")
+			os.Exit(1)
+		}
+
+		if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr.GetLocalManager()); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "DNSRecordSet")
 			os.Exit(1)
 		}
 

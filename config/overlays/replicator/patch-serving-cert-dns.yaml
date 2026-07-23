@@ -1,0 +1,6 @@
+- op: replace
+  path: /spec/dnsNames/0
+  value: dns-operator-webhook-service.dns-replicator-system.svc
+- op: replace
+  path: /spec/dnsNames/1
+  value: dns-operator-webhook-service.dns-replicator-system.svc.cluster.local

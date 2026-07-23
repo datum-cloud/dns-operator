@@ -1,0 +1,325 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-activity-display
+spec:
+  description: |
+    Verifies create-time display annotations (mutating webhook), customer-style
+    TXT/_dmarc and apex FQDNs, update refresh of display-value, and that
+    annotation handling still allows downstream replication.
+  clusters:
+    upstream:
+      kubeconfig: ../kubeconfig-upstream
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-activity-display
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-activity-display
+
+  - name: Prereq - create DNSZoneClass in downstream
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-activity-display
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-activity-display
+
+  - name: Create DNSZone upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: activity-display-zone
+          spec:
+            domainName: activity-display.example.com
+            dnsZoneClassName: powerdns-activity-display
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: activity-display-zone
+
+  - name: Wait for DNSZone to be ready
+    try:
+    - assert:
+        cluster: upstream
+        timeout: 60s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: activity-display-zone
+          status:
+            # Zone has both Accepted and Programmed; filter so slice length is not compared.
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+
+  - name: Create A record — annotations present immediately (webhook)
+    description: |
+      Mutating webhook must stamp display-name/value at admission so create
+      audits include the FQDN. A short timeout fails if only the reconciler
+      patches annotations later.
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-activity-display
+          spec:
+            dnsZoneRef:
+              name: activity-display-zone
+            recordType: A
+            records:
+            - name: www
+              ttl: 300
+              a:
+                content: 192.0.2.42
+    - assert:
+        cluster: upstream
+        timeout: 5s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-activity-display
+            annotations:
+              dns.networking.miloapis.com/display-name: www.activity-display.example.com
+              dns.networking.miloapis.com/display-value: "192.0.2.42"
+
+  - name: Create TXT _dmarc — customer-facing hostname in display-name
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: dmarc-activity-display
+          spec:
+            dnsZoneRef:
+              name: activity-display-zone
+            recordType: TXT
+            records:
+            - name: _dmarc
+              ttl: 300
+              txt:
+                content: "v=DMARC1; p=none"
+    - assert:
+        cluster: upstream
+        timeout: 5s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: dmarc-activity-display
+            annotations:
+              dns.networking.miloapis.com/display-name: _dmarc.activity-display.example.com
+
+  - name: Create apex A — display-name is zone domain
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: apex-activity-display
+          spec:
+            dnsZoneRef:
+              name: activity-display-zone
+            recordType: A
+            records:
+            - name: "@"
+              ttl: 300
+              a:
+                content: 192.0.2.1
+    - assert:
+        cluster: upstream
+        timeout: 5s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: apex-activity-display
+            annotations:
+              dns.networking.miloapis.com/display-name: activity-display.example.com
+              dns.networking.miloapis.com/display-value: "192.0.2.1"
+
+  - name: Update A record refreshes display-value
+    try:
+    - patch:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-activity-display
+          spec:
+            records:
+            - name: www
+              ttl: 300
+              a:
+                content: 192.0.2.99
+    - assert:
+        cluster: upstream
+        timeout: 5s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-activity-display
+            annotations:
+              dns.networking.miloapis.com/display-name: www.activity-display.example.com
+              dns.networking.miloapis.com/display-value: "192.0.2.99"
+
+  - name: Confirm www record still replicated downstream
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        timeout: 30s
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: www-activity-display
+            namespace: ($downstreamNamespaceName)
+
+  - name: Teardown
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: www-activity-display
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSRecordSet
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: dmarc-activity-display
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSRecordSet
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: apex-activity-display
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSRecordSet
+          check:
+            ($error == null): true
+    - sleep:
+        duration: 3s
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: activity-display-zone
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            ($error == null): true
+    - sleep:
+        duration: 3s
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-activity-display
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-activity-display
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true

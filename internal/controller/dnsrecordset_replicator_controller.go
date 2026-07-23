@@ -23,6 +23,7 @@ import (
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/display"
 	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
 )
 
@@ -336,24 +337,10 @@ func (r *DNSRecordSetReplicator) updateStatus(
 // on the DNSRecordSet if they are missing or outdated. These annotations provide
 // human-friendly values for ActivityPolicy audit rule templates.
 // Returns true if annotations were modified (caller should patch the object).
+// The mutating webhook stamps these at admission; this remains a safety net for
+// legacy objects and webhook-unavailable cases.
 func ensureDisplayAnnotations(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) bool {
-	expectedDisplayName := computeDisplayName(rs, zoneDomainName)
-	expectedDisplayValue := computeDisplayValue(rs)
-
-	if rs.Annotations == nil {
-		rs.Annotations = make(map[string]string)
-	}
-
-	currentDisplayName := rs.Annotations[AnnotationDisplayName]
-	currentDisplayValue := rs.Annotations[AnnotationDisplayValue]
-
-	if currentDisplayName == expectedDisplayName && currentDisplayValue == expectedDisplayValue {
-		return false
-	}
-
-	rs.Annotations[AnnotationDisplayName] = expectedDisplayName
-	rs.Annotations[AnnotationDisplayValue] = expectedDisplayValue
-	return true
+	return display.EnsureAnnotations(rs, zoneDomainName)
 }
 
 // ---- Watches / mapping helpers -------------------------

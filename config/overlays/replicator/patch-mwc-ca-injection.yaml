@@ -1,6 +1,3 @@
-- op: add
-  path: /metadata/annotations
-  value: {}
-- op: add
+- op: replace
   path: /metadata/annotations/cert-manager.io~1inject-ca-from
   value: dns-replicator-system/dns-operator-serving-cert

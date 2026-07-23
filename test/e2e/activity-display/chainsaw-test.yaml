@@ -83,6 +83,16 @@ spec:
             dnsZoneClassName: powerdns-activity-display
     - assert:
         cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: activity-display-zone
+
+  - name: Wait for DNSZone to be ready
+    try:
+    - assert:
+        cluster: upstream
         timeout: 60s
         resource:
           apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -90,9 +100,9 @@ spec:
           metadata:
             name: activity-display-zone
           status:
-            conditions:
-            - type: Accepted
-              status: "True"
+            # Zone has both Accepted and Programmed; filter so slice length is not compared.
+            (conditions[?type == 'Accepted']):
+            - status: "True"
 
   - name: Create A record — annotations present immediately (webhook)
     description: |

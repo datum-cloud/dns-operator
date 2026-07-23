@@ -1,0 +1,44 @@
+# Applied to the "control" cluster only (see Taskfile.yaml env:up) to exercise
+# PowerDNS Lightningstream edge federation end-to-end: the DNSRecordSet below
+# is written to the control cluster's pdns-auth via dns-operator, published to
+# the shared RustFS bucket by lightningstream, and should appear at the
+# "edge" cluster's pdns-auth once its lightningstream sidecar pulls the
+# snapshot - without ever being applied to the edge cluster directly.
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZoneClass
+metadata:
+  name: powerdns
+spec:
+  controllerName: powerdns
+  nameServerPolicy:
+    mode: Static
+    static:
+      servers: ["ns1.example.net.", "ns2.example.net."]
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: example-com
+  namespace: default
+spec:
+  domainName: example.com
+  dnsZoneClassName: powerdns
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSRecordSet
+metadata:
+  name: www-a
+  namespace: default
+spec:
+  dnsZoneRef:
+    name: example-com
+  recordType: A
+  records:
+    - name: www
+      a:
+        content: "192.0.2.10"
+      ttl: 300
+    - name: www
+      a:
+        content: "192.0.2.11"
+      ttl: 300

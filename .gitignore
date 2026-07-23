@@ -15,6 +15,10 @@ dev/
 .go-version
 config/**/charts
 
+# test-infra repo clone, managed by Taskfile.yaml (see includes.test-infra)
+.test-infra/
+.task/
+
 # Test binary, built with `go test -c`
 *.test
 

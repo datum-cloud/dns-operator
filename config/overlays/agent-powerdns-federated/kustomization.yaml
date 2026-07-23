@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dns-agent-system
+
+resources:
+  - ../../agent
+
+components:
+  - ../../agent/components/namespace
+
+# Unlike config/overlays/agent-powerdns, this overlay does NOT ship its own
+# MinIO instance or a static s3-credentials Secret: it's used for both the
+# "control" and "edge" clusters in the local PowerDNS Lightningstream
+# federation environment (see Taskfile.yaml env:* tasks), and the two
+# clusters need different s3-credentials endpoint_url values (in-cluster
+# RustFS Service vs. a cross-cluster NodePort discovered at apply time).
+# The Taskfile applies s3-credentials with `kubectl create secret ... | apply`
+# after this kustomization and after RustFS is up.

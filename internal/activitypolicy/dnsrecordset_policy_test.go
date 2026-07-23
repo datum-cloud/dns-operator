@@ -141,10 +141,9 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 	}
 
 	type fixture struct {
-		name         string
-		wantRule     string // empty => no audit rule should match
-		audit        map[string]any
-		skipIfNoRule bool
+		name     string
+		wantRule string // empty => no audit rule should match
+		audit    map[string]any
 	}
 
 	displayAnns := map[string]any{

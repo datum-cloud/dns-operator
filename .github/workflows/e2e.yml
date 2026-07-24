@@ -25,6 +25,18 @@ jobs:
       - name: Clone the code
         uses: actions/checkout@v4
 
+      - name: Free up disk space
+        # Three test-infra kind clusters (Flux/cert-manager/Kyverno/Envoy each)
+        # plus PowerDNS/RustFS/Lightningstream/operator images overflow the
+        # runner's ~14GB OS disk, which thrashes `kind load` (observed ~14min)
+        # and destabilizes the API servers. Reclaim ~20GB of preinstalled
+        # toolchains we don't use (keep /opt/hostedtoolcache - Go/Task live there).
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/share/powershell || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:

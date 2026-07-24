@@ -25,12 +25,12 @@ how this operator itself is designed, see this repo's architecture docs:
 ## What this means
 
 Deleting the upstream record is supposed to clean up the downstream copy
-too. When that cleanup is skipped, the downstream copy keeps quietly reasserting
-itself as the owner of that name — with no upstream object left for the
-customer, or for us, to point at from their side. Any new record request
-for that same name then gets rejected as a duplicate, indefinitely, because
-nothing in the system still considers itself responsible for removing the
-old one.
+too. When that cleanup fails to happen, the downstream copy keeps quietly
+reasserting itself as the owner of that name — with no upstream object left
+for the customer, or for us, to point at from their side. Any new record
+request for that same name then gets rejected as a duplicate, indefinitely,
+because nothing in the system still considers itself responsible for
+removing the old one.
 
 ## Why this happens
 

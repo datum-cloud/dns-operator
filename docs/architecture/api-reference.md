@@ -1,7 +1,8 @@
 # API Reference
 
-The operator serves all resources under the API group/version
-**`dns.networking.miloapis.com/v1alpha1`**. Generated CRDs live in
+This reference documents the user-facing API — the resources platform users
+create and read to manage DNS. The operator serves them under the API
+group/version **`dns.networking.miloapis.com/v1alpha1`**. Generated CRDs live in
 [`config/crd/bases`](../../config/crd/bases); runnable samples live in
 [`config/samples`](../../config/samples).
 
@@ -138,23 +139,9 @@ and `PDNSError` (the backend rejected the change). See
 [Replication Model](./replication.md#status-synthesis) for how the operator
 synthesizes conditions across clusters.
 
-## DNSOperator (server config)
-
-You configure the operator binary with a `DNSOperator` object passed via
-`--server-config`. The API does not serve this object; it configures a running
-instance. Sample: [`config/agent/server-config.yaml`](../../config/agent/server-config.yaml).
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `discovery.mode` | `single` | `single` (local cluster) or `milo` (discover project control planes). |
-| `discovery.internalServiceDiscovery` | `false` | Use internal service addresses when connecting to discovered control planes. |
-| `discovery.discoveryKubeconfigPath` | — | Kubeconfig for the platform control plane used for discovery. |
-| `discovery.projectKubeconfigPath` | — | Connection template for discovered project control planes. |
-| `downstreamResourceManagement.kubeconfigPath` | — | Kubeconfig for the authoritative (downstream) cluster. |
-| `downstreamResourceManagement.dnsZoneAccountingNamespace` | `datum-downstream-dnszone-accounting` | Namespace holding the zone ownership ledger. |
-| `controllers.dnsRecordSetPowerDNS.maxConcurrentReconciles` | `4` | Concurrent reconciles for the PowerDNS record-set controller. |
-| `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay` | `1s` | Exponential backoff base delay. |
-| `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay` | `30s` | Exponential backoff max delay. |
-
-Backend-specific settings live with each backend. For the PowerDNS environment
-variables, see [PowerDNS Backend → Configuration](./backends/powerdns.md#configuration).
+> [!NOTE]
+>
+> This reference covers the user-facing API. The `DNSOperator` object that
+> configures the operator binary is deployment configuration, not part of the
+> served API — see [Deployment Topology → Operator
+> Configuration](./topology.md#operator-configuration).

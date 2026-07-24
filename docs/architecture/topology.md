@@ -73,9 +73,9 @@ for the backend model and the servers the agent can program.
 
 ## Discovery
 
-The replicator's `discovery.mode` (in the [`DNSOperator` server
-config](./api-reference.md#dnsoperator-server-config)) selects how the replicator
-finds upstream control planes:
+The replicator's `discovery.mode` (in the
+[`DNSOperator` server config](#operator-configuration)) selects how the
+replicator finds upstream control planes:
 
 - **`single`** — the operator serves exactly one upstream cluster: the cluster it
   runs in. The operator performs no external discovery.
@@ -116,6 +116,28 @@ Each zone's `NS` and `SOA` records advertise nameserver names from the
 - **Mutating webhook** — stamps display annotations (FQDNs, record values) onto
   record sets at admission, so downstream consumers render human-readable names
   without re-deriving them.
+
+## Operator Configuration
+
+You configure the operator binary with a `DNSOperator` object passed via
+`--server-config`. The API does not serve this object; it configures a running
+instance. Sample:
+[`config/agent/server-config.yaml`](../../config/agent/server-config.yaml).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `discovery.mode` | `single` | `single` (local cluster) or `milo` (discover project control planes). |
+| `discovery.internalServiceDiscovery` | `false` | Use internal service addresses when connecting to discovered control planes. |
+| `discovery.discoveryKubeconfigPath` | — | Kubeconfig for the platform control plane used for discovery. |
+| `discovery.projectKubeconfigPath` | — | Connection template for discovered project control planes. |
+| `downstreamResourceManagement.kubeconfigPath` | — | Kubeconfig for the authoritative (downstream) cluster. |
+| `downstreamResourceManagement.dnsZoneAccountingNamespace` | `datum-downstream-dnszone-accounting` | Namespace holding the zone ownership ledger. |
+| `controllers.dnsRecordSetPowerDNS.maxConcurrentReconciles` | `4` | Concurrent reconciles for the PowerDNS record-set controller. |
+| `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay` | `1s` | Exponential backoff base delay. |
+| `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay` | `30s` | Exponential backoff max delay. |
+
+Backend-specific settings live with each backend. For the PowerDNS environment
+variables, see [PowerDNS Backend → Configuration](./backends/powerdns.md#configuration).
 
 ## Deployment Overlays
 

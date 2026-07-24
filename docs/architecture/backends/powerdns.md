@@ -112,6 +112,6 @@ shape.
 ## Related
 
 - [DNS Backends](./README.md) — The backend model that every backend shares
-- [Deployment Topology](../topology.md) — Where the backend and serving layer run
-- [API Reference](../api-reference.md#dnszoneclass) — `DNSZoneClass` schema and
-  the `DNSOperator` PowerDNS settings
+- [API Reference](../api-reference.md#dnszoneclass) — `DNSZoneClass` schema
+- [Deployment Topology](../topology.md#operator-configuration) — The
+  `DNSOperator` server config, including the PowerDNS controller settings

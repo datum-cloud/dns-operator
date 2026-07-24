@@ -37,14 +37,23 @@ and cluster topology, and gives the authoritative data a single writer.
 ## System Context
 
 <p align="center">
-  <img src="./diagrams/system-context.png" alt="System Context — DNS Operator" />
+  <img src="./diagrams/system-context.png" alt="System Context — DNS Service" />
 </p>
 
-The tenant control plane holds the desired state. The operator reads that state,
-programs the authoritative backend, and writes status back to the tenant control
-plane. Recursive resolvers query the serving layer directly over standard DNS.
-The [Technology Stack](#technology-stack) section lists the open-source
-components that make up the service.
+The DNS service exists so platform users and other platform services can make the
+domains they own resolvable on the internet. Platform capabilities depend on it:
+networking and ingress publish records to expose workloads, and TLS certificate
+issuance validates domain control through DNS. A domain earns authority through
+the platform's **Domains** capability, which handles ownership and verification;
+the DNS service then serves that domain's records.
+
+Users and platform services author zones and records in a tenant control plane,
+which holds the desired state. The operator reads that state, programs the
+authoritative backend, and writes status back to the tenant control plane.
+Recursive resolvers query the serving layer directly over standard DNS, so the
+wider internet can reach the user's applications. The
+[Technology Stack](#technology-stack) section lists the open-source components
+that make up the service.
 
 ## Core Concepts
 

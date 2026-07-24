@@ -88,24 +88,26 @@ a tenant control plane requires no change to the DNS operator.
 
 ## Authoritative Serving and State Replication
 
-The authoritative cluster is the single writer, but it does not necessarily
-answer public queries. The backend replicates its authoritative state to a
-**serving layer** of read-only nodes that answer queries close to end users: the
-writer publishes changes to a shared store, and each serving node pulls them and
-serves them over standard DNS.
+The authoritative cluster holds the source of truth, but it does not necessarily
+answer public queries itself. To scale and distribute serving, a backend can
+replicate its authoritative zone data to a separate **serving layer** of
+read-only nodes that answer queries close to end users. A simpler backend may
+instead answer queries directly from the authoritative server, with no separate
+serving layer at all.
 
-This design makes the serving layer horizontally scalable and geographically
-distributable. Each node is stateless beyond its local replica, so you can add
-nodes wherever the shared store is reachable. An anycast address typically fronts
-the nodes, so resolvers reach the nearest one.
+Where a serving layer exists, each node holds only its own replica, so you can
+add nodes close to users, and an anycast address typically fronts them so
+resolvers reach the nearest one.
 
-How a backend replicates its state is backend-specific. For the PowerDNS
-mechanism — LMDB snapshots shipped through LightningStream to object storage, plus
-a local recursor for `ALIAS` expansion — see [PowerDNS Backend → Storage and
-Serving](./backends/powerdns.md#storage-and-serving).
+**How** a backend replicates its data and serves it is backend-specific — zone
+transfers, shared storage, and clustered databases are all valid approaches. For
+the PowerDNS mechanism — LMDB snapshots shipped through LightningStream to object
+storage, with a local recursor for `ALIAS` expansion — see [PowerDNS Backend →
+Storage and Serving](./backends/powerdns.md#storage-and-serving).
 
 Each zone's `NS` and `SOA` records advertise nameserver names from the
-`DNSZoneClass` nameserver policy, and those names point at the serving layer.
+`DNSZoneClass` nameserver policy, and those names point at wherever the backend
+answers queries.
 
 ## Supporting Components
 

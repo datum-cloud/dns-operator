@@ -18,22 +18,18 @@ System_Boundary(replication, "Replication Control Plane") {
 
 System_Boundary(authoritative, "Authoritative Cluster") {
     Container(agent, "DNS Operator (downstream agent)", "Go / controller-runtime", "Programs zones and records")
-    Container(pdns, "Authoritative Backend", "DNS server", "Holds authoritative zone data")
-    Container(publish, "State Publisher", "replication sidecar", "Publishes backend state to the shared store")
+    Container(pdns, "Authoritative Backend", "DNS server", "Source of truth for authoritative zone data")
 }
 
-ContainerDb(store, "Shared State Store", "object storage", "Durable authoritative state")
-
 System_Boundary(edge, "Serving Layer") {
-    Container(serving, "Authoritative Serving Node", "read-only backend + replication sidecar", "Answers DNS queries from replicated state")
+    Container(serving, "Authoritative Serving Nodes", "DNS servers", "Answer public DNS queries")
 }
 
 Rel(user, cp, "Creates / edits DNS resources", "kubectl / API")
 Rel(replicator, cp, "Watches spec, writes status", "watch / patch")
 Rel(replicator, agent, "Mirrors desired state as shadow objects")
 Rel(agent, pdns, "Programs zones / records")
-Rel(publish, store, "Publishes state")
-Rel(serving, store, "Pulls state")
+Rel(pdns, serving, "Replicates authoritative zone data", "backend-specific")
 Rel_U(resolver, serving, "DNS query", "UDP/TCP :53")
 
 SHOW_LEGEND()

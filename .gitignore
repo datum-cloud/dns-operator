@@ -19,6 +19,10 @@ config/**/charts
 .test-infra/
 .task/
 
+# Per-cluster kubeconfigs generated for the e2e Chainsaw suites
+# (make chainsaw-prepare-kubeconfigs / task env:chainsaw-prepare-kubeconfigs)
+test/e2e/kubeconfig-*
+
 # Test binary, built with `go test -c`
 *.test
 

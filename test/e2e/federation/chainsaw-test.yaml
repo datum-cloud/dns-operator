@@ -121,7 +121,7 @@ spec:
           apiVersion: v1
           kind: Pod
           metadata:
-            name: dnsutils
+            name: dnsutils-fed
             namespace: default
           spec:
             restartPolicy: Never
@@ -139,7 +139,7 @@ spec:
           apiVersion: v1
           kind: Pod
           metadata:
-            name: dnsutils
+            name: dnsutils-fed
             namespace: default
           status:
             phase: Running
@@ -147,8 +147,8 @@ spec:
         cluster: control
         content: |
           set -eu
-          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils
-          kubectl -n default exec pod/dnsutils -- sh -c \
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fed
+          kubectl -n default exec pod/dnsutils-fed -- sh -c \
             "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short | grep -E '^192\\.0\\.2\\.10$'"
 
   - name: DNS query on edge confirms Lightningstream replication (without the CR ever existing on edge)
@@ -163,17 +163,17 @@ spec:
           # Lightningstream syncing LMDB snapshots through the shared RustFS
           # bucket, which happens on a polling interval, not instantly.
           # Poll for a few minutes rather than asserting immediately.
-          if ! kubectl -n default get pod dnsutils >/dev/null 2>&1; then
-            kubectl -n default run dnsutils --image=infoblox/dnstools:latest --restart=Never \
+          if ! kubectl -n default get pod dnsutils-fed >/dev/null 2>&1; then
+            kubectl -n default run dnsutils-fed --image=infoblox/dnstools:latest --restart=Never \
               --overrides='{"spec":{"terminationGracePeriodSeconds":0}}' --command -- sh -c 'sleep 3600'
           fi
-          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fed
 
           attempts=18
           delay=10
           i=0
           while [ "$i" -lt "$attempts" ]; do
-            out=$(kubectl -n default exec pod/dnsutils -- sh -c \
+            out=$(kubectl -n default exec pod/dnsutils-fed -- sh -c \
               "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +time=2 +tries=1" || true)
             echo "[edge attempt $((i+1))/$attempts] dig result: '${out}'"
             if [ "$out" = "192.0.2.10" ]; then
@@ -216,7 +216,7 @@ spec:
         cluster: control
         content: |
           set -eu
-          kubectl -n default exec pod/dnsutils -- sh -lc '
+          kubectl -n default exec pod/dnsutils-fed -- sh -lc '
           out=$(dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +tries=1 +time=2);
           printf ">>>%s<<<\n" "$out";
           [ -z "$out" ] && echo "EMPTY" || echo "NONEMPTY"
@@ -230,7 +230,7 @@ spec:
           delay=10
           i=0
           while [ "$i" -lt "$attempts" ]; do
-            out=$(kubectl -n default exec pod/dnsutils -- sh -c \
+            out=$(kubectl -n default exec pod/dnsutils-fed -- sh -c \
               "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +time=2 +tries=1" || true)
             echo "[edge cleanup attempt $((i+1))/$attempts] dig result: '${out}'"
             if [ -z "$out" ]; then
@@ -275,7 +275,7 @@ spec:
           apiVersion: v1
           kind: Pod
           namespace: default
-          name: dnsutils
+          name: dnsutils-fed
         expect:
         - match:
             apiVersion: v1
@@ -288,7 +288,7 @@ spec:
           apiVersion: v1
           kind: Pod
           namespace: default
-          name: dnsutils
+          name: dnsutils-fed
         expect:
         - match:
             apiVersion: v1

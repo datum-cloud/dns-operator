@@ -14,11 +14,19 @@ vars:
   # Bump to the merged tag once datum-cloud/test-infra#35 lands (it removes
   # the hardcoded NodePorts that block running two clusters concurrently).
   TEST_INFRA_REPO_REF: 'fix/remove-hardcoded-nodeports'
+  # Upstream (control-plane) cluster runs the replicator; it pushes DNSZone/
+  # DNSRecordSet resources to the control cluster, which plays the "downstream"
+  # agent role for the replicator and the "control" (Lightningstream source)
+  # role for edge replication - one cluster, two roles, mirroring production.
+  UPSTREAM_CLUSTER_NAME: 'dns-upstream'
   CONTROL_CLUSTER_NAME: 'dns-control'
   EDGE_CLUSTER_NAME: 'dns-edge'
   IMG: 'ghcr.io/datum-cloud/dns-operator:latest'
   RUSTFS_BUCKET: 'lightningstream'
   RUSTFS_NODEPORT_FILE: 'dev/rustfs.nodeport'
+  # In-cluster-rewritten kubeconfig for the control cluster, mounted into the
+  # replicator (via a Secret) so it can reach control's API as its downstream.
+  CONTROL_INCLUSTER_KUBECONFIG: 'dev/control.incluster.kubeconfig'
   # Dedicated kubeconfig for this environment (not the user's default
   # ~/.kube/config). go-task's `env:` blocks are implemented as process-wide
   # os.Setenv calls that leak between sibling task/cmd invocations (a known
@@ -41,14 +49,17 @@ tasks:
     desc: "Show available commands"
     silent: true
     cmds:
-      - echo "DNS platform local environment (control + edge PowerDNS federation):"
-      - echo "  task env:up          Bring up control + edge clusters, deploy a sample zone"
-      - echo "  task env:down        Tear down both clusters"
-      - echo "  task env:dns-check   Query both clusters' PowerDNS for the sample record"
+      - echo "DNS platform local environment (upstream replicator + control + edge federation):"
+      - echo "  task env:up          Bring up upstream + control + edge clusters, deploy a sample zone"
+      - echo "  task env:stack-up    Bring up the full chain with no sample data (used by CI)"
+      - echo "  task env:chainsaw    Run the full Chainsaw e2e suite against the environment"
+      - echo "  task env:down        Tear down all clusters"
+      - echo "  task env:dns-check   Query control + edge PowerDNS for the sample record"
       - echo ""
       - echo "Individual pieces:"
       - echo "  task env:control-up  Control cluster only (dns-operator + PowerDNS + RustFS)"
       - echo "  task env:edge-up     Edge cluster only (PowerDNS, replicates from control)"
+      - echo "  task env:upstream-up Upstream cluster only (replicator, pushes to control)"
       - echo ""
       - echo "Underlying test-infra tasks are available as test-infra:<name>, e.g.:"
       - echo "  task test-infra:kubectl -- get pods --all-namespaces"
@@ -200,14 +211,57 @@ tasks:
             sh: echo "http://{{.CONTROL_CLUSTER_NAME}}-control-plane:$(cat {{.RUSTFS_NODEPORT_FILE}})"
       - echo "✅ edge cluster (kind-{{.EDGE_CLUSTER_NAME}}) ready"
 
-  env:up:
-    desc: "Bring up the full local DNS federation environment (control + edge clusters)"
+  env:upstream-up:
+    desc: "Create the upstream kind cluster and deploy the replicator pointed at the control (downstream agent) cluster"
     cmds:
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
+      - CLUSTER={{.UPSTREAM_CLUSTER_NAME}} IMG={{.IMG}} make kind-load-image
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} make install-dns-operator-crds
+      # The replicator's manager watches networking-services types (Domain,
+      # etc.) in addition to DNS resources; install those CRDs so its
+      # controllers start cleanly (mirrors `make bootstrap-upstream`).
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} make install-networking-crds
+      # The replicator reaches the control cluster's API (its "downstream")
+      # through a kubeconfig Secret. Export control's kubeconfig rewritten to
+      # the control-plane container's in-network address (host:6443, TLS-skip)
+      # so it is reachable from the upstream cluster's pods over the shared
+      # kind docker network - the same cross-cluster addressing env:edge-up
+      # already uses for RustFS.
+      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT={{.CONTROL_INCLUSTER_KUBECONFIG}} KIND_KUBECONFIG_INSECURE=true make export-kind-kubeconfig
+      - |
+        set -euo pipefail
+        export KUBECONFIG={{.ENV_KUBECONFIG}}
+        kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} create namespace dns-replicator-system --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE={{.CONTROL_INCLUSTER_KUBECONFIG}} make secret-from-file
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/replicator make kustomize-apply
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=180s
+      - echo "✅ upstream cluster (kind-{{.UPSTREAM_CLUSTER_NAME}}) ready"
+
+  env:stack-up:
+    desc: "Bring up all three clusters and the full DNS chain (no sample data) - used by CI"
+    cmds:
+      # Order matters: the replicator (upstream) needs the control cluster
+      # reachable, and edge needs control's RustFS NodePort, so control comes
+      # up first, then edge, then upstream.
       - task: env:control-up
       - task: env:edge-up
+      - task: env:upstream-up
+
+  env:up:
+    desc: "Bring up the full local DNS federation environment (upstream + control + edge) with sample data"
+    cmds:
+      - task: env:stack-up
+      # Dev convenience only: this applies the sample directly on the control
+      # cluster to smoke-test the control->edge Lightningstream path. CI uses
+      # env:stack-up instead and drives the full upstream->edge chain through
+      # the Chainsaw suites (see env:chainsaw), so it never applies this - the
+      # sample's example.com zone would otherwise collide with the
+      # zones-and-records suite on the shared control PowerDNS.
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} apply -f config/samples/federation/dnszone-example.yaml
       - echo ""
-      - echo "🎉 Environment up. control=kind-{{.CONTROL_CLUSTER_NAME}} edge=kind-{{.EDGE_CLUSTER_NAME}}"
+      - echo "🎉 Environment up. upstream=kind-{{.UPSTREAM_CLUSTER_NAME}} control=kind-{{.CONTROL_CLUSTER_NAME}} edge=kind-{{.EDGE_CLUSTER_NAME}}"
       - echo "   Lightningstream syncs on an interval - give it a few seconds, then:"
       - echo "   task env:dns-check"
 
@@ -220,26 +274,35 @@ tasks:
       - KUBECONFIG={{.ENV_KUBECONFIG}} make dns-debug DNS_DEBUG_CONTEXT=kind-{{.EDGE_CLUSTER_NAME}} DNS_DEBUG_ZONE=example.com DNS_DEBUG_HOST=www
 
   env:chainsaw-prepare-kubeconfigs:
-    desc: "Export control/edge kind kubeconfigs into test/e2e/ for the federation Chainsaw test"
+    desc: "Export upstream/control/edge kind kubeconfigs into test/e2e/ for the Chainsaw suites"
     cmds:
+      - CLUSTER={{.UPSTREAM_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-upstream make export-kind-kubeconfig-raw
+      # The control cluster is addressed as "downstream" by the replicator
+      # suites and as "control" by the federation/full-chain suites, so export
+      # its kubeconfig under both names.
+      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-downstream make export-kind-kubeconfig-raw
       - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-control make export-kind-kubeconfig-raw
       - CLUSTER={{.EDGE_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-edge make export-kind-kubeconfig-raw
-      - echo "✅ wrote test/e2e/kubeconfig-control and test/e2e/kubeconfig-edge"
+      - echo "✅ wrote test/e2e/kubeconfig-{upstream,downstream,control,edge}"
 
-  env:chainsaw-federation:
-    desc: "Run the federation Chainsaw e2e test against the control/edge environment"
+  env:chainsaw:
+    desc: "Run the full Chainsaw e2e suite (replicator + federation + full-chain) against the environment"
     deps:
       - env:chainsaw-prepare-kubeconfigs
     cmds:
       # Chainsaw needs *a* default KUBECONFIG to initialize its client even
-      # though this test only ever addresses the "control"/"edge" clusters
-      # by name (spec.clusters) - point it at the control kubeconfig we just
-      # exported.
-      - cd test/e2e && KUBECONFIG=kubeconfig-control chainsaw test federation/
+      # though each suite addresses its clusters by name (spec.clusters) -
+      # point it at the control kubeconfig we just exported. `.` runs every
+      # suite under test/e2e (alias, display-annotations, zones-and-records,
+      # federation, full-chain).
+      - cd test/e2e && KUBECONFIG=kubeconfig-control chainsaw test .
 
   env:down:
-    desc: "Tear down both clusters"
+    desc: "Tear down all clusters (upstream + control + edge)"
     cmds:
+      - task: test-infra:delete-kind
+        vars:
+          CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
       # NOTE: calling the leaf `delete-kind` task directly (not the
       # `cluster-down`/`down` wrapper) - go-task does not forward
       # caller-supplied `vars:` through a wrapper task's own un-parameterized
@@ -253,4 +316,4 @@ tasks:
       - task: test-infra:delete-kind
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
-      - rm -f {{.RUSTFS_NODEPORT_FILE}} {{.ENV_KUBECONFIG}}
+      - rm -f {{.RUSTFS_NODEPORT_FILE}} {{.ENV_KUBECONFIG}} {{.CONTROL_INCLUSTER_KUBECONFIG}}

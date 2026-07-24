@@ -12,6 +12,15 @@ jobs:
   e2e:
     name: Run Chainsaw E2E Tests
     runs-on: ubuntu-latest
+    # Three test-infra kind clusters (upstream + control + edge), each with
+    # Flux/cert-manager/Kyverno/Envoy Gateway, plus RustFS and a Lightningstream
+    # sync interval the federation/full-chain suites poll for - give it headroom.
+    timeout-minutes: 60
+    env:
+      # The Taskfile pulls in the shared datum-cloud/test-infra Taskfile as a
+      # remote include; go-task gates that behind this experiment flag, and
+      # `--yes` (below) auto-accepts the download in this non-interactive run.
+      TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
@@ -26,34 +35,61 @@ jobs:
         with:
           install_only: true
 
-      - name: Bootstrap e2e environment
-        run: make bootstrap-e2e
+      - name: Setup Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Wait for controllers to be ready
+      - name: Install Chainsaw
+        # env:chainsaw invokes `chainsaw` from PATH; `make chainsaw` installs
+        # the pinned version into ./bin, which we add to PATH here.
         run: |
-          kubectl --context kind-dns-upstream -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=120s
-          kubectl --context kind-dns-downstream -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
+          make chainsaw
+          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare kubeconfigs for Chainsaw
-        run: make chainsaw-prepare-kubeconfigs
+      - name: Bring up the full DNS environment
+        # Creates the upstream (replicator) + control (downstream agent +
+        # PowerDNS + Lightningstream + RustFS) + edge clusters and wires the
+        # whole production chain together. No sample data (env:stack-up, not
+        # env:up) so the suites own all zones on the shared control PowerDNS.
+        run: task --yes env:stack-up
 
       - name: Run Chainsaw tests
-        run: make chainsaw-test
+        # Runs every suite under test/e2e against the environment: the
+        # upstream->control replicator suites (alias, display-annotations,
+        # zones-and-records), the control->edge Lightningstream suite
+        # (federation), and the end-to-end upstream->edge suite (full-chain).
+        run: task --yes env:chainsaw
 
       - name: Collect diagnostic logs
         if: failure()
+        env:
+          KUBECONFIG: dev/kubeconfig
         run: |
-          echo "=== Upstream controller logs ==="
+          echo "=== [upstream] replicator logs ==="
           kubectl --context kind-dns-upstream -n dns-replicator-system logs deployment/dns-operator-controller-manager --tail=200 || true
           echo ""
-          echo "=== Upstream controller describe ==="
-          kubectl --context kind-dns-upstream -n dns-replicator-system describe deployment/dns-operator-controller-manager || true
+          echo "=== [upstream] DNSZones / DNSRecordSets ==="
+          kubectl --context kind-dns-upstream get dnszones,dnsrecordsets -A || true
           echo ""
-          echo "=== Downstream agent logs ==="
-          kubectl --context kind-dns-downstream -n dns-agent-system logs statefulset/pdns-auth --tail=100 || true
-          echo ""
-          echo "=== DNSZones in upstream ==="
-          kubectl --context kind-dns-upstream get dnszones -A || true
-          echo ""
-          echo "=== DNSZones in downstream ==="
-          kubectl --context kind-dns-downstream get dnszones -A || true
+          for ctx in kind-dns-control kind-dns-edge; do
+            echo "=== [$ctx] pods (all namespaces) ==="
+            kubectl --context "$ctx" get pods -A || true
+            echo ""
+            echo "=== [$ctx] dns-operator agent logs (manager) ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c manager --tail=200 || true
+            echo ""
+            echo "=== [$ctx] lightningstream logs ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c lightningstream --tail=200 || true
+            echo ""
+            echo "=== [$ctx] DNSZones / DNSRecordSets ==="
+            kubectl --context "$ctx" get dnszones,dnsrecordsets -A || true
+            echo ""
+          done
+          echo "=== RustFS logs (control) ==="
+          kubectl --context kind-dns-control -n rustfs-system logs -l app.kubernetes.io/instance=rustfs --tail=100 || true
+
+      - name: Tear down the environment
+        if: always()
+        run: task --yes env:down || true

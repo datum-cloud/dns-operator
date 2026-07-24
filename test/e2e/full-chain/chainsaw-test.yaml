@@ -1,0 +1,337 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# End-to-end proof of the whole production chain in one test:
+#
+#   upstream (replicator)  --push-->  control (downstream agent + PowerDNS)
+#     --Lightningstream/RustFS snapshot-->  edge (PowerDNS)
+#
+# A DNSZone/DNSRecordSet is created ONLY on the upstream (control-plane)
+# cluster. The replicator copies it to the control cluster (which plays the
+# downstream agent role), whose dns-operator programs PowerDNS; Lightningstream
+# then replicates the LMDB snapshot to the edge cluster over the shared RustFS
+# bucket. The record is asserted to resolve on edge without any CR ever
+# existing there - the same end-to-end signal an operator relies on in
+# production.
+#
+# See test/e2e/zones-and-records (upstream->control replicator hop in
+# isolation) and test/e2e/federation (control->edge Lightningstream hop in
+# isolation); this suite chains both.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-full-chain
+spec:
+  timeouts:
+    # The edge-replication script polls for a few minutes waiting for
+    # Lightningstream to sync; give exec plenty of headroom.
+    exec: 240s
+  clusters:
+    upstream:
+      kubeconfig: ../kubeconfig-upstream
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
+    edge:
+      kubeconfig: ../kubeconfig-edge
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-fullchain
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.fullchain.example.
+                - ns2.fullchain.example.
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-fullchain
+
+  - name: Prereq - create DNSZoneClass in downstream
+    # The replicated DNSZone references this class by name on the downstream
+    # (control) cluster, so it must exist there too.
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-fullchain
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.fullchain.example.
+                - ns2.fullchain.example.
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-fullchain
+
+  - name: Create DNSZone upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fullchain-example
+          spec:
+            domainName: fullchain.example
+            dnsZoneClassName: powerdns-fullchain
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fullchain-example
+
+  - name: Confirm DNSZone replicated to downstream (control)
+    try:
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fullchain-example
+            namespace: ($downstreamNamespaceName)
+
+  - name: Create DNSRecordSet upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: api-fullchain
+          spec:
+            dnsZoneRef:
+              name: fullchain-example
+            recordType: A
+            records:
+            - name: api
+              ttl: 5
+              a:
+                content: 192.0.2.50
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: api-fullchain
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: fullchain-example
+
+  - name: Confirm DNSRecordSet Accepted/Programmed upstream
+    # These conditions on the upstream CR only flip True once the replicator
+    # has pushed the record to control and control's agent has programmed
+    # PowerDNS - so this asserts the upstream->control hop succeeded.
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: api-fullchain
+          status:
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
+
+  - name: DNS query on control confirms the record is programmed locally
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-fullchain
+            namespace: default
+          spec:
+            restartPolicy: Never
+            # Default 30s termination grace period exceeds chainsaw's default
+            # 15s delete timeout, spuriously failing the Teardown step below.
+            terminationGracePeriodSeconds: 0
+            containers:
+            - name: dns
+              image: infoblox/dnstools:latest
+              command: ["sleep", "3600"]
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-fullchain
+            namespace: default
+          status:
+            phase: Running
+    - script:
+        cluster: downstream
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fullchain
+          kubectl -n default exec pod/dnsutils-fullchain -- sh -c \
+            "dig @pdns-auth.dns-agent-system.svc.cluster.local api.fullchain.example A +short | grep -E '^192\\.0\\.2\\.50$'"
+
+  - name: DNS query on edge confirms the full upstream->edge chain via Lightningstream
+    try:
+    - script:
+        cluster: edge
+        skipCommandOutput: true
+        content: |
+          set -eu
+          # The edge cluster never receives the DNSZone/DNSRecordSet CRs and
+          # was never touched by the replicator - PowerDNS on edge only learns
+          # this record via Lightningstream syncing LMDB snapshots through the
+          # shared RustFS bucket, on a polling interval. Poll for a few minutes.
+          if ! kubectl -n default get pod dnsutils-fullchain >/dev/null 2>&1; then
+            kubectl -n default run dnsutils-fullchain --image=infoblox/dnstools:latest --restart=Never \
+              --overrides='{"spec":{"terminationGracePeriodSeconds":0}}' --command -- sh -c 'sleep 3600'
+          fi
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fullchain
+
+          attempts=18
+          delay=10
+          i=0
+          while [ "$i" -lt "$attempts" ]; do
+            out=$(kubectl -n default exec pod/dnsutils-fullchain -- sh -c \
+              "dig @pdns-auth.dns-agent-system.svc.cluster.local api.fullchain.example A +short +time=2 +tries=1" || true)
+            echo "[edge attempt $((i+1))/$attempts] dig result: '${out}'"
+            if [ "$out" = "192.0.2.50" ]; then
+              echo "Record created on upstream reached edge PowerDNS."
+              exit 0
+            fi
+            i=$((i+1))
+            sleep "$delay"
+          done
+          echo "Record never reached edge PowerDNS after $((attempts*delay))s" >&2
+          exit 1
+
+  - name: Confirm the DNSZone never existed on edge
+    try:
+    - error:
+        cluster: edge
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fullchain-example
+
+  - name: Teardown - delete upstream resources; replication removes them downstream and on edge
+    try:
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: api-fullchain
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSRecordSet
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: fullchain-example
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            ($error == null): true
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-fullchain
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: upstream
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-fullchain
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: downstream
+        ref:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: dnsutils-fullchain
+        expect:
+        - match:
+            apiVersion: v1
+            kind: Pod
+          check:
+            ($error == null): true
+    - delete:
+        cluster: edge
+        ref:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: dnsutils-fullchain
+        expect:
+        - match:
+            apiVersion: v1
+            kind: Pod
+          check:
+            ($error == null): true

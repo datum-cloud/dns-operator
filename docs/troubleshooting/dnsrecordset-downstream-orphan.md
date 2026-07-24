@@ -15,9 +15,8 @@
 Every DNS record exists in two places: an **upstream** copy in the
 customer's own project control plane, and a **downstream** copy on the
 shared DNS infrastructure cluster that actually gets programmed into the
-DNS provider. Read that first if the upstream/downstream terminology below
-is unfamiliar. For how this operator itself is designed, see this repo's
-architecture docs:
+DNS provider. Keep that distinction in mind for the terminology below. For
+how this operator itself is designed, see this repo's architecture docs:
 - [Topology](../architecture/topology.md) — the replicator and
   downstream-agent roles, the control planes involved, and discovery modes.
 - [Replication](../architecture/replication.md) — the shadow-object model,

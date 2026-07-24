@@ -1,6 +1,6 @@
 # API Reference
 
-All resources are served under the API group/version
+The operator serves all resources under the API group/version
 **`dns.networking.miloapis.com/v1alpha1`**. Generated CRDs live in
 [`config/crd/bases`](../../config/crd/bases); runnable samples live in
 [`config/samples`](../../config/samples).
@@ -15,8 +15,8 @@ All resources are served under the API group/version
 ## DNSZoneClass
 
 Cluster-scoped policy, analogous to a `StorageClass`. Every `DNSZone` references
-a class, which determines the backend and how authoritative nameservers are
-assigned.
+a class, which determines the backend and how the operator assigns authoritative
+nameservers.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -100,7 +100,7 @@ spec:
 
 When several `DNSRecordSet` resources target the same zone, owner name, and
 record type, the agent programs a **single** owner (chosen by oldest creation
-timestamp, then name). The others are marked `Programmed=False` with reason
+timestamp, then name). The agent marks the others `Programmed=False` with reason
 `NotOwner`, so conflicting records never silently overwrite each other.
 
 ## DNSZoneDiscovery
@@ -121,19 +121,19 @@ Every DNS resource reports status through standard Kubernetes conditions:
 | Condition | Meaning |
 |-----------|---------|
 | `Accepted` | The resource is valid and its dependencies are satisfied. |
-| `Programmed` | The desired state is realized in the backend. |
+| `Programmed` | The backend has realized the desired state. |
 | `Discovered` | (`DNSZoneDiscovery` only) The live-record snapshot completed. |
 
 Common reasons include `Pending`, `Programmed`, `DNSZoneInUse` (domain already
 claimed by another zone), `NotOwner` (a conflicting record set owns the name),
 and `PDNSError` (the backend rejected the change). See
-[Replication Model](./replication.md#status-synthesis) for how conditions are
-synthesized across clusters.
+[Replication Model](./replication.md#status-synthesis) for how the operator
+synthesizes conditions across clusters.
 
 ## DNSOperator (server config)
 
-The operator binary is configured with a `DNSOperator` object passed via
-`--server-config`. It is not served by the API; it configures a running
+You configure the operator binary with a `DNSOperator` object passed via
+`--server-config`. The API does not serve this object; it configures a running
 instance. Sample: [`config/agent/server-config.yaml`](../../config/agent/server-config.yaml).
 
 | Field | Default | Description |
@@ -148,12 +148,5 @@ instance. Sample: [`config/agent/server-config.yaml`](../../config/agent/server-
 | `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay` | `1s` | Exponential backoff base delay. |
 | `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay` | `30s` | Exponential backoff max delay. |
 
-### PowerDNS backend connection
-
-The downstream agent connects to PowerDNS via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PDNS_API_URL` | `http://127.0.0.1:8081` | PowerDNS HTTP API endpoint. |
-| `PDNS_API_KEY` | — | API key (or use `PDNS_API_KEY_FILE`). |
-| `PDNS_API_KEY_FILE` | — | Path to a file containing the API key. |
+Backend-specific settings live with each backend. For the PowerDNS environment
+variables, see [PowerDNS Backend → Configuration](./backends/powerdns.md#configuration).

@@ -26,9 +26,6 @@ surface.
 - **Clear status** — `Accepted` and `Programmed` conditions report whether a
   zone or record is valid and actually serving, mirrored back from the
   authoritative backend.
-- **Human-readable activity** — Integrates with the
-  [Activity Service](docs/enhancements/activity-integration.md) so DNS changes
-  appear as plain-language timelines.
 
 ## How it works
 
@@ -53,8 +50,6 @@ the [Architecture Overview](docs/architecture/README.md).
   conditions
 
 **Guides**
-- [Activity Integration](docs/enhancements/activity-integration.md) —
-  Human-readable DNS activity timelines
 - [Service Catalog](config/components/service-catalog/README.md) — DNS as a
   billable platform service
 

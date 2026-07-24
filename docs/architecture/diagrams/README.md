@@ -10,6 +10,7 @@ shared Datum brand theme (`datum-theme.puml`, copied from
 | `system-context.puml` | `system-context.png` | [Architecture Overview](../README.md) |
 | `container-view.puml` | `container-view.png` | [Deployment Topology](../topology.md) |
 | `replication-flow.puml` | `replication-flow.png` | [Replication Model](../replication.md) |
+| `powerdns-backend.puml` | `powerdns-backend.png` | [PowerDNS Backend](../backends/powerdns.md) |
 
 ## Editing
 

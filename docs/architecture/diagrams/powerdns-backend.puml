@@ -1,0 +1,28 @@
+@startuml powerdns-backend
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+!include datum-theme.puml
+
+title Component View — PowerDNS Backend
+
+Container(agent, "Downstream Agent", "Go / controller-runtime", "Reconciles shadow DNSZone / DNSRecordSet")
+
+System_Boundary(backend, "PowerDNS Backend") {
+    Component(client, "PowerDNS Client", "internal/pdns", "Translates records and calls the PowerDNS API")
+    Component(pdns, "PowerDNS Authoritative", "pdns-auth", "Serves and stores authoritative zones")
+    ComponentDb(lmdb, "LMDB Store", "embedded", "Local authoritative zone data")
+    Component(publish, "State Publisher", "LightningStream", "Snapshots LMDB to object storage")
+}
+
+ContainerDb(store, "Object Storage", "S3-compatible", "Durable authoritative state")
+Container(serving, "Serving Node", "PowerDNS (read-only)", "Answers DNS queries")
+
+Rel(agent, client, "ReplaceRRSet / DeleteRRSet / CreateZone")
+Rel(client, pdns, "Zone and RRset operations", "HTTP API + X-API-Key")
+Rel(pdns, lmdb, "Reads / writes")
+Rel(publish, lmdb, "Reads snapshots")
+Rel(publish, store, "Writes snapshots")
+Rel(serving, store, "Pulls snapshots")
+
+SHOW_LEGEND()
+@enduml

@@ -14,13 +14,11 @@ System_Boundary(dns, "DNS Service") {
 }
 
 System_Ext(cp, "Tenant Control Planes", "Kubernetes API where users author DNS resources")
-System_Ext(activity, "Activity Service", "Human-readable activity timelines")
 
 Rel(user, cp, "Creates DNSZone / DNSRecordSet", "kubectl / API")
 Rel(operator, cp, "Watches desired state, writes status", "watch / patch")
 Rel(operator, serving, "Programs authoritative zones")
 Rel_U(resolver, serving, "DNS query", "UDP/TCP :53")
-Rel(cp, activity, "Audit logs + events")
 
 SHOW_LEGEND()
 @enduml

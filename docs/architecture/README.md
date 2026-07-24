@@ -8,26 +8,26 @@ records to a globally distributed serving layer.
 
 ## How It Works
 
-Users author three kinds of resources — a `DNSZoneClass` that names the backend
+Users author three kinds of resources: a `DNSZoneClass` that names the backend
 and nameserver policy, a `DNSZone` for each domain, and `DNSRecordSet` resources
-for the records within it. These live in the user's own **tenant control plane**,
-so they inherit the platform's identity, RBAC, and audit surface for free.
+for the records within a zone. These resources live in the user's own **tenant
+control plane**, so they inherit the platform's identity, RBAC, and audit
+controls.
 
 The operator runs in one of two roles that split the work across trust
 boundaries:
 
 - A **replicator** watches tenant control planes, mirrors the desired state into
-  a shared authoritative cluster, and synthesizes status back up so users see
-  whether their DNS is live.
+  a shared authoritative cluster, and synthesizes status back up so users can
+  see whether their DNS is live.
 - A **downstream agent** runs next to the DNS backend, translates records into
   backend calls, and owns the authoritative zone data.
 
-The authoritative data is then fanned out to a read-only **serving layer** that
-answers live DNS queries close to end users.
+A read-only **serving layer** then replicates the authoritative data and answers
+live DNS queries close to end users.
 
-This separation means tenants never touch the DNS backend directly, backend
-technology and cluster topology stay hidden, and the authoritative data has a
-single writer.
+This separation keeps tenants off the DNS backend, hides the backend technology
+and cluster topology, and gives the authoritative data a single writer.
 
 ## System Context
 
@@ -35,11 +35,11 @@ single writer.
   <img src="./diagrams/system-context.png" alt="System Context — DNS Operator" />
 </p>
 
-The tenant control plane publishes desired state (and, separately, audit logs
-and events). The operator consumes desired state, programs the authoritative
-backend, and writes status back. Recursive resolvers query the serving layer
-directly over standard DNS. The system is built on proven open-source
-technologies.
+The tenant control plane holds the desired state. The operator reads that state,
+programs the authoritative backend, and writes status back to the tenant control
+plane. Recursive resolvers query the serving layer directly over standard DNS.
+The [Technology Stack](#technology-stack) section lists the open-source
+components that make up the service.
 
 ## Core Concepts
 
@@ -53,46 +53,49 @@ technologies.
 - **[`DNSZoneClass`](./api-reference.md#dnszoneclass)** is a cluster-scoped policy,
   analogous to a `StorageClass`, that selects the **backend** (via
   `controllerName`) and the **nameserver policy** for every zone that references
-  it. This is the seam that keeps backend choice out of individual zones.
+  it. The class is the seam that keeps backend choice out of individual zones.
 
 See the [API Reference](./api-reference.md) for the full resource schema.
 
 ### Backends
 
 A `DNSZoneClass` selects a backend by name through `spec.controllerName`. The
-downstream agent only acts on zones whose class names a backend it implements,
-so a single deployment can host multiple classes and multiple backends side by
-side. **PowerDNS** is the backend implemented today; the record-translation and
-zone-management logic sit behind a narrow backend interface so additional
-authoritative servers can be added without touching the reconcilers.
+downstream agent acts only on zones whose class names a backend it implements, so
+one deployment can host several classes and several backends side by side.
+**PowerDNS** is the backend the operator implements today. The record-translation
+and zone-management logic sit behind a narrow backend interface, so you can add
+authoritative servers without changing the reconcilers.
+
+See [DNS Backends](./backends/README.md) for the backend model and the
+[PowerDNS backend](./backends/powerdns.md) for that backend's architecture.
 
 ### Multi-Tenancy via Control Plane Discovery
 
-Tenants are isolated by control plane rather than by namespace convention. The
-replicator **discovers** the control planes it should serve and reconciles each
-one independently:
+The operator isolates tenants by control plane rather than by namespace
+convention. The replicator **discovers** the control planes it serves and
+reconciles each one independently. Two discovery modes exist:
 
-- **`single`** — a single upstream cluster (the local one). Used for
-  self-contained deployments and development.
-- **`milo`** — dynamically discovers per-project control planes from a platform
-  control plane and connects to each. Used for the multi-tenant platform.
+- **`single`** — the operator serves one upstream cluster, the cluster it runs
+  in. This mode suits self-contained deployments and development.
+- **`milo`** — the operator discovers per-project control planes from a platform
+  control plane and connects to each one. This mode serves the multi-tenant
+  platform.
 
-Because desired state lives in the tenant's own control plane, tenants only ever
-see their own zones and records, and the operator's authoritative cluster is
-never exposed to them.
+Because the desired state lives in the tenant's own control plane, each tenant
+sees only its own zones and records, and the operator never exposes its
+authoritative cluster to tenants.
 
 ### Status Synthesis and Conditions
 
-Every resource carries two conditions the operator drives:
+Every resource carries two conditions that the operator sets:
 
 - **`Accepted`** — the resource is valid and its dependencies are satisfied.
-- **`Programmed`** — the desired state is realized in the backend.
+- **`Programmed`** — the backend has realized the desired state.
 
-The replicator mirrors realized status from the authoritative cluster back to
-the tenant control plane, so a user watching a `DNSZone` sees `Programmed=True`
-only once the zone is actually serving. See
-[Replication Model](./replication.md) for how status is synthesized across the
-two clusters.
+The replicator mirrors realized status from the authoritative cluster back to the
+tenant control plane. A user watching a `DNSZone` therefore sees `Programmed=True`
+only after the zone actually serves. See [Replication Model](./replication.md)
+for how the operator synthesizes status across the two clusters.
 
 ## Technology Stack
 
@@ -102,11 +105,10 @@ two clusters.
 | **Controller runtime** | [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) + [multicluster-runtime](https://github.com/kubernetes-sigs/multicluster-runtime) | Reconciliation across one or many control planes |
 | **Authoritative backend** | [PowerDNS Authoritative Server](https://doc.powerdns.com/authoritative/) | Serves authoritative zone data |
 | **State replication** | [LightningStream](https://github.com/PowerDNS/lightningstream) + object storage | Replicates the authoritative LMDB store to the serving layer |
-| **Activity** | [Activity Service](../enhancements/activity-integration.md) | Human-readable DNS activity timelines |
 
 ## API Resources
 
-Exposed under `dns.networking.miloapis.com/v1alpha1`:
+The operator serves these resources under `dns.networking.miloapis.com/v1alpha1`:
 
 | Resource | Scope | Description |
 |----------|-------|-------------|
@@ -123,9 +125,9 @@ See the [API Reference](./api-reference.md) for complete field documentation.
   layer
 - [Replication Model](./replication.md) — Shadow objects, namespace mapping, and
   status synthesis
+- [DNS Backends](./backends/README.md) — Backend model and available backends,
+  including the [PowerDNS backend](./backends/powerdns.md)
 - [API Reference](./api-reference.md) — Full resource schema and conditions
-- [Activity Integration](../enhancements/activity-integration.md) — Human-readable
-  DNS activity timelines
 
 ## References
 

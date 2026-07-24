@@ -26,8 +26,8 @@ change on either side wakes the replicator via cross-cluster watches.
 
 ## Shadow Objects and Namespace Mapping
 
-Cross-cluster ownership references are not possible in Kubernetes, so the
-replicator uses a **mapped-namespace** strategy to place and track shadows:
+Kubernetes does not support cross-cluster ownership references, so the replicator
+uses a **mapped-namespace** strategy to place and track shadows:
 
 - Each upstream namespace maps to a downstream namespace named from the upstream
   namespace's UID (`ns-<uid>`), keeping tenant namespaces collision-free without
@@ -39,9 +39,9 @@ replicator uses a **mapped-namespace** strategy to place and track shadows:
   reference, so garbage collection cleans up shadows when the upstream resource
   is deleted.
 
-Deletion flows downstream-first: the shadow (and its backend state) is removed
-before the upstream finalizer is released, so a deleted zone stops resolving
-before it disappears from the tenant's view.
+Deletion flows downstream-first: the replicator removes the shadow (and its
+backend state) before releasing the upstream finalizer, so a deleted zone stops
+resolving before it disappears from the tenant's view.
 
 ## Status Synthesis
 
@@ -50,43 +50,45 @@ validity with downstream reality:
 
 | Condition | Set to `True` when |
 |-----------|--------------------|
-| `Accepted` | The resource is valid, its dependencies exist, and (for zones) authoritative nameservers are known |
-| `Programmed` | The desired state is realized downstream — for a zone, its default `SOA` and `NS` record sets exist; for a record set, the backend has applied it |
+| `Accepted` | The resource is valid, its dependencies exist, and (for zones) the operator knows the authoritative nameservers |
+| `Programmed` | The backend has realized the desired state — for a zone, its default `SOA` and `NS` record sets exist; for a record set, the backend has applied it |
 
-Record-set status is mirrored straight from the downstream shadow, including
-per-owner results, so a user sees exactly what the backend realized. Zone status
-additionally reports the authoritative nameservers and a record count.
+The replicator mirrors record-set status straight from the downstream shadow,
+including per-owner results, so a user sees exactly what the backend realized.
+Zone status also reports the authoritative nameservers and a record count.
 
 ## Zone Ownership Accounting
 
 Because many tenant control planes feed one authoritative cluster, two tenants
-could request the same domain. The replicator guards against this with an
-**ownership ledger** in the authoritative cluster keyed by domain name. The first
-zone to claim a domain wins; a later claimant's zone is held with
-`Accepted=False` (reason `DNSZoneInUse`) and a warning event, rather than
-silently overwriting the incumbent. Ownership is released when the owning zone is
-deleted.
+could request the same domain. The replicator guards against that collision with
+an **ownership ledger** in the authoritative cluster, keyed by domain name. The
+first zone to claim a domain wins. The replicator holds a later claimant's zone
+with `Accepted=False` (reason `DNSZoneInUse`) and emits a warning event, rather
+than overwriting the incumbent. The replicator releases ownership when the owning
+zone is deleted.
 
 ## Default SOA and NS Records
 
-A zone is not authoritative until it has `SOA` and `NS` records. Once the zone's
-nameservers are known (from its `DNSZoneClass` nameserver policy), the replicator
-ensures two operator-managed record sets exist for the apex (`@`):
+A zone is not authoritative until it has `SOA` and `NS` records. Once the
+operator knows the zone's nameservers (from its `DNSZoneClass` nameserver
+policy), the replicator ensures two operator-managed record sets exist for the
+apex (`@`):
 
-- an **`NS`** set listing the authoritative nameservers, and
+- an **`NS`** set that lists the authoritative nameservers, and
 - an **`SOA`** set whose primary nameserver is the first of those, with a
-  hostmaster address derived from the domain and sensible refresh/retry/expire
-  defaults.
+  hostmaster address derived from the domain and default refresh, retry, and
+  expire values.
 
-These are created only when missing, so user-authored apex records are never
-clobbered, and the backend synthesizes the SOA serial when one is not supplied.
+The replicator creates these sets only when they are missing, so it never
+overwrites user-authored apex records. The backend synthesizes the `SOA` serial
+when a record omits one.
 
 ## Discovery of Zone Records
 
 `DNSZoneDiscovery` is a one-shot, read-only companion resource. The replicator
 resolves the referenced zone's live records over DNS and writes them into the
-resource's status. It is used to snapshot existing DNS during onboarding or
-verification and performs no mirroring or backend writes.
+resource's status. Use it to snapshot existing DNS during onboarding or
+verification; it performs no mirroring and no backend writes.
 
 ## Related
 

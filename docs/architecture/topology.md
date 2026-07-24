@@ -56,9 +56,10 @@ for the backend model and the servers the agent can program.
 
 > [!NOTE]
 >
-> A `single`-mode deployment runs the replicator and agent against the same
-> cluster, giving a self-contained DNS service with no separate control plane.
-> The `all` role runs both in one process.
+> In `single` discovery mode the replicator serves the cluster it runs in, so you
+> can point the replicator and agent at one cluster for a self-contained DNS
+> service with no separate control plane. Run the two roles as separate
+> deployments; select each with `--role`.
 
 ## Control Planes and Clusters
 
@@ -122,7 +123,8 @@ The repository ships Kustomize bases and overlays for each role:
 
 | Path | Role | Notes |
 |------|------|-------|
-| [`config/agent`](../../config/agent) | Downstream agent | Bundles PowerDNS alongside the manager |
+| [`config/overlays/agent-powerdns`](../../config/overlays/agent-powerdns) | Downstream agent | Runnable agent + PowerDNS: builds on the `config/agent` base and adds the namespace and a storage backend |
+| [`config/agent`](../../config/agent) | Downstream agent (base) | Manager, PowerDNS, and config; consumed by the overlay above rather than applied directly |
 | [`config/overlays/replicator`](../../config/overlays/replicator) | Replicator | Wires downstream cluster credentials and discovery mode |
 | [`config/milo`](../../config/milo) | Component | Installs platform integration resources into tenant control planes |
 

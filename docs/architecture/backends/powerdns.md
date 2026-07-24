@@ -17,7 +17,7 @@ The PowerDNS client translates each typed `DNSRecordSet` entry into the
 presentation format PowerDNS expects. Translation handles the details that DNS
 record types require:
 
-- Synthesizes the `SOA` serial (as `YYYYMMDDnn`) when a record omits it.
+- Synthesizes a date-based `SOA` serial (`YYYYMMDD01`) when a record omits it.
 - Encodes `SVCB` and `HTTPS` service parameters.
 - Quotes and escapes `TXT` content.
 - Qualifies owner names against the zone and removes duplicate values.

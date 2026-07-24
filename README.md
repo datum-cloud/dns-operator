@@ -66,11 +66,11 @@ how the roles fit together.
 
 ### Agent with embedded PowerDNS
 
-Runs the operator as a downstream agent alongside PowerDNS — the quickest way to
-a working DNS service:
+Runs the operator as a downstream agent alongside PowerDNS and a storage backend
+— the quickest way to a working DNS service:
 
 ```sh
-kubectl apply -k config/agent
+kubectl apply -k config/overlays/agent-powerdns
 ```
 
 Then create a `DNSZoneClass`, `DNSZone`, and `DNSRecordSet` (see

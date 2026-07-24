@@ -9,7 +9,7 @@ The operator serves all resources under the API group/version
 |----------|-------|---------|
 | [`DNSZoneClass`](#dnszoneclass) | Cluster | Selects backend and nameserver policy |
 | [`DNSZone`](#dnszone) | Namespaced | A single authoritative domain |
-| [`DNSRecordSet`](#dnsrecordset) | Namespaced | Records for one owner name and type |
+| [`DNSRecordSet`](#dnsrecordset) | Namespaced | Records of one type, for one or more owner names |
 | [`DNSZoneDiscovery`](#dnszonediscovery) | Namespaced | One-shot snapshot of live records |
 
 ## DNSZoneClass
@@ -50,7 +50,7 @@ Namespaced. Models a single domain.
 | `status.nameservers` | []string | Authoritative nameservers, derived from the class policy. |
 | `status.recordCount` | int | Number of record sets in the zone. |
 | `status.conditions` | []Condition | `Accepted`, `Programmed`. |
-| `status.domainRef` | object | Link to the owning `Domain` and its verification status, when present. |
+| `status.domainRef` | object | Link to the owning `Domain`, exposing its name and assigned nameservers, when present. |
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -65,9 +65,10 @@ spec:
 
 ## DNSRecordSet
 
-Namespaced. Models the records for one owner name and record type within a zone.
-Each entry in `spec.records` carries exactly one typed field matching
-`spec.recordType`.
+Namespaced. Models records of one record type within a zone, across one or more
+owner names. Each entry in `spec.records` sets one owner name and carries exactly
+one typed field matching `spec.recordType`; the backend groups entries that share
+an owner name into a single RRset.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -75,9 +76,12 @@ Each entry in `spec.records` carries exactly one typed field matching
 | `spec.recordType` | string | One of `A, AAAA, ALIAS, CNAME, TXT, MX, SRV, CAA, NS, SOA, PTR, TLSA, HTTPS, SVCB`. |
 | `spec.records[].name` | string | Owner name; `@` for the zone apex. |
 | `spec.records[].ttl` | int64 | Optional per-owner TTL. |
-| `spec.records[].<type>` | object | Typed record content for the entry (e.g. `a.content`, `mx.preference`/`mx.exchange`, `srv.*`, `soa.*`). |
+| `spec.records[].<type>` | object | Typed record content for the entry. Each typed field's `content` is a single value (e.g. `a.content: "192.0.2.10"`); other types use their own fields (`mx.preference`/`mx.exchange`, `srv.*`, `soa.*`). |
 | `status.conditions` | []Condition | `Accepted`, `Programmed`. |
 | `status.recordSets[]` | []object | Per-owner-name realized status, including per-record `Programmed`. |
+
+Each entry holds a single value. To give one owner name several addresses, add
+one entry per value; the backend groups them into one RRset:
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -92,7 +96,11 @@ spec:
   records:
     - name: www
       a:
-        content: ["192.0.2.10", "192.0.2.11"]
+        content: "192.0.2.10"
+      ttl: 300
+    - name: www
+      a:
+        content: "192.0.2.11"
       ttl: 300
 ```
 

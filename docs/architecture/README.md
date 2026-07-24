@@ -61,9 +61,9 @@ that make up the service.
 
 - **[`DNSZone`](./api-reference.md#dnszone)** models a single domain. Its status
   reports the authoritative nameservers and readiness.
-- **[`DNSRecordSet`](./api-reference.md#dnsrecordset)** models the records for one
-  owner name and type within a zone (A, AAAA, CNAME, ALIAS, TXT, MX, SRV, CAA,
-  NS, SOA, PTR, TLSA, HTTPS, SVCB).
+- **[`DNSRecordSet`](./api-reference.md#dnsrecordset)** models records of one type
+  within a zone, across one or more owner names (A, AAAA, CNAME, ALIAS, TXT, MX,
+  SRV, CAA, NS, SOA, PTR, TLSA, HTTPS, SVCB).
 - **[`DNSZoneClass`](./api-reference.md#dnszoneclass)** is a cluster-scoped policy,
   analogous to a `StorageClass`, that selects the **backend** (via
   `controllerName`) and the **nameserver policy** for every zone that references
@@ -101,10 +101,13 @@ authoritative cluster to tenants.
 
 ### Status Synthesis and Conditions
 
-Every resource carries two conditions that the operator sets:
+Every zone and record resource carries two conditions that the operator sets:
 
 - **`Accepted`** — the resource is valid and its dependencies are satisfied.
 - **`Programmed`** — the backend has realized the desired state.
+
+(The one-shot `DNSZoneDiscovery` uses `Accepted` and `Discovered` instead of
+`Programmed`.)
 
 The replicator mirrors realized status from the authoritative cluster back to the
 tenant control plane. A user watching a `DNSZone` therefore sees `Programmed=True`
@@ -128,7 +131,7 @@ The operator serves these resources under `dns.networking.miloapis.com/v1alpha1`
 |----------|-------|-------------|
 | `DNSZoneClass` | Cluster | Selects backend and nameserver policy for zones |
 | `DNSZone` | Namespaced | A single authoritative domain |
-| `DNSRecordSet` | Namespaced | Records for one owner name and type within a zone |
+| `DNSRecordSet` | Namespaced | Records of one type for one or more owner names in a zone |
 | `DNSZoneDiscovery` | Namespaced | One-shot snapshot of a zone's live records |
 
 See the [API Reference](./api-reference.md) for complete field documentation.

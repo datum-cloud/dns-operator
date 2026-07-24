@@ -8,11 +8,12 @@ add new ones without changing the DNS API.
 
 ## Backend Model
 
-The downstream agent talks to a backend through a narrow Go interface. The
-interface covers two record operations — replace the records for one owner name
-and type, and delete them — plus zone-level create, read, and delete. Each
-backend implements this interface; the reconcilers never call a backend's native
-API directly.
+The downstream agent talks to a backend through a Go client. A narrow interface
+covers the two record operations — replace the records for one owner name and
+type, and delete them — so the record reconciler stays backend-agnostic. Zone
+operations (create, read, delete) are methods on the backend's concrete client
+rather than part of that interface. Either way, the reconcilers call the
+backend's Go client and never its native API directly.
 
 Three properties hold for every backend:
 
@@ -47,7 +48,8 @@ row here and a companion page that documents its specifics.
 
 Adding a backend is an operator task, not an API change. At a high level:
 
-1. Implement the backend interface for the target authoritative server.
+1. Implement the record interface and the zone-management client for the target
+   authoritative server.
 2. Choose a `controllerName` and register the backend under it.
 3. Package the server and its dependencies in a deployment overlay, following the
    pattern in [`config/agent`](../../../config/agent).

@@ -80,8 +80,8 @@ apex (`@`):
   expire values.
 
 The replicator creates these sets only when they are missing, so it never
-overwrites user-authored apex records. The backend synthesizes the `SOA` serial
-when a record omits one.
+overwrites user-authored apex records. The operator synthesizes a date-based
+`SOA` serial (`YYYYMMDD01`) when a record omits one.
 
 ## Discovery of Zone Records
 

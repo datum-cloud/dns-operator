@@ -12,11 +12,11 @@
 > ...but nothing visible in the customer's project actually references that
 > name anymore.
 
-Background on how DNS records are represented across control planes (and
-how to access each one) is covered in the wiki's
-[Multi-Tenancy: Upstream & Downstream Control Planes](https://wiki.datum.net/infrastructure/dns/multi-tenancy)
-doc — read that first if the upstream/downstream terminology below is
-unfamiliar. For how this operator itself is designed, see this repo's
+Every DNS record exists in two places: an **upstream** copy in the
+customer's own project control plane, and a **downstream** copy on the
+shared DNS infrastructure cluster that actually gets programmed into the
+DNS provider. Read that first if the upstream/downstream terminology below
+is unfamiliar. For how this operator itself is designed, see this repo's
 architecture docs:
 - [Topology](../architecture/topology.md) — the replicator and
   downstream-agent roles, the control planes involved, and discovery modes.

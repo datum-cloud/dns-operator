@@ -1,6 +1,6 @@
 # Architecture Diagrams
 
-[C4 model](https://c4model.com) diagrams for the DNS operator, authored in
+[C4 model](https://c4model.com) diagrams for the DNS service, authored in
 [C4-PlantUML](https://github.com/plantuml-stdlib/C4-PlantUML) and styled with the
 shared Datum brand theme (`datum-theme.puml`, copied from
 [datum-cloud/enhancements](https://github.com/datum-cloud/enhancements)).

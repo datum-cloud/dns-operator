@@ -3,7 +3,7 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 !include datum-theme.puml
 
-title System Context — DNS Operator
+title System Context — DNS Service
 
 Person(user, "Platform User", "Declares zones and records")
 Person(resolver, "Recursive Resolver", "Resolves names on behalf of the internet")

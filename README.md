@@ -1,13 +1,18 @@
-# DNS Operator
+# DNS
 
 Manage authoritative DNS the Kubernetes way. Declare a domain and its records as
-ordinary Kubernetes resources, and the DNS operator programs them into an
+ordinary Kubernetes resources, and the DNS service programs them into an
 authoritative DNS backend and publishes them to a globally distributed serving
 layer — no zone files, no backend API calls, no manual nameserver wiring.
 
-It's built as a Kubernetes operator, so it works natively with `kubectl` and any
-Kubernetes client, and inherits your platform's identity, RBAC, and audit
-surface.
+You manage DNS through native Kubernetes resources, so it works with `kubectl`
+and any Kubernetes client, and inherits your platform's identity, RBAC, and audit
+controls.
+
+This repository provides the **DNS operator**, the control-plane component that
+reconciles those resources and programs the backend. See the
+[Architecture Overview](docs/architecture/README.md) for how the operator fits
+into the wider service.
 
 ## What it does
 

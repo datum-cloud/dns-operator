@@ -1,10 +1,15 @@
-# DNS Operator Architecture
+# DNS Service Architecture
 
-The DNS operator is the control plane for a multi-tenant, Kubernetes-native
-authoritative DNS service. Platform users declare zones and records as ordinary
-Kubernetes resources in their own control plane; the operator carries that
-desired state down to an authoritative DNS backend and publishes the resulting
-records to a globally distributed serving layer.
+The DNS service provides multi-tenant, Kubernetes-native authoritative DNS.
+Platform users declare zones and records as ordinary Kubernetes resources in
+their own control plane; the service carries that desired state down to an
+authoritative DNS backend and publishes the resulting records to a globally
+distributed serving layer.
+
+The **DNS operator** is the control-plane component at the heart of the service.
+It reconciles the user's resources and programs the backend. The DNS backend, the
+serving layer, and a shared state store make up the rest of the system, and this
+document describes how the operator and those components fit together.
 
 ## How It Works
 

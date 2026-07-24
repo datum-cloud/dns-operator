@@ -1,9 +1,10 @@
 # Deployment Topology
 
-The DNS operator is a single binary that runs in one of two **roles**, which you
-select with `--role`. A complete deployment composes those roles across a few
-control planes and a serving fleet. This document describes the components a
-deployment needs, independent of any specific cloud or cluster technology.
+The DNS operator — the service's control-plane component — is a single binary
+that runs in one of two **roles**, which you select with `--role`. A complete
+deployment composes those roles across a few control planes and a serving fleet.
+This document describes the components a deployment needs, independent of any
+specific cloud or cluster technology.
 
 > [!NOTE]
 >

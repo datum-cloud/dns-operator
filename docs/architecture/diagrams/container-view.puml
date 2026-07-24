@@ -3,7 +3,7 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
 !include datum-theme.puml
 
-title Container View — DNS Operator
+title Container View — DNS Service
 
 Person(user, "Platform User", "Declares zones and records")
 Person(resolver, "Recursive Resolver", "Resolves names for the internet")

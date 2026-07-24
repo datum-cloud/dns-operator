@@ -31,28 +31,9 @@ single writer.
 
 ## System Context
 
-```mermaid
-C4Context
-  title System Context — DNS Operator
-
-  Person(user, "Platform User", "Declares zones and records")
-  Person(resolver, "Recursive Resolver", "Resolves names on behalf of the internet")
-
-  System_Boundary(dns, "DNS Service") {
-    System(operator, "DNS Operator", "Reconciles zones and records into an authoritative backend")
-    System(serving, "Authoritative Serving Layer", "Answers DNS queries")
-  }
-
-  System_Ext(cp, "Tenant Control Planes", "Kubernetes API where users author DNS resources")
-  System_Ext(activity, "Activity Service", "Human-readable activity timelines")
-
-  Rel(user, cp, "Creates DNSZone / DNSRecordSet", "kubectl / API")
-  Rel(operator, cp, "Watches desired state, writes status", "watch / patch")
-  Rel(operator, serving, "Programs authoritative zones")
-  Rel(resolver, serving, "DNS query", "UDP/TCP :53")
-  Rel(cp, activity, "Audit logs + events")
-  UpdateRelStyle(resolver, serving, $offsetY="-20")
-```
+<p align="center">
+  <img src="./diagrams/system-context.png" alt="System Context — DNS Operator" />
+</p>
 
 The tenant control plane publishes desired state (and, separately, audit logs
 and events). The operator consumes desired state, programs the authoritative

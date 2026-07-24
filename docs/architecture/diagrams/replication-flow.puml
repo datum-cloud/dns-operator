@@ -1,0 +1,25 @@
+@startuml replication-flow
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Dynamic.puml
+!include datum-theme.puml
+
+title Replication Flow — Desired State Down, Realized Status Up
+
+System_Boundary(up, "Upstream Control Plane") {
+    Container(uz, "DNSZone / DNSRecordSet", "Kubernetes resource", "User-authored desired state")
+}
+
+System_Boundary(down, "Authoritative Cluster") {
+    Container(sz, "Shadow DNSZone / DNSRecordSet", "Kubernetes resource", "Operator-managed mirror")
+    Container(agent, "Downstream Agent", "controller-runtime", "Programs the backend")
+    ContainerDb(be, "DNS Backend", "PowerDNS", "Authoritative zone data")
+}
+
+RelIndex(1, uz, sz, "Replicator mirrors spec", "down")
+RelIndex(2, sz, agent, "Agent reconciles shadow")
+RelIndex(3, agent, be, "Programs zones / records", "HTTP API")
+RelIndex(4, be, sz, "Realized status")
+RelIndex(5, sz, uz, "Replicator mirrors status", "up")
+
+SHOW_LEGEND()
+@enduml

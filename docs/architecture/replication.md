@@ -20,20 +20,9 @@ downstream. The downstream agent programs the backend from the shadow and writes
 realized status onto it; the replicator mirrors that status back upstream. A
 change on either side wakes the replicator via cross-cluster watches.
 
-```mermaid
-flowchart LR
-  subgraph up[Upstream Control Plane]
-    uz[DNSZone / DNSRecordSet]
-  end
-  subgraph down[Authoritative Cluster]
-    sz[Shadow DNSZone / DNSRecordSet]
-    be[(DNS Backend)]
-  end
-  uz -- "mirror spec (down)" --> sz
-  sz -- "program" --> be
-  be -- "realized status" --> sz
-  sz -- "mirror status (up)" --> uz
-```
+<p align="center">
+  <img src="./diagrams/replication-flow.png" alt="Replication Flow — desired state down, realized status up" />
+</p>
 
 ## Shadow Objects and Namespace Mapping
 

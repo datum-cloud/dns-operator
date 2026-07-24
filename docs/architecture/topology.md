@@ -15,41 +15,9 @@ cluster technology.
 
 ## Container View
 
-```mermaid
-C4Container
-  title Container View — DNS Operator
-
-  Person(user, "Platform User")
-  Person(resolver, "Recursive Resolver")
-
-  System_Boundary(tenant, "Tenant Control Planes") {
-    Container(cp, "Project Control Plane", "Kubernetes API", "Holds user-authored DNSZone / DNSRecordSet / DNSZoneClass")
-  }
-
-  System_Boundary(replication, "Replication Control Plane") {
-    Container(replicator, "DNS Operator (replicator)", "Go / controller-runtime", "Discovers control planes, mirrors desired state, synthesizes status")
-  }
-
-  System_Boundary(authoritative, "Authoritative Cluster") {
-    Container(agent, "DNS Operator (downstream agent)", "Go / controller-runtime", "Programs zones and records")
-    Container(pdns, "PowerDNS Authoritative", "PowerDNS + LMDB", "Holds authoritative zone data")
-    Container(publish, "State Publisher", "LightningStream", "Snapshots LMDB to object storage")
-  }
-
-  ContainerDb(store, "Object Storage", "S3-compatible", "Durable authoritative state")
-
-  System_Boundary(edge, "Serving Layer") {
-    Container(serving, "Authoritative Serving Node", "PowerDNS (read-only) + LightningStream", "Answers DNS queries from replicated state")
-  }
-
-  Rel(user, cp, "Creates / edits DNS resources", "kubectl / API")
-  Rel(replicator, cp, "Watches spec, writes status", "watch / patch")
-  Rel(replicator, agent, "Mirrors desired state as shadow objects")
-  Rel(agent, pdns, "Programs zones / records", "HTTP API")
-  Rel(publish, store, "Writes LMDB snapshots")
-  Rel(serving, store, "Pulls LMDB snapshots")
-  Rel(resolver, serving, "DNS query", "UDP/TCP :53")
-```
+<p align="center">
+  <img src="./diagrams/container-view.png" alt="Container View — DNS Operator" />
+</p>
 
 ## Roles
 

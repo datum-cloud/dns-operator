@@ -57,13 +57,31 @@ a different setting governs each one, so it helps to reason about them separatel
 |-------|--------------|------------------------|
 | 1. Reconcile | The agent programs the change into the writer's PowerDNS through the HTTP API. | Controller queue latency, normally seconds. On a backend error the agent retries with exponential backoff, from `rateLimiterBaseDelay` (1s) up to `rateLimiterMaxDelay` (30s). |
 | 2. Authoritative write | The writer's PowerDNS serves the change. It reads LMDB directly (`zone-cache-refresh-interval=0`), so no cache stands between the write and the answer. | Effectively immediate on the writer. |
-| 3. Replicate to serving nodes | A LightningStream sidecar snapshots the LMDB to object storage; each serving node polls object storage and merges the snapshot. | The writer's snapshot interval plus each node's poll interval — seconds to a few minutes. Both are LightningStream settings you can tune. |
+| 3. Replicate to serving nodes | A LightningStream sidecar snapshots the LMDB to object storage; each serving node lists object storage, downloads new snapshots, and merges them. | The writer's `lmdb_poll_interval` plus each node's `storage_poll_interval` (see [LightningStream intervals](#lightningstream-intervals)), plus object-storage upload and download time — typically a few seconds. |
 | 4. Resolver caching | Recursive resolvers and clients cache the answer until its TTL expires. They also cache a *missing* name for the zone's negative-cache TTL (the `SOA` minimum). | The record's TTL, and — for a newly added name — the negative-cache TTL of any earlier lookup. |
 
 Stages 1–3 move a change from the API to every authoritative serving node,
-usually within seconds to a few minutes. Stage 4 dominates what end users
-observe, because a resolver keeps serving a cached answer until the TTL expires
-regardless of how fast the authoritative servers update.
+typically within a few seconds. Stage 4 dominates what end users observe, because
+a resolver keeps serving a cached answer until the TTL expires regardless of how
+fast the authoritative servers update.
+
+### LightningStream intervals
+
+LightningStream drives stage 3. The deployment runs it with default intervals, so
+a change reaches every serving node within a few seconds of becoming
+authoritative on the writer, bounded mainly by object-storage latency:
+
+| Setting | Default | Effect on propagation |
+|---------|---------|-----------------------|
+| `lmdb_poll_interval` | `1s` | How often the writer's sidecar checks LMDB for changes to snapshot. |
+| `storage_poll_interval` | `1s` | How often a serving node lists object storage for new snapshots. |
+| `storage_force_snapshot_interval` | `4h` | Writes a snapshot even with no changes, so an idle instance does not look stale. |
+| `storage_retry_interval` | `5s` | Retry delay after a failed snapshot upload or download. |
+
+Lowering the poll intervals shortens propagation at the cost of more frequent
+storage listings; raising them does the reverse. These intervals govern only how
+fast a change reaches the serving nodes — end users still see it no sooner than
+their cached TTL allows.
 
 Two practical consequences follow:
 

@@ -106,8 +106,10 @@ Every zone and record resource carries two conditions that the operator sets:
 - **`Accepted`** — the resource is valid and its dependencies are satisfied.
 - **`Programmed`** — the backend has realized the desired state.
 
-(The one-shot `DNSZoneDiscovery` uses `Accepted` and `Discovered` instead of
-`Programmed`.)
+> [!NOTE]
+>
+> The one-shot `DNSZoneDiscovery` uses `Accepted` and `Discovered` instead of
+> `Programmed`.
 
 The replicator mirrors realized status from the authoritative cluster back to the
 tenant control plane. A user watching a `DNSZone` therefore sees `Programmed=True`

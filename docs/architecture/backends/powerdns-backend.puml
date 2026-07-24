@@ -3,6 +3,8 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
 !include ../datum-theme.puml
 
+LAYOUT_LEFT_RIGHT()
+
 title Component View — PowerDNS Backend
 
 Container(agent, "Downstream Agent", "Go / controller-runtime", "Reconciles shadow DNSZone / DNSRecordSet")

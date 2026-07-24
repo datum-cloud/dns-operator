@@ -3,6 +3,8 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 !include datum-theme.puml
 
+LAYOUT_LEFT_RIGHT()
+
 title System Context — DNS Service
 
 Person(user, "Platform User", "Owns domains and publishes DNS so their applications are reachable")

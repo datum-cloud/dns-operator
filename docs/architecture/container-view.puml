@@ -3,6 +3,8 @@
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
 !include datum-theme.puml
 
+LAYOUT_LEFT_RIGHT()
+
 title Container View — DNS Service
 
 Person(user, "Platform User", "Declares zones and records")

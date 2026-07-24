@@ -48,6 +48,34 @@ recursor to expand `ALIAS` records at query time. See
 [Deployment Topology](../topology.md#authoritative-serving-and-state-replication)
 for how the serving layer fits the wider system.
 
+## Propagation and Timing
+
+A record change reaches end users through four stages. Each stage adds delay, and
+a different setting governs each one, so it helps to reason about them separately.
+
+| Stage | What happens | What governs the delay |
+|-------|--------------|------------------------|
+| 1. Reconcile | The agent programs the change into the writer's PowerDNS through the HTTP API. | Controller queue latency, normally seconds. On a backend error the agent retries with exponential backoff, from `rateLimiterBaseDelay` (1s) up to `rateLimiterMaxDelay` (30s). |
+| 2. Authoritative write | The writer's PowerDNS serves the change. It reads LMDB directly (`zone-cache-refresh-interval=0`), so no cache stands between the write and the answer. | Effectively immediate on the writer. |
+| 3. Replicate to serving nodes | A LightningStream sidecar snapshots the LMDB to object storage; each serving node polls object storage and merges the snapshot. | The writer's snapshot interval plus each node's poll interval — seconds to a few minutes. Both are LightningStream settings you can tune. |
+| 4. Resolver caching | Recursive resolvers and clients cache the answer until its TTL expires. They also cache a *missing* name for the zone's negative-cache TTL (the `SOA` minimum). | The record's TTL, and — for a newly added name — the negative-cache TTL of any earlier lookup. |
+
+Stages 1–3 move a change from the API to every authoritative serving node,
+usually within seconds to a few minutes. Stage 4 dominates what end users
+observe, because a resolver keeps serving a cached answer until the TTL expires
+regardless of how fast the authoritative servers update.
+
+Two practical consequences follow:
+
+- **To make a change take effect quickly, lower the record's TTL before you make
+  it.** Set a short TTL, wait for the old TTL to expire everywhere, change the
+  record, then raise the TTL again. The serving pipeline itself adds only seconds
+  to minutes; the TTL sets the ceiling.
+- **A brand-new name can appear slowly if something looked it up first**, because
+  resolvers cached the negative answer for the zone's negative-cache TTL. The
+  operator's default `SOA` sets this value (see
+  [Replication Model](../replication.md#default-soa-and-ns-records)).
+
 ## Configuration
 
 The agent connects to PowerDNS through environment variables:

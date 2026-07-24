@@ -1,30 +1,43 @@
 @startuml powerdns-backend
 !$NEW_C4_STYLE = 1
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
 !include ../datum-theme.puml
 
 LAYOUT_LEFT_RIGHT()
 
-title Component View — PowerDNS Backend
+title Deployment View — PowerDNS Backend
 
-Container(agent, "Downstream Agent", "Go / controller-runtime", "Reconciles shadow DNSZone / DNSRecordSet")
+Deployment_Node(rcp, "Replication Control Plane", "Kubernetes cluster") {
+    Container(replicator, "DNS Operator (replicator)", "controller-runtime", "Mirrors desired state into the authoritative cluster")
+}
 
-System_Boundary(backend, "PowerDNS Backend") {
-    Component(client, "PowerDNS Client", "internal/pdns", "Translates records and calls the PowerDNS API")
-    Component(pdns, "PowerDNS Authoritative", "pdns-auth", "Serves and stores authoritative zones")
-    ComponentDb(lmdb, "LMDB Store", "embedded", "Local authoritative zone data")
-    Component(publish, "State Publisher", "LightningStream", "Snapshots LMDB to object storage")
+Deployment_Node(auth, "Authoritative Cluster", "Kubernetes cluster") {
+    Container(api, "Kubernetes API", "control plane", "Holds shadow DNSZone / DNSRecordSet")
+    Container(agent, "DNS Operator (downstream agent)", "controller-runtime", "Reconciles shadows and programs PowerDNS")
+    Deployment_Node(pod, "pdns-auth", "StatefulSet pod") {
+        Container(pdns, "PowerDNS Authoritative", "pdns-auth + LMDB", "Writer and source of truth")
+        Container(pub, "LightningStream", "sidecar", "Snapshots LMDB to object storage")
+    }
 }
 
 ContainerDb(store, "Object Storage", "S3-compatible", "Durable authoritative state")
-Container(serving, "Serving Node", "PowerDNS (read-only)", "Answers DNS queries")
 
-Rel(agent, client, "ReplaceRRSet / DeleteRRSet / CreateZone")
-Rel(client, pdns, "Zone and RRset operations", "HTTP API + X-API-Key")
-Rel(pdns, lmdb, "Reads / writes")
-Rel(publish, lmdb, "Reads snapshots")
-Rel(publish, store, "Writes snapshots")
-Rel(serving, store, "Pulls snapshots")
+Deployment_Node(edge, "Serving Layer", "Edge nodes") {
+    Deployment_Node(node, "Serving Node", "DaemonSet pod") {
+        Container(spdns, "PowerDNS (read-only)", "pdns-auth + LMDB", "Answers DNS queries")
+        Container(recv, "LightningStream", "sidecar (receive)", "Pulls snapshots from object storage")
+        Container(rec, "Recursor", "pdns-recursor", "Expands ALIAS at query time")
+    }
+}
+
+Person_Ext(resolver, "Recursive Resolver", "Resolves names for the internet")
+
+Rel(replicator, api, "Writes shadow DNS resources", "apply")
+Rel(agent, api, "Watches shadows, writes status", "watch")
+Rel(agent, pdns, "Programs zones / records", "HTTP API + X-API-Key")
+Rel(pub, store, "Writes snapshots")
+Rel(recv, store, "Pulls snapshots")
+Rel(resolver, spdns, "DNS query", "UDP/TCP :53")
 
 SHOW_LEGEND()
 @enduml

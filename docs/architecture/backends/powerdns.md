@@ -7,8 +7,13 @@ PowerDNS backend translates records, programs zones, stores data, and serves
 queries. For the properties every backend shares, see the
 [backend model](./README.md#backend-model).
 
+The deployment view below shows where each component runs: the downstream agent
+and the PowerDNS writer in the authoritative cluster (fed shadow resources by the
+replicator through the cluster's Kubernetes API), and the read-only serving nodes
+at the edge, replicating through shared object storage.
+
 <p align="center">
-  <img src="./powerdns-backend.png" alt="Component View — PowerDNS Backend" />
+  <img src="./powerdns-backend.png" alt="Deployment View — PowerDNS Backend" />
 </p>
 
 ## Record Translation

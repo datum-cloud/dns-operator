@@ -1,15 +1,16 @@
 # A DNS record can't be created because of a "conflicting record" error
 
-**Symptom:** A customer can't create or edit a DNS record. The record's
-status shows it failed to program, with a message like:
-
-```
-PDNSError: A conflicting record already exists for this name. Remove the
-existing record and try again.
-```
-
-...but nothing visible in the customer's project actually references that
-name anymore.
+> [!NOTE]
+> **Symptom:** A customer can't create or edit a DNS record. The record's
+> status shows it failed to program, with a message like:
+>
+> ```
+> PDNSError: A conflicting record already exists for this name. Remove the
+> existing record and try again.
+> ```
+>
+> ...but nothing visible in the customer's project actually references that
+> name anymore.
 
 Background on how DNS records are represented across control planes (and
 how to access each one) is covered in the wiki's
@@ -51,9 +52,10 @@ AI Edge was never cleaned up.
 
 ## How to investigate
 
-These steps assume `kubectl` contexts named `upstream` (the customer's
-project control plane) and `downstream` (the shared DNS infrastructure
-cluster) — substitute whatever your environment actually calls them.
+> [!NOTE]
+> These steps assume `kubectl` contexts named `upstream` (the customer's
+> project control plane) and `downstream` (the shared DNS infrastructure
+> cluster) — substitute whatever your environment actually calls them.
 
 1. **Confirm the upstream record really doesn't exist.** List
    `DNSRecordSet`s in the customer's project namespace for the name in
@@ -104,10 +106,11 @@ cluster) — substitute whatever your environment actually calls them.
    # expect: Error from server (NotFound)
    ```
 
-   If that upstream `get` returns `NotFound` while the downstream copy
-   above is healthy and has no `deletionTimestamp`, this is a confirmed
-   orphan, not a timing artifact — a genuinely deleted object leaves no
-   `DeletionTimestamp` behind for anything to react to.
+   > [!IMPORTANT]
+   > If that upstream `get` returns `NotFound` while the downstream copy
+   > above is healthy and has no `deletionTimestamp`, this is a confirmed
+   > orphan, not a timing artifact — a genuinely deleted object leaves no
+   > `DeletionTimestamp` behind for anything to react to.
 
 5. **Optional:** confirm what the DNS provider itself currently has on
    record for that name, to double check it matches what you found
@@ -125,9 +128,10 @@ cluster) — substitute whatever your environment actually calls them.
    kubectl --context downstream -n "ns-$uid" delete dnsrecordset <record-name>
    ```
 
-   Confirm nothing else references the object first (check
-   `metadata.ownerReferences` for an anchor `ConfigMap` — see
-   [Replication](../architecture/replication.md) — before deleting).
+   > [!WARNING]
+   > Confirm nothing else references the object first (check
+   > `metadata.ownerReferences` for an anchor `ConfigMap` — see
+   > [Replication](../architecture/replication.md)) before deleting.
 
 2. Confirm the customer's originally-stuck record programs successfully
    shortly afterward:

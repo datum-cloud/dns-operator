@@ -8,7 +8,7 @@ queries. For the properties every backend shares, see the
 [backend model](./README.md#backend-model).
 
 <p align="center">
-  <img src="../diagrams/powerdns-backend.png" alt="Component View — PowerDNS Backend" />
+  <img src="./powerdns-backend.png" alt="Component View — PowerDNS Backend" />
 </p>
 
 ## Record Translation

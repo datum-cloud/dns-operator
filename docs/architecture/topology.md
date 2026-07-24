@@ -16,7 +16,7 @@ specific cloud or cluster technology.
 ## Container View
 
 <p align="center">
-  <img src="./diagrams/container-view.png" alt="Container View — DNS Operator" />
+  <img src="./container-view.png" alt="Container View — DNS Service" />
 </p>
 
 ## Roles

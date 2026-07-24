@@ -1,12 +1,16 @@
 version: '3'
 
 # Renders the architecture diagrams from PlantUML sources using Docker,
-# mirroring the datum-cloud/enhancements convention. PNGs are committed next
-# to their .puml source and referenced from the docs. The shared brand theme
+# mirroring the datum-cloud/enhancements convention. Each diagram is committed
+# next to the document that embeds it. The shared brand theme
 # (datum-theme*.puml) is an include, not a diagram, so it is excluded.
+#
+# The whole docs/architecture tree is mounted so relative includes (e.g.
+# ../datum-theme.puml from backends/) resolve, and each PNG is written back
+# beside its source.
 
 vars:
-  DIAGRAMS_DIR: "{{.USER_WORKING_DIR}}/docs/architecture/diagrams"
+  ARCH_DIR: "{{.USER_WORKING_DIR}}/docs/architecture"
   OUTPUT_FORMAT: "png"
   PLANTUML_IMAGE: "plantuml/plantuml:latest"
 
@@ -21,12 +25,11 @@ tasks:
     cmds:
       - |
         set -e
-        cd "{{.DIAGRAMS_DIR}}"
-        for puml in *.puml; do
-          case "$puml" in datum-theme*) continue ;; esac
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
           echo "Rendering: $puml"
           docker run --rm -v "$(pwd)":/data "{{.PLANTUML_IMAGE}}" \
-            -t{{.OUTPUT_FORMAT}} -o /data "/data/$puml"
+            -t{{.OUTPUT_FORMAT}} -o "/data/$(dirname "$puml")" "/data/$puml"
         done
 
   diagrams:validate:
@@ -34,9 +37,8 @@ tasks:
     cmds:
       - |
         set -e
-        cd "{{.DIAGRAMS_DIR}}"
-        for puml in *.puml; do
-          case "$puml" in datum-theme*) continue ;; esac
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
           echo "Validating: $puml"
           docker run --rm -v "$(pwd)":/data "{{.PLANTUML_IMAGE}}" \
             -syntax "/data/$puml"
@@ -47,9 +49,8 @@ tasks:
     cmds:
       - |
         set -e
-        cd "{{.DIAGRAMS_DIR}}"
-        for puml in *.puml; do
-          case "$puml" in datum-theme*) continue ;; esac
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
           rm -f "${puml%.puml}.{{.OUTPUT_FORMAT}}"
         done
         echo "Removed generated diagrams"

@@ -37,7 +37,7 @@ and cluster topology, and gives the authoritative data a single writer.
 ## System Context
 
 <p align="center">
-  <img src="./diagrams/system-context.png" alt="System Context — DNS Service" />
+  <img src="./system-context.png" alt="System Context — DNS Service" />
 </p>
 
 The DNS service exists so platform users and other platform services can make the

@@ -21,7 +21,7 @@ realized status onto it; the replicator mirrors that status back upstream. A
 change on either side wakes the replicator via cross-cluster watches.
 
 <p align="center">
-  <img src="./diagrams/replication-flow.png" alt="Replication Flow — desired state down, realized status up" />
+  <img src="./replication-flow.png" alt="Replication Flow — desired state down, realized status up" />
 </p>
 
 ## Shadow Objects and Namespace Mapping

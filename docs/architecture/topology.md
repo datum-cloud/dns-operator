@@ -89,21 +89,20 @@ a tenant control plane requires no change to the DNS operator.
 ## Authoritative Serving and State Replication
 
 The authoritative cluster is the single writer, but it does not necessarily
-answer public queries. The deployment replicates authoritative state to a serving
-layer that answers queries close to end users:
-
-1. The backend stores authoritative zone data in an embedded **LMDB** store.
-2. A **publisher** sidecar (LightningStream) snapshots that store to shared,
-   S3-compatible **object storage**.
-3. Each **serving node** runs a read-only copy of the backend with a LightningStream
-   sidecar in receive mode. The sidecar pulls snapshots from object storage, and
-   the node serves them over standard DNS.
+answer public queries. The backend replicates its authoritative state to a
+**serving layer** of read-only nodes that answer queries close to end users: the
+writer publishes changes to a shared store, and each serving node pulls them and
+serves them over standard DNS.
 
 This design makes the serving layer horizontally scalable and geographically
 distributable. Each node is stateless beyond its local replica, so you can add
-nodes anywhere object storage is reachable. An anycast address typically fronts
-the nodes, so resolvers reach the nearest one. A serving node can also run a
-local recursor to expand `ALIAS` records at query time.
+nodes wherever the shared store is reachable. An anycast address typically fronts
+the nodes, so resolvers reach the nearest one.
+
+How a backend replicates its state is backend-specific. For the PowerDNS
+mechanism — LMDB snapshots shipped through LightningStream to object storage, plus
+a local recursor for `ALIAS` expansion — see [PowerDNS Backend → Storage and
+Serving](./backends/powerdns.md#storage-and-serving).
 
 Each zone's `NS` and `SOA` records advertise nameserver names from the
 `DNSZoneClass` nameserver policy, and those names point at the serving layer.
@@ -132,12 +131,10 @@ instance. Sample:
 | `discovery.projectKubeconfigPath` | — | Connection template for discovered project control planes. |
 | `downstreamResourceManagement.kubeconfigPath` | — | Kubeconfig for the authoritative (downstream) cluster. |
 | `downstreamResourceManagement.dnsZoneAccountingNamespace` | `datum-downstream-dnszone-accounting` | Namespace holding the zone ownership ledger. |
-| `controllers.dnsRecordSetPowerDNS.maxConcurrentReconciles` | `4` | Concurrent reconciles for the PowerDNS record-set controller. |
-| `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay` | `1s` | Exponential backoff base delay. |
-| `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay` | `30s` | Exponential backoff max delay. |
 
-Backend-specific settings live with each backend. For the PowerDNS environment
-variables, see [PowerDNS Backend → Configuration](./backends/powerdns.md#configuration).
+Each backend contributes its own `controllers.<backend>` tuning and connection
+settings. For the PowerDNS controller options and environment variables, see
+[PowerDNS Backend → Configuration](./backends/powerdns.md#configuration).
 
 ## Deployment Overlays
 

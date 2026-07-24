@@ -104,14 +104,25 @@ The agent connects to PowerDNS through environment variables:
 | `PDNS_API_KEY` | — | API key (or use `PDNS_API_KEY_FILE`). |
 | `PDNS_API_KEY_FILE` | — | Path to a file that contains the API key. |
 
-The [`config/agent`](../../../config/agent) overlay bundles PowerDNS, the
-recursor, and LightningStream alongside the agent, and wires the API key through
-a shared volume. See [Deployment Topology](../topology.md) for the deployment
-shape.
+The PowerDNS record-set controller adds its own tuning under
+`controllers.dnsRecordSetPowerDNS` in the [`DNSOperator` server
+config](../topology.md#operator-configuration):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `controllers.dnsRecordSetPowerDNS.maxConcurrentReconciles` | `4` | Concurrent reconciles for the PowerDNS record-set controller. |
+| `controllers.dnsRecordSetPowerDNS.rateLimiterBaseDelay` | `1s` | Exponential backoff base delay. |
+| `controllers.dnsRecordSetPowerDNS.rateLimiterMaxDelay` | `30s` | Exponential backoff max delay. |
+
+The [`config/agent`](../../../config/agent) base bundles PowerDNS, the recursor,
+and LightningStream alongside the agent and wires the API key through a shared
+volume; the runnable [`config/overlays/agent-powerdns`](../../../config/overlays/agent-powerdns)
+overlay adds the namespace and a storage backend. See
+[Deployment Topology](../topology.md) for the deployment shape.
 
 ## Related
 
 - [DNS Backends](./README.md) — The backend model that every backend shares
 - [API Reference](../api-reference.md#dnszoneclass) — `DNSZoneClass` schema
-- [Deployment Topology](../topology.md#operator-configuration) — The
-  `DNSOperator` server config, including the PowerDNS controller settings
+- [Deployment Topology](../topology.md#operator-configuration) — The generic
+  `DNSOperator` server config

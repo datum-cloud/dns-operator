@@ -62,7 +62,6 @@ spec:
         - /manager
         args:
           - --role=replicator
-          - --leader-elect
           - --health-probe-bind-address=:8081
           - --server-config=/config/server-config.yaml
         image: ghcr.io/datum-cloud/dns-operator:latest
@@ -75,6 +74,11 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        # Leader election is set via env (defaulted in cmd/main.go) rather than a
+        # flag so overlays can toggle it by patching this one env var instead of
+        # overriding the whole args list.
+        - name: LEADER_ELECT
+          value: "true"
         ports: []
         securityContext:
           readOnlyRootFilesystem: true

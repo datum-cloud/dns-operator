@@ -1,6 +1,10 @@
-# Milo-mode replicator: 2 active replicas (leader election OFF so both replicas
+# Milo-mode replicator: 2 replicas with leader election OFF so both replicas
 # reconcile — this is what exercises the multicluster per-cluster ownership that
-# regressed in engineering#346), plus the milo-apiserver kubeconfig mount.
+# regressed in engineering#346 — plus the milo-apiserver kubeconfig mount.
+#
+# Note we DON'T restate the container args here: env and volume/volumeMount
+# lists merge by name under strategic merge, so we only patch what changes
+# (LEADER_ELECT=false) and inherit the base args (--role, --server-config, …).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,11 +15,9 @@ spec:
     spec:
       containers:
         - name: manager
-          # Replaces the base args wholesale — note NO --leader-elect.
-          args:
-            - --role=replicator
-            - --health-probe-bind-address=:8081
-            - --server-config=/config/server-config.yaml
+          env:
+            - name: LEADER_ELECT
+              value: "false"
           volumeMounts:
             - name: milo-kubeconfig
               mountPath: /milo

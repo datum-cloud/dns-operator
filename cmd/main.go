@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -63,19 +62,6 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
-// envBool returns the boolean value of the named env var, or def when it is
-// unset or unparseable. Used to default toggle flags from the environment so
-// kustomize overlays can patch a single env var instead of overriding the
-// container's whole args list.
-func envBool(key string, def bool) bool {
-	if v, ok := os.LookupEnv(key); ok {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
-	}
-	return def
-}
-
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -96,11 +82,9 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", envBool("LEADER_ELECT", false),
+	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager. "+
-			"Defaults from the LEADER_ELECT env var so overlays can toggle it "+
-			"without overriding the whole args list.")
+			"Enabling this will ensure there is only one active controller manager.")
 	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 10*time.Second,
 		"The duration that non-leader candidates will wait to force acquire leadership.")
 	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 3*time.Second,

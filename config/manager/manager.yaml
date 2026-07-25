@@ -62,6 +62,10 @@ spec:
         - /manager
         args:
           - --role=replicator
+          # Value comes from the LEADER_ELECT env var via Kubernetes'
+          # $(VAR) substitution, so overlays toggle leader election by patching
+          # that one env var instead of overriding this whole args list.
+          - --leader-elect=$(LEADER_ELECT)
           - --health-probe-bind-address=:8081
           - --server-config=/config/server-config.yaml
         image: ghcr.io/datum-cloud/dns-operator:latest
@@ -74,9 +78,8 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        # Leader election is set via env (defaulted in cmd/main.go) rather than a
-        # flag so overlays can toggle it by patching this one env var instead of
-        # overriding the whole args list.
+        # Substituted into --leader-elect=$(LEADER_ELECT) above. Overlays patch
+        # this env var (env lists merge by name) rather than restating args.
         - name: LEADER_ELECT
           value: "true"
         ports: []

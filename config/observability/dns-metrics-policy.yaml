@@ -1,22 +1,11 @@
-# ResourceMetricsPolicy consumed by the milo-os/resource-metrics controller.
+# ResourceMetricsPolicy for control-plane DNS drift detection. resource-metrics
+# emits one gauge per DNSRecordSet/DNSZone from each control plane; recording
+# rules diff the two sides. See docs/enhancements/controlplane-drift-detection.md.
 #
-# resource-metrics watches every project (upstream) control plane via the Milo
-# multi-cluster provider, and — with discovery.collectRootControlPlane=true —
-# the root/core (downstream) control plane as well. It emits one gauge series
-# per matching object on whichever control plane the object lives on, pushing
-# over OTLP to the platform OTel collector -> Victoria Metrics.
-#
-# The two generators below emit structurally different series on the two sides
-# of the replication boundary so that recording rules can diff them:
-#
-#   dns_recordset_upstream_info    <- source of truth, on project control planes
-#   dns_recordset_downstream_info  <- replicated copy, on the root control plane
-#
-# The downstream series lifts the replicator's `meta.datumapis.com/upstream-*`
-# annotations onto labels so the two sides share a join key
-# (upstream_cluster, upstream_namespace, upstream_name).
-#
-# See docs/enhancements/controlplane-drift-detection.md for the full design.
+# Upstream generators run on project control planes (desired state). Downstream
+# generators run on the root control plane (replicated copies) and lift the
+# replicator's meta.datumapis.com/upstream-* annotations onto labels, so both
+# sides share the join key (upstream_cluster, upstream_namespace, upstream_name).
 apiVersion: resourcemetrics.miloapis.com/v1alpha1
 kind: ResourceMetricsPolicy
 metadata:
@@ -41,9 +30,8 @@ spec:
                 - name: upstream_name
                   value: "object.metadata.name"
                 - name: accepted
-                  # Null-safe: a record with no status yet (no reconciler) has no
-                  # status.conditions; guarding with has() avoids a CEL eval error
-                  # that would make resource-metrics silently drop the whole series.
+                  # has() guards a record that has no status yet: reading a
+                  # missing status.conditions is a CEL error, which drops the series.
                   value: "has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Accepted' && c.status == 'True') ? 'true' : 'false'"
 
     - name: dnszone-upstream-info
@@ -64,11 +52,9 @@ spec:
                   value: "object.metadata.name"
 
     # ---- Downstream (root control plane): replicated / actual state -------
-    # Join labels come from the annotations the replicator stamps in
-    # internal/downstreamclient/mappednamespace.go. NOTE: the namespace is
-    # remapped downstream, so metadata.namespace is NOT the upstream namespace;
-    # the real one is in the upstream-namespace annotation. The cluster-name
-    # annotation is prefixed "cluster-" — the recording rules normalize for it.
+    # Downstream namespaces are remapped, so the join labels come from the
+    # replicator's upstream-* annotations, not from metadata. The cluster-name
+    # annotation is prefixed "cluster-"; the recording rules normalize it.
     - name: dnsrecordset-downstream-info
       resource:
         group: dns.networking.miloapis.com

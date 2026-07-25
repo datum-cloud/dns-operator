@@ -1,0 +1,173 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Missing: an upstream DNSRecordSet that was never replicated downstream
+# (stalled replication / shard-ownership gap). We reproduce it by scaling the
+# replicator to 0 FIRST, then creating an upstream object — no downstream copy
+# is ever made — and assert the missing recording rule fires.
+#
+# Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
+#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
+#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
+#   infra  -> kind cluster hosting VM + OTel + the           ../kubeconfig-infra
+#             replicator Deployment (ns dns-replicator-system)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-drift-missing
+spec:
+  timeouts:
+    exec: 600s
+  clusters:
+    alpha:
+      kubeconfig: ../kubeconfig-alpha
+    core:
+      kubeconfig: ../kubeconfig-core
+    infra:
+      kubeconfig: ../kubeconfig-infra
+    replicator:
+      kubeconfig: ../kubeconfig-replicator
+  cluster: alpha
+  steps:
+    - name: Prereq - DNSZoneClass + DNSZone on upstream project CP alpha
+      try:
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszoneclass.yaml
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszone.yaml
+        - assert:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: drift-example
+                namespace: default
+
+    - name: Scale the replicator to 0 so nothing gets replicated
+      try:
+        - script:
+            cluster: replicator
+            timeout: 120s
+            content: |
+              set -eu
+              kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=0
+              kubectl -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=90s || true
+              kubectl -n dns-replicator-system get pods
+
+    - name: Create an upstream DNSRecordSet that will never replicate
+      try:
+        - create:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              metadata:
+                name: www-missing
+                namespace: default
+              spec:
+                dnsZoneRef:
+                  name: drift-example
+                recordType: A
+                records:
+                  - name: www-missing
+                    ttl: 60
+                    a:
+                      content: 192.0.2.30
+        - assert:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              metadata:
+                name: www-missing
+                namespace: default
+
+    - name: Confirm no downstream copy exists on the core CP
+      try:
+        - script:
+            cluster: core
+            timeout: 60s
+            content: |
+              set -eu
+              got=$(kubectl get dnsrecordset -A \
+                -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                2>/dev/null || true)
+              echo "downstream upstream-name annotations: ${got}"
+              if printf '%s\n' "$got" | grep -qx "www-missing"; then
+                echo "unexpected: www-missing was replicated despite replicator scaled to 0" >&2
+                exit 1
+              fi
+              echo "confirmed: no downstream copy for www-missing"
+
+    - name: Poll VM until the missing recording rule fires
+      try:
+        - script:
+            cluster: infra
+            timeout: 300s
+            content: |
+              set -eu
+              vm_url="${VM_QUERY_URL:-http://vmsingle-telemetry-system-vm.telemetry-system.svc.cluster.local:8428/api/v1/query}"
+              query='dns:recordset_downstream_missing{upstream_name="www-missing"} > 0'
+              attempt=0
+              until [ "$attempt" -ge 30 ]; do
+                attempt=$((attempt+1))
+                echo "[missing attempt $attempt] query: $query"
+                out=$(kubectl run e2e-vmq-missing-$attempt \
+                        --rm -i --restart=Never --quiet \
+                        --image=curlimages/curl:8.10.1 \
+                        --timeout=20s \
+                        -- curl -fsS --max-time 5 \
+                           --data-urlencode "query=${query}" "${vm_url}" \
+                      || true)
+                json=$(printf '%s' "$out" | sed '/pod ".*" deleted/d')
+                echo "response: $json"
+                if printf '%s' "$json" | grep -Eq '"result":\s*\[\s*\{'; then
+                  echo "missing detected by recording rule"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "dns:recordset_downstream_missing never went > 0 for www-missing" >&2
+              exit 1
+
+    - name: Teardown - restore the replicator and clean up
+      try:
+        - script:
+            cluster: replicator
+            timeout: 180s
+            content: |
+              set -eu
+              # Restore the replicator BEFORE deleting the upstream object so the
+              # (now-replicated) downstream copy gets cascade-deleted normally and
+              # no orphan is left behind for the next scenario.
+              kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=1
+              kubectl -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=120s
+              # rollout status only waits for pod readiness — wait for the
+              # multicluster provider to actually re-engage the project CPs before
+              # deleting upstream objects, otherwise the replicator can't release
+              # finalizers / cascade-delete the downstream copies and the deletes
+              # below time out.
+              for i in $(seq 1 20); do
+                if kubectl -n dns-replicator-system logs -l control-plane=controller-manager --since=90s 2>/dev/null \
+                     | grep -q "Successfully registered and engaged"; then
+                  echo "replicator re-engaged project CPs"; break
+                fi
+                sleep 3
+              done
+              sleep 10
+        - delete:
+            cluster: alpha
+            ref:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              namespace: default
+              name: www-missing
+        - delete:
+            cluster: alpha
+            ref:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              namespace: default
+              name: drift-example

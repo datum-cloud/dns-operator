@@ -1,0 +1,127 @@
+# Recording + alerting rules that detect drift between the upstream (project)
+# and downstream (root) control planes, using the series emitted by the
+# dns-metrics ResourceMetricsPolicy (see dns-metrics-policy.yaml).
+#
+# Join key: (upstream_cluster, upstream_namespace, upstream_name).
+#
+# A single dns-metrics policy is applied to every control plane, so BOTH the
+# upstream and downstream generators emit on every CP. resource-metrics tags
+# each series with the source CP type via milo.control_plane.type (promoted to
+# the Prometheus label milo_control_plane_type): "root" on the core (downstream)
+# CP, "project" on project (upstream) CPs. We partition on that label so the
+# downstream generator's (empty-label) series on project CPs and the upstream
+# generator's series on the core CP don't pollute the diff.
+#
+# Join normalization: the downstream series carries upstream_cluster="cluster-
+# <name>" (the replicator prefixes it; <name> is the Milo cluster key, which for
+# a cluster-scoped Project is the bare project name). The upstream series is
+# tagged with milo_project_name = the project name (resource-metrics strips the
+# leading "/" the Milo provider uses). We add the "cluster-" prefix to the
+# upstream side so both align. Label names/values confirmed against
+# resource-metrics v-current (milo.project.name / milo.control_plane.type,
+# root value "root"); re-verify if resource-metrics changes its attribute keys.
+#
+# See docs/enhancements/controlplane-drift-detection.md for the full design.
+# Standard Prometheus-operator PrometheusRule. datum-cloud/infra runs the
+# victoria-metrics-operator, which converts PrometheusRule -> VMRule and carries
+# labels through, so no VM-specific CRD is needed. The
+# telemetry.miloapis.com/resource-metrics-aggregator label routes these rules to
+# the dedicated `vmalert-datum-resource-metrics-aggregator` (which has the
+# resource-metrics datasource); the general vmalert selects the complement (that
+# label DoesNotExist). See infra .../victoria-metrics/base/vmalert.yaml.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dns-controlplane-drift
+  labels:
+    managed-by: flux
+    app.kubernetes.io/part-of: dns-operator
+    # Route to the resource-metrics aggregator vmalert (label presence is the
+    # selector; value is not significant).
+    telemetry.miloapis.com/resource-metrics-aggregator: "true"
+spec:
+  groups:
+    - name: dns.drift.recording
+      interval: 30s
+      rules:
+        # Both sides are normalized to a bare `proj` (project name) join key.
+        # Upstream: milo_project_name is already the bare name ("alpha").
+        # Downstream: the replicator stamps upstream-cluster-name as
+        #   "cluster-" + replace(<milo cluster key>, "/", "_"), and the milo
+        #   provider keys a project cluster as "/alpha", so the annotation is
+        #   "cluster-_alpha". Strip the "cluster-_?" prefix to recover "alpha".
+        # (Verified live: downstream upstream_cluster="cluster-_alpha" vs
+        # upstream milo_project_name="alpha".)
+        - record: dns:recordset_upstream:normalized
+          expr: |
+            label_replace(
+              dns_recordset_upstream_info{milo_control_plane_type="project"},
+              "proj", "$1", "milo_project_name", "(.*)"
+            )
+
+        # Downstream view: core CP only (where replicated objects live), with
+        # the cluster annotation normalized to the bare project name.
+        - record: dns:recordset_downstream:scoped
+          expr: |
+            label_replace(
+              dns_recordset_downstream_info{milo_control_plane_type="root"},
+              "proj", "$1", "upstream_cluster", "cluster-_?(.*)"
+            )
+
+        # ORPHANS: exists downstream, no surviving upstream owner.
+        # This is the failure mode from engineering#346 — a replicated record
+        # left "reserving" a name after its upstream owner was deleted.
+        - record: dns:recordset_downstream_orphan
+          expr: |
+            dns:recordset_downstream:scoped
+              unless on(proj, upstream_namespace, upstream_name)
+            dns:recordset_upstream:normalized
+
+        # MISSING: exists upstream, never replicated / replication stalled.
+        - record: dns:recordset_downstream_missing
+          expr: |
+            dns:recordset_upstream:normalized
+              unless on(proj, upstream_namespace, upstream_name)
+            dns:recordset_downstream:scoped
+
+    - name: dns.drift.alerts
+      rules:
+        - alert: DNSDownstreamOrphanRecordSet
+          # for: rides out normal replication + OTLP push/staleness lag so we
+          # only page on drift that actually persists.
+          expr: dns:recordset_downstream_orphan > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Orphaned downstream DNSRecordSet (no upstream owner)"
+            description: >-
+              DNSRecordSet {{ $labels.upstream_name }} in namespace
+              {{ $labels.upstream_namespace }} (cluster {{ $labels.upstream_cluster }})
+              exists on the downstream control plane with no matching upstream
+              owner. This is the failure mode from engineering#346 and can block
+              new records for the same name. Runbook: docs/enhancements/controlplane-drift-detection.md
+
+        - alert: DNSDownstreamMissingRecordSet
+          expr: dns:recordset_downstream_missing > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Upstream DNSRecordSet not replicated downstream"
+            description: >-
+              DNSRecordSet {{ $labels.upstream_name }} in namespace
+              {{ $labels.upstream_namespace }} (cluster {{ $labels.upstream_cluster }})
+              exists upstream but has no downstream copy — replication may be
+              stalled or a replica may not own this cluster.
+
+        - alert: DNSRecordSetNotAccepted
+          expr: dns_recordset_upstream_info{accepted="false", milo_control_plane_type="project"} == 1
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DNSRecordSet stuck not-Accepted for 15m"
+            description: >-
+              DNSRecordSet {{ $labels.upstream_name }} in namespace
+              {{ $labels.upstream_namespace }} has not reached Accepted=True.

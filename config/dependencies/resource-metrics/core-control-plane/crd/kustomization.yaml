@@ -1,0 +1,15 @@
+# Installs the resource-metrics CRD (ResourceMetricsPolicy,
+# resourcemetrics.miloapis.com) INTO the Milo core control plane.
+#
+# TARGET: milo-apiserver (the core/downstream CP) — NOT the kind apiserver.
+# Apply with a milo kubeconfig (see ../../README.md). Mirrors the intent of
+# milo-os/infra apps/resource-metrics-system/base/milo-control-plane.yaml
+# (which applies the operator's `crd` path onto the Milo CP via Flux).
+#
+# Must be Established before the dns-metrics ResourceMetricsPolicy in ../policy
+# is applied.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - resourcemetricspolicies-crd.yaml

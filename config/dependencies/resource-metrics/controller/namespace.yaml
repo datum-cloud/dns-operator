@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-metrics-system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: resource-metrics
+    app.kubernetes.io/managed-by: kustomize

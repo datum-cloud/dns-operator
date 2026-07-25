@@ -1,0 +1,16 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: milo
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: oci://ghcr.io/datum-cloud/milo-kustomize
+  # milo publishes this bundle from milo/.github/workflows/build-apiserver.yaml.
+  # Tags: semver releases (v0.24.3) and per-merge v0.0.0-<branch> /
+  # v0.0.0-main-<timestamp>. Pin to a reproducible tag; keep in sync with the
+  # image newTag override in flux-install.yaml. Tracking the v0.0.0-main
+  # floating tag for now because the latest semver predates the multi-arch
+  # publish and ImagePullBackOffs on arm64 kind clusters. Bump deliberately.
+  ref:
+    tag: v0.0.0-main

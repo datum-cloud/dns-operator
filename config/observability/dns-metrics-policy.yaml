@@ -1,0 +1,108 @@
+# ResourceMetricsPolicy consumed by the milo-os/resource-metrics controller.
+#
+# resource-metrics watches every project (upstream) control plane via the Milo
+# multi-cluster provider, and — with discovery.collectRootControlPlane=true —
+# the root/core (downstream) control plane as well. It emits one gauge series
+# per matching object on whichever control plane the object lives on, pushing
+# over OTLP to the platform OTel collector -> Victoria Metrics.
+#
+# The two generators below emit structurally different series on the two sides
+# of the replication boundary so that recording rules can diff them:
+#
+#   dns_recordset_upstream_info    <- source of truth, on project control planes
+#   dns_recordset_downstream_info  <- replicated copy, on the root control plane
+#
+# The downstream series lifts the replicator's `meta.datumapis.com/upstream-*`
+# annotations onto labels so the two sides share a join key
+# (upstream_cluster, upstream_namespace, upstream_name).
+#
+# See docs/enhancements/controlplane-drift-detection.md for the full design.
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: dns-metrics
+spec:
+  generators:
+    # ---- Upstream (project control planes): desired state -----------------
+    - name: dnsrecordset-upstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_recordset_upstream_info
+          help: "One series per DNSRecordSet on a source (upstream) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_namespace
+                  value: "object.metadata.namespace"
+                - name: upstream_name
+                  value: "object.metadata.name"
+                - name: accepted
+                  # Null-safe: a record with no status yet (no reconciler) has no
+                  # status.conditions; guarding with has() avoids a CEL eval error
+                  # that would make resource-metrics silently drop the whole series.
+                  value: "has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Accepted' && c.status == 'True') ? 'true' : 'false'"
+
+    - name: dnszone-upstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_upstream_info
+          help: "One series per DNSZone on a source (upstream) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_namespace
+                  value: "object.metadata.namespace"
+                - name: upstream_name
+                  value: "object.metadata.name"
+
+    # ---- Downstream (root control plane): replicated / actual state -------
+    # Join labels come from the annotations the replicator stamps in
+    # internal/downstreamclient/mappednamespace.go. NOTE: the namespace is
+    # remapped downstream, so metadata.namespace is NOT the upstream namespace;
+    # the real one is in the upstream-namespace annotation. The cluster-name
+    # annotation is prefixed "cluster-" — the recording rules normalize for it.
+    - name: dnsrecordset-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_recordset_downstream_info
+          help: "One series per replicated DNSRecordSet on the downstream (root) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_cluster
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-cluster-name']"
+                - name: upstream_namespace
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-namespace']"
+                - name: upstream_name
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-name']"
+
+    - name: dnszone-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_downstream_info
+          help: "One series per replicated DNSZone on the downstream (root) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_cluster
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-cluster-name']"
+                - name: upstream_namespace
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-namespace']"
+                - name: upstream_name
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-name']"

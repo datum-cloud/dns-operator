@@ -27,6 +27,21 @@ vars:
   # In-cluster-rewritten kubeconfig for the control cluster, mounted into the
   # replicator (via a Secret) so it can reach control's API as its downstream.
   CONTROL_INCLUSTER_KUBECONFIG: 'dev/control.incluster.kubeconfig'
+  # Admin kubeconfig for the Milo core control plane (milo-apiserver), minted
+  # from the static test-admin-token. Used to install DNS CRDs and create the
+  # Org + projects on the core CP. Server points at a local port-forward.
+  MILO_ADMIN_KUBECONFIG: 'dev/milo.admin.kubeconfig'
+  # dns-operator image used by the replicator on dns-upstream. Loaded into the
+  # kind node; the overlays reference :latest with imagePullPolicy IfNotPresent.
+  DNSOP_IMG: 'ghcr.io/datum-cloud/dns-operator:latest'
+  # Cross-cluster kubeconfig the replicator uses to reach milo-apiserver on
+  # dns-control, via the envoy gateway NodePort on the control node's IP.
+  MILO_UPSTREAM_KUBECONFIG: 'dev/milo.upstream.kubeconfig'
+  MILO_GATEWAY_NODEPORT: '32648'
+  # resource-metrics controller image (loaded into the dns-control kind node).
+  # Published image is amd64-only (see milo-os/resource-metrics#13); on arm64
+  # build locally: `docker build -t resource-metrics:arm64-dev <resource-metrics checkout>`.
+  RM_IMG: 'resource-metrics:arm64-dev'
   # Dedicated kubeconfig for this environment (not the user's default
   # ~/.kube/config). go-task's `env:` blocks are implemented as process-wide
   # os.Setenv calls that leak between sibling task/cmd invocations (a known
@@ -317,3 +332,177 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
       - rm -f {{.RUSTFS_NODEPORT_FILE}} {{.ENV_KUBECONFIG}} {{.CONTROL_INCLUSTER_KUBECONFIG}}
+
+  # ---- Milo control-plane (drift-detection / Phase B) --------------------
+  # Installs the Milo apiserver + controller-manager into the control cluster
+  # via Flux, so the replicator can run discovery.mode=milo and resource-metrics
+  # can collect project + core control planes. See config/dependencies/milo and
+  # docs/enhancements/controlplane-drift-detection.md.
+  env:milo-up:
+    desc: "Install Milo (apiserver + controller-manager) into the control cluster via Flux"
+    silent: true
+    cmds:
+      - echo "➡️  Installing Milo into kind-{{.CONTROL_CLUSTER_NAME}}..."
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} apply -k config/dependencies/milo
+      - echo "⏳ waiting for Flux OCIRepository 'milo' to reconcile..."
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait ocirepository/milo --for=condition=Ready --timeout=180s
+      - echo "⏳ waiting for Flux Kustomization 'milo-infra-crds'..."
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait kustomization/milo-infra-crds --for=condition=Ready --timeout=300s
+      - echo "⏳ waiting for Flux Kustomization 'milo' (cold start applies CRDs + deploys apiserver, up to 10m)..."
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait kustomization/milo --for=condition=Ready --timeout=600s
+      - echo "✅ Milo installed. milo-system objects:"
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n milo-system get pods,svc
+
+  env:derisk-control-milo:
+    desc: "De-risk: bring up ONLY the control cluster + Milo (no agent/rustfs) to inspect the live milo-apiserver"
+    cmds:
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.CONTROL_CLUSTER_NAME}}"
+      - task: env:milo-up
+
+  # internal: mint an admin kubeconfig for the Milo core CP via a transient
+  # port-forward, then run CMD (a kubectl invocation with KUBECONFIG=$mk).
+  # milo-apiserver's NodePort is not host-mapped, and on macOS the host cannot
+  # reach the kind docker-network IP, so a port-forward is the portable way to
+  # drive the core CP from the host (macOS dev + Linux CI).
+  env:with-milo-admin:
+    internal: true
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        export KUBECONFIG={{.ENV_KUBECONFIG}}
+        kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n milo-system port-forward svc/milo-apiserver 16443:6443 >/tmp/milo-pf.log 2>&1 &
+        pf=$!; trap 'kill $pf 2>/dev/null || true' EXIT
+        for i in $(seq 1 30); do
+          curl -sk -o /dev/null -m 2 https://127.0.0.1:16443/livez && break || sleep 1
+        done
+        mk={{.MILO_ADMIN_KUBECONFIG}}
+        kubectl config --kubeconfig="$mk" set-cluster milo --server=https://127.0.0.1:16443 --insecure-skip-tls-verify=true >/dev/null
+        kubectl config --kubeconfig="$mk" set-credentials admin --token=test-admin-token >/dev/null
+        kubectl config --kubeconfig="$mk" set-context milo --cluster=milo --user=admin >/dev/null
+        kubectl config --kubeconfig="$mk" use-context milo >/dev/null
+        KUBECONFIG="$mk" {{.CMD}}
+
+  env:observability-up:
+    desc: "Install the observability stack (Victoria Metrics + OTel + Prometheus CRDs) into the control cluster"
+    cmds:
+      - KUBECONFIG={{.ENV_KUBECONFIG}} TASK_X_REMOTE_TASKFILES=1 task --yes test-infra:install-observability
+
+  env:metrics-up:
+    desc: "Deploy resource-metrics (mode:milo + collectRootControlPlane) + the dns-metrics policy + drift rules"
+    cmds:
+      - kind load docker-image {{.RM_IMG}} --name {{.CONTROL_CLUSTER_NAME}}
+      # ResourceMetricsPolicy CRD + the dns-metrics policy live on the Milo core CP
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl apply -k config/dependencies/resource-metrics/core-control-plane/crd
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl wait --for=condition=Established crd/resourcemetricspolicies.resourcemetrics.miloapis.com --timeout=60s
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl apply -f config/observability/dns-metrics-policy.yaml
+      # Controller runs on the control kind cluster; drift rules load into VM
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} apply -k config/dependencies/resource-metrics/controller
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n telemetry-system apply -f config/observability/dns-drift-rules.yaml
+      - echo "✅ resource-metrics + dns-metrics policy + drift rules deployed"
+
+  env:milo-all-up:
+    desc: "Full clean bring-up: control+Milo, CRDs+projects, observability, resource-metrics, upstream replicator"
+    cmds:
+      - task: env:derisk-control-milo
+      - task: env:milo-bootstrap
+      - task: env:observability-up
+      - task: env:metrics-up
+      - task: env:upstream-milo-up
+
+  env:chainsaw-milo:
+    desc: "Run the control-plane drift Chainsaw suite (happy-path/orphan/missing) against the running Milo env"
+    cmds:
+      - |
+        set -euo pipefail
+        root="$(pwd)"
+        cd test/e2e/controlplane-drift
+        # infra = dns-control kind (VM + OTel); replicator = dns-upstream kind.
+        # Both kind APIs are host-reachable.
+        kind get kubeconfig --name {{.CONTROL_CLUSTER_NAME}} > kubeconfig-infra
+        kind get kubeconfig --name {{.UPSTREAM_CLUSTER_NAME}} > kubeconfig-replicator
+        # alpha (project CP) + core (Milo core CP): reach milo-apiserver via a
+        # localhost port-forward — portable across macOS + Linux, since the
+        # gateway NodePort is not host-mapped and macOS can't reach the kind
+        # docker-network IP directly.
+        KUBECONFIG="$root/{{.ENV_KUBECONFIG}}" kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} \
+          -n milo-system port-forward svc/milo-apiserver 16443:6443 >/tmp/milo-pf-chainsaw.log 2>&1 &
+        pf=$!; trap 'kill $pf 2>/dev/null || true' EXIT
+        for i in $(seq 1 30); do curl -sk -o /dev/null -m2 https://127.0.0.1:16443/livez && break || sleep 1; done
+        for name in core alpha; do
+          kubectl config --kubeconfig=kubeconfig-$name set-credentials a --token=test-admin-token >/dev/null
+          kubectl config --kubeconfig=kubeconfig-$name set-context $name --cluster=$name --user=a >/dev/null
+          kubectl config --kubeconfig=kubeconfig-$name use-context $name >/dev/null
+        done
+        kubectl config --kubeconfig=kubeconfig-core set-cluster core \
+          --server=https://127.0.0.1:16443 --insecure-skip-tls-verify=true >/dev/null
+        kubectl config --kubeconfig=kubeconfig-alpha set-cluster alpha \
+          --server=https://127.0.0.1:16443/apis/resourcemanager.miloapis.com/v1alpha1/projects/alpha/control-plane \
+          --insecure-skip-tls-verify=true >/dev/null
+        KUBECONFIG=kubeconfig-infra chainsaw test --config .chainsaw.yaml {{.CHAINSAW_SUITE | default "."}}
+
+  env:upstream-milo-up:
+    desc: "Create dns-upstream and deploy the replicator (discovery.mode=milo, 2 replicas) pointed at Milo on dns-control"
+    cmds:
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
+      - kind load docker-image {{.DNSOP_IMG}} --name {{.UPSTREAM_CLUSTER_NAME}}
+      # Mint the cross-cluster milo kubeconfig (control node IP + gateway
+      # NodePort) and stash it as the milo-kubeconfig Secret the replicator-milo
+      # overlay mounts at /milo. NODE_IP via python to avoid go-task/docker
+      # template brace conflicts.
+      - |
+        set -euo pipefail
+        export KUBECONFIG={{.ENV_KUBECONFIG}}
+        NODE_IP=$(docker inspect {{.CONTROL_CLUSTER_NAME}}-control-plane | python3 -c "import json,sys; n=json.load(sys.stdin)[0]['NetworkSettings']['Networks']; print(next(iter(n.values()))['IPAddress'])")
+        # Derive the envoy gateway NodePort dynamically — test-infra's
+        # fix/remove-hardcoded-nodeports branch assigns it per-cluster, so it is
+        # NOT stable across rebuilds. Look up the nodePort mapped to gateway
+        # port 8443 (the HTTPS listener that fronts milo-apiserver).
+        NODEPORT=$(kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n envoy-gateway-system get svc \
+          -o jsonpath='{range .items[*]}{range .spec.ports[?(@.port==8443)]}{.nodePort}{end}{end}')
+        test -n "$NODEPORT" || { echo "could not resolve envoy gateway 8443 NodePort" >&2; exit 1; }
+        echo "➡️  milo gateway endpoint for replicator: https://${NODE_IP}:${NODEPORT}"
+        mk={{.MILO_UPSTREAM_KUBECONFIG}}
+        kubectl config --kubeconfig="$mk" set-cluster milo --server="https://${NODE_IP}:${NODEPORT}" --insecure-skip-tls-verify=true >/dev/null
+        kubectl config --kubeconfig="$mk" set-credentials admin --token=test-admin-token >/dev/null
+        kubectl config --kubeconfig="$mk" set-context milo --cluster=milo --user=admin >/dev/null
+        kubectl config --kubeconfig="$mk" use-context milo >/dev/null
+        kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} create ns dns-replicator-system --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
+        kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system create secret generic milo-kubeconfig --from-file=kubeconfig="$mk" --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/replicator-milo make kustomize-apply
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deploy/dns-operator-controller-manager --timeout=180s
+      - echo "✅ replicator up on kind-{{.UPSTREAM_CLUSTER_NAME}} (mode=milo, 2 replicas)"
+
+  env:milo-bootstrap:
+    desc: "Install DNS + networking CRDs into the Milo core CP and create the drift Org + projects (alpha, beta)"
+    cmds:
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl apply -k config/crd
+      # The replicator (dnszone/dnszonediscovery controllers) indexes Domain
+      # (networking.datumapis.com); without its CRD, project-CP engagement fails
+      # on cache-index setup. Generate the networking CRDs and install them into
+      # the core CP (shared to all project CPs). The make target also applies to
+      # the local kind API (harmless) and writes dev/crds/network-services.
+      - KUBECONFIG={{.ENV_KUBECONFIG}} make install-networking-crds CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}}
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl apply -f dev/crds/network-services
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl apply -f test/e2e/controlplane-drift/fixtures/milo-projects.yaml
+      - task: env:with-milo-admin
+        vars:
+          CMD: kubectl wait --for=condition=Ready project/alpha project/beta --timeout=120s
+      - echo "✅ Milo core CP has DNS + networking CRDs; projects alpha, beta are Ready"

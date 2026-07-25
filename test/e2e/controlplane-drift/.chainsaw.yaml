@@ -1,0 +1,18 @@
+# Runner config for the control-plane drift suite. The scenarios share one
+# replicator Deployment (scaled up/down) and one Victoria Metrics instance, so
+# they MUST run sequentially. Delete/cleanup budgets are generous because
+# deleting an upstream DNSRecordSet waits on the replicator removing its
+# finalizer + cascading to the downstream copy.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: controlplane-drift
+spec:
+  parallel: 1
+  timeouts:
+    apply: 60s
+    assert: 120s
+    error: 60s
+    delete: 150s
+    cleanup: 150s
+    exec: 600s

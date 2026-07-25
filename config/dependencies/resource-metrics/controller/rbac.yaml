@@ -1,0 +1,75 @@
+# Cluster-scoped RBAC for the resource-metrics controller, vendored from
+# milo-os/resource-metrics config/components/controller_rbac (service_account +
+# role + role_binding). These grants apply on whatever API server the
+# ServiceAccount authenticates against, but note: in this deployment the
+# controller talks to the milo core control plane via the mounted
+# milo-kubeconfig (system:masters test token), so the effective permissions
+# there come from that token, not this ServiceAccount. This RBAC is retained
+# for correctness/parity with the upstream bundle and for any in-kind API
+# access (health/leader machinery).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: resource-metrics-controller-manager
+  namespace: resource-metrics-system
+  labels:
+    app.kubernetes.io/name: resource-metrics
+    app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: resource-metrics-manager-role
+  labels:
+    app.kubernetes.io/name: resource-metrics
+    app.kubernetes.io/managed-by: kustomize
+rules:
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - selfsubjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - resourcemetrics.miloapis.com
+  resources:
+  - resourcemetricspolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - resourcemetrics.miloapis.com
+  resources:
+  - resourcemetricspolicies/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - resourcemetrics.miloapis.com
+  resources:
+  - resourcemetricspolicies/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: resource-metrics-manager-rolebinding
+  labels:
+    app.kubernetes.io/name: resource-metrics
+    app.kubernetes.io/managed-by: kustomize
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: resource-metrics-manager-role
+subjects:
+- kind: ServiceAccount
+  name: resource-metrics-controller-manager
+  namespace: resource-metrics-system

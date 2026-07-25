@@ -1,0 +1,186 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Happy path: create a DNSZone(class) + DNSRecordSet on project CP `alpha`
+# (upstream), wait for the replicated copy to land on the core CP (downstream),
+# then assert Victoria Metrics carries BOTH sides of the join and that the
+# orphan recording rule is clean.
+#
+# Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
+#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
+#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
+#   infra  -> kind cluster hosting Victoria Metrics + OTel   ../kubeconfig-infra
+#             (used only to run in-cluster curl against VM)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-drift-happy-path
+spec:
+  # The VM-poll scripts loop for several minutes to ride out the
+  # watch -> collect -> OTLP -> remote-write -> ingest pipeline latency.
+  timeouts:
+    exec: 600s
+  clusters:
+    alpha:
+      kubeconfig: ../kubeconfig-alpha
+    core:
+      kubeconfig: ../kubeconfig-core
+    infra:
+      kubeconfig: ../kubeconfig-infra
+  cluster: alpha
+  steps:
+    - name: Prereq - DNSZoneClass + DNSZone on upstream project CP alpha
+      try:
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszoneclass.yaml
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszone.yaml
+        - assert:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: drift-example
+                namespace: default
+
+    - name: Create DNSRecordSet on upstream project CP alpha
+      try:
+        - create:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              metadata:
+                name: www-happy
+                namespace: default
+              spec:
+                dnsZoneRef:
+                  name: drift-example
+                recordType: A
+                records:
+                  - name: www
+                    ttl: 60
+                    a:
+                      content: 192.0.2.10
+        - assert:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              metadata:
+                name: www-happy
+                namespace: default
+
+    - name: Wait for the replicated copy to land on the downstream core CP
+      try:
+        - script:
+            cluster: core
+            timeout: 300s
+            content: |
+              set -eu
+              # The downstream namespace is remapped (ns-<uid>) and the real
+              # upstream identity lives only in annotations, so match on the
+              # upstream-name annotation across all namespaces rather than by
+              # name/namespace.
+              want="www-happy"
+              attempts=30
+              i=0
+              while [ "$i" -lt "$attempts" ]; do
+                i=$((i+1))
+                got=$(kubectl get dnsrecordset -A \
+                  -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                  2>/dev/null || true)
+                echo "[attempt $i/$attempts] downstream upstream-name annotations: ${got}"
+                if printf '%s\n' "$got" | grep -qx "$want"; then
+                  echo "replicated copy present on core CP"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "replicated DNSRecordSet ($want) never appeared on core CP" >&2
+              exit 1
+
+    - name: Assert upstream + downstream series exist in Victoria Metrics
+      try:
+        - script:
+            cluster: infra
+            timeout: 300s
+            content: |
+              set -eu
+              vm_url="${VM_QUERY_URL:-http://vmsingle-telemetry-system-vm.telemetry-system.svc.cluster.local:8428/api/v1/query}"
+
+              # Poll VM for a PromQL query until it returns a non-empty result.
+              poll() {
+                query="$1"; label="$2"
+                attempt=0
+                until [ "$attempt" -ge 24 ]; do
+                  attempt=$((attempt+1))
+                  echo "[$label attempt $attempt] query: $query"
+                  out=$(kubectl run e2e-vmq-happy-$label-$attempt \
+                          --rm -i --restart=Never --quiet \
+                          --image=curlimages/curl:8.10.1 \
+                          --timeout=20s \
+                          -- curl -fsS --max-time 5 \
+                             --data-urlencode "query=${query}" "${vm_url}" \
+                        || true)
+                  json=$(printf '%s' "$out" | sed '/pod ".*" deleted/d')
+                  echo "response: $json"
+                  if printf '%s' "$json" | grep -Eq '"result":\s*\[\s*\{'; then
+                    echo "[$label] series found"
+                    return 0
+                  fi
+                  sleep 10
+                done
+                echo "[$label] series never appeared: $query" >&2
+                return 1
+              }
+
+              poll 'dns_recordset_upstream_info{upstream_name="www-happy",milo_project_name="alpha"}' upstream
+              poll 'dns_recordset_downstream_info{upstream_name="www-happy",milo_control_plane_type="root"}' downstream
+
+    - name: Assert the orphan recording rule is clean (== 0 / empty)
+      try:
+        - script:
+            cluster: infra
+            timeout: 120s
+            content: |
+              set -eu
+              vm_url="${VM_QUERY_URL:-http://vmsingle-telemetry-system-vm.telemetry-system.svc.cluster.local:8428/api/v1/query}"
+              # The orphan recording rule only PRODUCES a series when an orphan
+              # exists (`unless` yields the leftover downstream vectors). A clean
+              # state is therefore an empty result. Scope to our record so an
+              # unrelated pre-existing orphan can't fail the happy path.
+              query='dns:recordset_downstream_orphan{upstream_name="www-happy"}'
+              out=$(kubectl run e2e-vmq-happy-orphan \
+                      --rm -i --restart=Never --quiet \
+                      --image=curlimages/curl:8.10.1 \
+                      --timeout=20s \
+                      -- curl -fsS --max-time 5 \
+                         --data-urlencode "query=${query}" "${vm_url}" \
+                    || true)
+              json=$(printf '%s' "$out" | sed '/pod ".*" deleted/d')
+              echo "response: $json"
+              if printf '%s' "$json" | grep -Eq '"result":\s*\[\s*\{'; then
+                echo "unexpected orphan series for www-happy — drift detected on happy path" >&2
+                exit 1
+              fi
+              echo "orphan recording rule clean (no series for www-happy)"
+
+    - name: Teardown
+      try:
+        - delete:
+            cluster: alpha
+            ref:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              namespace: default
+              name: www-happy
+        - delete:
+            cluster: alpha
+            ref:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              namespace: default
+              name: drift-example

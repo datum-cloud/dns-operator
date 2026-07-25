@@ -1,0 +1,97 @@
+# resource-metrics controller Deployment for the DNS drift-detection e2e on the
+# dns-control kind cluster. Vendored from milo-os/resource-metrics
+# config/manager/manager.yaml with the config/overlays/test-infra
+# deployment-patch folded in (this repo can't reference the operator's relative
+# kustomize bases, so the merged result is inlined here).
+#
+# Key test-infra wiring:
+#   * KUBECONFIG env -> /etc/milo/kubeconfig so ctrl.GetConfigOrDie() (the local
+#     cluster handed to the multicluster manager) targets milo-apiserver, not the
+#     kind apiserver. The controller's real control plane (CRD, policies, leader
+#     lease) lives on milo.
+#   * --server-config=/etc/resource-metrics/server.yaml, backed by the
+#     resource-metrics-service-config ConfigMap (see kustomization.yaml).
+#   * milo-kubeconfig Secret mounted at /etc/milo for discovery + per-project
+#     clients (matches discovery{,project}KubeconfigPath in server-config.yaml).
+#   * --leader-elect omitted: single replica; the lease would otherwise need a
+#     namespace on milo that controller-runtime can't default to.
+#   * imagePullPolicy IfNotPresent so a kind-loaded image is used when present.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-metrics-controller-manager
+  namespace: resource-metrics-system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: resource-metrics
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: resource-metrics
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        control-plane: controller-manager
+        app.kubernetes.io/name: resource-metrics
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: resource-metrics-controller-manager
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: manager
+        command:
+        - /manager
+        args:
+        - --health-probe-bind-address=:8081
+        - --server-config=/etc/resource-metrics/server.yaml
+        image: ghcr.io/milo-os/resource-metrics:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KUBECONFIG
+          value: /etc/milo/kubeconfig
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - "ALL"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 1
+            memory: 2Gi
+          requests:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: service-config
+          mountPath: /etc/resource-metrics
+          readOnly: true
+        - name: milo-kubeconfig
+          mountPath: /etc/milo
+          readOnly: true
+      volumes:
+      - name: service-config
+        configMap:
+          name: resource-metrics-service-config
+      - name: milo-kubeconfig
+        secret:
+          secretName: milo-kubeconfig

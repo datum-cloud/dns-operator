@@ -388,25 +388,27 @@ tasks:
 
   env:metrics-up:
     desc: "Deploy resource-metrics (mode:milo + collectRootControlPlane) + the dns-metrics policy + drift rules"
+    vars:
+      KCTL: KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}}
     cmds:
-      # ResourceMetricsPolicy CRD + the dns-metrics policy live on the Milo core CP
-      - task: env:with-milo-admin
-        vars:
-          CMD: kubectl apply -k config/dependencies/resource-metrics/core-control-plane/crd
-      - task: env:with-milo-admin
-        vars:
-          CMD: kubectl wait --for=condition=Established crd/resourcemetricspolicies.resourcemetrics.miloapis.com --timeout=60s
+      # All Flux objects live on the LOCAL (dns-control) cluster. The controller
+      # Kustomization deploys onto it; the CRD Kustomization targets the Milo
+      # core CP via kubeConfig. Both reference the same OCIRepository, and both
+      # come from resource-metrics' published bundle (no vendored manifests, no
+      # local image build — the pinned bundle ships a multi-arch image).
+      - "{{.KCTL}} apply -k config/dependencies/resource-metrics/controller"
+      - "{{.KCTL}} apply -k config/dependencies/resource-metrics/core-control-plane/crd"
+      - "{{.KCTL}} -n flux-system wait ocirepository/resource-metrics --for=condition=Ready --timeout=120s"
+      # Installs the ResourceMetricsPolicy CRD onto the Milo core CP from the bundle.
+      - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-crd --for=condition=Ready --timeout=180s"
+      # The dns-metrics policy is dns-operator-owned (not in the bundle), so it's
+      # applied directly to the core CP after its CRD is Established.
       - task: env:with-milo-admin
         vars:
           CMD: kubectl apply -f config/observability/dns-metrics-policy.yaml
-      # Controller: reference resource-metrics' published overlays/test-infra
-      # bundle via Flux (OCIRepository + Kustomization) — no vendored manifests,
-      # no local image build (the pinned bundle ships a multi-arch image).
-      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} apply -k config/dependencies/resource-metrics/controller
-      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait ocirepository/resource-metrics --for=condition=Ready --timeout=120s
-      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s
-      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s
-      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n telemetry-system apply -f config/observability/dns-drift-rules.yaml
+      - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s"
+      - "{{.KCTL}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s"
+      - "{{.KCTL}} -n telemetry-system apply -f config/observability/dns-drift-rules.yaml"
       - echo "✅ resource-metrics + dns-metrics policy + drift rules deployed"
 
   env:milo-all-up:

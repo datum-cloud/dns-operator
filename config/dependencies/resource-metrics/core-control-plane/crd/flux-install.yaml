@@ -1,0 +1,23 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: resource-metrics-crd
+  namespace: flux-system
+# Installs the ResourceMetricsPolicy CRD onto the Milo CORE control plane
+# straight from the operator's published bundle (path crd) — no vendored copy.
+# Mirrors infra apps/resource-metrics-system/base/milo-control-plane.yaml.
+# Targets the core CP via kubeConfig (a different API server than the local
+# cluster this Kustomization object lives on).
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 2m
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: resource-metrics        # shared with controller/ocirepository.yaml
+  path: crd
+  kubeConfig:
+    secretRef:
+      name: resource-metrics-milo-kubeconfig

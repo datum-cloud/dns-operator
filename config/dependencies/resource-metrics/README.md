@@ -62,38 +62,26 @@ kubectl --context kind-dns-control -n flux-system wait kustomization/resource-me
 > tag and replace the patch with a Deployment env patch:
 > `OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector-collector.telemetry-system:4317`.
 
-### `core-control-plane/` — applied with a MILO kubeconfig
+### `core-control-plane/` — installed onto the Milo core control plane
 
-These target the **Milo core control plane** (`milo-apiserver`), NOT the kind
-apiserver. Apply them with a milo kubeconfig — the same in-cluster
-endpoint + `test-admin-token` used by the controller, or an equivalent
-admin kubeconfig. This mirrors milo-os/infra
-`apps/resource-metrics-system/base/milo-control-plane.yaml`, which applies the
-operator's `crd` path onto the Milo CP.
+These land on the **Milo core control plane** (`milo-apiserver`), NOT the kind
+apiserver, because that is where the controller reads its policy from.
 
 | Path | Purpose |
 | --- | --- |
-| `core-control-plane/crd/` | The `ResourceMetricsPolicy` CRD (`resourcemetrics.miloapis.com`), vendored from the operator's `config/crd/bases`. Must be **Established first**. |
-| `core-control-plane/policy/` | Applies the `dns-metrics` `ResourceMetricsPolicy`. It **references** `config/observability/dns-metrics-policy.yaml` (single source of truth) rather than duplicating it — so the build needs `--load-restrictor LoadRestrictionsNone`. |
+| `core-control-plane/crd/` | Flux `Kustomization` (applied to the local cluster) that installs the `ResourceMetricsPolicy` CRD onto the core CP **from the published bundle** (`path: crd`) via `kubeConfig.secretRef`. No vendored CRD. Mirrors infra `apps/resource-metrics-system/base/milo-control-plane.yaml`. Includes the milo-kubeconfig Secret Flux targets the core CP with (test-only `test-admin-token`). |
+| `core-control-plane/policy/` | Applies the `dns-metrics` `ResourceMetricsPolicy`. This one is dns-operator-owned (not in the bundle), so it **references** `config/observability/dns-metrics-policy.yaml` (single source of truth) and is applied directly to the core CP after the CRD is Established. |
 
 ```sh
-# Point kubectl at the Milo core control plane. For example, extract the
-# controller's kubeconfig from the Secret, or use any admin kubeconfig for
-# milo-apiserver. Example using the same Secret the controller mounts:
-kubectl --context kind-dns-control -n resource-metrics-system \
-  get secret milo-kubeconfig -o jsonpath='{.data.kubeconfig}' \
-  | base64 -d > /tmp/milo.kubeconfig
+# 1) Install the CRD onto the core CP from the bundle (Flux objects go on the
+#    LOCAL cluster; the Kustomization targets the core CP via its kubeConfig).
+kubectl --context kind-dns-control apply -k config/dependencies/resource-metrics/core-control-plane/crd
+kubectl --context kind-dns-control -n flux-system wait kustomization/resource-metrics-crd --for=condition=Ready --timeout=180s
 
-# 1) Install the CRD and wait for it to be Established.
-kustomize build config/dependencies/resource-metrics/core-control-plane/crd \
-  | kubectl --kubeconfig /tmp/milo.kubeconfig apply -f -
-kubectl --kubeconfig /tmp/milo.kubeconfig wait --for=condition=Established \
-  crd/resourcemetricspolicies.resourcemetrics.miloapis.com --timeout=60s
-
-# 2) Apply the dns-metrics policy.
+# 2) Apply the dns-metrics policy to the core CP (point kubectl at milo-apiserver).
 kustomize build --load-restrictor LoadRestrictionsNone \
   config/dependencies/resource-metrics/core-control-plane/policy \
-  | kubectl --kubeconfig /tmp/milo.kubeconfig apply -f -
+  | kubectl --kubeconfig <milo-kubeconfig> apply -f -
 ```
 
 ## OTel endpoint assumption (confirm live)

@@ -38,10 +38,6 @@ vars:
   # dns-control, via the envoy gateway NodePort on the control node's IP.
   MILO_UPSTREAM_KUBECONFIG: 'dev/milo.upstream.kubeconfig'
   MILO_GATEWAY_NODEPORT: '32648'
-  # resource-metrics controller image (loaded into the dns-control kind node).
-  # Published image is amd64-only (see milo-os/resource-metrics#13); on arm64
-  # build locally: `docker build -t resource-metrics:arm64-dev <resource-metrics checkout>`.
-  RM_IMG: 'resource-metrics:arm64-dev'
   # Dedicated kubeconfig for this environment (not the user's default
   # ~/.kube/config). go-task's `env:` blocks are implemented as process-wide
   # os.Setenv calls that leak between sibling task/cmd invocations (a known
@@ -393,7 +389,6 @@ tasks:
   env:metrics-up:
     desc: "Deploy resource-metrics (mode:milo + collectRootControlPlane) + the dns-metrics policy + drift rules"
     cmds:
-      - kind load docker-image {{.RM_IMG}} --name {{.CONTROL_CLUSTER_NAME}}
       # ResourceMetricsPolicy CRD + the dns-metrics policy live on the Milo core CP
       - task: env:with-milo-admin
         vars:
@@ -404,8 +399,12 @@ tasks:
       - task: env:with-milo-admin
         vars:
           CMD: kubectl apply -f config/observability/dns-metrics-policy.yaml
-      # Controller runs on the control kind cluster; drift rules load into VM
+      # Controller: reference resource-metrics' published overlays/test-infra
+      # bundle via Flux (OCIRepository + Kustomization) — no vendored manifests,
+      # no local image build (the pinned bundle ships a multi-arch image).
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} apply -k config/dependencies/resource-metrics/controller
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait ocirepository/resource-metrics --for=condition=Ready --timeout=120s
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n telemetry-system apply -f config/observability/dns-drift-rules.yaml
       - echo "✅ resource-metrics + dns-metrics policy + drift rules deployed"

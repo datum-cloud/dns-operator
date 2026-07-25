@@ -1,36 +1,9 @@
-# Deploys the resource-metrics controller into namespace resource-metrics-system
-# on the dns-control kind cluster (the local/kind kubectl context).
-#
-# Apply with the KIND kubeconfig/context — NOT a milo kubeconfig. The controller
-# then reaches the milo core control plane via the mounted milo-kubeconfig
-# Secret. The resource-metrics CRD + dns-metrics ResourceMetricsPolicy live on
-# the milo core CP and are installed separately (see ../core-control-plane).
+# Deploys the resource-metrics controller by referencing its published kustomize
+# bundle (overlays/test-infra) via Flux, instead of vendoring its manifests.
+# Mirrors config/dependencies/milo. The controller runs on the control cluster
+# and reads ResourceMetricsPolicy from the Milo core CP (see ../core-control-plane).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
-namespace: resource-metrics-system
-
 resources:
-  - namespace.yaml
-  - rbac.yaml
-  - milo-kubeconfig-secret.yaml
-  - deployment.yaml
-
-# Pin/override the controller image. The upstream default tag is `latest`;
-# override newTag here (or via `kustomize edit set image`) to the tag published
-# for this e2e, or load a `dev` image into kind and set newTag: dev.
-images:
-  - name: ghcr.io/milo-os/resource-metrics
-    newName: resource-metrics
-    newTag: arm64-dev
-
-# server-config.yaml -> mounted at /etc/resource-metrics/server.yaml and passed
-# to --server-config. disableNameSuffixHash keeps the ConfigMap name stable so
-# the Deployment volume reference resolves without a kustomize name reference.
-configMapGenerator:
-  - name: resource-metrics-service-config
-    behavior: create
-    files:
-      - server.yaml=server-config.yaml
-    options:
-      disableNameSuffixHash: true
+  - ocirepository.yaml
+  - flux-install.yaml

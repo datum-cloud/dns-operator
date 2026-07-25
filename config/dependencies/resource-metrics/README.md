@@ -36,31 +36,31 @@ targets**. They are applied separately and never combined into a single
 
 ### `controller/` — applied to the KIND (dns-control) context
 
-The controller Deployment, its namespace, RBAC, the `milo-kubeconfig` Secret,
-and the `mode: milo` server-config. Apply with the **kind kubeconfig/context**
-for dns-control. The controller itself then talks to the Milo core CP through
-the mounted `milo-kubeconfig` Secret.
+Rather than vendoring the controller manifests, this **references the operator's
+published kustomize bundle** (`oci://ghcr.io/milo-os/resource-metrics-kustomize`,
+`overlays/test-infra`) via Flux — the same pattern `config/dependencies/milo`
+uses. That overlay already ships the Deployment, RBAC, namespace, the
+`milo-kubeconfig` Secret, and a `mode: milo` + `collectRootControlPlane: true`
+server-config, so we only override two things.
 
 | File | Purpose |
 | --- | --- |
-| `namespace.yaml` | `resource-metrics-system` namespace. |
-| `rbac.yaml` | ServiceAccount + ClusterRole + ClusterRoleBinding (vendored from the operator's `controller_rbac` component). |
-| `milo-kubeconfig-secret.yaml` | Kubeconfig Secret → in-cluster `milo-apiserver` + `test-admin-token`, `insecure-skip-tls-verify`. Modeled on the operator's `overlays/test-infra/milo-kubeconfig-secret.yaml`. **Test-only** credential. |
-| `server-config.yaml` | `ResourceMetricsOperator` config: `discovery.mode: milo`, `discoveryKubeconfigPath`/`projectKubeconfigPath` → `/etc/milo/kubeconfig`, and `discovery.collectRootControlPlane: true` (so the root CP is collected as cluster `root`). Also the OTLP endpoint. Rendered into the `resource-metrics-service-config` ConfigMap. |
-| `deployment.yaml` | Controller Deployment (base manager + test-infra patch folded in: `KUBECONFIG` env, milo-kubeconfig mount at `/etc/milo`, `--server-config=/etc/resource-metrics/server.yaml`, `imagePullPolicy: IfNotPresent`, no `--leader-elect`). |
-| `kustomization.yaml` | Ties the above together; `images:` override for the controller image; `configMapGenerator` for the server-config. |
+| `ocirepository.yaml` | Flux `OCIRepository` on `resource-metrics-kustomize`, pinned to a bundle tag that ships a multi-arch image. |
+| `flux-install.yaml` | Flux `Kustomization` on `overlays/test-infra` with two overrides: `images:` (the controller image tag) and a patch pointing the OTLP endpoint at our collector (`telemetry-system`, not the overlay default `otel-collector-system`). |
+| `kustomization.yaml` | Applies the two Flux resources into `flux-system`. |
 
 ```sh
-# Uses the dns-control kind context.
-kustomize build config/dependencies/resource-metrics/controller \
-  | kubectl --context kind-dns-control apply -f -
+kubectl --context kind-dns-control apply -k config/dependencies/resource-metrics/controller
+kubectl --context kind-dns-control -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s
 ```
 
 > [!NOTE]
-> Override the controller image before applying if you are not using
-> `ghcr.io/milo-os/resource-metrics:latest`, e.g.
-> `kustomize edit set image ghcr.io/milo-os/resource-metrics=ghcr.io/milo-os/resource-metrics:<tag>`
-> or load a `dev` image into kind and set `newTag: dev` in `kustomization.yaml`.
+> The OTLP-endpoint override is a full-ConfigMap patch because the pinned bundle
+> hardcodes the endpoint. Once [milo-os/resource-metrics#14](https://github.com/milo-os/resource-metrics/pull/14)
+> (configurable endpoint) and [#13](https://github.com/milo-os/resource-metrics/pull/13)
+> (multi-arch image) land in `main`, bump `ocirepository.yaml` to a `v0.0.0-main`
+> tag and replace the patch with a Deployment env patch:
+> `OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector-collector.telemetry-system:4317`.
 
 ### `core-control-plane/` — applied with a MILO kubeconfig
 

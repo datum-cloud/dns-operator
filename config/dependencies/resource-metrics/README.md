@@ -1,58 +1,39 @@
-# resource-metrics dependency (DNS control-plane drift detection)
+# resource-metrics (drift-detection dependency)
 
-Deploys [milo-os/resource-metrics](https://github.com/milo-os/resource-metrics)
-for the drift-detection e2e by referencing its published kustomize bundle via
-Flux — no vendored manifests. resource-metrics emits one gauge per
-DNSRecordSet/DNSZone from each control plane, and recording rules diff them. See
-`docs/enhancements/controlplane-drift-detection.md`.
+Deploys the [resource-metrics](https://github.com/milo-os/resource-metrics)
+controller that powers DNS control-plane drift detection: it emits a metric per
+`DNSRecordSet`/`DNSZone` from every control plane so the alert rules can spot
+records that have fallen out of sync between a customer's project and the
+serving control plane. See `docs/enhancements/controlplane-drift-detection.md`
+for the feature.
 
-The directory has two slices, applied separately because they target different
-API servers. `env:metrics-up` in the Taskfile runs both.
+You don't normally apply this by hand — `task env:metrics-up` does it while
+bringing up the e2e. The rest of this file is for changing or debugging it.
 
-## `controller/` — the controller, on the local (dns-control) cluster
+## What gets deployed, and where
 
-Flux pulls the operator's `overlays/test-infra` bundle, which already ships the
-Deployment, RBAC, namespace, the `milo-kubeconfig` Secret, and a `mode: milo` +
-`collectRootControlPlane: true` server-config. This slice overrides two things.
+resource-metrics comes from its own published release (a Flux-managed kustomize
+bundle), not copied into this repo, so it tracks upstream. It's split in two
+because the pieces live on different clusters:
 
-| File | Purpose |
-| --- | --- |
-| `ocirepository.yaml` | `OCIRepository` on `resource-metrics-kustomize`, pinned to a bundle tag with a multi-arch image. |
-| `flux-install.yaml` | `Kustomization` on `overlays/test-infra`; overrides the image tag and patches the OTLP endpoint to our collector (`telemetry-system`, not the overlay default `otel-collector-system`). |
-| `kustomization.yaml` | Applies both Flux resources into `flux-system`. |
+- **`controller/`** — the controller, on the local kind cluster. This is the
+  upstream `overlays/test-infra` bundle with our image tag and OTel endpoint
+  patched in.
+- **`core-control-plane/`** — its CRD and the `dns-metrics` policy, on the Milo
+  core control plane (where the controller reads them). The CRD comes from the
+  same bundle; the policy is ours and points back to
+  `config/observability/dns-metrics-policy.yaml`.
 
-```sh
-kubectl --context kind-dns-control apply -k config/dependencies/resource-metrics/controller
-kubectl --context kind-dns-control -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s
-```
+## Changing it
 
-The controller reaches the core CP over the in-cluster Service
-(`milo-apiserver.milo-system.svc.cluster.local:6443`, self-signed →
-`insecure-skip-tls-verify`) with the test-only `test-admin-token`.
+- **Image tag / OTel endpoint** — `controller/flux-install.yaml`.
+- **Bundle version** — pinned in `controller/ocirepository.yaml` (and reused by
+  `core-control-plane/crd/`).
 
 > [!NOTE]
-> The endpoint override is a full-ConfigMap patch because the pinned bundle
-> hardcodes the endpoint. After resource-metrics
+> The OTel endpoint is overridden with a full-ConfigMap patch because the pinned
+> bundle hardcodes it. After resource-metrics
 > [#14](https://github.com/milo-os/resource-metrics/pull/14) (configurable
 > endpoint) and [#13](https://github.com/milo-os/resource-metrics/pull/13)
-> (multi-arch image) merge, bump `ocirepository.yaml` to a `v0.0.0-main` tag and
-> replace the patch with an env patch:
-> `OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector-collector.telemetry-system:4317`.
-
-## `core-control-plane/` — the CRD and policy, on the Milo core CP
-
-These target `milo-apiserver` — where the controller reads its policy — not the
-kind apiserver.
-
-| Path | Purpose |
-| --- | --- |
-| `crd/` | Flux `Kustomization` (on the local cluster) that installs the `ResourceMetricsPolicy` CRD onto the core CP from the bundle (`path: crd`) via `kubeConfig.secretRef`. Mirrors infra's `milo-control-plane.yaml`. Includes the test-only milo-kubeconfig Secret. |
-| `policy/` | Applies the `dns-metrics` `ResourceMetricsPolicy`, which references `config/observability/dns-metrics-policy.yaml` (the single source), after the CRD is Established. |
-
-```sh
-kubectl --context kind-dns-control apply -k config/dependencies/resource-metrics/core-control-plane/crd
-kubectl --context kind-dns-control -n flux-system wait kustomization/resource-metrics-crd --for=condition=Ready --timeout=180s
-kustomize build --load-restrictor LoadRestrictionsNone \
-  config/dependencies/resource-metrics/core-control-plane/policy \
-  | kubectl --kubeconfig <milo-kubeconfig> apply -f -
-```
+> (multi-arch image) merge, bump the pin to a `v0.0.0-main` tag and swap the
+> patch for an `OTEL_EXPORTER_OTLP_ENDPOINT` env patch.

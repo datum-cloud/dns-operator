@@ -1,0 +1,66 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: rustfs
+  namespace: rustfs-system
+spec:
+  interval: 5m
+  timeout: 10m
+
+  chart:
+    spec:
+      chart: rustfs
+      version: 0.1.x  # Use latest 0.1.x version
+      sourceRef:
+        kind: HelmRepository
+        name: rustfs
+        namespace: rustfs-system
+      interval: 1h
+
+  values:
+    auth:
+      accessKey: "dns-federation"
+      secretKey: "dns-federation-secret"
+
+    # NOTE: the pinned chart version below (0.1.x) predates this chart's
+    # `setup.buckets` bucket-provisioning hook (added around 0.10.x) - so
+    # that value is silently ignored here. The "lightningstream" bucket is
+    # instead created explicitly by Taskfile.yaml's env:rustfs-up (via a
+    # one-off `aws s3 mb` pod), which works regardless of chart version.
+    # Lightningstream itself never creates its own bucket - without one it
+    # just polls "list snapshots" forever, logging "Volume not found".
+
+    config:
+      logLevel: "info"
+
+    # Small local footprint - this backs a single test zone's LMDB snapshots,
+    # not a production workload.
+    dataPersistence:
+      size: 2Gi
+    logsPersistence:
+      size: 1Gi
+
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+    # NodePort (not ClusterIP): the edge cluster reaches this Service from a
+    # different kind cluster over the shared "kind" Docker network, using the
+    # control-plane node's container name + the NodePort assigned here.
+    # NodePort is intentionally left unset so Kubernetes allocates it
+    # dynamically - see the test-infra fix for concurrent-cluster NodePorts.
+    service:
+      type: NodePort
+
+  install:
+    crds: CreateReplace
+    createNamespace: false
+
+  upgrade:
+    crds: CreateReplace
+
+  uninstall:
+    keepHistory: false

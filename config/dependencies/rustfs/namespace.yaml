@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rustfs-system
+  labels:
+    app.kubernetes.io/name: rustfs
+    app.kubernetes.io/component: storage

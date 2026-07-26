@@ -15,6 +15,14 @@ dev/
 .go-version
 config/**/charts
 
+# test-infra repo clone, managed by Taskfile.yaml (see includes.test-infra)
+.test-infra/
+.task/
+
+# Per-cluster kubeconfigs generated for the e2e Chainsaw suites
+# (make chainsaw-prepare-kubeconfigs / task env:chainsaw-prepare-kubeconfigs)
+test/e2e/kubeconfig-*
+
 # Test binary, built with `go test -c`
 *.test
 

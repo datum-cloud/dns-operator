@@ -1,0 +1,297 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-federation
+spec:
+  timeouts:
+    # The edge-replication script step below polls for a few minutes waiting
+    # for Lightningstream to sync; give exec plenty of headroom.
+    exec: 240s
+  clusters:
+    control:
+      kubeconfig: ../kubeconfig-control
+    edge:
+      kubeconfig: ../kubeconfig-edge
+  cluster: control
+  steps:
+  - name: Prereq - create DNSZoneClass on control
+    try:
+    - create:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-federation
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.fed-test.example.
+                - ns2.fed-test.example.
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-federation
+
+  - name: Create DNSZone on control
+    try:
+    - create:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fed-test-example
+          spec:
+            domainName: fed-test.example
+            dnsZoneClassName: powerdns-federation
+    - assert:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fed-test-example
+          # NOTE: unlike the upstream/replicator topology exercised by
+          # test/e2e/zones-and-records (which sets Accepted/Programmed
+          # conditions on DNSZone via dnszone_replicator_controller.go),
+          # this federation environment's agent runs dns-operator with
+          # --role=downstream only (see config/agent/manager.yaml), which
+          # reconciles DNSZone via dnszone_downstream_controller.go - that
+          # controller does not set status.conditions on DNSZone at all, it
+          # only populates status.nameservers from the DNSZoneClass. The
+          # Accepted/Programmed conditions this test cares about instead
+          # live on DNSRecordSet (asserted below), which downstream *does*
+          # set via dnsrecordset_downstream_controller.go /
+          # dnsrecordset_powerdns_controller.go.
+          status:
+            nameservers:
+            - ns1.fed-test.example.
+            - ns2.fed-test.example.
+
+  - name: Create DNSRecordSet on control
+    try:
+    - create:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: edge-a
+          spec:
+            dnsZoneRef:
+              name: fed-test-example
+            recordType: A
+            records:
+            - name: edge
+              ttl: 5
+              a:
+                content: 192.0.2.10
+    - assert:
+        cluster: control
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          metadata:
+            name: edge-a
+            ownerReferences:
+            - apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              name: fed-test-example
+          status:
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
+
+  - name: DNS query on control confirms the record is programmed locally
+    try:
+    - create:
+        cluster: control
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-fed
+            namespace: default
+          spec:
+            restartPolicy: Never
+            # Default 30s termination grace period exceeds chainsaw's
+            # default 15s delete timeout, spuriously failing the explicit
+            # Teardown step below.
+            terminationGracePeriodSeconds: 0
+            containers:
+            - name: dns
+              image: infoblox/dnstools:latest
+              command: ["sleep", "3600"]
+    - assert:
+        cluster: control
+        resource:
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: dnsutils-fed
+            namespace: default
+          status:
+            phase: Running
+    - script:
+        cluster: control
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fed
+          kubectl -n default exec pod/dnsutils-fed -- sh -c \
+            "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short | grep -E '^192\\.0\\.2\\.10$'"
+
+  - name: DNS query on edge confirms Lightningstream replication (without the CR ever existing on edge)
+    try:
+    - script:
+        cluster: edge
+        skipCommandOutput: true
+        content: |
+          set -eu
+          # The edge cluster never receives the DNSZone/DNSRecordSet CRs
+          # directly - PowerDNS on edge only learns about this record via
+          # Lightningstream syncing LMDB snapshots through the shared RustFS
+          # bucket, which happens on a polling interval, not instantly.
+          # Poll for a few minutes rather than asserting immediately.
+          if ! kubectl -n default get pod dnsutils-fed >/dev/null 2>&1; then
+            kubectl -n default run dnsutils-fed --image=infoblox/dnstools:latest --restart=Never \
+              --overrides='{"spec":{"terminationGracePeriodSeconds":0}}' --command -- sh -c 'sleep 3600'
+          fi
+          kubectl wait --for=condition=Ready --timeout=120s -n default pod/dnsutils-fed
+
+          attempts=18
+          delay=10
+          i=0
+          while [ "$i" -lt "$attempts" ]; do
+            out=$(kubectl -n default exec pod/dnsutils-fed -- sh -c \
+              "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +time=2 +tries=1" || true)
+            echo "[edge attempt $((i+1))/$attempts] dig result: '${out}'"
+            if [ "$out" = "192.0.2.10" ]; then
+              echo "Record replicated to edge PowerDNS."
+              exit 0
+            fi
+            i=$((i+1))
+            sleep "$delay"
+          done
+          echo "Record never replicated to edge PowerDNS after $((attempts*delay))s" >&2
+          exit 1
+
+  - name: Confirm DNSZone on control was never created on edge
+    try:
+    - error:
+        cluster: edge
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: fed-test-example
+
+  - name: Delete DNSRecordSet on control and confirm it eventually disappears from edge too
+    try:
+    - delete:
+        cluster: control
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSRecordSet
+          name: edge-a
+    - script:
+        cluster: control
+        content: |
+          set -eu
+          if kubectl -n default get dnsrecordset edge-a >/dev/null 2>&1; then
+            echo "control DNSRecordSet still exists" >&2
+            exit 1
+          fi
+    - script:
+        cluster: control
+        content: |
+          set -eu
+          kubectl -n default exec pod/dnsutils-fed -- sh -lc '
+          out=$(dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +tries=1 +time=2);
+          printf ">>>%s<<<\n" "$out";
+          [ -z "$out" ] && echo "EMPTY" || echo "NONEMPTY"
+          '
+    - script:
+        cluster: edge
+        skipCommandOutput: true
+        content: |
+          set -eu
+          attempts=18
+          delay=10
+          i=0
+          while [ "$i" -lt "$attempts" ]; do
+            out=$(kubectl -n default exec pod/dnsutils-fed -- sh -c \
+              "dig @pdns-auth.dns-agent-system.svc.cluster.local edge.fed-test.example A +short +time=2 +tries=1" || true)
+            echo "[edge cleanup attempt $((i+1))/$attempts] dig result: '${out}'"
+            if [ -z "$out" ]; then
+              echo "Record removal replicated to edge PowerDNS."
+              exit 0
+            fi
+            i=$((i+1))
+            sleep "$delay"
+          done
+          echo "Record deletion never replicated to edge PowerDNS after $((attempts*delay))s" >&2
+          exit 1
+
+  - name: Teardown
+    try:
+    - delete:
+        cluster: control
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          name: fed-test-example
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZone
+          check:
+            ($error == null): true
+    - delete:
+        cluster: control
+        ref:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          name: powerdns-federation
+        expect:
+        - match:
+            apiVersion: dns.networking.miloapis.com/v1alpha1
+            kind: DNSZoneClass
+          check:
+            ($error == null): true
+    - delete:
+        cluster: control
+        ref:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: dnsutils-fed
+        expect:
+        - match:
+            apiVersion: v1
+            kind: Pod
+          check:
+            ($error == null): true
+    - delete:
+        cluster: edge
+        ref:
+          apiVersion: v1
+          kind: Pod
+          namespace: default
+          name: dnsutils-fed
+        expect:
+        - match:
+            apiVersion: v1
+            kind: Pod
+          check:
+            ($error == null): true

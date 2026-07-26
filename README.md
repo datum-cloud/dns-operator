@@ -120,6 +120,19 @@ kubectl apply -k config/overlays/replicator
 ```
 3. Create `DNSZoneClass` (cluster-scoped), `DNSZone` and `DNSRecordSet` on the upstream cluster. The replicator will mirror them into the downstream cluster and update upstream `status` conditions.
 
+### Quickstart: Local DNS platform environment (control + edge federation)
+
+Brings up two [kind](https://kind.sigs.k8s.io/) clusters on the shared [`datum-cloud/test-infra`](https://github.com/datum-cloud/test-infra) tooling (same pattern as `milo-os/activity`) to exercise the full production topology end-to-end: dns-operator + PowerDNS on a "control" cluster, PowerDNS-only on an "edge" cluster, replicating zone data between them via PowerDNS Lightningstream over a shared [RustFS](https://rustfs.com) (S3-compatible) bucket — the same mechanism production uses to replicate zone data to edge PoPs over GCS.
+
+```bash
+export TASK_X_REMOTE_TASKFILES=1
+task env:up          # control cluster (dns-operator + PowerDNS + RustFS) + edge cluster (PowerDNS)
+task env:dns-check   # confirm the sample record replicated from control to edge
+task env:down        # tear down both clusters
+```
+
+See `Taskfile.yaml` for the individual `env:control-up` / `env:edge-up` steps, and `config/overlays/agent-powerdns-federated` / `config/dependencies/rustfs` for the underlying manifests.
+
 ### Conditions
 - `Accepted`: resource is valid and has required dependencies (e.g., `DNSRecordSet` sees its `DNSZone`)
 - `Programmed`: desired state is realized (shadow exists downstream; for downstream agent, recordsets applied to backend)

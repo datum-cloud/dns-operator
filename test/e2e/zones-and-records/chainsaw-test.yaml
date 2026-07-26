@@ -236,6 +236,11 @@ spec:
             namespace: default
           spec:
             restartPolicy: Never
+            # Default 30s grace period exceeds chainsaw's delete timeout, so
+            # cleanup of this pod times out ("context deadline exceeded") on
+            # the shared control cluster. Terminate immediately (same pattern
+            # as the federation/full-chain suites).
+            terminationGracePeriodSeconds: 0
             containers:
             - name: dns
               image: infoblox/dnstools:latest

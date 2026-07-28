@@ -102,7 +102,7 @@ The Activity Service translates audit logs and Kubernetes events into human-read
 | `dns.networking.miloapis.com/display-name` | `www.example.com` | Mutating webhook at create/update; replicator safety net |
 | `dns.networking.miloapis.com/display-value` | `192.0.2.10` | Same |
 
-Helpers live in `internal/display`. The webhook looks up the parent `DNSZone` to build the FQDN; if the zone is missing, annotations are left unset and policy fallbacks use `spec.records[0].name`.
+Helpers live in `internal/display`. The mutating webhook resolves the parent `DNSZone` on the project control plane (cluster-aware admission context); if the zone is missing or cluster resolution fails, annotations are left unset and the replicator acts as a safety net. Policy fallbacks use `spec.records[0].name`.
 
 Admission uses `failurePolicy: Ignore` so a missing webhook server degrades activity FQDNs instead of blocking DNSRecordSet writes. Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the manager image (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
 

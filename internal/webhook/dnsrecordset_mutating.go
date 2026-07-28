@@ -8,13 +8,17 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/display"
@@ -23,6 +27,10 @@ import (
 // DNSRecordSetMutator stamps display-name / display-value annotations at
 // admission so ActivityPolicy create audits can include the FQDN.
 type DNSRecordSetMutator struct {
+	// Manager is optional; when set and cluster context is present, DNSZone
+	// lookups use the project control plane client.
+	Manager mcmanager.Manager
+	// Client is the local/deployment-cluster client used as fallback.
 	Client client.Client
 }
 
@@ -40,9 +48,10 @@ func (m *DNSRecordSetMutator) Default(ctx context.Context, obj runtime.Object) e
 		return nil
 	}
 
+	cl := m.clientForZoneLookup(ctx)
 	var zone dnsv1alpha1.DNSZone
 	key := types.NamespacedName{Namespace: rs.Namespace, Name: rs.Spec.DNSZoneRef.Name}
-	if err := m.Client.Get(ctx, key, &zone); err != nil {
+	if err := cl.Get(ctx, key, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -53,10 +62,39 @@ func (m *DNSRecordSetMutator) Default(ctx context.Context, obj runtime.Object) e
 	return nil
 }
 
+// clientForZoneLookup returns the project control plane client when cluster
+// context is available, otherwise the local Client.
+//
+// milo v0.7.4 engages cluster-scoped Projects as req.String() ("/projectname"),
+// while admission Extra carries the bare project name. Try both forms.
+func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Client {
+	if m.Manager == nil {
+		return m.Client
+	}
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok || clusterName == "" {
+		return m.Client
+	}
+
+	cl, err := m.Manager.GetCluster(ctx, clusterName)
+	if err != nil && !strings.HasPrefix(clusterName, "/") {
+		cl, err = m.Manager.GetCluster(ctx, "/"+clusterName)
+	}
+	if err != nil {
+		logf.FromContext(ctx).V(1).Info("falling back to local client for DNSZone lookup",
+			"cluster", clusterName, "error", err)
+		return m.Client
+	}
+	return cl.GetClient()
+}
+
 // SetupDNSRecordSetWebhook registers the mutating webhook with the manager.
-func SetupDNSRecordSetWebhook(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
+func SetupDNSRecordSetWebhook(mgr mcmanager.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).
 		For(&dnsv1alpha1.DNSRecordSet{}).
-		WithDefaulter(&DNSRecordSetMutator{Client: mgr.GetClient()}).
+		WithDefaulter(&DNSRecordSetMutator{
+			Manager: mgr,
+			Client:  mgr.GetLocalManager().GetClient(),
+		}).
 		Complete()
 }

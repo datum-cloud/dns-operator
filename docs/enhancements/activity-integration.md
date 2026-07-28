@@ -104,6 +104,8 @@ The Activity Service translates audit logs and Kubernetes events into human-read
 
 Helpers live in `internal/display`. The webhook looks up the parent `DNSZone` to build the FQDN; if the zone is missing, annotations are left unset and policy fallbacks use `spec.records[0].name`.
 
+Admission uses `failurePolicy: Ignore` so a missing webhook server degrades activity FQDNs instead of blocking DNSRecordSet writes. Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the manager image (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
+
 ### Data Sources
 
 Activities are generated from two sources:
@@ -142,6 +144,9 @@ config/milo/
       dnszone-policy.yaml
       dnsrecordset-policy.yaml
       testdata/                 # Fixture notes for policy CEL tests
+config/components/
+  admission-webhooks/         # Cross-cluster MWC (OCI path for control-plane Flux)
+config/webhook/               # Same-cluster Service + MWC (kind / replicator)
 internal/display/             # FQDN / display-value helpers
 internal/webhook/             # Mutating webhook for display annotations
 internal/activitypolicy/      # Policy structure + CEL match tests
@@ -225,7 +230,7 @@ Use admission webhooks to intercept changes and create activities.
 **Pros:** Real-time, guaranteed delivery
 **Cons:** Adds latency to API calls, single point of failure
 
-We use ActivityPolicy + Events for activity generation. A **mutating** webhook is used only to stamp display annotations at admission (not to create Activity objects), so create audits see the FQDN without redesigning audit plumbing.
+We use ActivityPolicy + Events for activity generation. A **mutating** webhook is used only to stamp display annotations at admission (not to create Activity objects), so create audits see the FQDN without redesigning audit plumbing. Registration for control-plane environments must come from the `dns-operator-kustomize` OCI path `components/admission-webhooks` (same semver as the manager image), not a hand-authored MWC in infra.
 
 ---
 

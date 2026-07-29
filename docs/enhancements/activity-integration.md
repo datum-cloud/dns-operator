@@ -3,7 +3,7 @@
 **Status**: Implemented (Phase 1–2; UX polish for operator-readable summaries in issue #62)
 **Author**: Engineering
 **Created**: 2026-02-12
-**Updated**: 2026-07-23
+**Updated**: 2026-07-29
 
 ## Summary
 
@@ -101,8 +101,13 @@ The Activity Service translates audit logs and Kubernetes events into human-read
 |------------|---------|--------|
 | `dns.networking.miloapis.com/display-name` | `www.example.com` | Mutating webhook at create/update; replicator safety net |
 | `dns.networking.miloapis.com/display-value` | `192.0.2.10` | Same |
+| `dns.networking.miloapis.com/activity-change` | `added` / `removed` / `updated` | Mutating webhook on update when `records[]` differs from OldObject (issue #72) |
+| `dns.networking.miloapis.com/activity-name` | `app.example.com` | Hostname(s) that changed (FQDN) |
+| `dns.networking.miloapis.com/activity-value` | `192.0.2.10` | Value(s) for the changed hostname(s) |
 
 Helpers live in `internal/display`. The mutating webhook resolves the parent `DNSZone` on the project control plane (cluster-aware admission context); if the zone is missing or cluster resolution fails, annotations are left unset and the replicator acts as a safety net. Policy fallbacks use `spec.records[0].name`.
+
+Portal UX often keeps one `DNSRecordSet` per zone per type and edits hostnames inside `spec.records[]`. Adding or removing a hostname is therefore a Kubernetes update. Activity update rules prefer `activity-*` annotations so the timeline says **added** / **deleted** for that hostname instead of **updated** with a joined sibling list. When `activity-change` is absent (older images), rules fall back to `display-name` / `display-value`.
 
 Admission uses `failurePolicy: Ignore` so a missing webhook server degrades activity FQDNs instead of blocking DNSRecordSet writes. Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the manager image (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
 
@@ -236,7 +241,8 @@ We use ActivityPolicy + Events for activity generation. A **mutating** webhook i
 
 ## Open Questions
 
-1. How should we handle bulk operations (e.g., many records updated at once)?
+1. How should we handle bulk operations (e.g., many records updated at once)? Mixed add+remove in one write is summarized as `updated` with affected names; pure adds/removes use `added`/`removed` via `activity-*` annotations.
 2. Should activities include namespace information for multi-tenant visibility?
 3. How should we format multiple record values (e.g., multiple A records for the same name)?
 4. Portal activity *detail* views may still emphasize resource ids; summary link text is the FQDN — follow up in the portal if detail prominence is still weak.
+5. Longer-term: portal may choose one DNSRecordSet per hostname so create/delete map 1:1; activity-* annotations remain useful until then.

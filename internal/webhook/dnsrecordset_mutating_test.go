@@ -4,9 +4,11 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -148,6 +151,72 @@ func TestDNSRecordSetMutator_Default(t *testing.T) {
 				t.Errorf("display-value = %q, want %q", got, tt.wantValue)
 			}
 		})
+	}
+}
+
+func TestDNSRecordSetMutator_Default_activityDiff(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme: %v", err)
+	}
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "dodik.me"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(zone).Build()
+	m := &DNSRecordSetMutator{Client: cl}
+
+	oldRS := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "zone-a", Namespace: "default"},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "my-zone"},
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records:    []dnsv1alpha1.RecordEntry{{Name: "www", A: &dnsv1alpha1.ARecordSpec{Content: "192.168.1.1"}}},
+		},
+	}
+	oldRaw, err := json.Marshal(oldRS)
+	if err != nil {
+		t.Fatalf("marshal old: %v", err)
+	}
+
+	newRS := oldRS.DeepCopy()
+	newRS.Spec.Records = append(newRS.Spec.Records, dnsv1alpha1.RecordEntry{
+		Name: "app", A: &dnsv1alpha1.ARecordSpec{Content: "192.168.1.1"},
+	})
+
+	ctx := admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Update,
+			OldObject: runtime.RawExtension{Raw: oldRaw},
+		},
+	})
+	if err := m.Default(ctx, newRS); err != nil {
+		t.Fatalf("Default: %v", err)
+	}
+	if got := newRS.Annotations[display.AnnotationActivityChange]; got != display.ActivityChangeAdded {
+		t.Errorf("activity-change = %q, want %q", got, display.ActivityChangeAdded)
+	}
+	if got := newRS.Annotations[display.AnnotationActivityName]; got != "app.dodik.me" {
+		t.Errorf("activity-name = %q, want app.dodik.me", got)
+	}
+	if got := newRS.Annotations[display.AnnotationDisplayName]; got != "www.dodik.me, app.dodik.me" {
+		t.Errorf("display-name = %q, want joined FQDNs", got)
+	}
+
+	// Create (no OldObject) clears activity annotations.
+	createRS := oldRS.DeepCopy()
+	createRS.Annotations = map[string]string{
+		display.AnnotationActivityChange: display.ActivityChangeAdded,
+		display.AnnotationActivityName:   "stale.dodik.me",
+	}
+	if err := m.Default(context.Background(), createRS); err != nil {
+		t.Fatalf("Default create: %v", err)
+	}
+	if _, ok := createRS.Annotations[display.AnnotationActivityChange]; ok {
+		t.Fatalf("create should clear activity annotations, got %v", createRS.Annotations)
 	}
 }
 

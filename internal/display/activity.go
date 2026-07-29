@@ -207,7 +207,7 @@ func orderNames(preferredOrder, selected []string) []string {
 	for _, n := range selected {
 		want[n] = struct{}{}
 	}
-	var out []string
+	out := make([]string, 0, len(selected))
 	for _, n := range preferredOrder {
 		if _, ok := want[n]; ok {
 			out = append(out, n)
@@ -225,7 +225,7 @@ func orderNames(preferredOrder, selected []string) []string {
 
 func dedupePreserveOrder(names []string) []string {
 	seen := make(map[string]struct{}, len(names))
-	var out []string
+	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if _, ok := seen[n]; ok {
 			continue
@@ -241,7 +241,7 @@ func intersectNames(names, available []string) []string {
 	for _, n := range available {
 		avail[n] = struct{}{}
 	}
-	var out []string
+	out := make([]string, 0, len(names))
 	for _, n := range names {
 		if _, ok := avail[n]; ok {
 			out = append(out, n)

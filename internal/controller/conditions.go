@@ -13,4 +13,5 @@ const (
 	ReasonDNSZoneInUse        = "DNSZoneInUse"
 	ReasonNotOwner            = "NotOwner"
 	ReasonPDNSError           = "PDNSError"
+	ReasonConflict            = "Conflict"
 )

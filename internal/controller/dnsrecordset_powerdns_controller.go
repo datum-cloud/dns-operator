@@ -199,7 +199,14 @@ func (r *DNSRecordSetPowerDNSReconciler) setRecordProgrammedCondition(
 		newCond.Message = "Another DNSRecordSet owns this record"
 	case pdnsErr != nil:
 		newCond.Status = metav1.ConditionFalse
-		newCond.Reason = ReasonPDNSError
+		if pdnsclient.IsConflict(pdnsErr) {
+			// CNAME/ALIAS coexistence conflict: well-formed record, but it
+			// cannot share this name with existing data. Distinct reason so it
+			// is greppable and not mistaken for a transient provider error.
+			newCond.Reason = ReasonConflict
+		} else {
+			newCond.Reason = ReasonPDNSError
+		}
 		newCond.Message = pdnsclient.FriendlyMessage(pdnsErr)
 	default:
 		newCond.Status = metav1.ConditionTrue

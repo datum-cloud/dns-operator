@@ -113,6 +113,52 @@ func TestDNSRecordSetPolicy_Structure(t *testing.T) {
 	if !strings.Contains(createTXT, "display-name") {
 		t.Errorf("create-txt must include display-name hostname, got: %s", createTXT)
 	}
+	if !strings.Contains(createTXT, "TXT record") {
+		t.Errorf("create-txt must name the record type, got: %s", createTXT)
+	}
+	if !strings.Contains(createTXT, "display-value") {
+		t.Errorf("create-txt must include display-value for searchability, got: %s", createTXT)
+	}
+
+	createA := summaries["create-a-aaaa"]
+	if !strings.Contains(createA, "recordType") {
+		t.Errorf("create-a-aaaa must include A/AAAA recordType in summary, got: %s", createA)
+	}
+	if !strings.Contains(createA, "pointing to") {
+		t.Errorf("create-a-aaaa must include address phrasing, got: %s", createA)
+	}
+
+	updateA := summaries["update-a-aaaa"]
+	if !strings.Contains(updateA, "responseObject.spec.recordType") {
+		t.Errorf("update-a-aaaa must include A/AAAA recordType in summary, got: %s", updateA)
+	}
+
+	createCNAME := summaries["create-cname"]
+	if !strings.Contains(createCNAME, "CNAME record") {
+		t.Errorf("create-cname must name the record type, got: %s", createCNAME)
+	}
+	createALIAS := summaries["create-alias"]
+	if !strings.Contains(createALIAS, "ALIAS record") {
+		t.Errorf("create-alias must name the record type (distinct from CNAME), got: %s", createALIAS)
+	}
+	createMX := summaries["create-mx"]
+	if !strings.Contains(createMX, "MX record") {
+		t.Errorf("create-mx must name the record type, got: %s", createMX)
+	}
+	createNS := summaries["create-ns"]
+	if !strings.Contains(createNS, "NS record") {
+		t.Errorf("create-ns must name the record type, got: %s", createNS)
+	}
+
+	for _, name := range []string{"update-cname", "update-alias", "update-mx", "update-txt", "update-ns"} {
+		s, ok := summaries[name]
+		if !ok {
+			t.Fatalf("missing typed update rule %q", name)
+		}
+		if !strings.Contains(s, "display-value") {
+			t.Errorf("%s must include display-value, got: %s", name, s)
+		}
+	}
 
 	createFromReq := summaries["create-from-request"]
 	if !strings.Contains(createFromReq, "records[0].name") {

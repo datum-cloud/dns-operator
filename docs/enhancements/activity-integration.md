@@ -44,21 +44,21 @@ Activities should use human-friendly display names (e.g., "example.com" not "exa
 | 10:00:01 | Zone example.com is waiting for dependencies |
 | 10:00:02 | Zone example.com is now active |
 | 10:00:05 | Zone example.com is ready with default SOA and NS records |
-| 10:01:00 | user@example.com added www.example.com pointing to 192.0.2.10 |
+| 10:01:00 | user@example.com added A record www.example.com pointing to 192.0.2.10 |
 | 10:01:02 | www.example.com is now resolving to 192.0.2.10 |
-| 10:02:00 | user@example.com added api.example.com as an alias for api.internal.example.com |
+| 10:02:00 | user@example.com added CNAME record api.example.com as an alias for api.internal.example.com |
 | 10:02:02 | api.example.com is now resolving to api.internal.example.com |
-| 10:03:00 | user@example.com configured mail for example.com to use mail.example.com and mail2.example.com |
-| 10:04:00 | user@example.com added www.example.com pointing to 192.0.2.20 |
+| 10:03:00 | user@example.com added MX record example.com using 10 mail.example.com, 20 mail2.example.com |
+| 10:04:00 | user@example.com updated A record www.example.com to point to 192.0.2.20 |
 | 10:04:01 | www.example.com pointing to 192.0.2.20 won't take effect because another record already controls this name |
-| 10:05:00 | user@example.com deleted www.example.com pointing to 192.0.2.10 |
+| 10:05:00 | user@example.com deleted A record www.example.com |
 | 10:05:01 | www.example.com is now resolving to 192.0.2.20 |
 
 ### Error Scenario
 
 | Timestamp | Activity |
 |-----------|----------|
-| 10:00:00 | user@example.com added www.example.com pointing to 192.0.2.10 |
+| 10:00:00 | user@example.com added A record www.example.com pointing to 192.0.2.10 |
 | 10:00:01 | www.example.com is waiting for zone to be ready |
 | 10:00:05 | Failed to apply www.example.com |
 | 10:00:10 | www.example.com is now resolving to 192.0.2.10 |

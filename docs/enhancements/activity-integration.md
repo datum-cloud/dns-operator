@@ -109,7 +109,7 @@ Helpers live in `internal/display`. The mutating webhook resolves the parent `DN
 
 Portal UX often keeps one `DNSRecordSet` per zone per type and edits hostnames inside `spec.records[]`. Adding or removing a hostname is therefore a Kubernetes update. Activity update rules prefer `activity-*` annotations so the timeline says **added** / **deleted** for that hostname instead of **updated** with a joined sibling list. When `activity-change` is absent (older images), rules fall back to `display-name` / `display-value`.
 
-Admission uses `failurePolicy: Ignore` so a missing webhook server degrades activity FQDNs instead of blocking DNSRecordSet writes. Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the manager image (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
+Admission uses `failurePolicy: Fail` so a missing webhook blocks DNSRecordSet writes instead of admitting without activity annotations (those audits do not self-heal). Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the same manager image tag (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
 
 ### Data Sources
 

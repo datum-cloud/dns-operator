@@ -5,8 +5,9 @@
 # clientConfig points at the webhook Service on the infra/deployment cluster.
 # Do not add kustomize nameReference/namespace transformers here: Flux
 # targetNamespace would rewrite the Service namespace and break cross-cluster
-# lookup. failurePolicy is Ignore so a missing webhook server degrades
-# activity FQDNs instead of blocking all DNSRecordSet writes.
+# lookup. failurePolicy is Fail so a missing webhook does not silently
+# skip activity annotations (no self-recovery for the audit event). The
+# MWC must ship with the same OCI tag as the manager that serves it.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -21,7 +22,7 @@ webhooks:
         namespace: datum-dns-system
         path: /mutate-dns-networking-miloapis-com-v1alpha1-dnsrecordset
         port: 443
-    failurePolicy: Ignore
+    failurePolicy: Fail
     matchPolicy: Equivalent
     sideEffects: None
     timeoutSeconds: 10

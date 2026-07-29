@@ -14,6 +14,12 @@ apply. Hand-authoring the MWC in infra decoupled those versions and caused a
 production write outage when `failurePolicy: Fail` hit a build with nothing
 listening on `:9443` (see [#69](https://github.com/datum-cloud/dns-operator/issues/69)).
 
+`failurePolicy` is `Fail`. With co-versioned registration, a missing webhook
+should block DNSRecordSet writes rather than admit without activity
+annotations (Ignore has no self-recovery for the audit event that already
+fired). Always apply this path from the same OCI tag as the manager
+Deployment.
+
 This directory is **not** included in `config/default` or the replicator
 overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
 
@@ -21,7 +27,7 @@ overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
 
 | Kind | Name | Notes |
 | ---- | ---- | ----- |
-| `MutatingWebhookConfiguration` | `dns-operator-mutating-webhook-configuration` | `failurePolicy: Ignore`; Service ref is `dns-operator-webhook-service` / `datum-dns-system` |
+| `MutatingWebhookConfiguration` | `dns-operator-mutating-webhook-configuration` | `failurePolicy: Fail`; Service ref is `dns-operator-webhook-service` / `datum-dns-system` |
 
 No Service and no kustomize `namespace` transformer: Flux `targetNamespace`
 must not rewrite `clientConfig.service.namespace`.

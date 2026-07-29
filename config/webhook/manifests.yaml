@@ -11,7 +11,7 @@ webhooks:
       name: webhook-service
       namespace: system
       path: /mutate-dns-networking-miloapis-com-v1alpha1-dnsrecordset
-  failurePolicy: Ignore
+  failurePolicy: Fail
   name: mdnsrecordset.kb.io
   rules:
   - apiGroups:

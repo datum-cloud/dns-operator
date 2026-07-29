@@ -2,11 +2,12 @@
 
 // Package webhook provides admission webhooks for DNS resources.
 //
-// +kubebuilder:webhook:path=/mutate-dns-networking-miloapis-com-v1alpha1-dnsrecordset,mutating=true,failurePolicy=ignore,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=create;update,versions=v1alpha1,name=mdnsrecordset.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-dns-networking-miloapis-com-v1alpha1-dnsrecordset,mutating=true,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=create;update,versions=v1alpha1,name=mdnsrecordset.kb.io,admissionReviewVersions=v1
 package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -25,7 +26,8 @@ import (
 )
 
 // DNSRecordSetMutator stamps display-name / display-value annotations at
-// admission so ActivityPolicy create audits can include the FQDN.
+// admission so ActivityPolicy create audits can include the FQDN. On update it
+// also stamps activity-* annotations from a records[] diff (issue #72).
 type DNSRecordSetMutator struct {
 	// Manager is optional; when set and cluster context is present, DNSZone
 	// lookups use the project control plane client.
@@ -59,7 +61,26 @@ func (m *DNSRecordSetMutator) Default(ctx context.Context, obj runtime.Object) e
 	}
 
 	_ = display.EnsureAnnotations(rs, zone.Spec.DomainName)
+	m.stampActivityAnnotations(ctx, rs, zone.Spec.DomainName)
 	return nil
+}
+
+// stampActivityAnnotations compares against admission OldObject when present
+// (updates) and stamps or clears activity-change / activity-name / activity-value.
+func (m *DNSRecordSetMutator) stampActivityAnnotations(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) {
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil || len(req.OldObject.Raw) == 0 {
+		_ = display.ClearActivityAnnotations(rs)
+		return
+	}
+
+	var oldRS dnsv1alpha1.DNSRecordSet
+	if err := json.Unmarshal(req.OldObject.Raw, &oldRS); err != nil {
+		logf.FromContext(ctx).V(1).Info("skipping activity annotations; failed to decode OldObject", "error", err)
+		_ = display.ClearActivityAnnotations(rs)
+		return
+	}
+	_ = display.EnsureActivityAnnotations(rs, &oldRS, zoneDomainName)
 }
 
 // clientForZoneLookup returns the project control plane client when cluster

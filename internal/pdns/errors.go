@@ -13,6 +13,14 @@ type pdnsErrorBody struct {
 	Error string `json:"error"`
 }
 
+// NewAPIError builds a PowerDNS API error carrying an HTTP status and the raw
+// response body. The client produces these itself; this constructor exists so
+// code outside this package — controllers and their tests — can build the error
+// shapes that IsConflict and FriendlyMessage classify.
+func NewAPIError(status int, body string) error {
+	return &pdnsAPIError{Status: status, Body: body}
+}
+
 // FriendlyMessage returns a user-readable message for a PowerDNS API error.
 // The raw technical error is preserved in operator logs; only the translated
 // message is written to the DNSRecordSet status condition so end users see

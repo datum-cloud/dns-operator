@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	ns1ExampleNet = "ns1.example.net."
-	exampleCom    = "example.com."
+	ns1ExampleNet    = "ns1.example.net."
+	exampleCom       = "example.com."
+	targetExampleNet = "target.example.net."
 )
 
 func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
@@ -196,7 +197,7 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		},
 	}
 	rr = buildRRSets("example.com", rsALIAS)
-	if rr[0].Type != "ALIAS" || rr[0].Records[0].Content != "target.example.net." {
+	if rr[0].Type != "ALIAS" || rr[0].Records[0].Content != targetExampleNet {
 		t.Fatalf("ALIAS rrset unexpected: %#v", rr)
 	}
 
@@ -718,13 +719,13 @@ func TestBuildRRSets_DeduplicatesRecords(t *testing.T) {
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeCNAME,
 			Records: []dnsv1alpha1.RecordEntry{
-				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
-				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: targetExampleNet}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: targetExampleNet}},
 			},
 		},
 	}
 	rr = buildRRSets("example.com", rsCNAME)
-	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != "target.example.net." {
+	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != targetExampleNet {
 		t.Fatalf("expected CNAME deduped to single record, got %#v", rr)
 	}
 }

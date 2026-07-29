@@ -576,14 +576,14 @@ func TestHelpers(t *testing.T) {
 	if got := quoteIfNeeded(`"x"`); got != `"x"` {
 		t.Fatalf("quoteIfNeeded pass-through: %q", got)
 	}
-	if got := qualifyOwner("@", "example.com"); got != exampleCom {
-		t.Fatalf("qualifyOwner @: %q", got)
+	if got := QualifyOwner("@", "example.com"); got != exampleCom {
+		t.Fatalf("QualifyOwner @: %q", got)
 	}
-	if got := qualifyOwner("www", "example.com"); got != "www.example.com." {
-		t.Fatalf("qualifyOwner rel: %q", got)
+	if got := QualifyOwner("www", "example.com"); got != "www.example.com." {
+		t.Fatalf("QualifyOwner rel: %q", got)
 	}
-	if got := qualifyOwner("abs.example.", "example.com"); got != "abs.example." {
-		t.Fatalf("qualifyOwner abs: %q", got)
+	if got := QualifyOwner("abs.example.", "example.com"); got != "abs.example." {
+		t.Fatalf("QualifyOwner abs: %q", got)
 	}
 }
 

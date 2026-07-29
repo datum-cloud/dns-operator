@@ -4,6 +4,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -587,5 +588,198 @@ func TestReconcile_OwnerWithNoRecords_DeletesRRSet(t *testing.T) {
 	}
 	if cond.Status != metav1.ConditionTrue || cond.Reason != controller.ReasonProgrammed {
 		t.Fatalf("unexpected per-record condition on delete-only owner: %+v", cond)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Owner-name spelling aliases
+//
+// "api", "api.example.com." and "@" at the apex all qualify to a single
+// PowerDNS RRset. Rewriting an owner name therefore enqueues two requests for
+// one RRset, and the request carrying the retired spelling finds no owning
+// DNSRecordSet — it must not delete what the live spelling wrote.
+// ---------------------------------------------------------------------------
+
+const (
+	ownerRelative = "api"
+	ownerAbsolute = "api.example.com."
+	aliasValue    = "9.9.9.9"
+)
+
+func newPDNSRequest(zoneName, ownerName string) controller.PowerDNSRecordSetReconcileRequest {
+	return controller.PowerDNSRecordSetReconcileRequest{
+		Request: ctrl.Request{
+			NamespacedName: client.ObjectKey{
+				Namespace: ns,
+				Name:      zoneName,
+			},
+		},
+		RecordSetType: string(dnsv1alpha1.RRTypeA),
+		RecordSetName: ownerName,
+	}
+}
+
+func TestReconcile_RespelledOwnerName_DoesNotDeleteLiveRRSet(t *testing.T) {
+	t.Parallel()
+
+	// Both queue orderings must converge on the record being present: the fix
+	// removes the race, so neither order may produce a delete.
+	orders := map[string][]string{
+		"live spelling first":    {ownerRelative, ownerAbsolute},
+		"retired spelling first": {ownerAbsolute, ownerRelative},
+	}
+
+	for name, order := range orders {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := newScheme(t)
+			zoneName := "zone-respelled"
+			zone, zc := newZoneAndClass(zoneName)
+			// The spec has already converged on the relative spelling; the
+			// absolute one survives only as a queued request.
+			rs := newARecordSet("rs-respelled", zoneName, ownerRelative, aliasValue)
+
+			pdns := &fakePDNSClient{}
+			cl := newFakeClient(t, scheme, zone, zc, rs)
+			r := &controller.DNSRecordSetPowerDNSReconciler{
+				Client: cl,
+				Scheme: scheme,
+				PDNS:   pdns,
+			}
+
+			for _, ownerName := range order {
+				if _, err := r.Reconcile(context.Background(), newPDNSRequest(zoneName, ownerName)); err != nil {
+					t.Fatalf("reconcile %q: %v", ownerName, err)
+				}
+			}
+
+			if len(pdns.deleteCalls) != 0 {
+				t.Fatalf("retired spelling deleted a live RRset: %+v", pdns.deleteCalls)
+			}
+			if len(pdns.replaceCalls) != 1 {
+				t.Fatalf("expected 1 ReplaceRRSet, got %+v", pdns.replaceCalls)
+			}
+			if got := pdns.replaceCalls[0].OwnerName; got != ownerRelative {
+				t.Fatalf("expected RRset written under %q, got %q", ownerRelative, got)
+			}
+		})
+	}
+}
+
+func TestReconcile_ApexSpellingAlias_DoesNotDeleteLiveRRSet(t *testing.T) {
+	t.Parallel()
+
+	scheme := newScheme(t)
+	zoneName := "zone-apex-alias"
+	zone, zc := newZoneAndClass(zoneName)
+	rs := newARecordSet("rs-apex-alias", zoneName, "@", aliasValue)
+
+	pdns := &fakePDNSClient{}
+	cl := newFakeClient(t, scheme, zone, zc, rs)
+	r := &controller.DNSRecordSetPowerDNSReconciler{
+		Client: cl,
+		Scheme: scheme,
+		PDNS:   pdns,
+	}
+
+	// The absolute apex spelling is the same RRset as "@".
+	req := newPDNSRequest(zoneName, zone.Spec.DomainName+".")
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile apex alias: %v", err)
+	}
+
+	if len(pdns.deleteCalls) != 0 {
+		t.Fatalf("apex alias deleted the live RRset: %+v", pdns.deleteCalls)
+	}
+}
+
+func TestReconcile_RemovedOwnerName_StillDeletesRRSet(t *testing.T) {
+	t.Parallel()
+
+	scheme := newScheme(t)
+	zoneName := "zone-removed-owner"
+	zone, zc := newZoneAndClass(zoneName)
+	rs := newARecordSet("rs-unrelated", zoneName, ownerRelative, aliasValue)
+
+	pdns := &fakePDNSClient{}
+	cl := newFakeClient(t, scheme, zone, zc, rs)
+	r := &controller.DNSRecordSetPowerDNSReconciler{
+		Client: cl,
+		Scheme: scheme,
+		PDNS:   pdns,
+	}
+
+	// Nothing claims "retired" under any spelling, so cleanup must proceed.
+	const removed = "retired"
+	if _, err := r.Reconcile(context.Background(), newPDNSRequest(zoneName, removed)); err != nil {
+		t.Fatalf("reconcile removed owner: %v", err)
+	}
+
+	if len(pdns.deleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteRRSet for a genuinely removed owner, got %+v", pdns.deleteCalls)
+	}
+	if got := pdns.deleteCalls[0].OwnerName; got != removed {
+		t.Fatalf("expected delete of %q, got %q", removed, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coexistence conflicts
+// ---------------------------------------------------------------------------
+
+// A PowerDNS coexistence conflict cannot be cleared by retrying, and retrying
+// on the error path pins the controller's reconcile error ratio high. It must
+// requeue slowly instead, without reporting a reconcile error.
+func TestReconcile_CoexistenceConflict_RequeuesWithoutError(t *testing.T) {
+	t.Parallel()
+
+	scheme := newScheme(t)
+	zoneName := "zone-conflict"
+	zone, zc := newZoneAndClass(zoneName)
+	rs := newARecordSet("rs-conflict", zoneName, ownerRelative, aliasValue)
+
+	pdns := &fakePDNSClient{
+		replaceErr: pdnsclient.NewAPIError(
+			http.StatusUnprocessableEntity,
+			`{"error":"RRset api.example.com. IN A: Conflicts with pre-existing RRset"}`,
+		),
+	}
+	cl := newFakeClient(t, scheme, zone, zc, rs)
+	r := &controller.DNSRecordSetPowerDNSReconciler{
+		Client: cl,
+		Scheme: scheme,
+		PDNS:   pdns,
+	}
+
+	ctx := context.Background()
+	res, err := r.Reconcile(ctx, newPDNSRequest(zoneName, ownerRelative))
+	if err != nil {
+		t.Fatalf("conflict must not surface as a reconcile error, got %v", err)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Fatalf("expected a requeue so the record recovers when the conflict clears, got %+v", res)
+	}
+
+	var updated dnsv1alpha1.DNSRecordSet
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: rs.Name}, &updated); err != nil {
+		t.Fatalf("get updated: %v", err)
+	}
+	var st *dnsv1alpha1.RecordSetStatus
+	for i := range updated.Status.RecordSets {
+		if updated.Status.RecordSets[i].Name == ownerRelative {
+			st = &updated.Status.RecordSets[i]
+			break
+		}
+	}
+	if st == nil {
+		t.Fatalf("expected RecordSetStatus for %q", ownerRelative)
+	}
+	cond := apimeta.FindStatusCondition(st.Conditions, controller.CondProgrammed)
+	if cond == nil {
+		t.Fatalf("expected per-record CondProgrammed condition")
+	}
+	if cond.Status != metav1.ConditionFalse || cond.Reason != controller.ReasonConflict {
+		t.Fatalf("expected Programmed=False/Conflict, got %+v", cond)
 	}
 }

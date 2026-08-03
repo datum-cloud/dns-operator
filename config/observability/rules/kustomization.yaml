@@ -1,0 +1,6 @@
+# Drift recording + alerting rules. Apply these to the cluster running the
+# metrics stack, in a namespace the vmalert selects.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - dns-drift-rules.yaml

@@ -1,17 +1,21 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
 # Orphan / engineering#346 regression: a DNSRecordSet exists on the downstream
-# (core) CP with no surviving upstream owner. We reproduce it by replicating a
+# cluster with no surviving upstream owner. We reproduce it by replicating a
 # record, scaling the replicator to 0 (so it can't cascade-delete the downstream
 # copy), then deleting the upstream object. The downstream copy is left behind =>
 # orphan. We assert the orphan recording rule fires and the alert becomes active,
 # then restore the replicator and assert it clears.
 #
 # Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
-#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
-#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
-#   infra  -> kind cluster hosting VM + OTel + the           ../kubeconfig-infra
-#             replicator Deployment (ns dns-replicator-system)
+#   alpha       -> project CP alpha (UPSTREAM)          ../kubeconfig-alpha
+#   downstream  -> cluster storing the shadow objects  ../kubeconfig-downstream
+#   infra       -> cluster hosting VM + OTel           ../kubeconfig-infra
+#   replicator  -> cluster running the replicator      ../kubeconfig-replicator
+#
+# downstream and infra are the same kind cluster here, exactly as in production:
+# the DNS infrastructure cluster stores the shadow objects AND runs the metrics
+# stack. They are named separately so each step reads as what it is doing.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -22,8 +26,8 @@ spec:
   clusters:
     alpha:
       kubeconfig: ../kubeconfig-alpha
-    core:
-      kubeconfig: ../kubeconfig-core
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
     infra:
       kubeconfig: ../kubeconfig-infra
     replicator:
@@ -67,7 +71,7 @@ spec:
                     a:
                       content: 192.0.2.20
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 300s
             content: |
               set -eu
@@ -81,12 +85,12 @@ spec:
                   2>/dev/null || true)
                 echo "[attempt $i/$attempts] downstream upstream-name annotations: ${got}"
                 if printf '%s\n' "$got" | grep -qx "$want"; then
-                  echo "replicated copy present on core CP"
+                  echo "replicated copy present on downstream cluster"
                   exit 0
                 fi
                 sleep 10
               done
-              echo "replicated DNSRecordSet ($want) never appeared on core CP" >&2
+              echo "replicated DNSRecordSet ($want) never appeared on downstream cluster" >&2
               exit 1
 
     - name: Scale the replicator to 0 to prevent GC cascade
@@ -121,7 +125,7 @@ spec:
                 --type=merge -p '{"metadata":{"finalizers":[]}}' || true
               kubectl -n default delete dnsrecordset www-orphan --wait=false || true
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 60s
             content: |
               set -eu
@@ -219,7 +223,7 @@ spec:
               kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=1
               kubectl -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=120s
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 120s
             content: |
               set -eu
@@ -238,12 +242,12 @@ spec:
                 echo "no leftover found (already removed)"
               fi
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 90s
             content: |
               set -eu
               # Assert remediation at the source of truth: the orphaned downstream
-              # object is gone from the core CP. We deliberately do NOT poll the
+              # object is gone from the downstream cluster. We deliberately do NOT poll the
               # VM recording rule here — its series only clears once the removed
               # object's samples age out of VM's ~5m staleness window, which makes
               # a rule-based clear assertion slow and flaky. Once the object is
@@ -253,13 +257,13 @@ spec:
                   -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
                   2>/dev/null || true)
                 if ! printf '%s\n' "$got" | grep -qx "www-orphan"; then
-                  echo "orphaned leftover removed from core CP — drift resolved at source"
+                  echo "orphaned leftover removed from downstream cluster — drift resolved at source"
                   exit 0
                 fi
                 echo "[clear attempt $i] leftover still present; waiting"
                 sleep 5
               done
-              echo "orphaned downstream leftover was not removed from the core CP" >&2
+              echo "orphaned downstream leftover was not removed from the downstream cluster" >&2
               exit 1
 
     - name: Teardown

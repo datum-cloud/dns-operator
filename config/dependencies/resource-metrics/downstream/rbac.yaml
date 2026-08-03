@@ -1,0 +1,35 @@
+# The bundle's controller_rbac component grants what the controller needs to
+# read policies and run its access preflight, but not to read the resources a
+# policy names — CRD owners opt in to that themselves.
+#
+# On a project control plane that opt-in happens through resource-metrics'
+# aggregated-reader ClusterRole. That aggregation mechanism does not cover a
+# single-mode deployment, so the downstream collector needs the grant directly.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: downstream-resource-metrics-dns-reader
+rules:
+  - apiGroups:
+      - dns.networking.miloapis.com
+    resources:
+      - dnszones
+      - dnsrecordsets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: downstream-resource-metrics-dns-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: downstream-resource-metrics-dns-reader
+subjects:
+  - kind: ServiceAccount
+    # namePrefix from the Flux Kustomization, in the namespace it targets.
+    name: downstream-resource-metrics-controller-manager
+    namespace: resource-metrics-system

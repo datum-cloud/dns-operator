@@ -1,13 +1,16 @@
 # Applies the dns-metrics ResourceMetricsPolicy onto the Milo core control
-# plane. The policy itself is authored (and owned) elsewhere at
-# config/observability/dns-metrics-policy.yaml — it is referenced here, not
-# duplicated, so there is a single source of truth.
+# plane. The policy is the one the operator already ships to production in
+# config/milo/resource-metrics/policies — it is referenced here, not duplicated,
+# so the e2e exercises exactly what infra deploys.
 #
-# TARGET: milo-apiserver (the core/downstream CP) — NOT the kind apiserver.
-# Apply with a milo kubeconfig (see ../../README.md), AFTER the CRD in ../crd
-# is Established. resource-metrics watches this policy on the core CP and, with
-# discovery.collectRootControlPlane=true, emits the upstream/downstream series
-# the drift recording rules diff.
+# TARGET: milo-apiserver (the core CP) — NOT the kind apiserver. Apply with a
+# milo kubeconfig (see ../../README.md), AFTER the CRD in ../crd is Established.
+# The milo-mode resource-metrics watches this policy on the core CP and runs it
+# against every project control plane it engages, emitting the
+# dns_record_set_info series the drift rules treat as the upstream side.
+#
+# The downstream side is a separate policy on a separate cluster; see
+# config/observability/cluster-policy.
 #
 # Referencing a path outside this kustomization root requires
 # `--load-restrictor LoadRestrictionsNone` at build time.
@@ -15,4 +18,4 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../../../observability/dns-metrics-policy.yaml
+  - ../../../../milo/resource-metrics/policies/dns-metrics.yaml

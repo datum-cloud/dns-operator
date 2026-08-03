@@ -1,15 +1,19 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
 #
 # Happy path: create a DNSZone(class) + DNSRecordSet on project CP `alpha`
-# (upstream), wait for the replicated copy to land on the core CP (downstream),
+# (upstream), wait for the replicated copy to land on the downstream cluster,
 # then assert Victoria Metrics carries BOTH sides of the join and that the
 # orphan recording rule is clean.
 #
 # Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
-#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
-#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
-#   infra  -> kind cluster hosting Victoria Metrics + OTel   ../kubeconfig-infra
-#             (used only to run in-cluster curl against VM)
+#   alpha       -> project CP alpha (UPSTREAM)          ../kubeconfig-alpha
+#   downstream  -> cluster storing the shadow objects  ../kubeconfig-downstream
+#   infra       -> cluster hosting VM + OTel           ../kubeconfig-infra
+#                  (used only to run in-cluster curl against VM)
+#
+# downstream and infra are the same kind cluster here, exactly as in production:
+# the DNS infrastructure cluster stores the shadow objects AND runs the metrics
+# stack. They are named separately so each step reads as what it is doing.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -22,8 +26,8 @@ spec:
   clusters:
     alpha:
       kubeconfig: ../kubeconfig-alpha
-    core:
-      kubeconfig: ../kubeconfig-core
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
     infra:
       kubeconfig: ../kubeconfig-infra
   cluster: alpha
@@ -73,10 +77,10 @@ spec:
                 name: www-happy
                 namespace: default
 
-    - name: Wait for the replicated copy to land on the downstream core CP
+    - name: Wait for the replicated copy to land on the downstream cluster
       try:
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 300s
             content: |
               set -eu
@@ -94,12 +98,12 @@ spec:
                   2>/dev/null || true)
                 echo "[attempt $i/$attempts] downstream upstream-name annotations: ${got}"
                 if printf '%s\n' "$got" | grep -qx "$want"; then
-                  echo "replicated copy present on core CP"
+                  echo "replicated copy present on downstream cluster"
                   exit 0
                 fi
                 sleep 10
               done
-              echo "replicated DNSRecordSet ($want) never appeared on core CP" >&2
+              echo "replicated DNSRecordSet ($want) never appeared on downstream cluster" >&2
               exit 1
 
     - name: Assert upstream + downstream series exist in Victoria Metrics
@@ -137,8 +141,12 @@ spec:
                 return 1
               }
 
-              poll 'dns_recordset_upstream_info{upstream_name="www-happy",milo_project_name="alpha"}' upstream
-              poll 'dns_recordset_downstream_info{upstream_name="www-happy",milo_control_plane_type="root"}' downstream
+              # The two sides come from two different collectors and carry
+              # different labels: the upstream policy reports the customer's own
+              # metadata, the downstream one reports the replicator's
+              # upstream-* annotations.
+              poll 'dns_record_set_info{name="www-happy",milo_project_name="alpha"}' upstream
+              poll 'dns_record_set_downstream_info{upstream_name="www-happy"}' downstream
 
     - name: Assert the orphan recording rule is clean (== 0 / empty)
       try:

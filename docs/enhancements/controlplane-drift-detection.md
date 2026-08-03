@@ -23,22 +23,26 @@ Alerts only fire after the condition **persists** (`for: 10m`), so normal replic
 ## How it works
 
 ```
-Customer projects  ──replicate──►  Serving control plane  ──►  Live DNS
-  (upstream)                          (downstream)
-        │                                   │
-        └──────── resource-metrics ─────────┘   emits one metric per DNS record, per side
-                          │
-                          ▼
-              Victoria Metrics + alerts   (compare the two sides; a mismatch is drift)
+Customer projects  ──replicate──►  DNS infrastructure cluster  ──►  Live DNS
+  (upstream)                            (downstream)
+        │                                     │
+  resource-metrics                     resource-metrics
+   (mode: milo)                        (mode: single)
+        │                                     │
+        └──────────────┬──────────────────────┘   one metric per DNS record, per side
+                       ▼
+           Victoria Metrics + alerts   (compare the two sides; a mismatch is drift)
 ```
 
-- [`milo-os/resource-metrics`](https://github.com/datum-cloud/resource-metrics) emits one metric per `DNSRecordSet`/`DNSZone` from every customer project and from the serving control plane — no new code in the DNS operator.
-- Recording rules compare the two sides. A serving-side record with no matching project record is an **orphan**; a project record with no matching serving-side record is **missing**.
+- The two sides are two different API servers, so they need two [`milo-os/resource-metrics`](https://github.com/milo-os/resource-metrics) collectors. The upstream one runs `discovery.mode: milo` and engages every customer project; the downstream one runs `discovery.mode: single` on the infrastructure cluster that stores the replicated copies. No new code in the DNS operator.
+- Recording rules compare the two sides. A downstream record with no matching project record is an **orphan**; a project record with no matching downstream record is **missing**.
 - Rules ship as a standard Prometheus `PrometheusRule` and evaluate in Victoria Metrics.
 
 ## What's included
 
-- `config/observability/` — the `dns-metrics` metrics policy and the `dns-controlplane-drift` alert/recording rules.
+- `config/milo/resource-metrics/policies/dns-metrics.yaml` — the upstream side. This already ships to the Milo core control plane today; the rules join against the series it already emits.
+- `config/observability/cluster-policy/` — `dns-downstream-metrics`, the downstream side, for the infrastructure cluster.
+- `config/observability/rules/` — the `dns-controlplane-drift` recording rules and alerts.
 - `config/dependencies/` and `config/overlays/` — the environment used to validate it end-to-end.
 - `test/e2e/controlplane-drift/` — automated tests for all three cases (healthy, orphan, missing).
 
@@ -56,4 +60,9 @@ The orphan test reproduces #346 end-to-end: replicate a record, break replicatio
 
 ## Enabling in staging / production
 
-The metrics and rules are additive, but the serving-side metrics require one platform change: set `discovery.collectRootControlPlane: true` in the `resource-metrics` config (it collects only customer projects today). Validate the new series in staging for one metrics-retention window before wiring the alerts to paging.
+The upstream series already exist — `dns-metrics` runs in production today. What's new is the downstream half, and it needs a second `resource-metrics` deployment on the DNS infrastructure cluster in `discovery.mode: single`, with the `dns-downstream-metrics` policy and read access to `DNSZone`/`DNSRecordSet` there.
+
+> [!NOTE]
+> `discovery.collectRootControlPlane: true` is **not** the way to get these series. It collects Milo's root control plane, and the replicated copies do not live there — they live in the infrastructure cluster's own apiserver.
+
+Validate the new series in staging for one metrics-retention window before wiring the alerts to paging.

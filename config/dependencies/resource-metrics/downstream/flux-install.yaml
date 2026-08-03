@@ -1,0 +1,102 @@
+# Installs the ResourceMetricsPolicy CRD onto the DOWNSTREAM cluster. This is a
+# second, independent installation from the one on the Milo core CP (../core-
+# control-plane/crd): each resource-metrics reads policies from the cluster its
+# local manager targets, and these two target different API servers.
+#
+# No kubeConfig here — the downstream cluster is the local one in this e2e, the
+# same way production's downstream is the cluster the operator already runs in.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: resource-metrics-downstream-crd
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 2m
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: resource-metrics        # shared with ../controller/ocirepository.yaml
+  path: crd
+---
+# The DOWNSTREAM collector: discovery.mode=single, so it collects exactly one
+# cluster — the one it runs in, which is where the replicator writes the shadow
+# objects. It runs the dns-downstream-metrics policy and emits
+# dns_record_set_downstream_info; the upstream side is the separate milo-mode
+# deployment in ../controller.
+#
+# Deployed from the bundle's plain `manager` path rather than overlays/test-infra
+# (which is milo-flavoured: it mounts a milo kubeconfig and points KUBECONFIG at
+# it, which is exactly what single mode must not do). namePrefix keeps it from
+# colliding with the milo-mode deployment in the same namespace; the bundle's
+# ClusterRoleBinding subject already names that namespace, so nothing else needs
+# patching.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: resource-metrics-downstream
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: resource-metrics
+  path: manager
+  namePrefix: downstream-
+  targetNamespace: resource-metrics-system
+  dependsOn:
+    - name: resource-metrics-downstream-crd
+  components:
+    - ../components/controller_rbac
+  images:
+    - name: ghcr.io/milo-os/resource-metrics
+      newTag: v0.0.0-feat-multi-arch-arm64-image
+  patches:
+    - target:
+        kind: Deployment
+        name: resource-metrics-controller-manager
+      patch: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: resource-metrics-controller-manager
+        spec:
+          template:
+            spec:
+              containers:
+                - name: manager
+                  imagePullPolicy: IfNotPresent
+                  # Restated in full because strategic merge replaces scalar
+                  # lists wholesale. --leader-elect is deliberately dropped: the
+                  # lease namespace is hardcoded to milo-system upstream, so both
+                  # deployments would contend for one lease and only one would
+                  # ever collect. A single replica needs no lease.
+                  args:
+                    - --health-probe-bind-address=:8081
+                    - --server-config=/config/config.yaml
+    - target:
+        kind: ConfigMap
+        name: resource-metrics-service-config
+      patch: |
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: resource-metrics-service-config
+        data:
+          config.yaml: |
+            apiVersion: apiserver.config.miloapis.com/v1alpha1
+            kind: ResourceMetricsOperator
+            discovery:
+              mode: single
+              internalServiceDiscovery: false
+            otel:
+              endpoint: otel-collector-collector.telemetry-system:4317
+              insecure: true
+              collectionInterval: 5s
+              defaultMetricPrefix: ""

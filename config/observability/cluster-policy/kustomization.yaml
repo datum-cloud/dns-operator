@@ -1,0 +1,7 @@
+# ResourceMetricsPolicy for the downstream cluster. Apply it to the cluster
+# whose apiserver stores the replicated shadow objects, alongside a
+# resource-metrics running discovery.mode: single.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - dns-downstream-metrics.yaml

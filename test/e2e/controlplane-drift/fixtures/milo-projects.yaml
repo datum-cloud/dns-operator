@@ -3,8 +3,9 @@
 # virtual control plane per Project, reachable at
 #   {milo}/apis/resourcemanager.miloapis.com/v1alpha1/projects/<name>/control-plane
 # and shares the core-registered DNS CRDs. These two projects are the "upstream"
-# control planes the replicator discovers in discovery.mode=milo; the core CP is
-# the "downstream". See docs/enhancements/controlplane-drift-detection.md.
+# control planes the replicator discovers in discovery.mode=milo. The
+# "downstream" is a separate cluster entirely — dns-control's own apiserver, not
+# anything milo serves. See docs/enhancements/controlplane-drift-detection.md.
 apiVersion: resourcemanager.miloapis.com/v1alpha1
 kind: Organization
 metadata:

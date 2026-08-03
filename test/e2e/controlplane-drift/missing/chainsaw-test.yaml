@@ -6,10 +6,14 @@
 # is ever made — and assert the missing recording rule fires.
 #
 # Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
-#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
-#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
-#   infra  -> kind cluster hosting VM + OTel + the           ../kubeconfig-infra
-#             replicator Deployment (ns dns-replicator-system)
+#   alpha       -> project CP alpha (UPSTREAM)          ../kubeconfig-alpha
+#   downstream  -> cluster storing the shadow objects  ../kubeconfig-downstream
+#   infra       -> cluster hosting VM + OTel           ../kubeconfig-infra
+#   replicator  -> cluster running the replicator      ../kubeconfig-replicator
+#
+# downstream and infra are the same kind cluster here, exactly as in production:
+# the DNS infrastructure cluster stores the shadow objects AND runs the metrics
+# stack. They are named separately so each step reads as what it is doing.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -20,8 +24,8 @@ spec:
   clusters:
     alpha:
       kubeconfig: ../kubeconfig-alpha
-    core:
-      kubeconfig: ../kubeconfig-core
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
     infra:
       kubeconfig: ../kubeconfig-infra
     replicator:
@@ -84,10 +88,10 @@ spec:
                 name: www-missing
                 namespace: default
 
-    - name: Confirm no downstream copy exists on the core CP
+    - name: Confirm no downstream copy exists on the downstream cluster
       try:
         - script:
-            cluster: core
+            cluster: downstream
             timeout: 60s
             content: |
               set -eu

@@ -27,9 +27,14 @@ local manager targets:
   policy is `config/milo/resource-metrics/policies/dns-metrics.yaml`, the same
   one infra ships to production.
 - **`downstream/`** — the downstream collector, `discovery.mode: single`, on the
-  cluster that stores the replicated shadow objects, plus its CRD and the RBAC
-  letting it read DNS resources there. Its policy is
-  `config/observability/cluster-policy`.
+  cluster that stores the replicated shadow objects, plus its CRD, namespace and
+  RBAC. Its policy is `config/observability/cluster-policy`.
+
+Both deployments keep the bundle's object names and are told apart by namespace:
+`resource-metrics-system` and `resource-metrics-downstream-system`. The bundle
+names and labels every deployment identically, so sharing one namespace would
+mean renaming *and* relabelling both to stop a `kubectl logs deploy/...`,
+Service, or PodMonitor lookup resolving to the wrong pod.
 
 ## Changing it
 

@@ -29,17 +29,17 @@ spec:
 #
 # Deployed from the bundle's plain `manager` path rather than overlays/test-infra
 # (which is milo-flavoured: it mounts a milo kubeconfig and points KUBECONFIG at
-# it, which is exactly what single mode must not do). namePrefix keeps the object
-# names from colliding with the milo-mode deployment in the same namespace; the
-# bundle's ClusterRoleBinding subject already names that namespace, so nothing
-# else needs patching.
+# it, which is exactly what single mode must not do).
 #
-# namePrefix does NOT rewrite labels, so the deployment patch below also adds an
-# app.kubernetes.io/instance label to the selector and pod template. Without it
-# both deployments select the identical bundle labels: ReplicaSet pod-template
-# hashes keep them from actually stealing each other's pods, but every label
-# lookup against them — `kubectl logs deploy/...`, a Service, a PodMonitor —
-# silently resolves to whichever pod it finds first.
+# It gets its own namespace rather than sharing the upstream collector's. The
+# bundle names and labels every deployment identically, so co-tenanting the two
+# would need both renaming and relabelling to keep `kubectl logs deploy/...`, a
+# Service, or a PodMonitor from resolving to the wrong pod. A namespace draws
+# that boundary once, for free: names stay as the bundle ships them, and
+# Deployment selectors are namespace-scoped so they cannot overlap. The
+# ServiceAccount comes from ../rbac.yaml in that namespace under the name the
+# bundle's Deployment already expects, so the bundle's controller_rbac component
+# is deliberately not used — its ClusterRole is cluster-scoped and would collide.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -55,12 +55,9 @@ spec:
     kind: OCIRepository
     name: resource-metrics
   path: manager
-  namePrefix: downstream-
-  targetNamespace: resource-metrics-system
+  targetNamespace: resource-metrics-downstream-system
   dependsOn:
     - name: resource-metrics-downstream-crd
-  components:
-    - ../components/controller_rbac
   images:
     - name: ghcr.io/milo-os/resource-metrics
       newTag: v0.0.0-feat-multi-arch-arm64-image
@@ -74,13 +71,7 @@ spec:
         metadata:
           name: resource-metrics-controller-manager
         spec:
-          selector:
-            matchLabels:
-              app.kubernetes.io/instance: downstream
           template:
-            metadata:
-              labels:
-                app.kubernetes.io/instance: downstream
             spec:
               containers:
                 - name: manager

@@ -424,8 +424,10 @@ tasks:
       - "{{.KCTL}} apply -k config/observability/cluster-policy"
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s"
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-downstream --for=condition=Ready --timeout=300s"
+      # Same deployment name in both cases — the two collectors are told apart by
+      # namespace, not by name.
       - "{{.KCTL}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s"
-      - "{{.KCTL}} -n resource-metrics-system rollout status deploy/downstream-resource-metrics-controller-manager --timeout=150s"
+      - "{{.KCTL}} -n resource-metrics-downstream-system rollout status deploy/resource-metrics-controller-manager --timeout=150s"
       - "{{.KCTL}} -n telemetry-system apply -k config/observability/rules"
       - echo "✅ upstream + downstream resource-metrics, both policies, and the drift rules deployed"
 

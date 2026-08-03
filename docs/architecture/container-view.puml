@@ -1,0 +1,38 @@
+@startuml container-view
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Container View — DNS Service
+
+Person(user, "Platform User", "Declares zones and records")
+Person(resolver, "Recursive Resolver", "Resolves names for the internet")
+
+System_Boundary(tenant, "Tenant Control Planes") {
+    Container(cp, "Project Control Plane", "Kubernetes API", "Holds user-authored DNSZone / DNSRecordSet / DNSZoneClass")
+}
+
+System_Boundary(replication, "Replication Control Plane") {
+    Container(replicator, "DNS Operator (replicator)", "Go / controller-runtime", "Discovers control planes, mirrors desired state, synthesizes status")
+}
+
+System_Boundary(authoritative, "Authoritative Cluster") {
+    Container(agent, "DNS Operator (downstream agent)", "Go / controller-runtime", "Programs zones and records")
+    Container(pdns, "Authoritative Backend", "DNS server", "Source of truth for authoritative zone data")
+}
+
+System_Boundary(edge, "Serving Layer") {
+    Container(serving, "Authoritative Serving Nodes", "DNS servers", "Answer public DNS queries")
+}
+
+Rel(user, cp, "Creates / edits DNS resources", "kubectl / API")
+Rel(replicator, cp, "Watches spec, writes status", "watch / patch")
+Rel(replicator, agent, "Mirrors desired state as shadow objects")
+Rel(agent, pdns, "Programs zones / records")
+Rel(pdns, serving, "Replicates authoritative zone data", "backend-specific")
+Rel_U(resolver, serving, "DNS query", "UDP/TCP :53")
+
+SHOW_LEGEND()
+@enduml

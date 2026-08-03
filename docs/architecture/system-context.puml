@@ -1,0 +1,30 @@
+@startuml system-context
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+!include datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title System Context — DNS Service
+
+Person(user, "Platform User", "Owns domains and publishes DNS so their applications are reachable")
+
+System_Boundary(dns, "DNS Service") {
+    System(operator, "DNS Operator", "Reconciles zones and records into an authoritative backend")
+    System(serving, "Authoritative Serving Layer", "Answers DNS queries")
+}
+
+System_Ext(domains, "Domains", "Domain ownership and verification")
+System_Ext(services, "Platform Services", "Networking, ingress, and TLS certificate issuance")
+System_Ext(cp, "Tenant Control Planes", "Kubernetes API where users and platform services author DNS resources")
+Person_Ext(resolver, "Recursive Resolver", "Resolves names for the internet")
+
+Rel_D(user, cp, "Declares zones and records", "kubectl / API")
+Rel_D(services, cp, "Publish records to expose workloads and validate domain control")
+Rel(domains, cp, "Supply verified domains that zones are created for")
+Rel(operator, cp, "Watches desired state, writes status", "watch / patch")
+Rel(operator, serving, "Programs authoritative zones")
+Rel_U(resolver, serving, "Resolves published records", "UDP/TCP :53")
+
+SHOW_LEGEND()
+@enduml

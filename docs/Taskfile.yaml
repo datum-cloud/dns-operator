@@ -1,0 +1,56 @@
+version: '3'
+
+# Renders the architecture diagrams from PlantUML sources using Docker,
+# mirroring the datum-cloud/enhancements convention. Each diagram is committed
+# next to the document that embeds it. The shared brand theme
+# (datum-theme*.puml) is an include, not a diagram, so it is excluded.
+#
+# The whole docs/architecture tree is mounted so relative includes (e.g.
+# ../datum-theme.puml from backends/) resolve, and each PNG is written back
+# beside its source.
+
+vars:
+  ARCH_DIR: "{{.USER_WORKING_DIR}}/docs/architecture"
+  OUTPUT_FORMAT: "png"
+  PLANTUML_IMAGE: "plantuml/plantuml:latest"
+
+tasks:
+  diagrams:
+    desc: Render all architecture diagrams from PlantUML
+    cmds:
+      - task: diagrams:render
+
+  diagrams:render:
+    desc: Render PlantUML diagrams to PNG using Docker
+    cmds:
+      - |
+        set -e
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
+          echo "Rendering: $puml"
+          docker run --rm -v "$(pwd)":/data "{{.PLANTUML_IMAGE}}" \
+            -t{{.OUTPUT_FORMAT}} -o "/data/$(dirname "$puml")" "/data/$puml"
+        done
+
+  diagrams:validate:
+    desc: Validate PlantUML syntax using Docker
+    cmds:
+      - |
+        set -e
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
+          echo "Validating: $puml"
+          docker run --rm -v "$(pwd)":/data "{{.PLANTUML_IMAGE}}" \
+            -syntax "/data/$puml"
+        done
+
+  diagrams:clean:
+    desc: Remove generated diagram PNGs
+    cmds:
+      - |
+        set -e
+        cd "{{.ARCH_DIR}}"
+        find . -name '*.puml' ! -name 'datum-theme*.puml' | while read -r puml; do
+          rm -f "${puml%.puml}.{{.OUTPUT_FORMAT}}"
+        done
+        echo "Removed generated diagrams"

@@ -1,0 +1,43 @@
+@startuml powerdns-backend
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Deployment.puml
+!include ../datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Deployment View — PowerDNS Backend
+
+Deployment_Node(rcp, "Replication Control Plane", "Kubernetes cluster") {
+    Container(replicator, "DNS Operator (replicator)", "controller-runtime", "Mirrors desired state into the authoritative cluster")
+}
+
+Deployment_Node(auth, "Authoritative Cluster", "Kubernetes cluster") {
+    Container(api, "Kubernetes API", "control plane", "Holds shadow DNSZone / DNSRecordSet")
+    Container(agent, "DNS Operator (downstream agent)", "controller-runtime", "Reconciles shadows and programs PowerDNS")
+    Deployment_Node(pod, "pdns-auth", "StatefulSet pod") {
+        Container(pdns, "PowerDNS Authoritative", "pdns-auth + LMDB", "Writer and source of truth")
+        Container(pub, "LightningStream", "sidecar", "Snapshots LMDB to object storage")
+    }
+}
+
+ContainerDb(store, "Object Storage", "S3-compatible", "Durable authoritative state")
+
+Deployment_Node(edge, "Serving Layer", "Edge nodes") {
+    Deployment_Node(node, "Serving Node", "DaemonSet pod") {
+        Container(spdns, "PowerDNS (read-only)", "pdns-auth + LMDB", "Answers DNS queries")
+        Container(recv, "LightningStream", "sidecar (receive)", "Pulls snapshots from object storage")
+        Container(rec, "Recursor", "pdns-recursor", "Expands ALIAS at query time")
+    }
+}
+
+Person_Ext(resolver, "Recursive Resolver", "Resolves names for the internet")
+
+Rel(replicator, api, "Writes shadow DNS resources", "apply")
+Rel(agent, api, "Watches shadows, writes status", "watch")
+Rel(agent, pdns, "Programs zones / records", "HTTP API + X-API-Key")
+Rel(pub, store, "Writes snapshots")
+Rel(recv, store, "Pulls snapshots")
+Rel(resolver, spdns, "DNS query", "UDP/TCP :53")
+
+SHOW_LEGEND()
+@enduml

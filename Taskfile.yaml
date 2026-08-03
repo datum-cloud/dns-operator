@@ -412,9 +412,15 @@ tasks:
       # Each policy goes to the cluster whose collector reads it, once that
       # cluster's CRD is Established. dns-metrics is the same policy infra ships
       # to production; dns-downstream-metrics is drift-detection specific.
+      # Applied as a plain file, not with `apply -k` on
+      # config/dependencies/resource-metrics/core-control-plane/policy: that
+      # kustomization references the policy outside its own root, which needs
+      # --load-restrictor LoadRestrictionsNone, and `kubectl apply -k` has no way
+      # to pass it. The kustomization stays as the reference for how infra wires
+      # this; here we apply what it points at.
       - task: env:with-milo-admin
         vars:
-          CMD: kubectl apply -k config/dependencies/resource-metrics/core-control-plane/policy
+          CMD: kubectl apply -f config/milo/resource-metrics/policies/dns-metrics.yaml
       - "{{.KCTL}} apply -k config/observability/cluster-policy"
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s"
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-downstream --for=condition=Ready --timeout=300s"

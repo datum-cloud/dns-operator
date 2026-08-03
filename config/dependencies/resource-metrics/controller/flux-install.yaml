@@ -29,6 +29,27 @@ spec:
     - name: ghcr.io/milo-os/resource-metrics
       newTag: v0.0.0-feat-multi-arch-arm64-image
   patches:
+    # Distinguish this deployment's pods from the downstream one's in the same
+    # namespace. The bundle labels both identically, so without this the two
+    # selectors overlap and any label lookup — `kubectl logs deploy/...`, a
+    # Service, a PodMonitor — resolves to whichever pod it finds first. The
+    # downstream side sets the matching `instance: downstream`.
+    - target:
+        kind: Deployment
+        name: resource-metrics-controller-manager
+      patch: |
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: resource-metrics-controller-manager
+        spec:
+          selector:
+            matchLabels:
+              app.kubernetes.io/instance: upstream
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/instance: upstream
     # Point the operator at our OTel collector. Once milo-os/resource-metrics#14
     # lands, replace this whole ConfigMap patch with a Deployment env patch:
     #   env: [{name: OTEL_EXPORTER_OTLP_ENDPOINT, value: otel-collector-collector.telemetry-system:4317}]

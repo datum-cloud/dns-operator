@@ -29,10 +29,17 @@ spec:
 #
 # Deployed from the bundle's plain `manager` path rather than overlays/test-infra
 # (which is milo-flavoured: it mounts a milo kubeconfig and points KUBECONFIG at
-# it, which is exactly what single mode must not do). namePrefix keeps it from
-# colliding with the milo-mode deployment in the same namespace; the bundle's
-# ClusterRoleBinding subject already names that namespace, so nothing else needs
-# patching.
+# it, which is exactly what single mode must not do). namePrefix keeps the object
+# names from colliding with the milo-mode deployment in the same namespace; the
+# bundle's ClusterRoleBinding subject already names that namespace, so nothing
+# else needs patching.
+#
+# namePrefix does NOT rewrite labels, so the deployment patch below also adds an
+# app.kubernetes.io/instance label to the selector and pod template. Without it
+# both deployments select the identical bundle labels: ReplicaSet pod-template
+# hashes keep them from actually stealing each other's pods, but every label
+# lookup against them — `kubectl logs deploy/...`, a Service, a PodMonitor —
+# silently resolves to whichever pod it finds first.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -67,7 +74,13 @@ spec:
         metadata:
           name: resource-metrics-controller-manager
         spec:
+          selector:
+            matchLabels:
+              app.kubernetes.io/instance: downstream
           template:
+            metadata:
+              labels:
+                app.kubernetes.io/instance: downstream
             spec:
               containers:
                 - name: manager

@@ -1,0 +1,9 @@
+# Deploys the resource-metrics controller by referencing its published kustomize
+# bundle (overlays/test-infra) via Flux, instead of vendoring its manifests.
+# Mirrors config/dependencies/milo. The controller runs on the control cluster
+# and reads ResourceMetricsPolicy from the Milo core CP (see ../core-control-plane).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ocirepository.yaml
+  - flux-install.yaml

@@ -1,0 +1,48 @@
+# Replicator overlay for the production-accurate Milo drift-detection e2e.
+# Mirrors config/overlays/replicator (namespace + webhook-cert patches) but runs
+# discovery.mode=milo with 2 active replicas and a milo-apiserver kubeconfig
+# instead of the single-mode downstream-kubeconfig Secret.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dns-replicator-system
+
+resources:
+  - ../../default
+
+# Replace the base single-mode server-config with the milo-mode one.
+configMapGenerator:
+  - name: server-config
+    behavior: replace
+    files:
+      - server-config.yaml
+
+patches:
+  - path: patch-milo.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  - path: ../replicator/patch-namespace.yaml
+    target:
+      kind: ServiceAccount
+      name: controller-manager
+  - path: ../replicator/patch-namespace.yaml
+    target:
+      kind: Service
+      name: controller-manager-metrics-service
+  - path: ../replicator/patch-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: manager-rolebinding
+  - path: ../replicator/patch-namespace.yaml
+    target:
+      kind: ClusterRoleBinding
+      name: dns-operator-metrics-auth-rolebinding
+  - path: ../replicator/patch-namespace.yaml
+    target:
+      kind: RoleBinding
+      name: leader-election-rolebinding
+  - path: ../replicator/patch-mwc-ca-injection.yaml
+    target:
+      kind: MutatingWebhookConfiguration
+      name: mutating-webhook-configuration

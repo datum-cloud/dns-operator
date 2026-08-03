@@ -1,0 +1,14 @@
+# Deploys the Milo apiserver + controller-manager into the control cluster via
+# Flux, so the DNS drift e2e can run the replicator and resource-metrics in the
+# production `discovery.mode: milo` topology (project control planes for the
+# upstream side, the Milo core control plane as the downstream). Lifted from
+# milo-os/resource-metrics config/dependencies/milo.
+#
+# See docs/enhancements/controlplane-drift-detection.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - ocirepository.yaml
+  - flux-install-infra-crds.yaml
+  - flux-install.yaml

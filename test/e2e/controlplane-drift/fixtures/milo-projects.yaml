@@ -1,0 +1,33 @@
+# Org + two projects for the control-plane drift e2e. Applied to the Milo core
+# control plane (milo-apiserver). Milo's project controller creates an isolated
+# virtual control plane per Project, reachable at
+#   {milo}/apis/resourcemanager.miloapis.com/v1alpha1/projects/<name>/control-plane
+# and shares the core-registered DNS CRDs. These two projects are the "upstream"
+# control planes the replicator discovers in discovery.mode=milo; the core CP is
+# the "downstream". See docs/enhancements/controlplane-drift-detection.md.
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Organization
+metadata:
+  name: drift-org
+  annotations:
+    kubernetes.io/display-name: "DNS Drift E2E Org"
+spec:
+  type: Standard
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: alpha
+spec:
+  ownerRef:
+    kind: Organization
+    name: drift-org
+---
+apiVersion: resourcemanager.miloapis.com/v1alpha1
+kind: Project
+metadata:
+  name: beta
+spec:
+  ownerRef:
+    kind: Organization
+    name: drift-org

@@ -1,0 +1,13 @@
+# Shared DNSZone for the control-plane drift e2e. Namespaced; created on the
+# upstream project CP (e.g. cluster: alpha) in the `default` namespace. The
+# replicator copies it to the downstream (core) CP, remapping the namespace and
+# stamping the meta.datumapis.com/upstream-* annotations that resource-metrics
+# lifts onto the dns_zone_downstream_info series.
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: drift-example
+  namespace: default
+spec:
+  domainName: drift.example
+  dnsZoneClassName: drift-powerdns

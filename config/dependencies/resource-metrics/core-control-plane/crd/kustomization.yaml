@@ -1,0 +1,8 @@
+# Installs the ResourceMetricsPolicy CRD onto the Milo core control plane from
+# the published resource-metrics bundle via Flux (see flux-install.yaml). The
+# milo-kubeconfig Secret it targets the core CP with is co-located here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - milo-kubeconfig-secret.yaml
+  - flux-install.yaml

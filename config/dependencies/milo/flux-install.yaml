@@ -1,0 +1,54 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: milo
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  prune: true
+  wait: true
+  targetNamespace: milo-system
+  # ProjectControlPlane CRD (from milo-infra-crds) must exist before the milo
+  # overlay starts, or milo-controller-manager crash-loops on the missing CRD.
+  dependsOn:
+    - name: milo-infra-crds
+  sourceRef:
+    kind: OCIRepository
+    name: milo
+  path: overlays/test-infra
+  # The upstream test-infra overlay assumes locally kind-loaded `dev` images;
+  # CI pulls from the registry, so override the tag to the OCI bundle pin.
+  # Keep in sync with ocirepository.yaml.
+  images:
+    - name: ghcr.io/datum-cloud/milo
+      newTag: v0.0.0-main
+  # Strip argo-system (argo-events HelmRelease + argo HelmRepository): the DNS
+  # drift e2e does not exercise event-driven flows, and argo-events pulls in a
+  # NATS JetStream dependency that bloats spin-up. Remove via $patch: delete.
+  patches:
+    - target:
+        group: helm.toolkit.fluxcd.io
+        version: v2
+        kind: HelmRelease
+        name: argo-events
+      patch: |
+        apiVersion: helm.toolkit.fluxcd.io/v2
+        kind: HelmRelease
+        metadata:
+          name: argo-events
+          namespace: milo-system
+        $patch: delete
+    - target:
+        group: source.toolkit.fluxcd.io
+        version: v1
+        kind: HelmRepository
+        name: argo
+      patch: |
+        apiVersion: source.toolkit.fluxcd.io/v1
+        kind: HelmRepository
+        metadata:
+          name: argo
+          namespace: milo-system
+        $patch: delete

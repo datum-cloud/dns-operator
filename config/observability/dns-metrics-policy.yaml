@@ -1,0 +1,94 @@
+# ResourceMetricsPolicy for control-plane DNS drift detection. resource-metrics
+# emits one gauge per DNSRecordSet/DNSZone from each control plane; recording
+# rules diff the two sides. See docs/enhancements/controlplane-drift-detection.md.
+#
+# Upstream generators run on project control planes (desired state). Downstream
+# generators run on the root control plane (replicated copies) and lift the
+# replicator's meta.datumapis.com/upstream-* annotations onto labels, so both
+# sides share the join key (upstream_cluster, upstream_namespace, upstream_name).
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: dns-metrics
+spec:
+  generators:
+    # ---- Upstream (project control planes): desired state -----------------
+    - name: dnsrecordset-upstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_recordset_upstream_info
+          help: "One series per DNSRecordSet on a source (upstream) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_namespace
+                  value: "object.metadata.namespace"
+                - name: upstream_name
+                  value: "object.metadata.name"
+                - name: accepted
+                  # has() guards a record that has no status yet: reading a
+                  # missing status.conditions is a CEL error, which drops the series.
+                  value: "has(object.status) && has(object.status.conditions) && object.status.conditions.exists(c, c.type == 'Accepted' && c.status == 'True') ? 'true' : 'false'"
+
+    - name: dnszone-upstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_upstream_info
+          help: "One series per DNSZone on a source (upstream) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_namespace
+                  value: "object.metadata.namespace"
+                - name: upstream_name
+                  value: "object.metadata.name"
+
+    # ---- Downstream (root control plane): replicated / actual state -------
+    # Downstream namespaces are remapped, so the join labels come from the
+    # replicator's upstream-* annotations, not from metadata. The cluster-name
+    # annotation is prefixed "cluster-"; the recording rules normalize it.
+    - name: dnsrecordset-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_recordset_downstream_info
+          help: "One series per replicated DNSRecordSet on the downstream (root) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_cluster
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-cluster-name']"
+                - name: upstream_namespace
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-namespace']"
+                - name: upstream_name
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-name']"
+
+    - name: dnszone-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_downstream_info
+          help: "One series per replicated DNSZone on the downstream (root) control plane."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_cluster
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-cluster-name']"
+                - name: upstream_namespace
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-namespace']"
+                - name: upstream_name
+                  value: "object.metadata.annotations['meta.datumapis.com/upstream-name']"

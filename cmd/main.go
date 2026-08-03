@@ -287,6 +287,7 @@ func main() {
 
 		// Multicluster manager (serves mutating webhook for display annotations)
 		webhookServer := webhook.NewServer(webhookServerOptions)
+		webhookServer = dnswebhook.NewClusterAwareWebhookServer(webhookServer)
 		mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
@@ -319,7 +320,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr.GetLocalManager()); err != nil {
+		if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "DNSRecordSet")
 			os.Exit(1)
 		}

@@ -233,7 +233,7 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 
 	// helper for asserts with normalization
 	get := func(typ, owner string) []string {
-		return index[key{typ, qualifyOwner(owner, zone)}]
+		return index[key{typ, QualifyOwner(owner, zone)}]
 	}
 	stripq := func(s string) string {
 		if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
@@ -362,7 +362,7 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 			sort.Strings(index[k])
 		}
 		get := func(typ, owner string) []string {
-			return index[[2]string{typ, qualifyOwner(owner, zone)}]
+			return index[[2]string{typ, QualifyOwner(owner, zone)}]
 		}
 		return index, get
 	}
@@ -397,8 +397,8 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 
 	// Capture NS/SOA count before we mutate A records, to verify we don't touch other types.
 	indexBefore, _ := buildIndex(t)
-	nsBefore := len(indexBefore[[2]string{"NS", qualifyOwner("@", zone)}])
-	soaBefore := len(indexBefore[[2]string{"SOA", qualifyOwner("@", zone)}])
+	nsBefore := len(indexBefore[[2]string{"NS", QualifyOwner("@", zone)}])
+	soaBefore := len(indexBefore[[2]string{"SOA", QualifyOwner("@", zone)}])
 
 	// Updated: drop "www", change @ and api.
 	updated := dnsv1alpha1.DNSRecordSet{
@@ -430,10 +430,10 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	}
 
 	// Verify we did not touch NS/SOA rrsets (ApplyRecordSetAuthoritative is per-type).
-	if got := len(indexAfter[[2]string{"NS", qualifyOwner("@", zone)}]); got != nsBefore {
+	if got := len(indexAfter[[2]string{"NS", QualifyOwner("@", zone)}]); got != nsBefore {
 		t.Fatalf("NS rrset count changed: before=%d after=%d", nsBefore, got)
 	}
-	if got := len(indexAfter[[2]string{"SOA", qualifyOwner("@", zone)}]); got != soaBefore {
+	if got := len(indexAfter[[2]string{"SOA", QualifyOwner("@", zone)}]); got != soaBefore {
 		t.Fatalf("SOA rrset count changed: before=%d after=%d", soaBefore, got)
 	}
 }

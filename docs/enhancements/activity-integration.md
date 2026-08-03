@@ -3,7 +3,7 @@
 **Status**: Implemented (Phase 1–2; UX polish for operator-readable summaries in issue #62)
 **Author**: Engineering
 **Created**: 2026-02-12
-**Updated**: 2026-07-23
+**Updated**: 2026-07-29
 
 ## Summary
 
@@ -44,21 +44,21 @@ Activities should use human-friendly display names (e.g., "example.com" not "exa
 | 10:00:01 | Zone example.com is waiting for dependencies |
 | 10:00:02 | Zone example.com is now active |
 | 10:00:05 | Zone example.com is ready with default SOA and NS records |
-| 10:01:00 | user@example.com added www.example.com pointing to 192.0.2.10 |
+| 10:01:00 | user@example.com added A record www.example.com pointing to 192.0.2.10 |
 | 10:01:02 | www.example.com is now resolving to 192.0.2.10 |
-| 10:02:00 | user@example.com added api.example.com as an alias for api.internal.example.com |
+| 10:02:00 | user@example.com added CNAME record api.example.com as an alias for api.internal.example.com |
 | 10:02:02 | api.example.com is now resolving to api.internal.example.com |
-| 10:03:00 | user@example.com configured mail for example.com to use mail.example.com and mail2.example.com |
-| 10:04:00 | user@example.com added www.example.com pointing to 192.0.2.20 |
+| 10:03:00 | user@example.com added MX record example.com using 10 mail.example.com, 20 mail2.example.com |
+| 10:04:00 | user@example.com updated A record www.example.com to point to 192.0.2.20 |
 | 10:04:01 | www.example.com pointing to 192.0.2.20 won't take effect because another record already controls this name |
-| 10:05:00 | user@example.com deleted www.example.com pointing to 192.0.2.10 |
+| 10:05:00 | user@example.com deleted A record www.example.com |
 | 10:05:01 | www.example.com is now resolving to 192.0.2.20 |
 
 ### Error Scenario
 
 | Timestamp | Activity |
 |-----------|----------|
-| 10:00:00 | user@example.com added www.example.com pointing to 192.0.2.10 |
+| 10:00:00 | user@example.com added A record www.example.com pointing to 192.0.2.10 |
 | 10:00:01 | www.example.com is waiting for zone to be ready |
 | 10:00:05 | Failed to apply www.example.com |
 | 10:00:10 | www.example.com is now resolving to 192.0.2.10 |
@@ -101,8 +101,15 @@ The Activity Service translates audit logs and Kubernetes events into human-read
 |------------|---------|--------|
 | `dns.networking.miloapis.com/display-name` | `www.example.com` | Mutating webhook at create/update; replicator safety net |
 | `dns.networking.miloapis.com/display-value` | `192.0.2.10` | Same |
+| `dns.networking.miloapis.com/activity-change` | `added` / `removed` / `updated` | Mutating webhook on update when `records[]` differs from OldObject (issue #72) |
+| `dns.networking.miloapis.com/activity-name` | `app.example.com` | Hostname(s) that changed (FQDN) |
+| `dns.networking.miloapis.com/activity-value` | `192.0.2.10` | Value(s) for the changed hostname(s) |
 
-Helpers live in `internal/display`. The webhook looks up the parent `DNSZone` to build the FQDN; if the zone is missing, annotations are left unset and policy fallbacks use `spec.records[0].name`.
+Helpers live in `internal/display`. The mutating webhook resolves the parent `DNSZone` on the project control plane (cluster-aware admission context); if the zone is missing or cluster resolution fails, annotations are left unset and the replicator acts as a safety net. Policy fallbacks use `spec.records[0].name`.
+
+Portal UX often keeps one `DNSRecordSet` per zone per type and edits hostnames inside `spec.records[]`. Adding or removing a hostname is therefore a Kubernetes update. Activity update rules prefer `activity-*` annotations so the timeline says **added** / **deleted** for that hostname instead of **updated** with a joined sibling list. When `activity-change` is absent (older images), rules fall back to `display-name` / `display-value`.
+
+Admission uses `failurePolicy: Fail` so a missing webhook blocks DNSRecordSet writes instead of admitting without activity annotations (those audits do not self-heal). Cross-cluster registration for Datum control planes ships in `config/components/admission-webhooks` (OCI path `components/admission-webhooks`), versioned with the same manager image tag (see that directory's README). Same-cluster kind/e2e packaging stays under `config/webhook/`.
 
 ### Data Sources
 
@@ -142,6 +149,9 @@ config/milo/
       dnszone-policy.yaml
       dnsrecordset-policy.yaml
       testdata/                 # Fixture notes for policy CEL tests
+config/components/
+  admission-webhooks/         # Cross-cluster MWC (OCI path for control-plane Flux)
+config/webhook/               # Same-cluster Service + MWC (kind / replicator)
 internal/display/             # FQDN / display-value helpers
 internal/webhook/             # Mutating webhook for display annotations
 internal/activitypolicy/      # Policy structure + CEL match tests
@@ -225,13 +235,14 @@ Use admission webhooks to intercept changes and create activities.
 **Pros:** Real-time, guaranteed delivery
 **Cons:** Adds latency to API calls, single point of failure
 
-We use ActivityPolicy + Events for activity generation. A **mutating** webhook is used only to stamp display annotations at admission (not to create Activity objects), so create audits see the FQDN without redesigning audit plumbing.
+We use ActivityPolicy + Events for activity generation. A **mutating** webhook is used only to stamp display annotations at admission (not to create Activity objects), so create audits see the FQDN without redesigning audit plumbing. Registration for control-plane environments must come from the `dns-operator-kustomize` OCI path `components/admission-webhooks` (same semver as the manager image), not a hand-authored MWC in infra.
 
 ---
 
 ## Open Questions
 
-1. How should we handle bulk operations (e.g., many records updated at once)?
+1. How should we handle bulk operations (e.g., many records updated at once)? Mixed add+remove in one write is summarized as `updated` with affected names; pure adds/removes use `added`/`removed` via `activity-*` annotations.
 2. Should activities include namespace information for multi-tenant visibility?
 3. How should we format multiple record values (e.g., multiple A records for the same name)?
 4. Portal activity *detail* views may still emphasize resource ids; summary link text is the FQDN — follow up in the portal if detail prominence is still weak.
+5. Longer-term: portal may choose one DNSRecordSet per hostname so create/delete map 1:1; activity-* annotations remain useful until then.

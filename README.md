@@ -94,6 +94,29 @@ The replicator mirrors upstream `DNSZone` / `DNSRecordSet` resources downstream
 and synthesizes their status back upstream. See
 [Replication Model](docs/architecture/replication.md).
 
+### Local federation environment
+
+Brings up [kind](https://kind.sigs.k8s.io/) clusters on the shared
+[`datum-cloud/test-infra`](https://github.com/datum-cloud/test-infra) tooling to
+exercise the full production topology end to end: a replicator on an "upstream"
+cluster, dns-operator + PowerDNS on a "control" cluster, and PowerDNS alone on an
+"edge" cluster. Zone data replicates from control to edge with PowerDNS
+LightningStream over a shared [RustFS](https://rustfs.com) (S3-compatible)
+bucket — the same mechanism production uses to replicate to edge PoPs over GCS.
+
+```bash
+export TASK_X_REMOTE_TASKFILES=1
+task env:up          # upstream (replicator) + control (operator + PowerDNS + RustFS) + edge (PowerDNS)
+task env:dns-check   # confirm the sample record replicated from control to edge
+task env:down        # tear down every cluster
+```
+
+See [`Taskfile.yaml`](Taskfile.yaml) for the individual `env:upstream-up`,
+`env:control-up`, and `env:edge-up` steps, and
+[`config/overlays/agent-powerdns-federated`](config/overlays/agent-powerdns-federated)
+and [`config/dependencies/rustfs`](config/dependencies/rustfs) for the underlying
+manifests.
+
 ## Development
 
 - **Build:** `make docker-build` (see the [`Makefile`](Makefile))

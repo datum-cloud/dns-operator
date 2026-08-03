@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	ns1ExampleNet = "ns1.example.net."
-	exampleCom    = "example.com."
+	ns1ExampleNet    = "ns1.example.net."
+	exampleCom       = "example.com."
+	targetExampleNet = "target.example.net."
 )
 
 func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
@@ -196,7 +197,7 @@ func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 		},
 	}
 	rr = buildRRSets("example.com", rsALIAS)
-	if rr[0].Type != "ALIAS" || rr[0].Records[0].Content != "target.example.net." {
+	if rr[0].Type != "ALIAS" || rr[0].Records[0].Content != targetExampleNet {
 		t.Fatalf("ALIAS rrset unexpected: %#v", rr)
 	}
 
@@ -575,14 +576,14 @@ func TestHelpers(t *testing.T) {
 	if got := quoteIfNeeded(`"x"`); got != `"x"` {
 		t.Fatalf("quoteIfNeeded pass-through: %q", got)
 	}
-	if got := qualifyOwner("@", "example.com"); got != exampleCom {
-		t.Fatalf("qualifyOwner @: %q", got)
+	if got := QualifyOwner("@", "example.com"); got != exampleCom {
+		t.Fatalf("QualifyOwner @: %q", got)
 	}
-	if got := qualifyOwner("www", "example.com"); got != "www.example.com." {
-		t.Fatalf("qualifyOwner rel: %q", got)
+	if got := QualifyOwner("www", "example.com"); got != "www.example.com." {
+		t.Fatalf("QualifyOwner rel: %q", got)
 	}
-	if got := qualifyOwner("abs.example.", "example.com"); got != "abs.example." {
-		t.Fatalf("qualifyOwner abs: %q", got)
+	if got := QualifyOwner("abs.example.", "example.com"); got != "abs.example." {
+		t.Fatalf("QualifyOwner abs: %q", got)
 	}
 }
 
@@ -677,6 +678,44 @@ func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 	}
 }
 
+// CNAME and ALIAS are single-valued at an owner name: multiple/duplicate
+// entries must collapse to exactly one record (PowerDNS rejects otherwise, 422).
+func TestBuildRRSets_CNAMEAliasSingleValue(t *testing.T) {
+	t.Parallel()
+
+	rsCNAME := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeCNAME,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "other.example.net."}},
+			},
+		},
+	}
+	rr := buildRRSets("example.com", rsCNAME)
+	if len(rr) != 1 || len(rr[0].Records) != 1 {
+		t.Fatalf("CNAME single-value: expected 1 rrset/1 record, got %#v", rr)
+	}
+	if rr[0].Records[0].Content != "target.example.net." {
+		t.Fatalf("CNAME single-value: first-wins expected target.example.net., got %q", rr[0].Records[0].Content)
+	}
+
+	rsALIAS := dnsv1alpha1.DNSRecordSet{
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeALIAS,
+			Records: []dnsv1alpha1.RecordEntry{
+				{Name: "@", ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "lb.example.net."}},
+				{Name: "@", ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "lb.example.net."}},
+			},
+		},
+	}
+	rr = buildRRSets("example.com", rsALIAS)
+	if len(rr) != 1 || len(rr[0].Records) != 1 {
+		t.Fatalf("ALIAS single-value: expected 1 rrset/1 record, got %#v", rr)
+	}
+}
+
 // sanity: makeSimpleRRSet keeps values verbatim (used after we normalize)
 func TestMakeSimpleRRSet(t *testing.T) {
 	t.Parallel()
@@ -718,13 +757,13 @@ func TestBuildRRSets_DeduplicatesRecords(t *testing.T) {
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeCNAME,
 			Records: []dnsv1alpha1.RecordEntry{
-				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
-				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: targetExampleNet}},
+				{Name: "www", CNAME: &dnsv1alpha1.CNAMERecordSpec{Content: targetExampleNet}},
 			},
 		},
 	}
 	rr = buildRRSets("example.com", rsCNAME)
-	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != "target.example.net." {
+	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != targetExampleNet {
 		t.Fatalf("expected CNAME deduped to single record, got %#v", rr)
 	}
 }

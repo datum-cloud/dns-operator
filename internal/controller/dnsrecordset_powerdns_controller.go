@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +28,13 @@ import (
 	operatorconfig "go.miloapis.com/dns-operator/internal/config"
 	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 )
+
+// conflictRequeueInterval is how long to wait before re-attempting a record
+// PowerDNS rejected because it cannot coexist with existing data at the same
+// owner name. Long, because clearing the conflict needs a change we may never
+// be woken for: the conflicting RRset can be written directly to PowerDNS by
+// another writer, producing no Kubernetes watch event.
+const conflictRequeueInterval = 10 * time.Minute
 
 // PowerDNSRecordSetReconcileRequest scopes reconciliation to a single (zone, type, owner name) tuple.
 type PowerDNSRecordSetReconcileRequest struct {
@@ -123,15 +131,30 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 	}
 
 	var pdnsErr error
-	if owner == nil {
-		pdnsErr = r.PDNS.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
-	} else {
+	// Default to deleting: unless this request resolves to records worth
+	// writing, the RRset goes away. The delete itself is guarded below, so both
+	// paths that reach it — no owning DNSRecordSet, and an owner that yields no
+	// usable records — get the same protection.
+	wantDelete := true
+	if owner != nil {
 		entries := filterRecordEntries(owner, req.RecordSetName)
 		payload, ok := pdnsclient.BuildOwnerRRSet(zone.Spec.DomainName, dnsv1alpha1.RRType(req.RecordSetType), req.RecordSetName, entries)
-		if !ok || len(payload.Records) == 0 {
-			pdnsErr = r.PDNS.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
-		} else {
+		if ok && len(payload.Records) > 0 {
+			wantDelete = false
 			pdnsErr = r.PDNS.ReplaceRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName, payload.TTL, payload.Records)
+		}
+	}
+	if wantDelete {
+		// Only delete once no *other spelling* of this owner name still claims
+		// the RRset. "api", "api.example.com." and "@" at the apex all qualify
+		// to a single PowerDNS RRset, so rewriting an owner name enqueues both
+		// the old and the new spelling; the request holding the retired
+		// spelling must not delete what the live one just wrote.
+		rrsetName := pdnsclient.QualifyOwner(req.RecordSetName, zone.Spec.DomainName)
+		if aliasedOwnerExists(&rsList, req.RecordSetType, zone.Spec.DomainName, rrsetName, req.RecordSetName) {
+			logger.Info("owner name aliases a live RRset; skipping delete", "rrsetName", rrsetName)
+		} else {
+			pdnsErr = r.PDNS.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
 		}
 	}
 	if pdnsErr != nil {
@@ -144,11 +167,52 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 	}
 
 	if pdnsErr != nil {
+		if pdnsclient.IsConflict(pdnsErr) {
+			// A coexistence conflict is not a transient provider failure: the
+			// record is well-formed but cannot share this owner name with data
+			// already there. Retrying on the error path cannot clear it, and
+			// hot-looping on it inflates the controller's reconcile error ratio
+			// until the alert fires. Poll slowly instead; the status already
+			// carries Programmed=False with reason Conflict.
+			logger.Info("pdns coexistence conflict; requeueing without error",
+				"requeueAfter", conflictRequeueInterval)
+			return reconcile.Result{RequeueAfter: conflictRequeueInterval}, nil
+		}
 		return reconcile.Result{}, pdnsErr
 	}
 
 	logger.Info("powerdns reconcile complete")
 	return reconcile.Result{}, nil
+}
+
+// aliasedOwnerExists reports whether any DNSRecordSet in list holds a record of
+// recordType, under an owner name other than excludeOwnerName, that qualifies to
+// rrsetName within zoneDomain. It lets the delete paths distinguish an owner name
+// that was genuinely removed from one that was merely respelled: the latter still
+// owns the RRset under a different spelling and must not be deleted.
+//
+// excludeOwnerName is the spelling being reconciled. Skipping it keeps the
+// genuine cleanup case working — a request whose own records have gone away
+// must still be able to delete the RRset it alone owned.
+func aliasedOwnerExists(
+	list *dnsv1alpha1.DNSRecordSetList,
+	recordType, zoneDomain, rrsetName, excludeOwnerName string,
+) bool {
+	for i := range list.Items {
+		rs := &list.Items[i]
+		if string(rs.Spec.RecordType) != recordType {
+			continue
+		}
+		for _, rec := range rs.Spec.Records {
+			if rec.Name == "" || rec.Name == excludeOwnerName {
+				continue
+			}
+			if pdnsclient.QualifyOwner(rec.Name, zoneDomain) == rrsetName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (r *DNSRecordSetPowerDNSReconciler) updateStatuses(
@@ -199,7 +263,14 @@ func (r *DNSRecordSetPowerDNSReconciler) setRecordProgrammedCondition(
 		newCond.Message = "Another DNSRecordSet owns this record"
 	case pdnsErr != nil:
 		newCond.Status = metav1.ConditionFalse
-		newCond.Reason = ReasonPDNSError
+		if pdnsclient.IsConflict(pdnsErr) {
+			// CNAME/ALIAS coexistence conflict: well-formed record, but it
+			// cannot share this name with existing data. Distinct reason so it
+			// is greppable and not mistaken for a transient provider error.
+			newCond.Reason = ReasonConflict
+		} else {
+			newCond.Reason = ReasonPDNSError
+		}
 		newCond.Message = pdnsclient.FriendlyMessage(pdnsErr)
 	default:
 		newCond.Status = metav1.ConditionTrue

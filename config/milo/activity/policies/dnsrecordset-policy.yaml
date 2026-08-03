@@ -6,12 +6,15 @@
 # Audit rules handle CRUD operations captured by the Kubernetes API server audit log.
 # Event rules handle async controller outcomes (programming failures).
 #
-# Design principles:
+# Design principles (issue #62):
+# - One readable line: who did what to which DNS name
+# - Always include the record type (A, CNAME, TXT, …) in human summaries
 # - Use FQDNs (www.example.com) as display text, not resource names
-# - Show record values (IPs, CNAME targets, MX hosts) where available
+# - Show record values (IPs, CNAME targets, MX hosts, TXT content) where available
 # - Accurate create / update / delete language ("added", "updated", "deleted")
-# - Type-specific phrasing for common record types
-# - Prefer display-name annotations (stamped at admission by mutating webhook)
+# - Prefer display-name / display-value annotations (stamped at admission)
+# - Prefer activity-change / activity-name / activity-value on updates when a
+#   hostname was added/removed on a multi-name DNSRecordSet (issue #72)
 # - Fallback to relative owner name from spec.records when annotations are absent
 # - Exclude system components (system:*) from human audit rules
 # - Update rules read recordType from responseObject (portal PATCHes omit it on request)
@@ -29,31 +32,31 @@ spec:
     # ----- CREATE RULES (type-specific with display annotations) -----
     - name: create-a-aaaa
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType in ['A', 'AAAA'] && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} pointing to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} added {{ audit.requestObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} pointing to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-cname
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType == 'CNAME' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} added CNAME record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-alias
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType == 'ALIAS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} added {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} added ALIAS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-mx
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType == 'MX' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} configured mail for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} using {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} added MX record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} using {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-txt
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType == 'TXT' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} added TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }}"
+      summary: "{{ actor }} added TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} with {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-ns
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.requestObject.spec) && audit.requestObject.spec.recordType == 'NS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} added nameservers for {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }}"
+      summary: "{{ actor }} added NS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} with nameservers {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: create-other-annotated
       match: "!audit.user.username.startsWith('system:') && audit.verb == 'create' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations && has(audit.requestObject.spec)"
-      summary: "{{ actor }} added {{ audit.requestObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }}"
+      summary: "{{ actor }} added {{ audit.requestObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} with {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     # Create with spec but no display annotations: include relative owner name for searchability
     - name: create-from-request
@@ -82,19 +85,121 @@ spec:
       summary: "{{ actor }} deleted {{ link('a DNS record', audit.objectRef) }}"
 
     # ----- UPDATE RULES -----
+    # Prefer activity-* annotations when present: hostname-level add/remove on a
+    # multi-name DNSRecordSet is still a K8s update/patch (issue #72).
     # recordType is read from responseObject: portal PATCHes often omit it on requestObject (#36).
     # All update rules require requestObject.spec so metadata-only patches are ignored.
+    - name: update-activity-added-a-aaaa
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType in ['A', 'AAAA'] && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} pointing to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-a-aaaa
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType in ['A', 'AAAA'] && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-a-aaaa
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType in ['A', 'AAAA'] && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} to point to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-cname
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'CNAME' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added CNAME record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-cname
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'CNAME' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted CNAME record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-cname
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'CNAME' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated CNAME record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-alias
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'ALIAS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added ALIAS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-alias
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'ALIAS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted ALIAS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-alias
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'ALIAS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated ALIAS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-mx
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'MX' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added MX record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} using {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-mx
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'MX' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted MX record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-mx
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'MX' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated MX record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} to use {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-txt
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'TXT' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} with {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-txt
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'TXT' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-txt
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'TXT' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-ns
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'NS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added NS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} with nameservers {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-ns
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'NS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted NS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-ns
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'NS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated NS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} to nameservers {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-added-other
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'added' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} added {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} with {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
+    - name: update-activity-removed-other
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'removed' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} deleted {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }}"
+
+    - name: update-activity-updated-other
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/activity-change' in audit.responseObject.metadata.annotations && audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-change'] == 'updated' && 'dns.networking.miloapis.com/activity-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/activity-value'] }}"
+
     - name: update-a-aaaa
       match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType in ['A', 'AAAA'] && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} updated {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to point to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to point to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: update-cname
       match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'CNAME' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} updated {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to alias {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+      summary: "{{ actor }} updated CNAME record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    - name: update-alias
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'ALIAS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated ALIAS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} as an alias for {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    - name: update-mx
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'MX' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated MX record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to use {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    - name: update-txt
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'TXT' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated TXT record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
+
+    - name: update-ns
+      match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && audit.responseObject.spec.recordType == 'NS' && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
+      summary: "{{ actor }} updated NS record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to nameservers {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: update-other-annotated
       match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && has(audit.responseObject.metadata.annotations) && 'dns.networking.miloapis.com/display-name' in audit.responseObject.metadata.annotations"
-      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }}"
+      summary: "{{ actor }} updated {{ audit.responseObject.spec.recordType }} record {{ link(audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-name'], audit.objectRef) }} to {{ audit.responseObject.metadata.annotations['dns.networking.miloapis.com/display-value'] }}"
 
     - name: update-from-response
       match: "!audit.user.username.startsWith('system:') && audit.verb in ['update', 'patch'] && !has(audit.objectRef.subresource) && has(audit.requestObject.spec) && has(audit.responseObject.spec) && has(audit.responseObject.spec.records) && size(audit.responseObject.spec.records) > 0"

@@ -87,3 +87,40 @@ func TestFriendlyMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestIsConflict(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"non-pdns error", errors.New("boom"), false},
+		{
+			"ALIAS coexistence conflict",
+			&pdnsAPIError{Status: 422, Body: `{"error": "RRset www.ab.dk. IN ALIAS: Conflicts with pre-existing RRset"}`},
+			true,
+		},
+		{
+			"non-conflict 422 (duplicate record)",
+			&pdnsAPIError{Status: 422, Body: `{"error": "RRset x. IN NS: duplicate record with content \"ns1.\""}`},
+			false,
+		},
+		{
+			"non-422 status",
+			&pdnsAPIError{Status: 500, Body: `{"error": "Conflicts with pre-existing RRset"}`},
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsConflict(tt.err); got != tt.want {
+				t.Errorf("IsConflict() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

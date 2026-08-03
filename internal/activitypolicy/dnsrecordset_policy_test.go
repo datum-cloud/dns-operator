@@ -113,6 +113,90 @@ func TestDNSRecordSetPolicy_Structure(t *testing.T) {
 	if !strings.Contains(createTXT, "display-name") {
 		t.Errorf("create-txt must include display-name hostname, got: %s", createTXT)
 	}
+	if !strings.Contains(createTXT, "TXT record") {
+		t.Errorf("create-txt must name the record type, got: %s", createTXT)
+	}
+	if !strings.Contains(createTXT, "display-value") {
+		t.Errorf("create-txt must include display-value for searchability, got: %s", createTXT)
+	}
+
+	createA := summaries["create-a-aaaa"]
+	if !strings.Contains(createA, "recordType") {
+		t.Errorf("create-a-aaaa must include A/AAAA recordType in summary, got: %s", createA)
+	}
+	if !strings.Contains(createA, "pointing to") {
+		t.Errorf("create-a-aaaa must include address phrasing, got: %s", createA)
+	}
+
+	updateA := summaries["update-a-aaaa"]
+	if !strings.Contains(updateA, "responseObject.spec.recordType") {
+		t.Errorf("update-a-aaaa must include A/AAAA recordType in summary, got: %s", updateA)
+	}
+
+	for _, name := range []string{
+		"update-activity-added-a-aaaa",
+		"update-activity-removed-a-aaaa",
+		"update-activity-updated-a-aaaa",
+	} {
+		m, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing rule %q", name)
+		}
+		if !strings.Contains(m, "activity-change") {
+			t.Errorf("%s must match activity-change annotation, got: %s", name, m)
+		}
+		if !strings.Contains(m, "has(audit.requestObject.spec)") {
+			t.Errorf("%s must require requestObject.spec", name)
+		}
+	}
+	addedSummary := summaries["update-activity-added-a-aaaa"]
+	if !strings.Contains(addedSummary, "added") || !strings.Contains(addedSummary, "activity-name") {
+		t.Errorf("update-activity-added-a-aaaa must say added with activity-name, got: %s", addedSummary)
+	}
+	removedSummary := summaries["update-activity-removed-a-aaaa"]
+	if !strings.Contains(removedSummary, "deleted") || !strings.Contains(removedSummary, "activity-name") {
+		t.Errorf("update-activity-removed-a-aaaa must say deleted with activity-name, got: %s", removedSummary)
+	}
+	// Activity rules must appear before display-name update fallbacks.
+	addedIdx, updateAIdx := -1, -1
+	for i, r := range pol.Spec.AuditRules {
+		switch r.Name {
+		case "update-activity-added-a-aaaa":
+			addedIdx = i
+		case "update-a-aaaa":
+			updateAIdx = i
+		}
+	}
+	if addedIdx < 0 || updateAIdx < 0 || addedIdx >= updateAIdx {
+		t.Errorf("update-activity-added-a-aaaa (idx %d) must precede update-a-aaaa (idx %d)", addedIdx, updateAIdx)
+	}
+
+	createCNAME := summaries["create-cname"]
+	if !strings.Contains(createCNAME, "CNAME record") {
+		t.Errorf("create-cname must name the record type, got: %s", createCNAME)
+	}
+	createALIAS := summaries["create-alias"]
+	if !strings.Contains(createALIAS, "ALIAS record") {
+		t.Errorf("create-alias must name the record type (distinct from CNAME), got: %s", createALIAS)
+	}
+	createMX := summaries["create-mx"]
+	if !strings.Contains(createMX, "MX record") {
+		t.Errorf("create-mx must name the record type, got: %s", createMX)
+	}
+	createNS := summaries["create-ns"]
+	if !strings.Contains(createNS, "NS record") {
+		t.Errorf("create-ns must name the record type, got: %s", createNS)
+	}
+
+	for _, name := range []string{"update-cname", "update-alias", "update-mx", "update-txt", "update-ns"} {
+		s, ok := summaries[name]
+		if !ok {
+			t.Fatalf("missing typed update rule %q", name)
+		}
+		if !strings.Contains(s, "display-value") {
+			t.Errorf("%s must include display-value, got: %s", name, s)
+		}
+	}
 
 	createFromReq := summaries["create-from-request"]
 	if !strings.Contains(createFromReq, "records[0].name") {
@@ -201,6 +285,70 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 							"name": "www",
 							"a":    map[string]any{"content": "192.0.2.10"},
 						}},
+					},
+				},
+			},
+		},
+		{
+			name:     "add hostname on multi-name A object (#72)",
+			wantRule: "update-activity-added-a-aaaa",
+			audit: map[string]any{
+				"user":      map[string]any{"username": "dgaghan@datum.net"},
+				"verb":      "patch",
+				"objectRef": map[string]any{},
+				"requestObject": map[string]any{
+					"spec": map[string]any{
+						"records": []any{
+							map[string]any{"name": "www", "a": map[string]any{"content": "192.168.1.1"}},
+							map[string]any{"name": "app", "a": map[string]any{"content": "192.168.1.1"}},
+						},
+					},
+				},
+				"responseObject": map[string]any{
+					"metadata": map[string]any{"annotations": map[string]any{
+						"dns.networking.miloapis.com/display-name":    "www.dodik.me, app.dodik.me",
+						"dns.networking.miloapis.com/display-value":   "192.168.1.1, 192.168.1.1",
+						"dns.networking.miloapis.com/activity-change": "added",
+						"dns.networking.miloapis.com/activity-name":   "app.dodik.me",
+						"dns.networking.miloapis.com/activity-value":  "192.168.1.1",
+					}},
+					"spec": map[string]any{
+						"recordType": "A",
+						"records": []any{
+							map[string]any{"name": "www", "a": map[string]any{"content": "192.168.1.1"}},
+							map[string]any{"name": "app", "a": map[string]any{"content": "192.168.1.1"}},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "remove hostname on multi-name A object (#72)",
+			wantRule: "update-activity-removed-a-aaaa",
+			audit: map[string]any{
+				"user":      map[string]any{"username": "dgaghan@datum.net"},
+				"verb":      "patch",
+				"objectRef": map[string]any{},
+				"requestObject": map[string]any{
+					"spec": map[string]any{
+						"records": []any{
+							map[string]any{"name": "www", "a": map[string]any{"content": "192.168.1.1"}},
+						},
+					},
+				},
+				"responseObject": map[string]any{
+					"metadata": map[string]any{"annotations": map[string]any{
+						"dns.networking.miloapis.com/display-name":    "www.dodik.me",
+						"dns.networking.miloapis.com/display-value":   "192.168.1.1",
+						"dns.networking.miloapis.com/activity-change": "removed",
+						"dns.networking.miloapis.com/activity-name":   "app.dodik.me",
+						"dns.networking.miloapis.com/activity-value":  "192.168.1.1",
+					}},
+					"spec": map[string]any{
+						"recordType": "A",
+						"records": []any{
+							map[string]any{"name": "www", "a": map[string]any{"content": "192.168.1.1"}},
+						},
 					},
 				},
 			},

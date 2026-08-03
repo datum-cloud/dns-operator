@@ -206,7 +206,7 @@ func BuildOwnerRRSet(
 		},
 	}
 	rrsets := buildRRSets(zone, rs)
-	target := qualifyOwner(ownerName, zone)
+	target := QualifyOwner(ownerName, zone)
 	for _, rr := range rrsets {
 		if rr.Name != target {
 			continue
@@ -348,7 +348,7 @@ func (c *Client) ReplaceRRSet(
 		records = append(records, rrsetRecord{Content: v, Disabled: false})
 	}
 	patch := []rrset{{
-		Name:       qualifyOwner(ownerName, zone),
+		Name:       QualifyOwner(ownerName, zone),
 		Type:       recordType,
 		TTL:        ttl,
 		ChangeType: "REPLACE",
@@ -360,7 +360,7 @@ func (c *Client) ReplaceRRSet(
 // DeleteRRSet removes the referenced (type, owner) RRset from PDNS.
 func (c *Client) DeleteRRSet(ctx context.Context, zone, recordType, ownerName string) error {
 	patch := []rrset{{
-		Name:       qualifyOwner(ownerName, zone),
+		Name:       QualifyOwner(ownerName, zone),
 		Type:       recordType,
 		ChangeType: "DELETE",
 		Records:    []rrsetRecord{},
@@ -428,7 +428,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 		if rec.TTL != nil {
 			ttl = int(*rec.TTL)
 		}
-		name := qualifyOwner(rec.Name, zone)
+		name := QualifyOwner(rec.Name, zone)
 		r := getOrInit(name, ttl)
 
 		switch rs.Spec.RecordType {
@@ -456,8 +456,10 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			target := strings.TrimSpace(rec.CNAME.Content)
 			target = qualifyIfNeeded(target)
-			if target != "" {
-				// TODO: Technically this is a violation of the RFC, but we'll allow it for now.
+			if target != "" && len(r.Records) == 0 {
+				// CNAME is single-valued (RFC 1034): keep exactly one record.
+				// First non-empty entry wins; extras/duplicates are dropped, as
+				// PowerDNS rejects a multi-valued or duplicate CNAME RRset (422).
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
 			}
 
@@ -604,7 +606,9 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 			}
 			target := strings.TrimSpace(rec.ALIAS.Content)
 			target = qualifyIfNeeded(target)
-			if target != "" {
+			if target != "" && len(r.Records) == 0 {
+				// ALIAS is single-valued at an owner name: keep one record.
+				// First non-empty entry wins; extras/duplicates are dropped.
 				r.Records = append(r.Records, rrsetRecord{Content: target, Disabled: false})
 			}
 
@@ -752,7 +756,14 @@ func makeSimpleRRSet(name, typ string, ttl int, values []string) rrset {
 	}
 }
 
-func qualifyOwner(owner, zone string) string {
+// QualifyOwner returns the absolute RRset name PowerDNS keys an owner on within
+// zone. It accepts every spelling the API allows: "@" or the empty string for
+// the apex, a relative label such as "api", or an already-absolute name ending
+// in a dot. Several spellings therefore collapse to one RRset — "api" and
+// "api.example.com." both qualify to "api.example.com." in zone example.com —
+// so callers comparing two owner names for RRset identity must compare their
+// qualified forms rather than the raw values.
+func QualifyOwner(owner, zone string) string {
 	if owner == "@" || owner == "" {
 		return zone + "."
 	}

@@ -56,6 +56,11 @@ func FriendlyMessage(err error) string {
 	case strings.Contains(detail, "RRset") && strings.Contains(detail, "IN ALIAS"):
 		return "An ALIAS record conflicts with an existing record at this name."
 	case apiErr.Status == 422:
+		// Surface the specific PowerDNS rejection reason when it doesn't match a
+		// known pattern; without it the reason is only visible in operator logs.
+		if detail != "" {
+			return "The DNS record was rejected as invalid: " + detail
+		}
 		return "The DNS record was rejected as invalid. Check the record type and value."
 	case apiErr.Status == 404:
 		return "The DNS zone could not be found. It may still be provisioning."

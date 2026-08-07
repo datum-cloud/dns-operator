@@ -3,7 +3,7 @@ package dns
 import (
 	"context"
 
-	"go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 type DNSController interface {
@@ -13,19 +13,19 @@ type DNSController interface {
 	// // Shutdown hook
 	Shutdown()
 
-	EnsureZone(ctx context.Context, zone v1alpha1.DNSZone, class v1alpha1.DNSZoneClass) error
-	DeleteZone(ctx context.Context, zone v1alpha1.DNSZone) error
+	EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) error
+	DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error
 
 	// EnsureRecordSet(
 	// 	ctx context.Context,
-	// 	zone v1alpha1.DNSZone,
-	// 	recordSet v1alpha1.DNSRecordSet,
+	// 	zone dnsv1alpha1.DNSZone,
+	// 	recordSet dnsv1alpha1.DNSRecordSet,
 	// ) error
 
 	// DeleteRecordSet(
 	// 	ctx context.Context,
-	// 	zone v1alpha1.DNSZone,
-	// 	recordSet v1alpha1.DNSRecordSet,
+	// 	zone dnsv1alpha1.DNSZone,
+	// 	recordSet dnsv1alpha1.DNSRecordSet,
 	// ) error
 
 	ReplaceRRSet(

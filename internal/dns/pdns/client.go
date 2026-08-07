@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"go.miloapis.com/dns-operator/api/v1alpha1"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
 )
@@ -123,7 +122,7 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return "", dnserrors.ZoneNotFoundError
+		return "", dnserrors.ErrZoneNotFound
 	}
 
 	if resp.StatusCode != 200 {
@@ -139,16 +138,18 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 	return zoneResponse.Name, nil
 }
 
-func (c *Client) EnsureZone(ctx context.Context, zone v1alpha1.DNSZone, class v1alpha1.DNSZoneClass) error {
+func (c *Client) EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) error {
 	// TODO - check if zone exists and is correct (e.g. nameservers match class)
 	if _, err := c.GetZone(ctx, zone.Spec.DomainName); err != nil {
 		// Zone does not exist; create it
-		if errors.Is(err, dnserrors.ZoneNotFoundError) {
+		if errors.Is(err, dnserrors.ErrZoneNotFound) {
 			// Zone does not exist; create it
 
 			var nss []string
 
-			if class.Spec.NameServerPolicy != nil && class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && class.Spec.NameServerPolicy.Static != nil {
+			if class.Spec.NameServerPolicy != nil &&
+				class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic &&
+				class.Spec.NameServerPolicy.Static != nil {
 				nss = class.Spec.NameServerPolicy.Static.Servers
 			}
 
@@ -164,7 +165,7 @@ func (c *Client) EnsureZone(ctx context.Context, zone v1alpha1.DNSZone, class v1
 	return nil
 }
 
-func (c *Client) DeleteZone(ctx context.Context, zone v1alpha1.DNSZone) error {
+func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error {
 	// TODO -> Implement Zone Deletion via PDNS API
 	return nil
 }

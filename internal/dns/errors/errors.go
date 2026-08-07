@@ -2,4 +2,4 @@ package errors
 
 import "errors"
 
-var ZoneNotFoundError = errors.New("Zone Not Found")
+var ErrZoneNotFound = errors.New("zone not found")

@@ -109,10 +109,20 @@ func main() {
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 	flag.StringVar(&role, "role", "downstream", "Role for this binary: downstream|replicator|all")
 
-	// This input argument specifies the class name (DNSZoneClass.metadata.name) which this controller should reconcile zones for
-	flag.StringVar(&controllerClass, "controller-class", "powerdns", "The controller class to use for this instance. Defaults to 'powerdns'")
-	// This input argument specifies the class type (DNSZoneClass.spec.controllerName) which this controller should reconcile zones for. Currently supported, fake, powerdns
-	flag.StringVar(&controllerClassType, "controller-class-type", "powerdns", "The controller class type to use for this instance. Defaults to 'powerdns'")
+	// specifies the class name (DNSZoneClass.metadata.name) which this controller should reconcile zones for
+	flag.StringVar(
+		&controllerClass,
+		"controller-class",
+		"powerdns",
+		"The controller class to use for this instance. Defaults to 'powerdns'",
+	)
+	// specifies the class type (DNSZoneClass.spec.controllerName) which this controller should reconcile zones for
+	flag.StringVar(
+		&controllerClassType,
+		"controller-class-type",
+		"powerdns",
+		"The controller class type to use for this instance. Defaults to 'powerdns'",
+	)
 
 	opts := zap.Options{
 		Development: true,

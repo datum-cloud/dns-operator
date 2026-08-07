@@ -38,5 +38,5 @@ func New(className string, classType string) (*DNSHandler, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("Failed to instantiate DNS Controller. Unknown Class %s and Type %s", className, classType)
+	return nil, fmt.Errorf("unknown class %s and type %s", className, classType)
 }

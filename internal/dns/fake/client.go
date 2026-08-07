@@ -3,7 +3,7 @@ package fake
 import (
 	"context"
 
-	"go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 )
 
 type FakeDNSClient struct {
@@ -56,7 +56,7 @@ func (f *FakeDNSClient) Init() error {
 
 func (f *FakeDNSClient) Shutdown() {}
 
-func (f *FakeDNSClient) EnsureZone(_ context.Context, z v1alpha1.DNSZone, c v1alpha1.DNSZoneClass) error {
+func (f *FakeDNSClient) EnsureZone(_ context.Context, z dnsv1alpha1.DNSZone, c dnsv1alpha1.DNSZoneClass) error {
 	f.EnsureZoneCalls = append(f.EnsureZoneCalls, EnsureZoneCall{
 		Zone:  z.Name,
 		Class: c.Name,
@@ -65,7 +65,7 @@ func (f *FakeDNSClient) EnsureZone(_ context.Context, z v1alpha1.DNSZone, c v1al
 	return f.EnsureZoneErr
 }
 
-func (f *FakeDNSClient) DeleteZone(_ context.Context, z v1alpha1.DNSZone) error {
+func (f *FakeDNSClient) DeleteZone(_ context.Context, z dnsv1alpha1.DNSZone) error {
 	f.DeleteZoneCalls = append(f.DeleteZoneCalls, DeleteZoneCall{
 		Zone: z.Name,
 	})

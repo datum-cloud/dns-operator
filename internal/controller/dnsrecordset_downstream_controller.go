@@ -61,6 +61,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, nil
 		}
 	} else {
+		// TODO cleanup downstream resources here
 		if controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
 			base := rs.DeepCopy()
 			controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)

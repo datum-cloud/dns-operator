@@ -4,22 +4,23 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"go.miloapis.com/dns-operator/internal/dns"
 )
 
 // DNSZoneReconciler reconciles a DNSZone object
 type DNSZoneReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	DNSHandler *dns.DNSHandler
 }
 
 const downstreamZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone-downstream"
@@ -37,6 +38,17 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
+		logger.Info("Resource belongs to different class. Not Reconciling", "class", zone.Spec.DNSZoneClassName, "namespace", req.Namespace, "name", req.Name)
+		return ctrl.Result{}, nil
+	}
+
+	var zc dnsv1alpha1.DNSZoneClass
+	if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
+		logger.Info("Failed to get zone class for zone. Not Reconciling", "class", zone.Spec.DNSZoneClassName, "namespace", req.Namespace, "name", req.Name)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -58,30 +70,18 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	} else {
 		// --- Deletion path: remove from PDNS, then drop finalizer ---
 		if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-			// Only manage PDNS if this zone is handled by our controller
-			var zc dnsv1alpha1.DNSZoneClass
-			if zone.Spec.DNSZoneClassName != "" {
-				if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
-					// TODO: should we delete if the class is not found?
-					return ctrl.Result{}, client.IgnoreNotFound(err)
-				}
-			}
-			if zc.Spec.ControllerName == ControllerNamePowerDNS {
-				cli, err := pdnsclient.NewFromEnv()
-				if err != nil {
-					logger.Error(err, "pdns client init")
-					return ctrl.Result{}, fmt.Errorf("pdns client: %w", err)
-				}
-				if err := cli.DeleteZone(ctx, zone.Spec.DomainName); err != nil {
-					logger.Error(err, "delete pdns zone failed; will retry", "zone", zone.Spec.DomainName)
-					return ctrl.Result{}, err
-				}
+			err := r.DNSHandler.Client.DeleteZone(ctx, zone)
+
+			if err != nil {
+				logger.Error(err, "failed to delete zone from downstream controller")
+				return ctrl.Result{}, err
 			}
 
 			// remove finalizer
 			if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
 				return ctrl.Result{}, nil
 			}
+
 			base := zone.DeepCopy()
 			controllerutil.RemoveFinalizer(&zone, downstreamZoneFinalizer)
 			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
@@ -92,50 +92,30 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// If class is set and equals "powerdns", ensure in PDNS (status handled by replicator)
-	if zone.Spec.DNSZoneClassName != "" {
-		var zc dnsv1alpha1.DNSZoneClass
-		if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
-		if zc.Spec.ControllerName == ControllerNamePowerDNS {
-			cli, err := pdnsclient.NewFromEnv()
-			if err != nil {
-				logger.Error(err, "pdns client init")
-				return ctrl.Result{}, fmt.Errorf("pdns client: %w", err)
-			}
-			// Ensure zone exists or create (no status updates here)
-			if _, err := cli.GetZone(ctx, zone.Spec.DomainName); err != nil {
-				// nameservers from class policy (Static)
-				var nss []string
-				if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
-					nss = append(nss, zc.Spec.NameServerPolicy.Static.Servers...)
-				}
-				if err := cli.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
-					logger.Error(err, "create pdns zone")
-					return ctrl.Result{}, err
-				}
-			}
+	err := r.DNSHandler.Client.EnsureZone(ctx, zone, zc)
 
-			// At this point the zone exists in PDNS; set downstream status nameservers from class if not already set
-			var desiredNS []string
-			if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
-				desiredNS = append(desiredNS, zc.Spec.NameServerPolicy.Static.Servers...)
-			}
-			desiredNS = normalizeStringSlice(desiredNS)
-			currentNS := normalizeStringSlice(zone.Status.Nameservers)
-			if len(desiredNS) > 0 && !equality.Semantic.DeepEqual(currentNS, desiredNS) {
-				base := zone.DeepCopy()
-				zone.Status.Nameservers = desiredNS
-				if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
-					logger.Error(err, "failed to update downstream nameservers status; will retry")
-					return ctrl.Result{}, err
-				}
-			}
+	if err != nil {
+		logger.Error(err, "failed to ensure zone in downstream controller")
+		return ctrl.Result{}, err
+	}
+
+	var desiredNS []string
+	if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
+		desiredNS = append(desiredNS, zc.Spec.NameServerPolicy.Static.Servers...)
+	}
+	desiredNS = normalizeStringSlice(desiredNS)
+	currentNS := normalizeStringSlice(zone.Status.Nameservers)
+	if len(desiredNS) > 0 && !equality.Semantic.DeepEqual(currentNS, desiredNS) {
+		base := zone.DeepCopy()
+		zone.Status.Nameservers = desiredNS
+		if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
+			logger.Error(err, "failed to update downstream nameservers status; will retry")
+			return ctrl.Result{}, err
 		}
 	}
 
 	return ctrl.Result{}, nil
+
 }
 
 // SetupWithManager sets up the controller with the Manager.

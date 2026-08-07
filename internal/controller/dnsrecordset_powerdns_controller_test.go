@@ -10,7 +10,8 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/controller"
-	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
+	"go.miloapis.com/dns-operator/internal/dns"
+	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,61 +19,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	fakedns "go.miloapis.com/dns-operator/internal/dns/fake"
 )
 
 const ns = "default"
 
-type fakePDNSClient struct {
-	replaceCalls []replaceCall
-	deleteCalls  []deleteCall
-
-	replaceErr error
-	deleteErr  error
-}
-
-type replaceCall struct {
-	Zone       string
-	RecordType string
-	OwnerName  string
-	TTL        int
-	Values     []string
-}
-
-type deleteCall struct {
-	Zone       string
-	RecordType string
-	OwnerName  string
-}
-
-var _ pdnsclient.Interface = (*fakePDNSClient)(nil)
-
-func (f *fakePDNSClient) ReplaceRRSet(
-	_ context.Context,
-	zone, recordType, ownerName string,
-	ttl int,
-	values []string,
-) error {
-	f.replaceCalls = append(f.replaceCalls, replaceCall{
-		Zone:       zone,
-		RecordType: recordType,
-		OwnerName:  ownerName,
-		TTL:        ttl,
-		Values:     values,
-	})
-	return f.replaceErr
-}
-
-func (f *fakePDNSClient) DeleteRRSet(
-	_ context.Context,
-	zone, recordType, ownerName string,
-) error {
-	f.deleteCalls = append(f.deleteCalls, deleteCall{
-		Zone:       zone,
-		RecordType: recordType,
-		OwnerName:  ownerName,
-	})
-	return f.deleteErr
-}
+// Prolly redundant
+var _ dns.DNSController = (*fakedns.FakeDNSClient)(nil)
 
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -181,13 +135,16 @@ func TestReconcile_SingleOwner_Success(t *testing.T) {
 	zone, zc := newZoneAndClass(zoneName)
 	rs := newARecordSet("rs-1", zoneName, ownerName, "1.2.3.4")
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()
@@ -211,10 +168,10 @@ func TestReconcile_SingleOwner_Success(t *testing.T) {
 	}
 
 	// PDNS should have been called with a REPLACE
-	if len(pdns.replaceCalls) != 1 {
-		t.Fatalf("expected 1 ReplaceRRSet call, got %d", len(pdns.replaceCalls))
+	if len(dnsHandler.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls) != 1 {
+		t.Fatalf("expected 1 ReplaceRRSet call, got %d", len(dnsHandler.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls))
 	}
-	call := pdns.replaceCalls[0]
+	call := dnsHandler.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls[0]
 	if call.Zone != zone.Spec.DomainName || call.OwnerName != ownerName {
 		t.Fatalf("unexpected PDNS call: %+v", call)
 	}
@@ -264,15 +221,18 @@ func TestReconcile_SingleOwner_PDNSError(t *testing.T) {
 	zone, zc := newZoneAndClass(zoneName)
 	rs := newARecordSet("rs-1", zoneName, ownerName, "1.2.3.4")
 
-	pdns := &fakePDNSClient{
-		replaceErr: errors.New("boom"),
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
 	}
+	dnsHandler.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceErr = errors.New("Boom!")
+
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()
@@ -287,7 +247,7 @@ func TestReconcile_SingleOwner_PDNSError(t *testing.T) {
 		RecordSetName: ownerName,
 	}
 
-	_, err := r.Reconcile(ctx, req)
+	_, err = r.Reconcile(ctx, req)
 	if err == nil {
 		t.Fatalf("expected PDNS error to be returned")
 	}
@@ -347,13 +307,16 @@ func TestReconcile_StatusCleanup_WhenOwnerRemoved(t *testing.T) {
 		},
 	}
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()
@@ -371,19 +334,19 @@ func TestReconcile_StatusCleanup_WhenOwnerRemoved(t *testing.T) {
 		RecordSetName: "old",
 	}
 
-	_, err := r.Reconcile(ctx, req)
+	_, err = r.Reconcile(ctx, req)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	// PDNS should have been asked to delete this RRSet, not replace it.
-	if len(pdns.deleteCalls) != 1 {
-		t.Fatalf("expected 1 DeleteRRSet call, got %d", len(pdns.deleteCalls))
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteRRSet call, got %d", len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls))
 	}
-	if len(pdns.replaceCalls) != 0 {
-		t.Fatalf("expected 0 ReplaceRRSet calls, got %d", len(pdns.replaceCalls))
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls) != 0 {
+		t.Fatalf("expected 0 ReplaceRRSet calls, got %d", len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls))
 	}
-	del := pdns.deleteCalls[0]
+	del := r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls[0]
 	if del.Zone != zone.Spec.DomainName || del.OwnerName != "old" {
 		t.Fatalf("unexpected DeleteRRSet call: %+v", del)
 	}
@@ -417,13 +380,16 @@ func TestReconcile_OwnerConflict_NotOwnerCondition(t *testing.T) {
 	rsOwner.CreationTimestamp = now
 	rsOther.CreationTimestamp = now
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
 	cl := newFakeClient(t, scheme, zone, zc, rsOwner, rsOther)
 
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()
@@ -438,16 +404,16 @@ func TestReconcile_OwnerConflict_NotOwnerCondition(t *testing.T) {
 		RecordSetName: ownerName,
 	}
 
-	_, err := r.Reconcile(ctx, req)
+	_, err = r.Reconcile(ctx, req)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	// PDNS should be called once, with values from the chosen owner (rsOwner)
-	if len(pdns.replaceCalls) != 1 {
-		t.Fatalf("expected 1 ReplaceRRSet call, got %d", len(pdns.replaceCalls))
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls) != 1 {
+		t.Fatalf("expected 1 ReplaceRRSet call, got %d", len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls))
 	}
-	call := pdns.replaceCalls[0]
+	call := r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls[0]
 	if call.OwnerName != ownerName {
 		t.Fatalf("unexpected PDNS call: %+v", call)
 	}
@@ -526,13 +492,16 @@ func TestReconcile_OwnerWithNoRecords_DeletesRRSet(t *testing.T) {
 		},
 	}
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()
@@ -547,20 +516,20 @@ func TestReconcile_OwnerWithNoRecords_DeletesRRSet(t *testing.T) {
 		RecordSetName: ownerName,
 	}
 
-	_, err := r.Reconcile(ctx, req)
+	_, err = r.Reconcile(ctx, req)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	// Since BuildOwnerRRSet returned an OwnerRRSet with zero Records,
 	// reconciler should call DeleteRRSet, not ReplaceRRSet.
-	if len(pdns.deleteCalls) != 1 {
-		t.Fatalf("expected 1 DeleteRRSet call, got %d", len(pdns.deleteCalls))
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteRRSet call, got %d", len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls))
 	}
-	if len(pdns.replaceCalls) != 0 {
-		t.Fatalf("expected 0 ReplaceRRSet calls, got %d", len(pdns.replaceCalls))
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls) != 0 {
+		t.Fatalf("expected 0 ReplaceRRSet calls, got %d", len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls))
 	}
-	del := pdns.deleteCalls[0]
+	del := r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls[0]
 	if del.Zone != zone.Spec.DomainName || del.OwnerName != ownerName {
 		t.Fatalf("unexpected DeleteRRSet call: %+v", del)
 	}
@@ -640,12 +609,15 @@ func TestReconcile_RespelledOwnerName_DoesNotDeleteLiveRRSet(t *testing.T) {
 			// absolute one survives only as a queued request.
 			rs := newARecordSet("rs-respelled", zoneName, ownerRelative, aliasValue)
 
-			pdns := &fakePDNSClient{}
+			dnsHandler, err := dns.New("fake", "fake")
+			if err != nil {
+				t.Fatalf("failed to create fake DNS handler: %v", err)
+			}
 			cl := newFakeClient(t, scheme, zone, zc, rs)
 			r := &controller.DNSRecordSetPowerDNSReconciler{
 				Client: cl,
 				Scheme: scheme,
-				PDNS:   pdns,
+				DNS:    dnsHandler,
 			}
 
 			for _, ownerName := range order {
@@ -654,13 +626,13 @@ func TestReconcile_RespelledOwnerName_DoesNotDeleteLiveRRSet(t *testing.T) {
 				}
 			}
 
-			if len(pdns.deleteCalls) != 0 {
-				t.Fatalf("retired spelling deleted a live RRset: %+v", pdns.deleteCalls)
+			if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls) != 0 {
+				t.Fatalf("retired spelling deleted a live RRset: %+v", r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls)
 			}
-			if len(pdns.replaceCalls) != 1 {
-				t.Fatalf("expected 1 ReplaceRRSet, got %+v", pdns.replaceCalls)
+			if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls) != 1 {
+				t.Fatalf("expected 1 ReplaceRRSet, got %+v", r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls)
 			}
-			if got := pdns.replaceCalls[0].OwnerName; got != ownerRelative {
+			if got := r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceCalls[0].OwnerName; got != ownerRelative {
 				t.Fatalf("expected RRset written under %q, got %q", ownerRelative, got)
 			}
 		})
@@ -675,12 +647,16 @@ func TestReconcile_ApexSpellingAlias_DoesNotDeleteLiveRRSet(t *testing.T) {
 	zone, zc := newZoneAndClass(zoneName)
 	rs := newARecordSet("rs-apex-alias", zoneName, "@", aliasValue)
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
+
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	// The absolute apex spelling is the same RRset as "@".
@@ -689,8 +665,8 @@ func TestReconcile_ApexSpellingAlias_DoesNotDeleteLiveRRSet(t *testing.T) {
 		t.Fatalf("reconcile apex alias: %v", err)
 	}
 
-	if len(pdns.deleteCalls) != 0 {
-		t.Fatalf("apex alias deleted the live RRset: %+v", pdns.deleteCalls)
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls) != 0 {
+		t.Fatalf("apex alias deleted the live RRset: %+v", r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls)
 	}
 }
 
@@ -702,12 +678,15 @@ func TestReconcile_RemovedOwnerName_StillDeletesRRSet(t *testing.T) {
 	zone, zc := newZoneAndClass(zoneName)
 	rs := newARecordSet("rs-unrelated", zoneName, ownerRelative, aliasValue)
 
-	pdns := &fakePDNSClient{}
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
+	}
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	// Nothing claims "retired" under any spelling, so cleanup must proceed.
@@ -716,10 +695,10 @@ func TestReconcile_RemovedOwnerName_StillDeletesRRSet(t *testing.T) {
 		t.Fatalf("reconcile removed owner: %v", err)
 	}
 
-	if len(pdns.deleteCalls) != 1 {
-		t.Fatalf("expected 1 DeleteRRSet for a genuinely removed owner, got %+v", pdns.deleteCalls)
+	if len(r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls) != 1 {
+		t.Fatalf("expected 1 DeleteRRSet for a genuinely removed owner, got %+v", r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls)
 	}
-	if got := pdns.deleteCalls[0].OwnerName; got != removed {
+	if got := r.DNS.Client.DNSController.(*fakedns.FakeDNSClient).DeleteCalls[0].OwnerName; got != removed {
 		t.Fatalf("expected delete of %q, got %q", removed, got)
 	}
 }
@@ -739,17 +718,20 @@ func TestReconcile_CoexistenceConflict_RequeuesWithoutError(t *testing.T) {
 	zone, zc := newZoneAndClass(zoneName)
 	rs := newARecordSet("rs-conflict", zoneName, ownerRelative, aliasValue)
 
-	pdns := &fakePDNSClient{
-		replaceErr: pdnsclient.NewAPIError(
-			http.StatusUnprocessableEntity,
-			`{"error":"RRset api.example.com. IN A: Conflicts with pre-existing RRset"}`,
-		),
+	dnsHandler, err := dns.New("fake", "fake")
+	if err != nil {
+		t.Fatalf("failed to create fake DNS handler: %v", err)
 	}
+	dnsHandler.Client.DNSController.(*fakedns.FakeDNSClient).ReplaceErr = pdnsclient.NewAPIError(
+		http.StatusUnprocessableEntity,
+		`{"error":"RRset api.example.com. IN A: Conflicts with pre-existing RRset"}`,
+	)
+
 	cl := newFakeClient(t, scheme, zone, zc, rs)
 	r := &controller.DNSRecordSetPowerDNSReconciler{
 		Client: cl,
 		Scheme: scheme,
-		PDNS:   pdns,
+		DNS:    dnsHandler,
 	}
 
 	ctx := context.Background()

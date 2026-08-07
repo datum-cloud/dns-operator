@@ -12,6 +12,7 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -119,7 +120,8 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	}
 
 	// DeleteZone
-	if err := c.DeleteZone(context.Background(), "example.com"); err != nil {
+	zn := dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "example.com", Namespace: "default"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"}}
+	if err := c.DeleteZone(context.Background(), zn); err != nil {
 		t.Fatalf("DeleteZone error: %v", err)
 	}
 }

@@ -45,8 +45,10 @@ type DeleteCall struct {
 
 func NewFakeDNSClient() *FakeDNSClient {
 	return &FakeDNSClient{
-		ReplaceCalls: []ReplaceCall{},
-		DeleteCalls:  []DeleteCall{},
+		ReplaceCalls:    []ReplaceCall{},
+		DeleteCalls:     []DeleteCall{},
+		EnsureZoneCalls: []EnsureZoneCall{},
+		DeleteZoneCalls: []DeleteZoneCall{},
 	}
 }
 
@@ -55,6 +57,10 @@ func (f *FakeDNSClient) Init() error {
 }
 
 func (f *FakeDNSClient) Shutdown() {}
+
+func (f *FakeDNSClient) GetZoneNameservers(_ context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string {
+	return []string{}
+}
 
 func (f *FakeDNSClient) EnsureZone(_ context.Context, z dnsv1alpha1.DNSZone, c dnsv1alpha1.DNSZoneClass) error {
 	f.EnsureZoneCalls = append(f.EnsureZoneCalls, EnsureZoneCall{
@@ -70,6 +76,14 @@ func (f *FakeDNSClient) DeleteZone(_ context.Context, z dnsv1alpha1.DNSZone) err
 		Zone: z.Name,
 	})
 	return f.DeleteZoneErr
+}
+
+func (c *FakeDNSClient) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+	return nil
+}
+
+func (c *FakeDNSClient) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+	return nil
 }
 
 func (f *FakeDNSClient) ReplaceRRSet(

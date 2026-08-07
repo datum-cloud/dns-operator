@@ -8,19 +8,20 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 )
 
 func TestNormalizeStringSlice(t *testing.T) {
-	if got := normalizeStringSlice(nil); got != nil {
+	if got := dnsutils.NormalizeStringSlice(nil); got != nil {
 		t.Fatalf("expected nil for nil input, got %v", got)
 	}
-	if got := normalizeStringSlice([]string{}); got != nil {
+	if got := dnsutils.NormalizeStringSlice([]string{}); got != nil {
 		t.Fatalf("expected nil for empty input, got %v", got)
 	}
 
 	in := []string{"b", "a", "c"}
 	want := []string{"a", "b", "c"}
-	got := normalizeStringSlice(in)
+	got := dnsutils.NormalizeStringSlice(in)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("unexpected normalize result: got=%v want=%v", got, want)
 	}
@@ -32,7 +33,7 @@ func TestNormalizeStringSlice(t *testing.T) {
 	// Duplicates are collapsed (duplicate nameservers previously produced a
 	// duplicate-record RRset that PowerDNS rejected with HTTP 422).
 	dup := []string{"ns2", "ns1", "ns2", "ns1"}
-	if got := normalizeStringSlice(dup); !reflect.DeepEqual(got, []string{"ns1", "ns2"}) {
+	if got := dnsutils.NormalizeStringSlice(dup); !reflect.DeepEqual(got, []string{"ns1", "ns2"}) {
 		t.Fatalf("expected duplicates removed, got=%v", got)
 	}
 }

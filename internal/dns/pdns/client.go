@@ -15,6 +15,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
+	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 )
 
 type Client struct {
@@ -139,62 +140,71 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 }
 
 func (c *Client) EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) error {
-	// TODO - check if zone exists and is correct (e.g. nameservers match class)
+	// Get desired nameservers from the class spec
+	nss := c.GetZoneNameservers(ctx, zone, class)
+
 	if _, err := c.GetZone(ctx, zone.Spec.DomainName); err != nil {
-		// Zone does not exist; create it
 		if errors.Is(err, dnserrors.ErrZoneNotFound) {
-			// Zone does not exist; create it
-
-			var nss []string
-
-			if class.Spec.NameServerPolicy != nil &&
-				class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic &&
-				class.Spec.NameServerPolicy.Static != nil {
-				nss = class.Spec.NameServerPolicy.Static.Servers
-			}
-
+			// Zone does not exist, create it
 			if err := c.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
 				return err
 			}
+			return nil
 		}
-
-		// TODO Log
-
 		return err
 	}
+
+	// TODO -> Implement zone update logic if needed (e.g., updating nameservers)
+
 	return nil
 }
 
 func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error {
-	// TODO -> Implement Zone Deletion via PDNS API
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone.Spec.DomainName+".", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		// drain is optional for DELETE (usually no body), but Close error must be handled
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already gone
+	}
+	if resp.StatusCode == 204 {
+		return nil // deleted successfully
+	}
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("pdns delete zone failed: status %d", resp.StatusCode)
+	}
 	return nil
 }
 
-// TODO refactor to new API call
-// in package pdns (same file as CreateZone/GetZone)
-// func (c *Client) DeleteZone(ctx context.Context, zone string) error {
-// 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-// 		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", nil)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	req.Header.Set("X-API-Key", c.APIKey)
-// 	resp, err := c.HTTP.Do(req)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	defer func() {
-// 		// drain is optional for DELETE (usually no body), but Close error must be handled
-// 		_ = resp.Body.Close()
-// 	}()
-// 	if resp.StatusCode == http.StatusNotFound {
-// 		return nil // already gone
-// 	}
-// 	if resp.StatusCode/100 != 2 {
-// 		return fmt.Errorf("pdns delete zone failed: status %d", resp.StatusCode)
-// 	}
-// 	return nil
-// }
+func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string {
+	var desiredNS []string
+	if class.Spec.NameServerPolicy != nil &&
+		class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic &&
+		class.Spec.NameServerPolicy.Static != nil {
+		desiredNS = append(desiredNS, class.Spec.NameServerPolicy.Static.Servers...)
+	}
+
+	return dnsutils.NormalizeStringSlice(desiredNS)
+}
+
+func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+
+	return nil
+}
+
+func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+	return nil
+}
 
 // GetZoneRRSets fetches all rrsets for a zone and returns them.
 func (c *Client) GetZoneRRSets(ctx context.Context, zone string) ([]zoneRRset, error) {

@@ -14,6 +14,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"go.miloapis.com/dns-operator/internal/dns"
+	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 )
 
 // DNSZoneReconciler reconciles a DNSZone object
@@ -34,7 +35,7 @@ const downstreamZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone-do
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
-	logger.Info("dnszone reconcile start", "namespace", req.Namespace, "name", req.Name)
+	logger.Info("dnszone reconcile start")
 
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
@@ -42,13 +43,13 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
-		logger.Info("Resource belongs to different class. Not Reconciling", "class", zone.Spec.DNSZoneClassName, "namespace", req.Namespace, "name", req.Name)
+		logger.Info("Resource belongs to different class. Not Reconciling")
 		return ctrl.Result{}, nil
 	}
 
 	var zc dnsv1alpha1.DNSZoneClass
 	if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
-		logger.Info("Failed to get zone class for zone. Not Reconciling", "class", zone.Spec.DNSZoneClassName, "namespace", req.Namespace, "name", req.Name)
+		logger.Info("Failed to get zone class for zone. Not Reconciling")
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -65,6 +66,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				logger.Error(err, "failed to add zone finalizer")
 				return ctrl.Result{}, err
 			}
+			logger.Info("Added finalizer to zone")
 			return ctrl.Result{}, nil
 		}
 	} else {
@@ -77,6 +79,8 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				return ctrl.Result{}, err
 			}
 
+			logger.Info("Deleted zone from downstream controller")
+
 			// remove finalizer
 			if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
 				return ctrl.Result{}, nil
@@ -88,6 +92,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				logger.Error(err, "failed to remove zone finalizer")
 				return ctrl.Result{}, err
 			}
+			logger.Info("Removed finalizer from zone")
 		}
 		return ctrl.Result{}, nil
 	}
@@ -99,23 +104,22 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	var desiredNS []string
-	if zc.Spec.NameServerPolicy != nil && zc.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic && zc.Spec.NameServerPolicy.Static != nil {
-		desiredNS = append(desiredNS, zc.Spec.NameServerPolicy.Static.Servers...)
-	}
-	desiredNS = normalizeStringSlice(desiredNS)
-	currentNS := normalizeStringSlice(zone.Status.Nameservers)
+	logger.Info("Ensured zone in downstream controller")
+
+	// Update the status of the DNSZone with the nameservers from the downstream controller
+	desiredNS := r.DNSHandler.Client.GetZoneNameservers(ctx, zone, zc)
+	currentNS := dnsutils.NormalizeStringSlice(zone.Status.Nameservers)
 	if len(desiredNS) > 0 && !equality.Semantic.DeepEqual(currentNS, desiredNS) {
 		base := zone.DeepCopy()
 		zone.Status.Nameservers = desiredNS
 		if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
-			logger.Error(err, "failed to update downstream nameservers status; will retry")
+			logger.Error(err, "failed to update zone status")
 			return ctrl.Result{}, err
 		}
+		logger.Info("Updated zone status")
 	}
 
 	return ctrl.Result{}, nil
-
 }
 
 // SetupWithManager sets up the controller with the Manager.

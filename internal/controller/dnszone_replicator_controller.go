@@ -30,6 +30,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
 )
 
@@ -560,8 +561,8 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 			shadow.SetNamespace(md.Namespace)
 			shadow.SetName(md.Name)
 			if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow); err == nil {
-				currentNS := normalizeStringSlice(upstream.Status.Nameservers)
-				desiredNS := normalizeStringSlice(shadow.Status.Nameservers)
+				currentNS := dnsutils.NormalizeStringSlice(upstream.Status.Nameservers)
+				desiredNS := dnsutils.NormalizeStringSlice(shadow.Status.Nameservers)
 				if !equality.Semantic.DeepEqual(currentNS, desiredNS) {
 					upstream.Status.Nameservers = desiredNS
 					changed = true

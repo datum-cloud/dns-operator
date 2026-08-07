@@ -16,17 +16,10 @@ type DNSController interface {
 	EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) error
 	DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error
 
-	// EnsureRecordSet(
-	// 	ctx context.Context,
-	// 	zone dnsv1alpha1.DNSZone,
-	// 	recordSet dnsv1alpha1.DNSRecordSet,
-	// ) error
+	GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string
 
-	// DeleteRecordSet(
-	// 	ctx context.Context,
-	// 	zone dnsv1alpha1.DNSZone,
-	// 	recordSet dnsv1alpha1.DNSRecordSet,
-	// ) error
+	EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error
+	DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error
 
 	ReplaceRRSet(
 		ctx context.Context,

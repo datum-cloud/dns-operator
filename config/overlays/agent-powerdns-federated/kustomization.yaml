@@ -9,6 +9,15 @@ resources:
 components:
   - ../../agent/components/namespace
 
+patches:
+  - target:
+      kind: StatefulSet
+      name: pdns-auth
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --controller-class=powerdns-e2e
+
 # Unlike config/overlays/agent-powerdns, this overlay does NOT ship its own
 # MinIO instance or a static s3-credentials Secret: it's used for both the
 # "control" and "edge" clusters in the local PowerDNS Lightningstream

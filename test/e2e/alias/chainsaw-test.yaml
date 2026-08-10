@@ -22,7 +22,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -39,7 +39,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
 
   - name: Prereq - create DNSZoneClass in downstream
     try:
@@ -49,7 +49,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -66,7 +66,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
 
   - name: Create DNSZone upstream
     try:
@@ -79,7 +79,7 @@ spec:
             name: example-test
           spec:
             domainName: example.test
-            dnsZoneClassName: powerdns-static-alias
+            dnsZoneClassName: powerdns-e2e
     - assert:
         cluster: upstream
         resource:

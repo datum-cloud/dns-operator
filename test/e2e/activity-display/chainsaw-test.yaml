@@ -23,7 +23,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-activity-display
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -40,7 +40,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-activity-display
+            name: powerdns-e2e
 
   - name: Prereq - create DNSZoneClass in downstream
     try:
@@ -50,7 +50,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-activity-display
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -67,7 +67,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-activity-display
+            name: powerdns-e2e
 
   - name: Create DNSZone upstream
     try:
@@ -80,7 +80,7 @@ spec:
             name: activity-display-zone
           spec:
             domainName: activity-display.example.com
-            dnsZoneClassName: powerdns-activity-display
+            dnsZoneClassName: powerdns-e2e
     - assert:
         cluster: upstream
         resource:
@@ -304,7 +304,7 @@ spec:
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
-          name: powerdns-activity-display
+          name: powerdns-e2e
         expect:
         - match:
             apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -316,7 +316,7 @@ spec:
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
-          name: powerdns-activity-display
+          name: powerdns-e2e
         expect:
         - match:
             apiVersion: dns.networking.miloapis.com/v1alpha1

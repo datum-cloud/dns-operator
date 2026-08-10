@@ -8,13 +8,53 @@ queries. For the properties every backend shares, see the
 [backend model](./README.md#backend-model).
 
 The deployment view below shows where each component runs: the downstream agent
-and the PowerDNS writer in the authoritative cluster (fed shadow resources by the
-replicator through the cluster's Kubernetes API), and the read-only serving nodes
-at the edge, replicating through shared object storage.
+**as a sidecar in the PowerDNS writer pod** in the authoritative cluster (fed
+shadow resources by the replicator through the cluster's Kubernetes API), and the
+read-only serving nodes at the edge, replicating through shared object storage.
 
 <p align="center">
   <img src="./powerdns-backend.png" alt="Deployment View — PowerDNS Backend" />
 </p>
+
+## Writer Tier
+
+The authoritative writer is a single pod that bundles the agent with the
+PowerDNS instance it programs:
+
+| Container | Role |
+|-----------|------|
+| Downstream agent | Reconciles shadow resources and programs PowerDNS |
+| `pdns-auth` | Authoritative server; owns this pod's LMDB store |
+| `pdns-recursor` | Loopback-only resolver used for `ALIAS` expansion |
+| LightningStream (`sync`) | Snapshots this pod's LMDB and merges peers' snapshots |
+
+Three properties of this arrangement matter when reasoning about writes:
+
+- **The agent programs PowerDNS over loopback.** It connects to the PowerDNS
+  container in its own pod (`PDNS_API_URL`, `http://localhost:8082` in the
+  shipped base). It never addresses another replica, and there is no
+  load-balanced API path between agent and backend.
+- **Each pod mints its own API key at startup.** An init container generates a
+  random key into a pod-local volume shared only with that pod's PowerDNS. Keys
+  are therefore per-pod, which makes the loopback path the only usable one by
+  construction.
+- **Exactly one agent writes at a time.** The writer may run more than one
+  replica for availability, but the agent is leader-elected, so a single replica
+  reconciles. On failover the write path moves to the new leader's pod and its
+  local LMDB.
+
+Every replica — not just the leader — runs LightningStream in `sync` mode, so
+the leader's writes reach its peers through object storage rather than through
+the cluster network. Peer replicas therefore converge on the same schedule as
+the serving layer, described in [Consistency Model](#consistency-model).
+
+> [!NOTE]
+>
+> A common misreading of this topology is that the agent talks to PowerDNS
+> through a Kubernetes `Service` and may land on any replica. It does not. That
+> distinction matters: a read-modify-write spread across replicas would be
+> subject to the convergence window below, whereas the loopback path always
+> reads and writes one consistent local store.
 
 ## Record Translation
 
@@ -52,6 +92,49 @@ anywhere object storage is reachable. A serving node can also run a local
 recursor to expand `ALIAS` records at query time. See
 [Deployment Topology](../topology.md#authoritative-serving-and-state-replication)
 for how the serving layer fits the wider system.
+
+The write path is enforced at two layers rather than by convention. Writers run
+LightningStream in `sync` mode and hold read-write credentials for the bucket;
+serving nodes run it in `receive` mode and hold read-only credentials. Serving
+nodes additionally disable the PowerDNS API and zone transfers, so nothing but a
+merge from object storage can alter a serving node's data.
+
+## Consistency Model
+
+Every PowerDNS instance keeps its **own** LMDB store. LMDB is a single-process
+embedded database and is never shared between pods, which is why replication
+goes through object storage rather than a shared volume. The stores converge;
+they are not a single copy.
+
+LightningStream **merges** snapshots rather than overwriting them, resolving
+per-record conflicts by last-writer-wins on a timestamp. Three PowerDNS settings
+make that merge well-defined, and all of them are required on every instance:
+
+| Setting | Why the merge needs it |
+|---------|------------------------|
+| `lmdb-lightning-stream=yes` | Stamps each record with the timestamp and originating instance the merge compares |
+| `lmdb-flag-deleted=yes` | Records deletions as tombstones, so a delete propagates instead of being undone by a peer that still holds the record |
+| `lmdb-random-ids=yes` | Assigns random zone IDs, so two instances creating zones independently do not collide on the same sequential ID |
+
+Three consequences follow for anyone reasoning about the system:
+
+- **Instance names must be globally unique within a bucket.** Each
+  LightningStream instance publishes snapshots under its own name. If two
+  instances share a name, each treats the other's snapshots as its own and
+  neither merges — replication stops silently, with no error surfaced. A
+  deployment spanning multiple clusters must therefore qualify the instance name
+  beyond the pod name, which alone repeats across clusters.
+- **Merge ordering depends on wall-clock time.** Last-writer-wins compares
+  timestamps across hosts, so clock skew between instances can let a stale write
+  win. Instances need synchronized clocks for the merge to reflect real ordering.
+- **A write is immediately visible only on the instance that accepted it.** Every
+  other instance sees it after a snapshot round-trip. An operation that is
+  *rejected* because the accepting instance has not yet converged — a delete
+  against a zone that instance has not seen, for example — writes no tombstone
+  and therefore leaves nothing for the merge to resolve. Such an operation must
+  be retried until it succeeds, never recorded as complete. The agent's
+  reconcile loop provides that guarantee: desired state is always re-derived
+  from Kubernetes, so a rejected write stays queued rather than being lost.
 
 ## Propagation and Timing
 

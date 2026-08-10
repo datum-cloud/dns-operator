@@ -13,10 +13,11 @@ Deployment_Node(rcp, "Replication Control Plane", "Kubernetes cluster") {
 
 Deployment_Node(auth, "Authoritative Cluster", "Kubernetes cluster") {
     Container(api, "Kubernetes API", "control plane", "Holds shadow DNSZone / DNSRecordSet")
-    Container(agent, "DNS Operator (downstream agent)", "controller-runtime", "Reconciles shadows and programs PowerDNS")
-    Deployment_Node(pod, "pdns-auth", "StatefulSet pod") {
-        Container(pdns, "PowerDNS Authoritative", "pdns-auth + LMDB", "Writer and source of truth")
-        Container(pub, "LightningStream", "sidecar", "Snapshots LMDB to object storage")
+    Deployment_Node(pod, "pdns-auth", "StatefulSet pod — N replicas, one leader") {
+        Container(agent, "DNS Operator (downstream agent)", "controller-runtime", "Reconciles shadows and programs PowerDNS. Leader-elected: only one replica writes")
+        Container(pdns, "PowerDNS Authoritative", "pdns-auth + LMDB", "Writer and source of truth for this replica")
+        Container(wrec, "Recursor", "pdns-recursor", "Expands ALIAS at query time")
+        Container(pub, "LightningStream", "sidecar (sync)", "Snapshots LMDB to object storage and merges peers")
     }
 }
 
@@ -34,9 +35,11 @@ Person_Ext(resolver, "Recursive Resolver", "Resolves names for the internet")
 
 Rel(replicator, api, "Writes shadow DNS resources", "apply")
 Rel(agent, api, "Watches shadows, writes status", "watch")
-Rel(agent, pdns, "Programs zones / records", "HTTP API + X-API-Key")
-Rel(pub, store, "Writes snapshots")
-Rel(recv, store, "Pulls snapshots")
+Rel(agent, pdns, "Programs zones / records", "HTTP API :8082 over loopback, same pod")
+Rel(pdns, wrec, "Resolves ALIAS targets", "127.0.0.1:5300")
+Rel(pub, store, "Writes and reads snapshots", "read-write credentials")
+Rel(recv, store, "Reads snapshots only", "read-only credentials")
+Rel(spdns, rec, "Resolves ALIAS targets", "127.0.0.1:5300")
 Rel(resolver, spdns, "DNS query", "UDP/TCP :53")
 
 SHOW_LEGEND()

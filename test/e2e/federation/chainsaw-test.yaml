@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-federation
 spec:
+  concurrent: false
   timeouts:
     # The edge-replication script step below polls for a few minutes waiting
     # for Lightningstream to sync; give exec plenty of headroom.

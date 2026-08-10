@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-activity-display
 spec:
+  concurrent: false
   description: |
     Verifies create-time display annotations (mutating webhook), customer-style
     TXT/_dmarc and apex FQDNs, update refresh of display-value, and that

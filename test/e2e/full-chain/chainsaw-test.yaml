@@ -21,6 +21,7 @@ kind: Test
 metadata:
   name: dns-operator-full-chain
 spec:
+  concurrent: false
   timeouts:
     # The edge-replication script polls for a few minutes waiting for
     # Lightningstream to sync; give exec plenty of headroom.

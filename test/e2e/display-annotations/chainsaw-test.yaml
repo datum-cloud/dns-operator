@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-display-annotations
 spec:
+  concurrent: false
   description: |
     Verifies that DNSRecordSet resources get display annotations set AND are
     replicated to the downstream cluster. This test catches a bug where the

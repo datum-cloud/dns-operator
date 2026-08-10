@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-zones-and-records
 spec:
+  concurrent: false
   clusters:
     upstream:
       kubeconfig: ../kubeconfig-upstream

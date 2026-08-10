@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-alias
 spec:
+  concurrent: false
   timeouts:
     # Our validation runs a couple of external DNS queries; default exec timeout (5s) is too tight.
     exec: 30s

@@ -113,8 +113,8 @@ func main() {
 	flag.StringVar(
 		&controllerClass,
 		"controller-class",
-		"powerdns",
-		"The controller class to use for this instance. Defaults to 'powerdns'",
+		"datum-external-global-dns",
+		"The controller class to use for this instance. Defaults to 'datum-external-global-dns'",
 	)
 	// specifies the class type (DNSZoneClass.spec.controllerName) which this controller should reconcile zones for
 	flag.StringVar(

@@ -25,9 +25,6 @@ import (
 
 const ns = "default"
 
-// Prolly redundant
-var _ dns.DNSController = (*fakedns.FakeDNSClient)(nil)
-
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 

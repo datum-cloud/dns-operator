@@ -12,6 +12,11 @@ specific cloud or cluster technology.
 > expand these tiers — for example, running everything in one cluster for
 > development (`discovery.mode: single`) or spreading the serving layer across
 > many regions in production.
+>
+> Concrete per-environment shape — replica counts, serving-node placement, bucket
+> and credential wiring — is not defined here. This repository ships the Kustomize
+> bases and the reference topology; the deployed configuration for a given
+> environment lives with that environment's GitOps configuration.
 
 ## Container View
 
@@ -39,7 +44,8 @@ cluster. See [Replication Model](./replication.md) for the internals.
 
 ### Downstream Agent
 
-**Runs in:** the authoritative cluster, co-located with the DNS backend.
+**Runs in:** the authoritative cluster, as a sidecar in the DNS backend's own pod
+— it programs the backend over loopback, not across the cluster network.
 
 **Responsibilities:**
 - Ensure zones exist in the backend for classes it implements, applying the
@@ -49,10 +55,15 @@ cluster. See [Replication Model](./replication.md) for the internals.
 - Report realized status (`Programmed`, per-record results) on the shadow
   objects, which the replicator mirrors upstream.
 
-The agent is the **only writer** to the DNS backend. It acts only on zones whose
-`DNSZoneClass.spec.controllerName` matches a backend it implements (`powerdns`
-today) and ignores every other class. See [DNS Backends](./backends/README.md)
-for the backend model and the servers the agent can program.
+The agent is the **only writer** to the DNS backend, in two senses. It is the
+only component that programs authoritative data at all, and it is leader-elected,
+so when the agent runs with more than one replica exactly one of them writes at
+any moment. It acts only on zones whose `DNSZoneClass.spec.controllerName`
+matches a backend it implements (`powerdns` today) and ignores every other class.
+See [DNS Backends](./backends/README.md) for the backend model and the servers
+the agent can program, and [PowerDNS Backend → Writer
+Tier](./backends/powerdns.md#writer-tier) for how the agent and backend share a
+pod.
 
 > [!NOTE]
 >

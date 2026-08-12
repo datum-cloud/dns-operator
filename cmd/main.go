@@ -246,6 +246,18 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Add indexer for RecordSets
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+			&dnsv1alpha1.DNSRecordSet{}, "spec.DNSZoneRef.Name",
+			func(obj client.Object) []string {
+				rs := obj.(*dnsv1alpha1.DNSRecordSet)
+				return []string{rs.Spec.DNSZoneRef.Name}
+			},
+		); err != nil {
+			ctrl.LoggerFrom(context.Background()).Error(err, "failed to index DNSRecordSet by spec.DNSZoneRef.Name")
+			os.Exit(1)
+		}
+
 		if err := (&controller.DNSZoneReconciler{
 			Client:     mgr.GetClient(),
 			Scheme:     mgr.GetScheme(),
@@ -254,19 +266,12 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
 			os.Exit(1)
 		}
-		if err := (&controller.DNSRecordSetReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
-			os.Exit(1)
-		}
-
-		pdnsControllerCfg := serverConfig.Controllers.DNSRecordSetPowerDNS
-		if err := (&controller.DNSRecordSetPowerDNSReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-			Config: pdnsControllerCfg,
+		if err := (&controller.DNSRecordSetReconciler{
+			Client:     mgr.GetClient(),
+			Scheme:     mgr.GetScheme(),
+			DNSHandler: dnsHandler,
 		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSetPowerDNS")
+			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)
 		}
 

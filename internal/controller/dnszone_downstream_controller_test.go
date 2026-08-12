@@ -12,6 +12,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/dns"
 	dnsfake "go.miloapis.com/dns-operator/internal/dns/fake"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -133,14 +134,43 @@ func TestDNSZoneDownstreamReconcile_AddsFinalizerThenEnsures(t *testing.T) {
 		t.Fatalf("second reconcile: %v", err)
 	}
 
+	var afterSecond dnsv1alpha1.DNSZone
+	if err := k8sClient.Get(context.Background(), req.NamespacedName, &afterSecond); err != nil {
+		t.Fatalf("get zone after second reconcile: %v", err)
+	}
+	accepted := apimeta.FindStatusCondition(afterSecond.Status.Conditions, CondAccepted)
+	if accepted == nil {
+		t.Fatal("expected Accepted condition after second reconcile")
+	}
+	if accepted.Status != metav1.ConditionTrue || accepted.Reason != ReasonAccepted {
+		t.Fatalf("expected Accepted=True with reason %q, got status=%q reason=%q", ReasonAccepted, accepted.Status, accepted.Reason)
+	}
+
+	_, err = r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("third reconcile: %v", err)
+	}
+
 	if len(fakeDNS.EnsureZoneCalls) != 1 {
-		t.Fatalf("expected EnsureZone to be called once on second reconcile, got %d", len(fakeDNS.EnsureZoneCalls))
+		t.Fatalf("expected EnsureZone to be called once by third reconcile, got %d", len(fakeDNS.EnsureZoneCalls))
 	}
 	if fakeDNS.EnsureZoneCalls[0].Zone != "zone-a" {
 		t.Fatalf("expected EnsureZone call for zone-a, got %q", fakeDNS.EnsureZoneCalls[0].Zone)
 	}
 	if fakeDNS.EnsureZoneCalls[0].Class != "downstream-class" {
 		t.Fatalf("expected EnsureZone class downstream-class, got %q", fakeDNS.EnsureZoneCalls[0].Class)
+	}
+
+	var afterThird dnsv1alpha1.DNSZone
+	if err := k8sClient.Get(context.Background(), req.NamespacedName, &afterThird); err != nil {
+		t.Fatalf("get zone after third reconcile: %v", err)
+	}
+	programmed := apimeta.FindStatusCondition(afterThird.Status.Conditions, CondProgrammed)
+	if programmed == nil {
+		t.Fatal("expected Programmed condition after third reconcile")
+	}
+	if programmed.Status != metav1.ConditionTrue || programmed.Reason != ReasonProgrammed {
+		t.Fatalf("expected Programmed=True with reason %q, got status=%q reason=%q", ReasonProgrammed, programmed.Status, programmed.Reason)
 	}
 }
 

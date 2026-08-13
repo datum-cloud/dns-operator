@@ -78,7 +78,7 @@ func (f *FakeDNSClient) DeleteZone(_ context.Context, z dnsv1alpha1.DNSZone) err
 	return f.DeleteZoneErr
 }
 
-func (c *FakeDNSClient) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) (error, []dnsv1alpha1.RecordSetStatus) {
+func (c *FakeDNSClient) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	return nil, nil
 }
 
@@ -91,7 +91,7 @@ func (f *FakeDNSClient) ReplaceRRSet(
 	zone, recordType, ownerName string,
 	ttl int,
 	values []string,
-	dnsZoneRef string,
+	ownerRef string,
 	observedGeneration int64,
 ) error {
 	f.ReplaceCalls = append(f.ReplaceCalls, ReplaceCall{

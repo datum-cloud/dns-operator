@@ -107,19 +107,33 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	// Ensure the DNSZone is an owner of this DNSRecordSet so GC cascades on zone deletion.
-	if !metav1.IsControlledBy(&rs, &zone) {
-		logger.Info("rs is not controlled by zone; setting owner reference")
-		base := rs.DeepCopy()
-		if err := controllerutil.SetControllerReference(&zone, &rs, r.Scheme); err != nil {
-			logger.Error(err, "failed to set owner reference", "rs", rs.Name, "zone", zone.Name)
+	if metav1.IsControlledBy(&rs, &zone) {
+		// This block is valid only for migration phase. DNSRecordSets are managed here and not by the DNSZone controller. So, we should not have a controller reference to the zone. We should only have an owner reference.
+		logger.Info("RecordSet is already controlled by zone. Should not be controller by. Should be owner reference only. Removing controller reference.")
+		err := controllerutil.RemoveControllerReference(&zone, &rs, r.Scheme)
+
+		if err != nil {
+			logger.Error(err, "failed to remove controller reference", "namespace", rs.Namespace, "name", rs.Name)
 			return ctrl.Result{}, err
 		}
-		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
-			logger.Error(err, "failed to patch owner reference", "rs", rs.Name, "zone", zone.Name)
+
+		return ctrl.Result{}, r.Update(ctx, &rs)
+	}
+
+	isOwner, err := controllerutil.HasOwnerReference(rs.OwnerReferences, &zone, r.Scheme)
+
+	if err != nil {
+		logger.Error(err, "failed to check owner reference", "namespace", rs.Namespace, "name", rs.Name)
+		return ctrl.Result{}, err
+	}
+
+	if !isOwner {
+		logger.Info("RecordSet is not owned by zone. Setting owner reference.")
+		if err := controllerutil.SetOwnerReference(&zone, &rs, r.Scheme); err != nil {
+			logger.Error(err, "failed to set owner reference", "namespace", rs.Namespace, "name", rs.Name)
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.Update(ctx, &rs)
 	}
 
 	base := rs.DeepCopy()
@@ -136,7 +150,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, r.Status().Patch(ctx, &rs, client.MergeFrom(base))
 	}
 
-	err, statuses := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
+	statuses, err := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
 	return ctrl.Result{}, r.updateStatus(ctx, &rs, err, statuses)
 }
 

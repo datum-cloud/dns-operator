@@ -35,7 +35,7 @@ func NewClient(baseURL, apiKey string) *Client {
 		BaseURL: baseURL,
 		APIKey:  apiKey,
 		HTTP:    &http.Client{Timeout: 10 * time.Second},
-		logger:  logf.FromContext(nil, "client", "powerdns"),
+		logger:  logf.FromContext(context.TODO(), "client", "powerdns"),
 	}
 }
 
@@ -204,7 +204,7 @@ func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZon
 	return dnsutils.NormalizeStringSlice(desiredNS)
 }
 
-func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) (error, []dnsv1alpha1.RecordSetStatus) {
+func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	statusList := make([]dnsv1alpha1.RecordSetStatus, 0, len(recordSet.Spec.Records))
 
 	rrsetMap := make(map[string][]dnsv1alpha1.RecordEntry)
@@ -231,8 +231,8 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		} else {
 			// Zones returned.
 			if len(zones) > 1 {
-				// This should not happend. We should only have one RRSet per owner per type. Log an error and continue.
-				c.logger.Error(fmt.Errorf("Multiple RRSets returned for owner %s", owner), "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones)
+				// This should not happen. We should only have one RRSet per owner per type. Log an error and continue.
+				c.logger.Error(fmt.Errorf("multiple rrsets returned for owner %s", owner), "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones)
 				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner), metav1.ConditionTrue))
 				continue
 			}
@@ -270,7 +270,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	}
 
 	// Deletion Phase
-	curRecordSet, err := c.queryDNSByComment(ctx, fmt.Sprintf("%s", recordSet.Name))
+	curRecordSet, err := c.queryDNSByComment(ctx, fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name))
 
 	if err != nil {
 		c.logger.Error(err, "Failed to query PDNS for record set", "recordSet", recordSet.Name)
@@ -295,7 +295,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 	}
 
-	return nil, statusList
+	return statusList, nil
 }
 
 func makeProgrammedStatus(owner string, status metav1.ConditionStatus, reason, message string) dnsv1alpha1.RecordSetStatus {
@@ -346,7 +346,7 @@ func (c *Client) replaceRRSetStatus(
 		owner,
 		ownerRRSet.TTL,
 		ownerRRSet.Records,
-		recordSet.Name,
+		fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name),
 		recordSet.Generation,
 	)
 	if err != nil {
@@ -633,7 +633,7 @@ func (c *Client) ReplaceRRSet(
 	ownerName string,
 	ttl int,
 	values []string,
-	dnsZoneRef string,
+	ownerRef string,
 	observedGeneration int64,
 ) error {
 	records := make([]rrsetRecord, 0, len(values))
@@ -651,7 +651,7 @@ func (c *Client) ReplaceRRSet(
 		Records:    dedupeRecords(records),
 		Comments: []zoneRRsetComment{{
 			Account:    "OWNER",
-			Content:    fmt.Sprintf("%s", dnsZoneRef),
+			Content:    ownerRef,
 			ModifiedAt: int(time.Now().Unix()),
 		}, {
 			Account:    "OBSERVED_GENERATION",

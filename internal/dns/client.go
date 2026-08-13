@@ -19,7 +19,7 @@ type DNSController interface {
 	GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string
 
 	// TODO - use pointers for zone and recordset to avoid copying
-	EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) (error, []dnsv1alpha1.RecordSetStatus)
+	EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error)
 	DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error
 
 	ReplaceRRSet(
@@ -29,7 +29,7 @@ type DNSController interface {
 		ownerName string,
 		ttl int,
 		values []string,
-		dnsZoneRef string,
+		ownerRef string,
 		observedGeneration int64,
 	) error
 

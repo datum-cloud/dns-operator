@@ -39,6 +39,13 @@ func newDownstreamZoneReconciler(t *testing.T, objs ...client.Object) (*DNSZoneR
 	k8sClient := ctrlfake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objs...).
+		WithIndex(&dnsv1alpha1.DNSRecordSet{}, "spec.DNSZoneRef.Name", func(obj client.Object) []string {
+			rs := obj.(*dnsv1alpha1.DNSRecordSet)
+			if rs.Spec.DNSZoneRef.Name == "" {
+				return nil
+			}
+			return []string{rs.Spec.DNSZoneRef.Name}
+		}).
 		WithStatusSubresource(&dnsv1alpha1.DNSZone{}).
 		Build()
 

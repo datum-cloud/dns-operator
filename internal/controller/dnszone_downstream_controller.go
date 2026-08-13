@@ -75,7 +75,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// --- Deletion path: remove from PDNS, then drop finalizer ---
 		if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
 			var rrs dnsv1alpha1.DNSRecordSetList
-			if err := r.Client.List(ctx, &rrs,
+			if err := r.List(ctx, &rrs,
 				client.InNamespace(zone.Namespace),
 				client.MatchingFields{"spec.DNSZoneRef.Name": zone.Name},
 			); err != nil {
@@ -86,11 +86,14 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			if len(rrs.Items) > 0 {
 				logger.Info("Found recordsets for zone, requeuing for deletion", "count", len(rrs.Items))
 
-				// Manually triggering GB because once Zone is gone, we can't determine what class the recordset belongs to, so we can't rely on the GB to enqueue the recordsets for deletion.
+				// Manually triggering GB because once Zone is gone, we can't determine what class the recordset belongs to once deleted,
+				// so we can't rely on the GB to enqueue the recordsets for deletion.
 				for _, rrs := range rrs.Items {
 					logger.Info("Deleting recordset for zone", "recordset", rrs.Name)
-					// Safe to ignore errors here. garbage collection kicks in at the same time
-					r.Client.Delete(ctx, &rrs)
+					err := r.Delete(ctx, &rrs)
+					if err != nil {
+						logger.Error(err, "failed to delete child recordset for zone", "recordset", rrs.Name)
+					}
 				}
 
 				return ctrl.Result{Requeue: true}, nil

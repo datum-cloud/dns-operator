@@ -131,7 +131,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		Type:               CondAccepted,
 		Status:             metav1.ConditionTrue,
 		Reason:             ReasonAccepted,
-		Message:            "Zone Acepted",
+		Message:            "Zone Accepted",
 		ObservedGeneration: zone.Generation,
 		LastTransitionTime: metav1.Now(),
 	}

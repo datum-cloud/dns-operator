@@ -109,6 +109,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if metav1.IsControlledBy(&rs, &zone) {
 		// This block is valid only for migration phase. DNSRecordSets are managed here and not by the DNSZone controller. So, we should not have a controller reference to the zone. We should only have an owner reference.
+		base := rs.DeepCopy()
 		logger.Info("RecordSet is already controlled by zone. Should not be controller by. Should be owner reference only. Removing controller reference.")
 		err := controllerutil.RemoveControllerReference(&zone, &rs, r.Scheme)
 
@@ -117,7 +118,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, err
 		}
 
-		return ctrl.Result{}, r.Update(ctx, &rs)
+		return ctrl.Result{}, r.Patch(ctx, &rs, client.MergeFrom(base))
 	}
 
 	isOwner, err := controllerutil.HasOwnerReference(rs.OwnerReferences, &zone, r.Scheme)
@@ -128,12 +129,13 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if !isOwner {
+		base := rs.DeepCopy()
 		logger.Info("RecordSet is not owned by zone. Setting owner reference.")
 		if err := controllerutil.SetOwnerReference(&zone, &rs, r.Scheme); err != nil {
 			logger.Error(err, "failed to set owner reference", "namespace", rs.Namespace, "name", rs.Name)
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.Update(ctx, &rs)
+		return ctrl.Result{}, r.Patch(ctx, &rs, client.MergeFrom(base))
 	}
 
 	base := rs.DeepCopy()

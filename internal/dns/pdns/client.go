@@ -44,6 +44,9 @@ type pdnsAPIError struct {
 	Body   string
 }
 
+var ACCOUNT_OBSERVED_GENERATION = "OBSERVED_GENERATION"
+var ACCOUNT_OWNER = "OWNER"
+
 func (e *pdnsAPIError) Error() string {
 	if e.Body != "" {
 		return fmt.Sprintf("status %d: %s", e.Status, e.Body)
@@ -242,20 +245,20 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 				statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
 			} else {
 				// At this point we only replace if Observed generation does not match the current generation.
-				needsReplace := false
+				needsReplace := true
 				for _, comment := range zones[0].Comments {
 					// Check if the comment contains the observed generation
-					if comment.Account == "OBSERVED_GENERATION" {
+					if comment.Account == ACCOUNT_OBSERVED_GENERATION {
 						observedGeneration, err := strconv.ParseInt(comment.Content, 10, 64)
 						if err != nil {
 							c.logger.Error(err, "Failed to parse observed generation", "comment", comment.Content)
-							continue
-						}
-						if observedGeneration != recordSet.Generation {
-							needsReplace = true
-							// Observed generation matches, no need to replace
 							break
 						}
+						if observedGeneration == recordSet.Generation {
+							// Observed generation matches, no need to replace
+							needsReplace = false
+						}
+						break
 					}
 				}
 
@@ -436,6 +439,32 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		err := c.applyRRSetPatch(ctx, zone.Spec.DomainName, patch)
 		if err != nil {
 			c.logger.Error(err, "Failed to delete record set from PowerDNS", "owner", owner, "recordType", recordSet.Spec.RecordType)
+			return err
+		}
+	}
+
+	curRecordSet, err := c.queryDNSByComment(ctx, fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name))
+	if err != nil {
+		c.logger.Error(err, "Failed to query record set by comment from PowerDNS", "recordSet", recordSet.Name)
+		return err
+	}
+
+	// In case there are any extra owners in PDNS that are not in the desired state, we need to delete them as well.
+	for _, cur := range curRecordSet {
+		if cur.Type != string(recordSet.Spec.RecordType) {
+			// Ignore this record type
+			continue
+		}
+
+		patch := []rrset{{
+			Name:       cur.Name,
+			Type:       cur.Type,
+			ChangeType: "DELETE",
+			Records:    []rrsetRecord{},
+		}}
+		err := c.applyRRSetPatch(ctx, zone.Spec.DomainName, patch)
+		if err != nil {
+			c.logger.Error(err, "Failed to delete record set from PowerDNS", "owner", cur.Name, "recordType", cur.Type)
 			return err
 		}
 	}
@@ -650,11 +679,11 @@ func (c *Client) ReplaceRRSet(
 		ChangeType: "REPLACE",
 		Records:    dedupeRecords(records),
 		Comments: []zoneRRsetComment{{
-			Account:    "OWNER",
+			Account:    ACCOUNT_OWNER,
 			Content:    ownerRef,
 			ModifiedAt: int(time.Now().Unix()),
 		}, {
-			Account:    "OBSERVED_GENERATION",
+			Account:    ACCOUNT_OBSERVED_GENERATION,
 			Content:    fmt.Sprintf("%d", observedGeneration),
 			ModifiedAt: int(time.Now().Unix()),
 		}},
@@ -708,7 +737,7 @@ func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset
 		return nil
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		errBody := readRespBody(resp, 64<<10) // closes Body
 		return &pdnsAPIError{Status: resp.StatusCode, Body: errBody}
 	}

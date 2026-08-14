@@ -284,6 +284,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 
 	if err != nil {
 		c.logger.Error(err, "Failed to query PDNS for record set", "recordSet", recordSet.Name)
+		return nil, err
 	}
 
 	for _, cur := range curRecordSet {

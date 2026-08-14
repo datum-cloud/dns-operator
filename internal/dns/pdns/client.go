@@ -222,7 +222,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 
 		if !ok {
 			c.logger.Info("Failed to build owner RRSet", "owner", owner, "rrset", ownerRRSet)
-			statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("failed to build owner RRSet for owner %s", owner), metav1.ConditionFalse))
+			statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("failed to build owner RRSet for owner %s", owner)))
 			continue
 		}
 
@@ -232,7 +232,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 
 		if err != nil {
 			// Set programmed to False on API errors
-			statusList = append(statusList, recordSetErrorStatus(owner, err, metav1.ConditionFalse))
+			statusList = append(statusList, recordSetErrorStatus(owner, err))
 			continue
 		}
 
@@ -244,7 +244,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			if len(zones) > 1 {
 				// This should not happen. We should only have one RRSet per owner per type. Log an error and continue.
 				c.logger.Error(fmt.Errorf("multiple rrsets returned for owner %s", owner), "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones)
-				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner), metav1.ConditionFalse))
+				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner)))
 				continue
 			}
 
@@ -322,8 +322,8 @@ func makeProgrammedStatus(owner string, status metav1.ConditionStatus, reason, m
 	}
 }
 
-func recordSetErrorStatus(owner string, err error, status metav1.ConditionStatus) dnsv1alpha1.RecordSetStatus {
-	return makeProgrammedStatus(owner, status, "PDNSError", err.Error())
+func recordSetErrorStatus(owner string, err error) dnsv1alpha1.RecordSetStatus {
+	return makeProgrammedStatus(owner, metav1.ConditionFalse, "PDNSError", err.Error())
 }
 
 func recordSetCreatedStatus(owner string) dnsv1alpha1.RecordSetStatus {
@@ -361,7 +361,7 @@ func (c *Client) replaceRRSetStatus(
 		recordSet.Generation,
 	)
 	if err != nil {
-		return recordSetErrorStatus(owner, err, metav1.ConditionFalse)
+		return recordSetErrorStatus(owner, err)
 	}
 	return recordSetCreatedStatus(owner)
 }

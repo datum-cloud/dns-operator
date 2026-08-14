@@ -201,13 +201,14 @@ func (r *DNSRecordSetReconciler) updateStatus(ctx context.Context, rs *dnsv1alph
 	changed := false
 	changed = apimeta.SetStatusCondition(&rs.Status.Conditions, condProgrammed)
 
+	sort.SliceStable(statuses, func(i, j int) bool {
+		return statuses[i].Name < statuses[j].Name
+	})
+
 	if rs.Status.RecordSets == nil {
 		rs.Status.RecordSets = statuses
 		changed = true
 	} else {
-		sort.SliceStable(statuses, func(i, j int) bool {
-			return statuses[i].Name < statuses[j].Name
-		})
 		if !reflect.DeepEqual(rs.Status.RecordSets, statuses) {
 			rs.Status.RecordSets = statuses
 			changed = true

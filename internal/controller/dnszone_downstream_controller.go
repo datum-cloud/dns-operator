@@ -58,10 +58,6 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// --- Ensure finalizer (non-deletion path) ---
 	if zone.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-
-			if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-				return ctrl.Result{}, nil
-			}
 			base := zone.DeepCopy()
 			controllerutil.AddFinalizer(&zone, downstreamZoneFinalizer)
 			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {

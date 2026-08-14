@@ -218,13 +218,21 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	}
 
 	for owner, entries := range rrsetMap {
-		ownerRRSet, _ := BuildOwnerRRSet(zone.Spec.DomainName, recordSet.Spec.RecordType, owner, entries)
+		ownerRRSet, ok := BuildOwnerRRSet(zone.Spec.DomainName, recordSet.Spec.RecordType, owner, entries)
+
+		if !ok {
+			c.logger.Info("Failed to build owner RRSet", "owner", owner, "rrset", ownerRRSet)
+			statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("failed to build owner RRSet for owner %s", owner), metav1.ConditionFalse))
+			continue
+		}
+
 		c.logger.Info("Ensuring record set for owner", "owner", owner, "rrset", ownerRRSet)
 		zones, err := c.getPDNSRRSet(ctx, zone.Spec.DomainName, owner, recordSet.Spec.RecordType)
 		c.logger.Info("Fetched existing rrsets from PDNS", "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones, "err", err)
 
 		if err != nil {
-			statusList = append(statusList, recordSetErrorStatus(owner, err, metav1.ConditionTrue))
+			// Set programmed to False on API errors
+			statusList = append(statusList, recordSetErrorStatus(owner, err, metav1.ConditionFalse))
 			continue
 		}
 
@@ -236,7 +244,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			if len(zones) > 1 {
 				// This should not happen. We should only have one RRSet per owner per type. Log an error and continue.
 				c.logger.Error(fmt.Errorf("multiple rrsets returned for owner %s", owner), "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones)
-				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner), metav1.ConditionTrue))
+				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner), metav1.ConditionFalse))
 				continue
 			}
 
@@ -244,7 +252,6 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 				// this happens when the record set was created previously and doesn't have the OWNER comment. We will replace it with the new one.
 				statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
 			} else {
-				// At this point we only replace if Observed generation does not match the current generation.
 				needsReplace := true
 				for _, comment := range zones[0].Comments {
 					// Check if the comment contains the observed generation

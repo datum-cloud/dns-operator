@@ -256,6 +256,83 @@ func TestDNSZoneReplicatorUpdateStatus_NoPatchForOrderOnlyChanges(t *testing.T) 
 	}
 }
 
+func TestDNSZoneReplicatorIsDomainVerified(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatalf("add networking scheme: %v", err)
+	}
+
+	const ns = "default"
+
+	verifiedDomain := &networkingv1alpha.Domain{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "verified.example.com"},
+		Spec:       networkingv1alpha.DomainSpec{DomainName: "verified.example.com"},
+		Status: networkingv1alpha.DomainStatus{
+			Conditions: []metav1.Condition{
+				{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionTrue},
+			},
+		},
+	}
+	pendingDomain := &networkingv1alpha.Domain{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "pending.example.com"},
+		Spec:       networkingv1alpha.DomainSpec{DomainName: "pending.example.com"},
+		Status: networkingv1alpha.DomainStatus{
+			Conditions: []metav1.Condition{
+				{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionFalse},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(verifiedDomain, pendingDomain).
+		WithIndex(&networkingv1alpha.Domain{}, "spec.domainName", func(obj client.Object) []string {
+			d := obj.(*networkingv1alpha.Domain)
+			if d.Spec.DomainName == "" {
+				return nil
+			}
+			return []string{d.Spec.DomainName}
+		}).
+		Build()
+
+	r := &DNSZoneReplicator{}
+
+	t.Run("verified domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "verified.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if !verified {
+			t.Fatal("expected domain to be verified")
+		}
+	})
+
+	t.Run("pending domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "pending.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if verified {
+			t.Fatal("expected domain to not be verified")
+		}
+	})
+
+	t.Run("no matching domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "missing.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if verified {
+			t.Fatal("expected no domain to mean not verified")
+		}
+	})
+}
+
 func statusEqualIgnoringTransitionTime(a, b dnsv1alpha1.DNSZoneStatus) bool {
 	if !reflect.DeepEqual(a.Nameservers, b.Nameservers) {
 		return false

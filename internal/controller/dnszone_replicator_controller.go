@@ -238,12 +238,42 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		}
 		return ctrl.Result{}, nil
 	}
-	if _, err = r.ensureDownstreamZone(ctx, strategy, &upstream); err != nil {
+	// Ensure a matching Domain exists in the upstream cluster for this zone's domain name.
+	// This must happen before we provision anything downstream, since the Domain
+	// controller can only begin (and the requester can only complete) ownership
+	// verification once the Domain object exists.
+	if err := r.ensureDomain(ctx, upstreamCl.GetClient(), &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Ensure a matching Domain exists in the upstream cluster for this zone's domain name.
-	if err := r.ensureDomain(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+	// Never provision DNS for a domain the requester hasn't proven they own.
+	// Without this gate, any syntactically valid domain name gets a live PowerDNS
+	// zone immediately, letting a tenant claim (and serve real traffic for) a
+	// domain someone else already controls.
+	verified, verr := r.isDomainVerified(ctx, upstreamCl.GetClient(), upstream.Namespace, upstream.Spec.DomainName)
+	if verr != nil {
+		return ctrl.Result{}, verr
+	}
+	if !verified {
+		base := upstream.DeepCopy()
+		msg := "Waiting for domain ownership verification before provisioning DNS"
+		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+			Type:               CondAccepted,
+			Status:             metav1.ConditionFalse,
+			Reason:             ReasonPendingDomainVerification,
+			Message:            msg,
+			ObservedGeneration: upstream.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now()),
+		}) {
+			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
+				return ctrl.Result{}, perr
+			}
+		}
+		lg.Info("domain not yet verified; deferring DNS provisioning", "domain", upstream.Spec.DomainName)
+		return ctrl.Result{}, nil
+	}
+
+	if _, err = r.ensureDownstreamZone(ctx, strategy, &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -724,6 +754,28 @@ func (r *DNSZoneReplicator) ensureDomain(ctx context.Context, c client.Client, u
 	newDomain.Spec.DomainName = upstream.Spec.DomainName
 	log.FromContext(ctx).Info("creating Domain for DNSZone (upstream)", "namespace", newDomain.Namespace, "domainName", newDomain.Spec.DomainName)
 	return c.Create(ctx, &newDomain)
+}
+
+// isDomainVerified reports whether a Domain matching domainName in namespace
+// has completed ownership verification. A domain with no matching Domain yet
+// (e.g. the object was just created and hasn't reconciled) is treated as
+// unverified.
+func (r *DNSZoneReplicator) isDomainVerified(ctx context.Context, c client.Client, namespace, domainName string) (bool, error) {
+	var dlist networkingv1alpha.DomainList
+	if err := c.List(
+		ctx,
+		&dlist,
+		client.InNamespace(namespace),
+		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", domainName)},
+	); err != nil {
+		return false, err
+	}
+	for _, d := range dlist.Items {
+		if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ---- Watches / mapping helpers --------------------------------------------

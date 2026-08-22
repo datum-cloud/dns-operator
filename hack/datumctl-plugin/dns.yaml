@@ -1,0 +1,60 @@
+# DRAFT curated-index entry for the datumctl-dns plugin.
+#
+# This file is NOT consumed by anything in this repository. Publishing it means
+# opening a PR against datum-cloud/datumctl-plugins that adds it as
+# plugins/dns.yaml; only then does `datumctl plugin install dns` resolve.
+# It is kept here so the entry is versioned next to the code it describes.
+#
+# Schema: https://github.com/datum-cloud/datumctl-plugins/blob/main/schema/plugin-v1alpha1.json
+# Template: that repo's plugins/compute.yaml
+#
+# Before opening the PR:
+#   1. Tag and release the plugin (goreleaser --config .goreleaser-plugin.yaml).
+#   2. Set spec.version to the released tag and update every uri to match it.
+#   3. Replace each placeholder sha256 with the real digest from the release's
+#      checksums.txt (the column order there is "<sha256>  <filename>"):
+#        curl -sL https://github.com/datum-cloud/dns-operator/releases/download/<tag>/checksums.txt
+#   4. Make sure the repo carries the `datumctl-plugin` GitHub topic.
+#
+# The sha256 values below are placeholders (64 zeros) so the file still
+# validates against the schema's ^[a-f0-9]{64}$ pattern. They are NOT real
+# digests and must be replaced before publishing.
+apiVersion: datumctl.datum.net/v1alpha1
+kind: Plugin
+metadata:
+  name: dns
+spec:
+  shortDescription: Manage DNS zones and records on Datum Cloud
+  homepage: https://github.com/datum-cloud/dns-operator
+  version: v0.1.0
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: https://github.com/datum-cloud/dns-operator/releases/download/v0.1.0/datumctl-dns_Linux_x86_64.tar.gz
+      sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: https://github.com/datum-cloud/dns-operator/releases/download/v0.1.0/datumctl-dns_Linux_arm64.tar.gz
+      sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: https://github.com/datum-cloud/dns-operator/releases/download/v0.1.0/datumctl-dns_Darwin_x86_64.tar.gz
+      sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: https://github.com/datum-cloud/dns-operator/releases/download/v0.1.0/datumctl-dns_Darwin_arm64.tar.gz
+      sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    - selector:
+        matchLabels:
+          os: windows
+          arch: amd64
+      uri: https://github.com/datum-cloud/dns-operator/releases/download/v0.1.0/datumctl-dns_Windows_x86_64.zip
+      sha256: "0000000000000000000000000000000000000000000000000000000000000000"

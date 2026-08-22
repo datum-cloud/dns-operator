@@ -139,6 +139,38 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
+##@ datumctl plugin
+
+# Version stamped into the plugin binary via -X main.version. Release builds go
+# through goreleaser (.goreleaser-plugin.yaml); this is for local/dev builds.
+PLUGIN_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+# Where datumctl looks for managed plugins. datumctl reads the same location
+# from DATUMCTL_PLUGINS_DIR, so a throwaway install is:
+#   make install-plugin DATUMCTL_PLUGIN_DIR=/tmp/p && DATUMCTL_PLUGINS_DIR=/tmp/p datumctl dns --help
+DATUMCTL_PLUGIN_DIR ?= $(HOME)/.datumctl/plugins
+
+.PHONY: build-plugin
+build-plugin: $(LOCALBIN) ## Build the datumctl-dns plugin binary into bin/.
+	go build -ldflags "-X main.version=$(PLUGIN_VERSION)" -o $(LOCALBIN)/datumctl-dns ./cmd/datumctl-dns
+
+.PHONY: install-plugin
+install-plugin: build-plugin ## Install the datumctl-dns plugin into ~/.datumctl/plugins.
+	mkdir -p $(DATUMCTL_PLUGIN_DIR)
+	install -m 0755 $(LOCALBIN)/datumctl-dns $(DATUMCTL_PLUGIN_DIR)/datumctl-dns
+	@echo "Installed $(DATUMCTL_PLUGIN_DIR)/datumctl-dns ($(PLUGIN_VERSION)); try 'datumctl dns --help'"
+
+# goreleaser is expected on PATH (brew install goreleaser), like kind above.
+# Releases run through goreleaser-action in CI; this target is for local checks.
+GORELEASER ?= goreleaser
+
+.PHONY: release-plugin-snapshot
+release-plugin-snapshot: ## Build the plugin release archives locally into dist/ (no publish).
+	@command -v $(GORELEASER) >/dev/null 2>&1 || { \
+		echo "goreleaser is not installed. Install it (e.g. 'brew install goreleaser') or set GORELEASER=<path>."; \
+		exit 1; \
+	}
+	$(GORELEASER) release --config .goreleaser-plugin.yaml --snapshot --clean
+
 ##@ Deployment
 
 ifndef ignore-not-found

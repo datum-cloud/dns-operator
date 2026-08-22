@@ -8,7 +8,8 @@ import (
 
 // DNSZoneClassSpec defines the desired state of DNSZoneClass
 type DNSZoneClassSpec struct {
-	// ControllerName identifies the downstream controller/backend implementation (e.g., "powerdns", "hickory").
+	// ControllerName names the service that provisions and serves zones of this
+	// class (for example, "powerdns").
 	// +kubebuilder:validation:Required
 	ControllerName string `json:"controllerName"`
 

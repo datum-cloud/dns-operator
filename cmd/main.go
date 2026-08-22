@@ -335,28 +335,7 @@ func main() {
 		}
 
 		// Start everything concurrently (no explicit wait-for-engagement loop)
-		ctx := ctrl.SetupSignalHandler()
-
-		g, ctx := errgroup.WithContext(ctx)
-
-		// Start any pre-created runnables (e.g., deploymentCluster)
-		for _, r := range runnables {
-			rr := r
-			g.Go(func() error { return ignoreCanceled(rr.Start(ctx)) })
-		}
-
-		// Start discovery provider (which will engage "single")
-		setupLog.Info("starting cluster discovery provider")
-		g.Go(func() error { return ignoreCanceled(provider.Run(ctx, mcmgr)) })
-
-		// Start downstream cluster (its cache backs your delegating client)
-		g.Go(func() error { return ignoreCanceled(downstreamCluster.Start(ctx)) })
-
-		// Finally start the multicluster manager (controllers + caches)
-		setupLog.Info("starting multicluster manager (replicator)")
-		g.Go(func() error { return ignoreCanceled(mcmgr.Start(ctx)) })
-
-		if err := g.Wait(); err != nil {
+		if err := runReplicator(ctrl.SetupSignalHandler(), runnables, downstreamCluster, mcmgr); err != nil {
 			setupLog.Error(err, "problem running multicluster manager")
 			os.Exit(1)
 		}
@@ -368,38 +347,49 @@ func main() {
 	}
 }
 
-type runnableProvider interface {
-	multicluster.Provider
-	Run(context.Context, mcmanager.Manager) error
-}
-
-// Needed until we contribute the patch in the following PR again (need to sign CLA):
+// runReplicator starts the pre-created runnables, the downstream cluster, and
+// the multicluster manager, and blocks until ctx is cancelled or one of them
+// returns an error.
 //
-//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
-type wrappedSingleClusterProvider struct {
-	multicluster.Provider
-	cluster cluster.Cluster
-}
+// The cluster discovery provider is deliberately not started here: providers
+// implementing multicluster.ProviderRunnable are added as a runnable by
+// mcmgr.Start, which is what engages clusters with the manager.
+func runReplicator(
+	ctx context.Context,
+	runnables []manager.Runnable,
+	downstreamCluster cluster.Cluster,
+	mcmgr mcmanager.Manager,
+) error {
+	g, ctx := errgroup.WithContext(ctx)
 
-func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
-		return err
+	// Start any pre-created runnables (e.g., deploymentCluster)
+	for _, r := range runnables {
+		rr := r
+		g.Go(func() error { return ignoreCanceled(rr.Start(ctx)) })
 	}
-	return p.Provider.(runnableProvider).Run(ctx, mgr)
+
+	// Start downstream cluster (its cache backs your delegating client)
+	g.Go(func() error { return ignoreCanceled(downstreamCluster.Start(ctx)) })
+
+	// Finally start the multicluster manager (controllers + caches)
+	setupLog.Info("starting multicluster manager (replicator)")
+	g.Go(func() error { return ignoreCanceled(mcmgr.Start(ctx)) })
+
+	return g.Wait()
 }
 
 func initializeClusterDiscovery(
 	serverConfig config.DNSOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider runnableProvider, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
-		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", deploymentCluster),
-			cluster:  deploymentCluster,
-		}
+		// The single provider implements multicluster.ProviderRunnable and
+		// engages the cluster under the name "single" when the multicluster
+		// manager starts it.
+		provider = mcsingle.New("single", deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()

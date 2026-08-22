@@ -48,8 +48,9 @@ spec:
             description: spec defines the desired state of DNSZoneClass
             properties:
               controllerName:
-                description: ControllerName identifies the downstream controller/backend
-                  implementation (e.g., "powerdns", "hickory").
+                description: |-
+                  ControllerName names the service that provisions and serves zones of this
+                  class (for example, "powerdns").
                 type: string
               defaults:
                 description: Defaults provides optional default values applied to

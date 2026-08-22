@@ -98,7 +98,7 @@ func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Cl
 	}
 
 	cl, err := m.Manager.GetCluster(ctx, clusterName)
-	if err != nil && !strings.HasPrefix(clusterName, "/") {
+	if err != nil && !strings.HasPrefix(clusterName.String(), "/") {
 		cl, err = m.Manager.GetCluster(ctx, "/"+clusterName)
 	}
 	if err != nil {
@@ -111,9 +111,8 @@ func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Cl
 
 // SetupDNSRecordSetWebhook registers the mutating webhook with the manager.
 func SetupDNSRecordSetWebhook(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).
-		For(&dnsv1alpha1.DNSRecordSet{}).
-		WithDefaulter(&DNSRecordSetMutator{
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &dnsv1alpha1.DNSRecordSet{}).
+		WithCustomDefaulter(&DNSRecordSetMutator{
 			Manager: mgr,
 			Client:  mgr.GetLocalManager().GetClient(),
 		}).

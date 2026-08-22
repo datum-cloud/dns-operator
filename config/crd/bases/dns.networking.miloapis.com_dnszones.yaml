@@ -174,8 +174,8 @@ spec:
                   type: string
                 type: array
               recordCount:
-                description: RecordCount is the number of DNSRecordSet resources in
-                  this namespace that reference this zone.
+                description: RecordCount is the total number of DNS records in this
+                  zone.
                 type: integer
             type: object
         required:

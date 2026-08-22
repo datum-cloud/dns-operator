@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
@@ -29,7 +30,7 @@ type empty struct{}
 // to exist on the resource for the event.
 func TypedEnqueueRequestForUpstreamOwner[object client.Object](ownerType client.Object) mchandler.TypedEventHandlerFunc[object, mcreconcile.Request] {
 
-	return func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[object, mcreconcile.Request] {
+	return func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[object, mcreconcile.Request] {
 		e := &enqueueRequestForOwner[object]{
 			ownerType: ownerType,
 		}
@@ -116,7 +117,7 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 					Namespace: meta[UpstreamOwnerNamespaceAnnotation],
 				},
 			},
-			ClusterName: strings.TrimPrefix(strings.ReplaceAll(meta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-"),
+			ClusterName: multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(meta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-")),
 		}
 		result[request] = empty{}
 	}

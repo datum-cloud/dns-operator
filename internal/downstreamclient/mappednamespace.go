@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
@@ -21,13 +22,13 @@ import (
 var _ ResourceStrategy = &mappedNamespaceResourceStrategy{}
 
 type mappedNamespaceResourceStrategy struct {
-	upstreamClusterName string
+	upstreamClusterName multicluster.ClusterName
 	upstreamClient      client.Client
 	downstreamClient    client.Client
 }
 
 func NewMappedNamespaceResourceStrategy(
-	upstreamClusterName string,
+	upstreamClusterName multicluster.ClusterName,
 	upstreamClient client.Client,
 	downstreamClient client.Client,
 ) ResourceStrategy {
@@ -97,7 +98,7 @@ func (c *mappedNamespaceResourceStrategy) ensureDownstreamNamespace(ctx context.
 			downstreamNamespace.Annotations = make(map[string]string)
 		}
 
-		downstreamNamespace.Annotations[UpstreamOwnerClusterNameAnnotation] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_"))
+		downstreamNamespace.Annotations[UpstreamOwnerClusterNameAnnotation] = fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName.String(), "/", "_"))
 
 		annotations := obj.GetAnnotations()
 		if v, ok := annotations[UpstreamOwnerNamespaceAnnotation]; ok {
@@ -139,7 +140,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 	anchorName := fmt.Sprintf("anchor-%s", owner.GetUID())
 
 	anchorAnnotations := map[string]string{
-		UpstreamOwnerClusterNameAnnotation: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName, "/", "_")),
+		UpstreamOwnerClusterNameAnnotation: fmt.Sprintf("cluster-%s", strings.ReplaceAll(c.upstreamClusterName.String(), "/", "_")),
 		UpstreamOwnerGroupAnnotation:       gvk.Group,
 		UpstreamOwnerKindAnnotation:        gvk.Kind,
 		UpstreamOwnerNameAnnotation:        owner.GetName(),

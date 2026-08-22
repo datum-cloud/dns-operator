@@ -363,7 +363,8 @@ func (p *plan) resolve(tp *typePlan, current []dnsv1alpha1.RecordEntry, protect 
 		return current
 	}
 
-	var keep, editable []dnsv1alpha1.RecordEntry
+	keep := make([]dnsv1alpha1.RecordEntry, 0, len(current))
+	editable := make([]dnsv1alpha1.RecordEntry, 0, len(current))
 	for _, e := range current {
 		if protect && p.protectedEntry(tp.set, tp.rrType, e) {
 			keep = append(keep, e)
@@ -393,7 +394,7 @@ func (p *plan) resolve(tp *typePlan, current []dnsv1alpha1.RecordEntry, protect 
 	// empty. A zone stuck in Pending has an unbounded window, and it is the
 	// state a user is most likely to be impatiently applying against — so the
 	// window is correlated with haste rather than merely possible.
-	var file []dnsv1alpha1.RecordEntry
+	file := make([]dnsv1alpha1.RecordEntry, 0, len(tp.file))
 	for _, w := range tp.file {
 		if protect && (ownedByPlatform(keep, w.Name, zone) || p.protectedEntry(tp.set, tp.rrType, w)) {
 			continue
@@ -618,7 +619,7 @@ func withheld(wanted, applying []change, reason string) []change {
 	for _, c := range applying {
 		have[changeKey(c)] = true
 	}
-	var out []change
+	out := make([]change, 0, len(wanted))
 	for _, c := range wanted {
 		if have[changeKey(c)] {
 			continue

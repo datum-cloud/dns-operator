@@ -158,7 +158,7 @@ func tally(rows []row) []string {
 		counts[r.status]++
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(statusOrder))
 	seen := map[string]bool{}
 	for _, s := range statusOrder {
 		seen[s] = true

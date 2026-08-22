@@ -68,8 +68,8 @@ func Emit(w io.Writer, origin string, defaultTTL int64, records []Record) error 
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "$ORIGIN %s.\n", zone)
-	fmt.Fprintf(&b, "$TTL %d\n", defaultTTL)
+	_, _ = fmt.Fprintf(&b, "$ORIGIN %s.\n", zone)
+	_, _ = fmt.Fprintf(&b, "$TTL %d\n", defaultTTL)
 
 	for _, t := range emitOrder {
 		group := byType[t]
@@ -125,7 +125,7 @@ func writeGroup(b *strings.Builder, t dnsv1alpha1.RRType, group []Record) {
 		ttlWidth = max(ttlWidth, len(row[1]))
 	}
 
-	fmt.Fprintf(b, "\n; %s\n", t)
+	_, _ = fmt.Fprintf(b, "\n; %s\n", t)
 	for _, row := range rendered {
 		b.WriteString(pad(row[0], nameWidth))
 		b.WriteByte(' ')

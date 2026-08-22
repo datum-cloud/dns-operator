@@ -170,7 +170,7 @@ func aEntry(name, ip string, t *int64) dnsv1alpha1.RecordEntry {
 
 // withOwnerStatus stamps a per-owner-name condition, which is the only place
 // the interesting programming outcomes exist.
-func withOwnerStatus(rs *dnsv1alpha1.DNSRecordSet, name string, status metav1.ConditionStatus, reason, message string) *dnsv1alpha1.DNSRecordSet {
+func withOwnerStatus(rs *dnsv1alpha1.DNSRecordSet, name string, status metav1.ConditionStatus, reason, message string) {
 	rs.Status.RecordSets = append(rs.Status.RecordSets, dnsv1alpha1.RecordSetStatus{
 		Name: name,
 		Conditions: []metav1.Condition{{
@@ -181,10 +181,9 @@ func withOwnerStatus(rs *dnsv1alpha1.DNSRecordSet, name string, status metav1.Co
 			LastTransitionTime: metav1.Now(),
 		}},
 	})
-	return rs
 }
 
-func withAcceptedFalse(rs *dnsv1alpha1.DNSRecordSet, message string) *dnsv1alpha1.DNSRecordSet {
+func withAcceptedFalse(rs *dnsv1alpha1.DNSRecordSet, message string) {
 	rs.Status.Conditions = append(rs.Status.Conditions, metav1.Condition{
 		Type:               "Accepted",
 		Status:             metav1.ConditionFalse,
@@ -192,7 +191,6 @@ func withAcceptedFalse(rs *dnsv1alpha1.DNSRecordSet, message string) *dnsv1alpha
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
-	return rs
 }
 
 func withLabels(rs *dnsv1alpha1.DNSRecordSet, kv map[string]string) *dnsv1alpha1.DNSRecordSet {

@@ -98,7 +98,7 @@ func TestDeleteUnknownNameIsNotFound(t *testing.T) {
 func TestDeleteMissingBucketIsNotFound(t *testing.T) {
 	interactive(t)
 	h := newHarness(t, testZone())
-	requireExit(t, h.run("record", "delete", testDomain, "www", "A", "--yes"), util.ExitNotFound)
+	_ = requireExit(t, h.run("record", "delete", testDomain, "www", "A", "--yes"), util.ExitNotFound)
 }
 
 // TestDeleteMatchesTheValueThroughItsSpelling — Key/Equal fold the differences

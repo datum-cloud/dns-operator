@@ -175,7 +175,7 @@ func exchange(ctx context.Context, msg *dns.Msg, addr string, timeout time.Durat
 // looking in both the answer and the authority section: a parent nameserver
 // returns the delegation as authority, not as an answer.
 func nsRecordsFor(resp *dns.Msg, domain string) []string {
-	var out []string
+	out := make([]string, 0, len(resp.Answer)+len(resp.Ns))
 	want := dns.CanonicalName(dns.Fqdn(domain))
 	for _, rr := range append(append([]dns.RR{}, resp.Answer...), resp.Ns...) {
 		ns, isNS := rr.(*dns.NS)

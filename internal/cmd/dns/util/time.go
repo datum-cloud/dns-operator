@@ -21,7 +21,7 @@ import (
 // a freshly created record set would otherwise report an age of 56 years.
 func RelativeAge(t metav1.Time) string {
 	if IsNeverTransitioned(t) {
-		return "—"
+		return emDash
 	}
 
 	d := time.Since(t.Time)
@@ -44,7 +44,7 @@ func RelativeAge(t metav1.Time) string {
 // views. A never-transitioned timestamp stays a bare em dash.
 func RelativeAgeVerbose(t metav1.Time) string {
 	age := RelativeAge(t)
-	if age == "—" {
+	if age == emDash {
 		return age
 	}
 	return age + " ago"

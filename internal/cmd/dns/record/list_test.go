@@ -199,7 +199,7 @@ func TestListFilters(t *testing.T) {
 func TestListUnknownTypeIsUsageError(t *testing.T) {
 	h := newHarness(t, zoneFixture()...)
 	err := h.run("record", "list", testDomain, "--type", "NOPE")
-	requireExit(t, err, util.ExitUsage)
+	_ = requireExit(t, err, util.ExitUsage)
 }
 
 func TestListUnknownZoneIsNotFound(t *testing.T) {

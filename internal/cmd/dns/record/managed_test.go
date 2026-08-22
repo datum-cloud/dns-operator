@@ -60,7 +60,7 @@ func TestGatewayRecordsAreNotUnlockedByForce(t *testing.T) {
 	h := newHarness(t, testZone(), gatewaySet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
 		Name: "_acme", TXT: &dnsv1alpha1.TXTRecordSpec{Content: `"token"`},
 	}))
-	requireExit(t, h.run("record", "set", testDomain, "_acme", "TXT", "other", "--force"), util.ExitConflict)
+	_ = requireExit(t, h.run("record", "set", testDomain, "_acme", "TXT", "other", "--force"), util.ExitConflict)
 }
 
 // TestPlatformRecordsWarnRatherThanBlock — the API permits the edit and the

@@ -109,7 +109,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	sort.Slice(owning, func(i, j int) bool { return owning[i].Spec.RecordType < owning[j].Spec.RecordType })
 	for i := range owning {
 		if i > 0 {
-			fmt.Fprintln(out)
+			_, _ = fmt.Fprintln(out)
 		}
 		describeSet(out, &owning[i], zone, ownerName)
 	}
@@ -123,38 +123,38 @@ func describeSet(out io.Writer, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.
 	zoneDomain := zone.Spec.DomainName
 	entries := entriesForOwner(rs.Spec.Records, ownerName, zoneDomain)
 
-	fmt.Fprintf(out, "%-13s %s\n", "Record", ownerDisplay(ownerName, zoneDomain))
-	fmt.Fprintf(out, "%-13s %s\n", "Zone", zoneDomain)
-	fmt.Fprintf(out, "%-13s %s\n", "Type", t)
-	fmt.Fprintf(out, "%-13s %s\n", "TTL", describeTTL(entries))
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Record", ownerDisplay(ownerName, zoneDomain))
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Zone", zoneDomain)
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Type", t)
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "TTL", describeTTL(entries))
 
 	if prov := classify(rs, dnsv1alpha1.RecordEntry{Name: ownerName}, zone.Spec.DomainName); prov != provUser {
-		fmt.Fprintf(out, "%-13s %s\n", "Managed by", managedBy(prov, rs))
+		_, _ = fmt.Fprintf(out, "%-13s %s\n", "Managed by", managedBy(prov, rs))
 	}
-	fmt.Fprintf(out, "%-13s %s\n", "Record set", rs.Name)
-	fmt.Fprintf(out, "%-13s %s\n", "Created", util.RelativeAgeVerbose(rs.CreationTimestamp))
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Record set", rs.Name)
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Created", util.RelativeAgeVerbose(rs.CreationTimestamp))
+	_, _ = fmt.Fprintln(out)
 
-	fmt.Fprintf(out, "Values\n")
+	_, _ = fmt.Fprintf(out, "Values\n")
 	for _, raw := range entries {
 		e := canonicalEntry(t, raw)
-		fmt.Fprintf(out, "  %s\n", rdata.Render(t, e))
+		_, _ = fmt.Fprintf(out, "  %s\n", rdata.Render(t, e))
 		// The named fields are shown because presentation format is what most
 		// records were entered as, and the flags are the notation that stays
 		// readable six months later. Flat types have a single field that
 		// repeats the value, so they are left alone.
 		if fields := rdata.Fields(t, e); len(fields) > 1 {
 			for _, f := range fields {
-				fmt.Fprintf(out, "      %-12s %s\n", f[0]+":", f[1])
+				_, _ = fmt.Fprintf(out, "      %-12s %s\n", f[0]+":", f[1])
 			}
 		}
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 
 	word, detail := util.RecordStatusInZone(rs, ownerName, zoneDomain)
-	fmt.Fprintf(out, "%-13s %s\n", "Status", word)
+	_, _ = fmt.Fprintf(out, "%-13s %s\n", "Status", word)
 	if detail != "" {
-		fmt.Fprintf(out, "%-13s %s\n", "", detail)
+		_, _ = fmt.Fprintf(out, "%-13s %s\n", "", detail)
 	}
 }
 
@@ -194,11 +194,11 @@ func printNextSteps(out io.Writer, zone *dnsv1alpha1.DNSZone, ownerName string, 
 	name := displayName(ownerName)
 	t := string(owning[0].Spec.RecordType)
 
-	fmt.Fprintf(out, "\nNext steps:\n")
-	fmt.Fprintf(out, "  Change the value:    datumctl dns record set %s %s %s <value>\n", domain, name, t)
-	fmt.Fprintf(out, "  Add another value:   datumctl dns record create %s %s %s <value>\n", domain, name, t)
-	fmt.Fprintf(out, "  Remove it:           datumctl dns record delete %s %s %s\n", domain, name, t)
-	fmt.Fprintf(out, "  See the whole zone:  datumctl dns record list %s\n", domain)
+	_, _ = fmt.Fprintf(out, "\nNext steps:\n")
+	_, _ = fmt.Fprintf(out, "  Change the value:    datumctl dns record set %s %s %s <value>\n", domain, name, t)
+	_, _ = fmt.Fprintf(out, "  Add another value:   datumctl dns record create %s %s %s <value>\n", domain, name, t)
+	_, _ = fmt.Fprintf(out, "  Remove it:           datumctl dns record delete %s %s %s\n", domain, name, t)
+	_, _ = fmt.Fprintf(out, "  See the whole zone:  datumctl dns record list %s\n", domain)
 }
 
 func describeNotFound(ownerName, zoneDomain string, rrTypes []dnsv1alpha1.RRType) error {

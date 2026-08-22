@@ -154,12 +154,12 @@ func runDelete(cmd *cobra.Command, args []string, opts *deleteOptions) error {
 		return nil
 	}
 
-	fmt.Fprintf(out, "  record/%s %s %s %s\n", zoneDomain, t, displayName(ownerName), actionDeleted)
+	_, _ = fmt.Fprintf(out, "  record/%s %s %s %s\n", zoneDomain, t, displayName(ownerName), actionDeleted)
 	for _, e := range doomed {
-		fmt.Fprintf(out, "  - %s\n", presentationLine(t, e))
+		_, _ = fmt.Fprintf(out, "  - %s\n", presentationLine(t, e))
 	}
 	if result.setRemoved {
-		fmt.Fprintf(out, "  record set %s removed — no %s records remain in the zone\n", result.set.Name, t)
+		_, _ = fmt.Fprintf(out, "  record set %s removed — no %s records remain in the zone\n", result.set.Name, t)
 	}
 	return nil
 }

@@ -18,6 +18,10 @@ import (
 // identifiers for xargs and command substitution.
 type OutputFormat string
 
+// emDash is what an empty or unknowable cell renders as, so a column never
+// collapses and "we do not know" is visibly different from "nothing".
+const emDash = "—"
+
 const (
 	OutputTable OutputFormat = "table"
 	OutputWide  OutputFormat = "wide"
@@ -84,7 +88,7 @@ func PrintYAML(w io.Writer, obj any) error {
 // cell that reads as a rendering bug.
 func OrDash(s string) string {
 	if s == "" {
-		return "—"
+		return emDash
 	}
 	return s
 }

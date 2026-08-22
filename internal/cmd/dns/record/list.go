@@ -156,7 +156,7 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 
 	printTable(out, rows, format == util.OutputWide, opts.noHeaders)
 	if !boolFlag(cmd, "quiet") {
-		fmt.Fprintf(out, "\n%s — %s\n", countOf(len(rows), pluralize(len(rows), "record")), strings.Join(tally(rows), ", "))
+		_, _ = fmt.Fprintf(out, "\n%s — %s\n", countOf(len(rows), pluralize(len(rows), "record")), strings.Join(tally(rows), ", "))
 	}
 	return nil
 }
@@ -315,9 +315,9 @@ func printTable(out io.Writer, rows []row, wide, noHeaders bool) {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
-			fmt.Fprintf(tw, "NAME\tTYPE\tTTL\tVALUE\tSTATUS\tRECORD SET\tAGE\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tTYPE\tTTL\tVALUE\tSTATUS\tRECORD SET\tAGE\n")
 		} else {
-			fmt.Fprintf(tw, "NAME\tTYPE\tTTL\tVALUE\tSTATUS\n")
+			_, _ = fmt.Fprintf(tw, "NAME\tTYPE\tTTL\tVALUE\tSTATUS\n")
 		}
 	}
 	for _, r := range rows {
@@ -326,11 +326,11 @@ func printTable(out io.Writer, rows []row, wide, noHeaders bool) {
 			status += "  " + m
 		}
 		if wide {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 				r.name, r.rrType, rdata.FormatTTL(r.ttl), util.OrDash(r.value), status,
 				r.set.Name, util.RelativeAge(r.set.CreationTimestamp))
 		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 				r.name, r.rrType, rdata.FormatTTL(r.ttl), util.OrDash(r.value), status)
 		}
 	}
@@ -348,7 +348,7 @@ func printNames(out io.Writer, rows []row) {
 			continue
 		}
 		seen[id] = true
-		fmt.Fprintln(out, id)
+		_, _ = fmt.Fprintln(out, id)
 	}
 }
 
@@ -356,9 +356,9 @@ func printNames(out io.Writer, rows []row) {
 // filter that matches nothing is a question that got an answer.
 func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1alpha1.RRType) {
 	if listIsFiltered(opts) {
-		fmt.Fprintf(out, "No records in zone %s match the given filters.\n", domain)
+		_, _ = fmt.Fprintf(out, "No records in zone %s match the given filters.\n", domain)
 	} else {
-		fmt.Fprintf(out, "No records found in zone %s.\n", domain)
+		_, _ = fmt.Fprintf(out, "No records found in zone %s.\n", domain)
 	}
 
 	example := "www A 203.0.113.10"
@@ -367,9 +367,9 @@ func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1
 			example = ex
 		}
 	}
-	fmt.Fprintf(out, "\nGet started:\n")
-	fmt.Fprintf(out, "  Add a record:   datumctl dns record create %s %s\n", domain, example)
-	fmt.Fprintf(out, "  Import a zone:  datumctl dns zone import %s --file zone.txt\n", domain)
+	_, _ = fmt.Fprintf(out, "\nGet started:\n")
+	_, _ = fmt.Fprintf(out, "  Add a record:   datumctl dns record create %s %s\n", domain, example)
+	_, _ = fmt.Fprintf(out, "  Import a zone:  datumctl dns zone import %s --file zone.txt\n", domain)
 }
 
 // warnUnfilterable says so when a row filter was given alongside raw-object

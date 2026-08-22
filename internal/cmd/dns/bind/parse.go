@@ -235,10 +235,8 @@ func parseRecord(
 	}
 
 	// TTL and class may appear in either order, and either may be absent.
-	var (
-		ttl   *int64
-		warns []string
-	)
+	var ttl *int64
+	warns := make([]string, 0, 2)
 	for i < len(toks) {
 		tok := toks[i].text
 		if class := strings.ToUpper(tok); dnsClasses[class] {

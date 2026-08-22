@@ -954,8 +954,10 @@ func TestImportReplaceKeepsPlatformNSSpelledAbsolutely(t *testing.T) {
 		t.Fatalf("import: %v\n%s", err, h.err.String())
 	}
 
-	var apex, dev []string
-	for _, e := range setEntries(t, c, importZoneObj+"-ns").Spec.Records {
+	nsEntries := setEntries(t, c, importZoneObj+"-ns").Spec.Records
+	apex := make([]string, 0, len(nsEntries))
+	dev := make([]string, 0, len(nsEntries))
+	for _, e := range nsEntries {
 		if rdata.FQDN(e.Name, importDomain) == rdata.FQDN("@", importDomain) {
 			apex = append(apex, e.NS.Content)
 			continue

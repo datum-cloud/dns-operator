@@ -154,12 +154,12 @@ func svcbKey(s dnsv1alpha1.HTTPSRecordSpec) string {
 		target = "."
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%d|%s", s.Priority, target)
+	_, _ = fmt.Fprintf(&b, "%d|%s", s.Priority, target)
 	// Alias form carries no parameters, so two alias records that differ only
 	// in discarded parameters are the same record.
 	if s.Priority != 0 {
 		for _, k := range sortedKeys(s.Params) {
-			fmt.Fprintf(&b, "|%s=%s", k, strings.TrimSpace(s.Params[k]))
+			_, _ = fmt.Fprintf(&b, "|%s=%s", k, strings.TrimSpace(s.Params[k]))
 		}
 	}
 	return b.String()

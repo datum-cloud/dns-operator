@@ -260,14 +260,14 @@ func ownerTTL(entries []dnsv1alpha1.RecordEntry, ownerName, zoneDomain string) (
 // format additionally prints the named fields of a structured type, for the
 // same reason in the other direction.
 func printEcho(out io.Writer, zone *dnsv1alpha1.DNSZone, t dnsv1alpha1.RRType, ownerName, action string, entries []dnsv1alpha1.RecordEntry, fromFlags bool) {
-	fmt.Fprintf(out, "  record/%s %s %s %s\n", zone.Spec.DomainName, t, displayName(ownerName), action)
+	_, _ = fmt.Fprintf(out, "  record/%s %s %s %s\n", zone.Spec.DomainName, t, displayName(ownerName), action)
 	for _, e := range entries {
-		fmt.Fprintf(out, "  %s\n", presentationLine(t, e))
+		_, _ = fmt.Fprintf(out, "  %s\n", presentationLine(t, e))
 		if fromFlags || !rdata.IsStructured(t) {
 			continue
 		}
 		for _, f := range rdata.Fields(t, canonicalEntry(t, e)) {
-			fmt.Fprintf(out, "      %-12s %s\n", f[0]+":", f[1])
+			_, _ = fmt.Fprintf(out, "      %-12s %s\n", f[0]+":", f[1])
 		}
 	}
 }
@@ -287,24 +287,24 @@ func printMutationDiff(out io.Writer, zone *dnsv1alpha1.DNSZone, t dnsv1alpha1.R
 		actionDeleted: "would be deleted",
 	}[result.action]
 
-	fmt.Fprintf(out, "Dry run — no changes were made.\n")
-	fmt.Fprintf(out, "  record/%s %s %s %s\n", zone.Spec.DomainName, t, displayName(ownerName), verb)
+	_, _ = fmt.Fprintf(out, "Dry run — no changes were made.\n")
+	_, _ = fmt.Fprintf(out, "  record/%s %s %s %s\n", zone.Spec.DomainName, t, displayName(ownerName), verb)
 
 	before := entriesForOwner(result.before, ownerName, zone.Spec.DomainName)
 	after := entriesForOwner(result.after, ownerName, zone.Spec.DomainName)
 
 	for _, e := range before {
 		if !containsEntry(after, t, e) {
-			fmt.Fprintf(out, "  - %s\n", presentationLine(t, e))
+			_, _ = fmt.Fprintf(out, "  - %s\n", presentationLine(t, e))
 		}
 	}
 	for _, e := range after {
 		if !containsEntry(before, t, e) {
-			fmt.Fprintf(out, "  + %s\n", presentationLine(t, e))
+			_, _ = fmt.Fprintf(out, "  + %s\n", presentationLine(t, e))
 		}
 	}
 	if result.setRemoved {
-		fmt.Fprintf(out, "  record set %s would be removed — it would hold no records\n", result.set.Name)
+		_, _ = fmt.Fprintf(out, "  record set %s would be removed — it would hold no records\n", result.set.Name)
 	}
 }
 
@@ -324,7 +324,7 @@ func containsEntry(entries []dnsv1alpha1.RecordEntry, t dnsv1alpha1.RRType, want
 // the -o json contract on stdout.
 func printWarnings(errOut io.Writer, warnings []string) {
 	for _, w := range warnings {
-		fmt.Fprintf(errOut, "Warning: %s\n", w)
+		_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
 	}
 }
 

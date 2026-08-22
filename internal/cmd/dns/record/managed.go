@@ -195,7 +195,7 @@ func guardMutation(warnTo io.Writer, rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1al
 		return util.UsageErrorf("%s is a platform-managed record", recordDisplay(ownerName, t, zone.Spec.DomainName)).
 			WithFix(risk + " — re-run with --force if that is what you want.")
 	}
-	fmt.Fprintf(warnTo, "Warning: %s is platform-managed; %s\n", recordDisplay(ownerName, t, zone.Spec.DomainName), risk)
+	_, _ = fmt.Fprintf(warnTo, "Warning: %s is platform-managed; %s\n", recordDisplay(ownerName, t, zone.Spec.DomainName), risk)
 	return nil
 }
 

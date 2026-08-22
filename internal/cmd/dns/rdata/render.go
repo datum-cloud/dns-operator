@@ -170,13 +170,12 @@ func renderSVCB(s dnsv1alpha1.HTTPSRecordSpec) string {
 	return fmt.Sprintf("%d %s", s.Priority, t)
 }
 
-// svcbFlagKeys, svcbUnquotedCSV, svcbQuotedKeys and svcbKeyRank mirror
+// svcbFlagKeys, svcbUnquotedCSV and svcbKeyRank mirror
 // internal/pdns so Render reproduces the backend's parameter spelling and
 // ordering byte for byte.
 var (
 	svcbFlagKeys    = map[string]struct{}{"no-default-alpn": {}}
 	svcbUnquotedCSV = map[string]struct{}{"alpn": {}, "ipv4hint": {}, "ipv6hint": {}, "port": {}}
-	svcbQuotedKeys  = map[string]struct{}{"esnikeys": {}, "ech": {}}
 )
 
 func svcbKeyRank(k string) int {

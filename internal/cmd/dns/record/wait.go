@@ -43,7 +43,7 @@ func waitForProgrammed(
 	deadline := time.Now().Add(timeout)
 	who := ownerDisplay(ownerName, zone.Spec.DomainName)
 
-	fmt.Fprintf(out, "  waiting for %s %s to be programmed...\n", who, t)
+	_, _ = fmt.Fprintf(out, "  waiting for %s %s to be programmed...\n", who, t)
 
 	var lastWord, lastDetail string
 	for {
@@ -58,15 +58,15 @@ func waitForProgrammed(
 
 			switch word {
 			case util.StatusProgrammed:
-				fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
+				_, _ = fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
 				return nil
 			case util.StatusConflict, util.StatusNotOwner:
-				fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
+				_, _ = fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
 				return util.NewCLIError(util.ExitConflict, detail).
 					WithFix(fmt.Sprintf("inspect it with: datumctl dns record describe %s %s %s",
 						zone.Spec.DomainName, displayName(ownerName), t))
 			case util.StatusError, util.StatusRejected:
-				fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
+				_, _ = fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
 				return util.NewCLIError(util.ExitError, detail).
 					WithFix(fmt.Sprintf("inspect it with: datumctl dns record describe %s %s %s",
 						zone.Spec.DomainName, displayName(ownerName), t))

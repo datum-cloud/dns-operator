@@ -217,7 +217,7 @@ func parseParam(s string) (string, string, error) {
 	}
 	for i := 0; i < len(k); i++ {
 		c := k[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
 			return "", "", errf("service parameter key %q contains an invalid character %q", k, string(c))
 		}
 	}

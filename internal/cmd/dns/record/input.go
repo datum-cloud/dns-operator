@@ -10,6 +10,9 @@ import (
 	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
 )
 
+// exampleIPv4 is the address used in help text and generated examples.
+const exampleIPv4 = "203.0.113.10"
+
 // recordInput is a mutation's arguments after parsing and validation: an owner
 // name, a type, and the values, in canonical (unencoded) form.
 type recordInput struct {
@@ -209,7 +212,7 @@ func valueFix(t dnsv1alpha1.RRType) string {
 func exampleRdata(t dnsv1alpha1.RRType) string {
 	switch t {
 	case dnsv1alpha1.RRTypeA:
-		return "203.0.113.10"
+		return exampleIPv4
 	case dnsv1alpha1.RRTypeAAAA:
 		return "2001:db8::1"
 	default:

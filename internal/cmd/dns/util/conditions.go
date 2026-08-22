@@ -167,7 +167,7 @@ func recordStatus(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone string) (word, d
 // left alone.
 func ownerConditions(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone, condType string) []*metav1.Condition {
 	want := qualifyOwner(ownerName, zone)
-	var found []*metav1.Condition
+	found := make([]*metav1.Condition, 0, len(rs.Status.RecordSets))
 	for i := range rs.Status.RecordSets {
 		if qualifyOwner(rs.Status.RecordSets[i].Name, zone) != want {
 			continue

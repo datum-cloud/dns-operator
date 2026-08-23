@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
 	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
 )
 
@@ -28,7 +29,7 @@ func TestDescribeShowsTheNamedFields(t *testing.T) {
 	out := h.stdout()
 	mustContain(t, collapse(out), "Record _sip._tcp.example.com")
 	mustContain(t, collapse(out), "Type SRV")
-	mustContain(t, collapse(out), "TTL 300")
+	mustContain(t, collapse(out), "TTL 5m")
 	mustContain(t, out, "10 5 5060 sip.example.com.")
 	mustContain(t, collapse(out), "Priority: 10")
 	mustContain(t, collapse(out), "Weight: 5")
@@ -58,7 +59,7 @@ func TestDescribeShowsTheBackendsSentenceVerbatim(t *testing.T) {
 func TestDescribeSpellsOutWhatAutoMeans(t *testing.T) {
 	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", nil)))
 	requireNoError(t, h.run("record", "describe", testDomain, "www"))
-	mustContain(t, collapse(h.stdout()), "TTL Auto (300)")
+	mustContain(t, collapse(h.stdout()), "TTL Auto (5m)")
 }
 
 // TestDescribeReportsDisagreeingTTLs — the API stores TTL per entry, the
@@ -69,7 +70,7 @@ func TestDescribeReportsDisagreeingTTLs(t *testing.T) {
 		aEntry("www", "203.0.113.11", ttl(60)),
 	))
 	requireNoError(t, h.run("record", "describe", testDomain, "www"))
-	mustContain(t, collapse(h.stdout()), "TTL 300 (values disagree; the backend applies the first)")
+	mustContain(t, collapse(h.stdout()), "TTL 5m (values disagree; the backend applies the first)")
 }
 
 // TestDescribeWithoutATypeShowsEveryTypeAtTheName.
@@ -152,7 +153,7 @@ func TestDescribeNeverRendersTheEpochAsAnAge(t *testing.T) {
 func TestDescribeAutoNamesTheRealDefault(t *testing.T) {
 	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", nil)))
 	requireNoError(t, h.run("record", "describe", testDomain, "www"))
-	mustContain(t, collapse(h.stdout()), fmt.Sprintf("TTL Auto (%d)", util.DefaultTTL))
+	mustContain(t, collapse(h.stdout()), fmt.Sprintf("TTL Auto (%s)", rdata.FormatSeconds(util.DefaultTTL)))
 }
 
 // TestDescribeDoesNotCallAutoAndTheDefaultADisagreement — they resolve to the

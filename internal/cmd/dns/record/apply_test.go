@@ -60,8 +60,8 @@ api 3600 IN A 203.0.113.20
 
 	lines := collapsedLines(h.stdout())
 	wantLines := []string{
-		"+ www A 300 203.0.113.11",
-		"→ api A 300 → 3600 203.0.113.20",
+		"+ www A 5m 203.0.113.11",
+		"→ api A 5m → 1h 203.0.113.20",
 	}
 	for _, want := range wantLines {
 		found := false
@@ -109,7 +109,7 @@ func TestApplyPruneDeletes(t *testing.T) {
 	path := zoneFilePath(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.10\n")
 	requireNoError(t, h.run("record", "apply", testDomain, "-f", path, "--prune", "--yes"))
 
-	mustContain(t, collapse(h.stdout()), "- old A 300 198.51.100.1")
+	mustContain(t, collapse(h.stdout()), "- old A 5m 198.51.100.1")
 	set := h.getSet(t, testZoneObject+"-a")
 	if len(set.Spec.Records) != 1 || set.Spec.Records[0].Name != "www" {
 		t.Errorf("--prune left %+v, want only www", set.Spec.Records)

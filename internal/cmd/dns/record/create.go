@@ -101,7 +101,7 @@ intents safely.`,
 }
 
 func registerMutateFlags(cmd *cobra.Command, opts *mutateOptions) {
-	cmd.Flags().StringVar(&opts.ttl, "ttl", "", "Time to live, in seconds or as a duration (300, 5m, 1h). Omitted means Auto")
+	cmd.Flags().StringVar(&opts.ttl, "ttl", "", "Time to live, in seconds or as a duration (300, 5m, 1h, 1d). Omitted means Auto")
 	cmd.Flags().StringVar(&opts.line, "line", "", `A whole record line, as dig prints it: "www 300 IN A 203.0.113.10"`)
 	cmd.Flags().BoolVar(&opts.wait, "wait", false, "Wait until the record is programmed by the DNS backend")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", defaultWaitTimeout, "How long --wait waits before giving up")

@@ -325,8 +325,8 @@ NAME     TYPE    TTL    VALUE                  STATUS
 @        MX      Auto   10 mail.example.com.   Programmed
 _dmarc   TXT     Auto   "v=DMARC1\; p=none"    Programmed
 api      CNAME   Auto   lb.example.net.        Pending
-www      A       300    203.0.113.10           Programmed
-www      A       300    203.0.113.11           Programmed
+www      A       5m     203.0.113.10           Programmed
+www      A       5m     203.0.113.11           Programmed
 
 5 records — 4 Programmed, 1 Pending
 ```
@@ -365,7 +365,7 @@ $ datumctl dns record describe example.com @ MX
 Record        example.com
 Zone          example.com
 Type          MX
-TTL           Auto (300)
+TTL           Auto (5m)
 Record set    example-com-mx
 Created       2m ago
 
@@ -407,10 +407,10 @@ The declarative path: diff a zone file against the live zone, print what would c
 
 ```console
 $ datumctl dns record apply example.com -f example.com.zone --dry-run
-  +   www    A       300          203.0.113.10
-  +   www    A       300          203.0.113.99
-  +   shop   CNAME   300          shops.example.net.
-  →   @      MX      Auto → 300   10 mail.example.com.
+  +   www    A       5m          203.0.113.10
+  +   www    A       5m          203.0.113.99
+  +   shop   CNAME   5m          shops.example.net.
+  →   @      MX      Auto → 5m   10 mail.example.com.
 
 4 changes — 3 to add, 1 to change
 
@@ -420,7 +420,7 @@ Dry run — 4 changes validated, nothing was written.
 Drop `--dry-run` to apply, and re-running an unchanged file reports `No changes.` By default apply only adds and updates; `--prune` also deletes the records the file does not mention. Platform-managed records — the zone's SOA, its apex NS records, and anything owned by AI Edge — are never pruned or modified, and whatever was skipped is reported.
 
 > [!WARNING]
-> A record left at the default `Auto` TTL does not currently survive an `export` → `apply` round trip as a no-op. `zone export` writes `$TTL 300` and omits the per-record TTL for such records, so re-reading the file resolves them to an explicit `300` and the diff reports `Auto → 300` for each one. Give records an explicit `--ttl` if you rely on `apply` being idempotent, for example in a drift check.
+> A record left at the default `Auto` TTL does not currently survive an `export` → `apply` round trip as a no-op. `zone export` writes `$TTL 300` and omits the per-record TTL for such records, so re-reading the file resolves them to an explicit `300` and the diff reports `Auto → 5m` for each one. Give records an explicit `--ttl` if you rely on `apply` being idempotent, for example in a drift check.
 
 ### Platform-managed records
 
@@ -520,7 +520,9 @@ exit status 2   # DNS_USAGE
 
 ### TTL
 
-`--ttl` takes seconds or a duration: `--ttl 300`, `--ttl 5m`, `--ttl 1h`. Omitting it means `Auto`, the backend default of 300s, rendered as `Auto (300)` in describe views so the number is never a mystery. Arbitrary TTLs are **not** snapped onto a preset ladder — `240` stays `240`.
+`--ttl` takes seconds or a duration: `--ttl 300`, `--ttl 5m`, `--ttl 1h`, `--ttl 1d`. The units are `s`, `m`, `h`, `d` and `w`, and they compose (`1h30m`). Omitting it means `Auto`, the backend default of 5m, rendered as `Auto (5m)` in describe views so the number is never a mystery. Arbitrary TTLs are **not** snapped onto a preset ladder — `240` stays `240`.
+
+TTLs are always **displayed** with their unit, never as a bare number: a `5` in a TTL column cannot be read without guessing at seconds versus minutes. The largest unit that divides evenly wins, so `300` shows as `5m`, `3600` as `1h` and `86400` as `1d`; a value that divides evenly into nothing larger stays in seconds (`90s`). Every rendered TTL parses back to the same number, so a value read off `record list` can be pasted straight into `--ttl`.
 
 > [!NOTE]
 > TTL is per-RRset in DNS but per-entry in the API, and the backend takes the first entry's TTL for an owner name and ignores the rest. The plugin applies `--ttl` to every value it writes for that `(name, type)`, and warns when it reads a set whose entries disagree.

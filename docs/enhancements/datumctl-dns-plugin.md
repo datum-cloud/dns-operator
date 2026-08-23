@@ -188,7 +188,7 @@ Fix:   targets are absolute, not zone-relative — did you mean "mail.example.co
 
 ### TTL
 
-`--ttl` takes seconds or a duration (`--ttl 300`, `--ttl 5m`, `--ttl 1h`). Omitted means `Auto`, which is the backend default of 300s; the CLI renders it as `Auto (300)` in describe views so the number is never a mystery. Unlike the portal, the CLI does **not** snap arbitrary TTLs onto a preset ladder — `240` stays `240`. The portal's rounding to 300 exists to serve a dropdown, and silently rewriting an imported TTL is the wrong default for a tool people script.
+`--ttl` takes seconds or a duration built from `s`, `m`, `h`, `d` and `w` (`--ttl 300`, `--ttl 5m`, `--ttl 1h`, `--ttl 1d`, `--ttl 1h30m`). Omitted means `Auto`, which is the backend default of 300s; the CLI renders it as `Auto (5m)` in describe views so the number is never a mystery. Displayed TTLs always carry their unit and use the largest one that divides evenly — `300` shows as `5m`, `86400` as `1d` — because a bare number in a TTL column cannot be read without guessing at its unit; every spelling shown parses back to the same number. Unlike the portal, the CLI does **not** snap arbitrary TTLs onto a preset ladder — `240` stays `240`. The portal's rounding to 300 exists to serve a dropdown, and silently rewriting an imported TTL is the wrong default for a tool people script.
 
 TTL is per-RRset in DNS but per-entry in the API, and the two cannot both be right. `buildRRSets` creates the rrset for an owner name from the **first** entry it sees for that name and takes the TTL from it; every later entry for the same owner contributes its value but its TTL is discarded. A record set whose entries disagree on TTL is therefore not an error at admission, not an error in the backend, and not visible in any condition — one of the TTLs simply wins and the others evaporate.
 
@@ -269,14 +269,14 @@ Flattened from every `DNSRecordSet` in the zone, sorted by name then type then v
 
 ```
 NAME       TYPE   TTL   VALUE                          STATUS
-@          SOA    3600  ns1.datum.net. hostmaster…     Programmed  (platform)
-@          NS     3600  ns1.datum.net.                 Programmed  (platform)
-@          NS     3600  ns2.datum.net.                 Programmed  (platform)
-@          MX     300   10 mail.example.com.           Programmed
-www        A      300   203.0.113.10                   Programmed
-www        A      300   203.0.113.11                   Programmed
+@          SOA    1h    ns1.datum.net. hostmaster…     Programmed  (platform)
+@          NS     1h    ns1.datum.net.                 Programmed  (platform)
+@          NS     1h    ns2.datum.net.                 Programmed  (platform)
+@          MX     5m    10 mail.example.com.           Programmed
+www        A      5m    203.0.113.10                   Programmed
+www        A      5m    203.0.113.11                   Programmed
 api        CNAME  Auto  lb.example.net.                Conflict
-_dmarc     TXT    3600  "v=DMARC1\; p=none"            Programmed
+_dmarc     TXT    1h    "v=DMARC1\; p=none"            Programmed
 
 8 records — 6 Programmed, 1 Conflict, 1 Pending
 ```
@@ -503,11 +503,11 @@ It also **refuses to import the zone's apex NS records and its SOA**, reports ea
 
 ```
 NAME   TYPE   TTL    VALUE                                              RESULT
-www    A      300    203.0.113.10                                       created
-@      NS     3600   ns1.oldprovider.net.                               skipped — the zone's apex NS records are managed by the platform — importing them would break delegation
-@      NS     3600   ns2.oldprovider.net.                               skipped — the zone's apex NS records are managed by the platform — importing them would break delegation
-dev    NS     3600   ns1.delegated.example.net.                         created
-@      SOA    3600   ns1.oldprovider.net. hostmaster.oldprovider.net…   skipped — the zone's SOA record is managed by the platform
+www    A      5m     203.0.113.10                                       created
+@      NS     1h     ns1.oldprovider.net.                               skipped — the zone's apex NS records are managed by the platform — importing them would break delegation
+@      NS     1h     ns2.oldprovider.net.                               skipped — the zone's apex NS records are managed by the platform — importing them would break delegation
+dev    NS     1h     ns1.delegated.example.net.                         created
+@      SOA    1h     ns1.oldprovider.net. hostmaster.oldprovider.net…   skipped — the zone's SOA record is managed by the platform
 
 5 records — 2 created, 3 skipped
 ```

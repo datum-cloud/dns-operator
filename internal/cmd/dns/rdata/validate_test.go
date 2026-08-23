@@ -586,7 +586,7 @@ func TestWarnings(t *testing.T) {
 		b := entry(t, dnsv1alpha1.RRTypeA, "www", "203.0.113.11")
 		b.TTL = ptr(int64(60))
 		w := Warnings(dnsv1alpha1.RRTypeA, a, b)
-		if len(w) != 1 || !strings.Contains(w[0], "applies the first one, 300") {
+		if len(w) != 1 || !strings.Contains(w[0], "applies the first one, 5m") {
 			t.Fatalf("want one TTL warning, got %v", w)
 		}
 		// Agreeing TTLs are silent.
@@ -800,11 +800,44 @@ func TestFormatTTL(t *testing.T) {
 	if got := FormatTTL(nil); got != "Auto" {
 		t.Fatalf("FormatTTL(nil) = %q, want Auto", got)
 	}
-	if got := FormatTTL(ptr(int64(300))); got != "300" {
-		t.Fatalf("FormatTTL(300) = %q", got)
+	// Every rendered TTL carries its unit. A bare number in a TTL column
+	// cannot be read without guessing at seconds versus minutes.
+	cases := map[int64]string{
+		0:       "0s",
+		1:       "1s",
+		5:       "5s",
+		59:      "59s",
+		60:      "1m",
+		90:      "90s", // does not divide evenly, so it stays in seconds
+		300:     "5m",
+		3600:    "1h",
+		5400:    "90m", // 90m, not 1h30m: one unit is easier to scan
+		7200:    "2h",
+		86400:   "1d",
+		129600:  "36h", // 1d12h would need two units, so hours win
+		604800:  "1w",
+		1209600: "2w",
 	}
-	if got := FormatTTL(ptr(int64(0))); got != "0" {
-		t.Fatalf("FormatTTL(0) = %q", got)
+	for secs, want := range cases {
+		if got := FormatTTL(ptr(secs)); got != want {
+			t.Errorf("FormatTTL(%d) = %q, want %q", secs, got, want)
+		}
+	}
+}
+
+// TestFormatTTLRoundTrips is the property that makes the humanized column
+// safe: whatever the table shows can be pasted straight back into --ttl and
+// mean the same thing.
+func TestFormatTTLRoundTrips(t *testing.T) {
+	for secs := int64(0); secs <= 700000; secs += 7 {
+		rendered := FormatTTL(ptr(secs))
+		back, err := ParseTTL(rendered)
+		if err != nil {
+			t.Fatalf("ParseTTL(FormatTTL(%d) = %q): %v", secs, rendered, err)
+		}
+		if back == nil || *back != secs {
+			t.Fatalf("FormatTTL(%d) = %q, which parses back to %v", secs, rendered, back)
+		}
 	}
 }
 

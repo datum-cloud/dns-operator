@@ -407,7 +407,7 @@ func TestWarningsInZoneGroupsByQualifiedName(t *testing.T) {
 	if len(got) != 1 || !strings.Contains(got[0], "disagree on TTL") {
 		t.Fatalf("two spellings of one owner with different TTLs must warn, got %v", got)
 	}
-	if !strings.Contains(got[0], "applies the first one, 300") {
+	if !strings.Contains(got[0], "applies the first one, 5m") {
 		t.Fatalf("the warning should name the TTL that wins, got %q", got[0])
 	}
 

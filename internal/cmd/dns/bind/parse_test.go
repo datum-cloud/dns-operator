@@ -3,6 +3,7 @@
 package bind
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -27,8 +28,11 @@ func flatten(t *testing.T, res ParseResult) []got {
 			t.Errorf("record on line %d: Entry.Name = %q, Record.Name = %q", r.Line, r.Entry.Name, r.Name)
 		}
 		out = append(out, got{
-			name:  r.Name,
-			ttl:   rdata.FormatTTL(r.TTL),
+			name: r.Name,
+			// Raw seconds, not rdata.FormatTTL: these cases assert what the
+			// parser produced, and a humanized "5m" would hide whether the
+			// parse or the formatter is under test.
+			ttl:   rawTTL(r.TTL),
 			rtype: string(r.Type),
 			value: rdata.Render(r.Type, r.Entry),
 		})
@@ -748,4 +752,13 @@ func TestParseNegativeTTLSaysSo(t *testing.T) {
 	if strings.Contains(err.Error(), "record type") {
 		t.Errorf("error = %q, want it not to blame the record type", err)
 	}
+}
+
+// rawTTL renders a parsed TTL as the plain number of seconds, with nil — the
+// "inherit the zone default" case — spelled as Auto.
+func rawTTL(ttl *int64) string {
+	if ttl == nil {
+		return "Auto"
+	}
+	return strconv.FormatInt(*ttl, 10)
 }

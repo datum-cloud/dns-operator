@@ -24,7 +24,7 @@ func TestDeleteOneValueLeavesTheRest(t *testing.T) {
 	}
 	mustContain(t, h.stderr(), "Delete the A record 203.0.113.11 for www.example.com? [y/N]")
 	mustContain(t, h.stdout(), "  record/example.com A www deleted")
-	mustContain(t, collapse(h.stdout()), "- www 300 IN A 203.0.113.11")
+	mustContain(t, collapse(h.stdout()), "- www 5m IN A 203.0.113.11")
 }
 
 // TestDeleteAllAtANameStatesTheCount — deleting three records is a different
@@ -122,7 +122,7 @@ func TestDeleteDryRunWritesNothing(t *testing.T) {
 
 	out := collapse(h.stdout())
 	mustContain(t, out, "Dry run — no changes were made.")
-	mustContain(t, out, "- www 300 IN A 203.0.113.10")
+	mustContain(t, out, "- www 5m IN A 203.0.113.10")
 	mustContain(t, out, "record set example-com-a would be removed")
 	mustNotContain(t, h.stderr(), "[y/N]")
 

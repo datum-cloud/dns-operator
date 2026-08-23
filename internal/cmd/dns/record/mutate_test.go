@@ -30,7 +30,7 @@ func TestCreateAppendsToTheRRset(t *testing.T) {
 		t.Errorf("records = %v, %v", got[0].A.Content, got[1].A.Content)
 	}
 	mustContain(t, h.stdout(), "  record/example.com A www created")
-	mustContain(t, collapse(h.stdout()), "www 300 IN A 203.0.113.11")
+	mustContain(t, collapse(h.stdout()), "www 5m IN A 203.0.113.11")
 }
 
 func TestSetReplacesEveryValueAtTheName(t *testing.T) {
@@ -116,7 +116,7 @@ func TestCreateInheritsTheNamesExistingTTL(t *testing.T) {
 	if got[1].TTL == nil || *got[1].TTL != 3600 {
 		t.Errorf("appended TTL = %v, want the name's existing 3600", got[1].TTL)
 	}
-	mustContain(t, collapse(h.stdout()), "www 3600 IN A 203.0.113.11")
+	mustContain(t, collapse(h.stdout()), "www 1h IN A 203.0.113.11")
 }
 
 // TestCreateTTLReachesEveryValueAtTheName — an explicit --ttl that only landed
@@ -153,7 +153,7 @@ func TestCreateStructuredTypeByFlags(t *testing.T) {
 	}
 	out := h.stdout()
 	mustContain(t, out, "  record/example.com MX @ created")
-	mustContain(t, collapse(out), "@ 300 IN MX 10 mail.example.com.")
+	mustContain(t, collapse(out), "@ 5m IN MX 10 mail.example.com.")
 	mustNotContain(t, out, "Preference:")
 }
 
@@ -273,7 +273,7 @@ func TestCreateFromAWholeLine(t *testing.T) {
 	if e.Name != "www" || e.A.Content != "203.0.113.10" || e.TTL == nil || *e.TTL != 300 {
 		t.Fatalf("entry = %+v (ttl %v)", e, e.TTL)
 	}
-	mustContain(t, collapse(h.stdout()), "www 300 IN A 203.0.113.10")
+	mustContain(t, collapse(h.stdout()), "www 5m IN A 203.0.113.10")
 }
 
 func TestLineIsExclusiveWithThePositionalForm(t *testing.T) {
@@ -414,8 +414,8 @@ func TestDryRunShowsTheDiffAndWritesNothing(t *testing.T) {
 	out := collapse(h.stdout())
 	mustContain(t, out, "Dry run — no changes were made.")
 	mustContain(t, out, "record/example.com A www would be updated")
-	mustContain(t, out, "- www 300 IN A 203.0.113.10")
-	mustContain(t, out, "+ www 300 IN A 203.0.113.20")
+	mustContain(t, out, "- www 5m IN A 203.0.113.10")
+	mustContain(t, out, "+ www 5m IN A 203.0.113.20")
 
 	if got := h.getSet(t, "example-com-a").Spec.Records[0].A.Content; got != "203.0.113.10" {
 		t.Errorf("a dry run wrote %q", got)
@@ -699,7 +699,7 @@ func TestRetimedNeighboursAreNotReportedAsCreated(t *testing.T) {
 	requireNoError(t, h.run("record", "create", testDomain, "www", "A", "203.0.113.12", "--ttl", "60"))
 
 	out := collapse(h.stdout())
-	mustContain(t, out, "www 60 IN A 203.0.113.12")
+	mustContain(t, out, "www 1m IN A 203.0.113.12")
 	mustNotContain(t, out, "203.0.113.10")
 	mustNotContain(t, out, "203.0.113.11")
 

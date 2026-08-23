@@ -55,14 +55,14 @@ func TestListFlattensBucketsIntoRecords(t *testing.T) {
 	got := collapsedLines(h.stdout())
 	want := []string{
 		"NAME TYPE TTL VALUE STATUS",
-		"@ MX 300 10 mail.example.com. Programmed",
-		"@ NS 3600 ns1.datum.net. Pending (platform)",
-		"@ NS 3600 ns2.datum.net. Pending (platform)",
-		"@ SOA 3600 ns1.datum.net. hostmaster.example.com. 1 10800 3600 604800 3600 Pending (platform)",
-		"_acme-challenge TXT 60 \"gateway-token\" Pending (managed by AI Edge)",
+		"@ MX 5m 10 mail.example.com. Programmed",
+		"@ NS 1h ns1.datum.net. Pending (platform)",
+		"@ NS 1h ns2.datum.net. Pending (platform)",
+		"@ SOA 1h ns1.datum.net. hostmaster.example.com. 1 10800 3600 604800 3600 Pending (platform)",
+		"_acme-challenge TXT 1m \"gateway-token\" Pending (managed by AI Edge)",
 		"api A Auto 203.0.113.12 Conflict",
-		"www A 300 203.0.113.10 Programmed",
-		"www A 300 203.0.113.11 Programmed",
+		"www A 5m 203.0.113.10 Programmed",
+		"www A 5m 203.0.113.11 Programmed",
 		"8 records — 3 Programmed, 4 Pending, 1 Conflict",
 	}
 	if len(got) != len(want) {
@@ -106,7 +106,7 @@ func TestListStatusPerOwnerName(t *testing.T) {
 
 			h := newHarness(t, testZone(), rs)
 			requireNoError(t, h.run("record", "list", testDomain))
-			mustContain(t, collapse(h.stdout()), "www A 300 203.0.113.10 "+tc.wantStatus)
+			mustContain(t, collapse(h.stdout()), "www A 5m 203.0.113.10 "+tc.wantStatus)
 		})
 	}
 }
@@ -135,7 +135,7 @@ func TestListFilters(t *testing.T) {
 		{
 			name:    "by type",
 			args:    []string{"--type", "MX"},
-			want:    []string{"@ MX 300 10 mail.example.com. Programmed", "1 record — 1 Programmed"},
+			want:    []string{"@ MX 5m 10 mail.example.com. Programmed", "1 record — 1 Programmed"},
 			notWant: []string{"www"},
 		},
 		{
@@ -146,13 +146,13 @@ func TestListFilters(t *testing.T) {
 		{
 			name:    "by owner name",
 			args:    []string{"--name", "www"},
-			want:    []string{"www A 300 203.0.113.10", "2 records — 2 Programmed"},
+			want:    []string{"www A 5m 203.0.113.10", "2 records — 2 Programmed"},
 			notWant: []string{"api A"},
 		},
 		{
 			name:    "by apex",
 			args:    []string{"--name", "@", "--type", "MX"},
-			want:    []string{"@ MX 300"},
+			want:    []string{"@ MX 5m"},
 			notWant: []string{"www"},
 		},
 		{
@@ -176,7 +176,7 @@ func TestListFilters(t *testing.T) {
 		{
 			name:    "no headers",
 			args:    []string{"--type", "MX", "--no-headers"},
-			want:    []string{"@ MX 300"},
+			want:    []string{"@ MX 5m"},
 			notWant: []string{"NAME TYPE TTL"},
 		},
 	}
@@ -295,7 +295,7 @@ func TestStatusFilterAcceptsTheTwoWordStatus(t *testing.T) {
 			requireNoError(t, h.run("record", "list", testDomain, "--status", token))
 
 			out := collapse(h.stdout())
-			mustContain(t, out, "www A 300 203.0.113.10 Not owner")
+			mustContain(t, out, "www A 5m 203.0.113.10 Not owner")
 			mustNotContain(t, out, "api")
 			mustContain(t, out, "1 record — 1 Not owner")
 		})
@@ -446,7 +446,7 @@ func TestAServerInventedReasonIsAValidFilter(t *testing.T) {
 	requireNoError(t, h.run("record", "list", testDomain, "--status", "throttled"))
 
 	out := collapse(h.stdout())
-	mustContain(t, out, "www A 300 203.0.113.10 Throttled")
+	mustContain(t, out, "www A 5m 203.0.113.10 Throttled")
 	mustNotContain(t, out, "api")
 	mustContain(t, out, "1 record — 1 Throttled")
 }

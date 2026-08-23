@@ -174,7 +174,7 @@ func describeTTL(entries []dnsv1alpha1.RecordEntry) string {
 	}
 	if entries[0].TTL == nil {
 		// Spelled out so "Auto" is never a mystery number.
-		return fmt.Sprintf("Auto (%d)", util.DefaultTTL)
+		return fmt.Sprintf("Auto (%s)", rdata.FormatSeconds(util.DefaultTTL))
 	}
 	return first
 }

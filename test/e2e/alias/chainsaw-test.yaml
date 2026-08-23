@@ -88,6 +88,27 @@ spec:
           metadata:
             name: example-test
 
+  - name: Mark the Domain verified
+    # The operator creates a Domain for the zone and refuses to provision DNS
+    # until the requester has proven they own it, so that a tenant cannot claim
+    # a domain someone else controls. Nothing in a kind cluster can complete a
+    # real ownership check, so the harness asserts the precondition directly —
+    # the same state a real tenant reaches before their zone goes live.
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: Domain
+          metadata:
+            name: example.test
+    - script:
+        cluster: upstream
+        content: |
+          kubectl patch domain example.test -n "$NAMESPACE" \
+            --subresource=status --type=merge \
+            -p "{\"status\":{\"conditions\":[{\"type\":\"Verified\",\"status\":\"True\",\"reason\":\"E2EHarnessVerified\",\"message\":\"marked verified by the e2e harness\",\"lastTransitionTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}}"
+
   - name: Confirm DNSZone replicated downstream
     try:
     - script:

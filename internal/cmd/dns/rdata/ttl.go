@@ -5,6 +5,7 @@ package rdata
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // maxTTL is the largest value a TTL may take: RFC 2181 §8 defines the field as
@@ -58,15 +59,24 @@ func parseTTLSeconds(v, orig string) (int64, error) {
 	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 		return n, nil
 	}
+	// A fractional TTL is handed to time.ParseDuration, which understands the
+	// decimal point that the unit loop below does not. "1.5h" is a perfectly
+	// good TTL — 5400 whole seconds — and only a value that lands between
+	// seconds is actually a mistake, so the two are reported differently.
+	if strings.Contains(v, ".") {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, badTTL(orig)
+		}
+		if d%time.Second != 0 {
+			return 0, errf("TTL %q is not a whole number of seconds", orig)
+		}
+		return int64(d / time.Second), nil
+	}
 	// A leading sign is carried through the unit parse rather than rejected as
 	// a stray character, so "-5m" earns the same "is negative" as "-5" does.
 	neg := strings.HasPrefix(v, "-")
 	v = strings.TrimPrefix(strings.TrimPrefix(v, "-"), "+")
-	// A fractional TTL is a different mistake from an unreadable one, and
-	// saying so is more use than pointing at the list of units.
-	if strings.Contains(v, ".") {
-		return 0, errf("TTL %q is not a whole number of seconds", orig)
-	}
 	var total int64
 	for i := 0; i < len(v); {
 		start := i

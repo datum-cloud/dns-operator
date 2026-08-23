@@ -761,12 +761,20 @@ func TestParseTTL(t *testing.T) {
 		{in: "1h", want: ptr(int64(3600))},
 		{in: "24h", want: ptr(int64(86400))},
 		{in: "1h30m", want: ptr(int64(5400))},
+		{in: "1d", want: ptr(int64(86400))},
+		{in: "1w", want: ptr(int64(604800))},
+		{in: "2W", want: ptr(int64(1209600))},
+		{in: "1d12h", want: ptr(int64(129600))},
+		// A decimal point is fine as long as it lands on a whole second.
+		{in: "1.5h", want: ptr(int64(5400))},
 		{in: "-1", wantErr: "is negative"},
 		{in: "-5m", wantErr: "is negative"},
 		{in: "2147483648", wantErr: "exceeds the maximum"},
 		{in: "1.5s", wantErr: "not a whole number of seconds"},
 		{in: "later", wantErr: "invalid TTL"},
 		{in: "300s extra", wantErr: "invalid TTL"},
+		{in: "300ms", wantErr: "invalid TTL"},
+		{in: "1.5d", wantErr: "invalid TTL"}, // time.ParseDuration has no "d"
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

@@ -368,3 +368,164 @@ func conditionsEqualIgnoringTransitionTime(a, b []metav1.Condition) bool {
 	}
 	return true
 }
+
+// accountingTestNS and accountingTestZoneNS are the namespaces the
+// zone-accounting tests below share.
+const (
+	accountingTestNS     = "datum-downstream-dnszone-accounting"
+	accountingTestZoneNS = "default"
+)
+
+// TestZoneAccountingSurvivesTheClusterNamePrefixChange reproduces the 2026-08-24
+// staging incident.
+//
+// Every accounting ConfigMap written before multicluster-runtime v0.23 stores an
+// owner whose cluster-name segment carries a leading slash, because that is what
+// the provider handed the reconciler at the time. After the upgrade the
+// reconciler computes the bare name, and a byte comparison declared every zone
+// in the fleet to be owned by somebody else within one reconcile sweep — which
+// parks each of them on Accepted=False/DNSZoneInUse and stops all DNS
+// reconciliation while PowerDNS keeps serving stale data as healthy.
+func TestZoneAccountingSurvivesTheClusterNamePrefixChange(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+
+	const (
+		accountingNS = accountingTestNS
+		domain       = "datum-staging.net"
+		// What the provider produced before the upgrade, and what is on disk.
+		legacyOwner = "/datum-cloud/default/datum-staging.net"
+		// What the reconciler computes now.
+		currentOwner = "datum-cloud/default/datum-staging.net"
+	)
+
+	existing := &corev1.ConfigMap{}
+	existing.Namespace = accountingNS
+	existing.Name = domain
+	existing.Data = map[string]string{"owner": legacyOwner}
+
+	ns := &corev1.Namespace{}
+	ns.Name = accountingNS
+
+	downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, existing).Build()
+	r := &DNSZoneReplicator{
+		DownstreamClient:    downstream,
+		AccountingNamespace: accountingNS,
+	}
+
+	zone := &dnsv1alpha1.DNSZone{}
+	zone.Namespace = accountingTestZoneNS
+	zone.Name = domain
+	zone.Spec.DomainName = domain
+
+	owned, err := r.ensureZoneAccounting(context.Background(), zone, currentOwner)
+	if err != nil {
+		t.Fatalf("ensureZoneAccounting: %v", err)
+	}
+	if !owned {
+		t.Fatalf("a zone whose accounting predates the cluster-name change was reported as owned by another resource")
+	}
+
+	// The tolerance is needed once. The record must be rewritten forward, so the
+	// next reconcile matches exactly rather than relying on the compatibility
+	// path forever.
+	var after corev1.ConfigMap
+	if err := downstream.Get(context.Background(),
+		client.ObjectKey{Namespace: accountingNS, Name: domain}, &after); err != nil {
+		t.Fatalf("re-reading the accounting configmap: %v", err)
+	}
+	if got := after.Data["owner"]; got != currentOwner {
+		t.Errorf("owner after migration = %q, want %q", got, currentOwner)
+	}
+}
+
+// TestZoneAccountingStillRejectsAGenuinelyDifferentOwner is the other half: the
+// compatibility above must not turn the ownership check into a rubber stamp.
+func TestZoneAccountingStillRejectsAGenuinelyDifferentOwner(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+
+	const accountingNS = accountingTestNS
+	const domain = "contested.example"
+
+	for _, stored := range []string{
+		"someone-else/default/contested-example",  // different cluster
+		"/someone-else/default/contested-example", // different cluster, legacy spelling
+		"datum-cloud/other-ns/contested-example",  // same cluster, different namespace
+		"datum-cloud/default/a-different-object",  // same cluster and namespace, other object
+	} {
+		t.Run(stored, func(t *testing.T) {
+			cm := &corev1.ConfigMap{}
+			cm.Namespace = accountingNS
+			cm.Name = domain
+			cm.Data = map[string]string{"owner": stored}
+			ns := &corev1.Namespace{}
+			ns.Name = accountingNS
+
+			downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, cm).Build()
+			r := &DNSZoneReplicator{DownstreamClient: downstream, AccountingNamespace: accountingNS}
+
+			zone := &dnsv1alpha1.DNSZone{}
+			zone.Namespace = accountingTestZoneNS
+			zone.Name = "contested-example"
+			zone.Spec.DomainName = domain
+
+			owned, err := r.ensureZoneAccounting(context.Background(), zone, "datum-cloud/default/contested-example")
+			if err != nil {
+				t.Fatalf("ensureZoneAccounting: %v", err)
+			}
+			if owned {
+				t.Errorf("claimed a zone owned by %q", stored)
+			}
+			// A rejected claim must not rewrite somebody else's record.
+			var after corev1.ConfigMap
+			if err := downstream.Get(context.Background(),
+				client.ObjectKey{Namespace: accountingNS, Name: domain}, &after); err != nil {
+				t.Fatalf("re-reading: %v", err)
+			}
+			if got := after.Data["owner"]; got != stored {
+				t.Errorf("owner was overwritten: %q, want %q untouched", got, stored)
+			}
+		})
+	}
+}
+
+// TestCleanupReleasesAZoneWithLegacyAccounting covers the third comparison site.
+// A byte comparison there refuses to delete the ConfigMap on zone teardown,
+// leaking an entry that then blocks the domain from ever being claimed again.
+func TestCleanupReleasesAZoneWithLegacyAccounting(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding corev1 to scheme: %v", err)
+	}
+
+	const accountingNS = accountingTestNS
+	const domain = "going-away.example"
+
+	cm := &corev1.ConfigMap{}
+	cm.Namespace = accountingNS
+	cm.Name = domain
+	cm.Data = map[string]string{"owner": "/datum-cloud/default/going-away-example"}
+
+	downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
+	r := &DNSZoneReplicator{DownstreamClient: downstream, AccountingNamespace: accountingNS}
+
+	zone := &dnsv1alpha1.DNSZone{}
+	zone.Namespace = accountingTestZoneNS
+	zone.Name = "going-away-example"
+	zone.Spec.DomainName = domain
+
+	if err := r.cleanupZoneAccounting(context.Background(), zone, "datum-cloud/default/going-away-example"); err != nil {
+		t.Fatalf("cleanupZoneAccounting: %v", err)
+	}
+
+	var after corev1.ConfigMap
+	err := downstream.Get(context.Background(), client.ObjectKey{Namespace: accountingNS, Name: domain}, &after)
+	if err == nil {
+		t.Fatalf("the accounting configmap survived teardown, so the domain stays claimed forever")
+	}
+}

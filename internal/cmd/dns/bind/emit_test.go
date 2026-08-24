@@ -82,7 +82,7 @@ func TestEmitTTL(t *testing.T) {
 		{"an explicit default", 900, "$TTL 900"},
 		{"zero falls back to the backend's own default", 0, "$TTL 300"},
 		{"negative falls back too", -5, "$TTL 300"},
-		{"out of range falls back", maxTTL + 1, "$TTL 300"},
+		{"out of range falls back", rdata.MaxTTL + 1, "$TTL 300"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

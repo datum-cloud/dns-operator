@@ -34,9 +34,15 @@ import (
 type Error struct {
 	Msg string
 	Fix string
+	// err, when set, is a sentinel this error stands for, so callers can ask
+	// errors.Is what kind of validation failure it was without matching on the
+	// message. It never appears in Error(): the text a user reads is Msg alone.
+	err error
 }
 
 func (e *Error) Error() string { return e.Msg }
+
+func (e *Error) Unwrap() error { return e.err }
 
 func errf(format string, args ...any) error {
 	return &Error{Msg: fmt.Sprintf(format, args...)}

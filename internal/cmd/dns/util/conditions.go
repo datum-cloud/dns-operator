@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -48,14 +49,6 @@ const (
 const pendingDetail = "waiting for the DNS backend"
 
 // FindCondition returns the first condition with the given type, or nil.
-func FindCondition(conditions []metav1.Condition, condType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == condType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
 
 // ZoneStatus renders a zone's condition set as a status word plus a lowercase
 // explanation. The first word is the filter token, as in compute: `--status ok`
@@ -70,12 +63,12 @@ func ZoneStatus(z *dnsv1alpha1.DNSZone) (word, detail string) {
 	}
 
 	// Admission rejection is terminal and outranks whatever Programmed says.
-	if accepted := FindCondition(z.Status.Conditions, condAccepted); accepted != nil &&
+	if accepted := apimeta.FindStatusCondition(z.Status.Conditions, condAccepted); accepted != nil &&
 		accepted.Status == metav1.ConditionFalse {
 		return StatusRejected, firstNonEmpty(accepted.Message, accepted.Reason, "the zone was rejected")
 	}
 
-	programmed := FindCondition(z.Status.Conditions, condProgrammed)
+	programmed := apimeta.FindStatusCondition(z.Status.Conditions, condProgrammed)
 	if programmed == nil {
 		return StatusPending, pendingDetail
 	}
@@ -122,7 +115,7 @@ func recordStatus(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone string) (word, d
 
 	// A set the API server rejected never reaches the backend, so no per-name
 	// condition will ever appear for it.
-	if accepted := FindCondition(rs.Status.Conditions, condAccepted); accepted != nil &&
+	if accepted := apimeta.FindStatusCondition(rs.Status.Conditions, condAccepted); accepted != nil &&
 		accepted.Status == metav1.ConditionFalse {
 		return StatusRejected, firstNonEmpty(accepted.Message, accepted.Reason, "the record set was rejected")
 	}
@@ -172,7 +165,7 @@ func ownerConditions(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone, condType str
 		if qualifyOwner(rs.Status.RecordSets[i].Name, zone) != want {
 			continue
 		}
-		found = append(found, FindCondition(rs.Status.RecordSets[i].Conditions, condType))
+		found = append(found, apimeta.FindStatusCondition(rs.Status.RecordSets[i].Conditions, condType))
 	}
 	return found
 }

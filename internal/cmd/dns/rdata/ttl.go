@@ -3,15 +3,17 @@
 package rdata
 
 import (
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// maxTTL is the largest value a TTL may take: RFC 2181 §8 defines the field as
+// MaxTTL is the largest value a TTL may take: RFC 2181 §8 defines the field as
 // a 31-bit unsigned quantity. The API applies no bounds at all, so this is a
 // CLI-side rule.
-const maxTTL = int64(2147483647)
+const MaxTTL = int64(2147483647)
 
 // ttlUnits is the suffix vocabulary a TTL may be written in, largest first.
 // It is RFC 2308 §4's set, which is what zone files and every other DNS CLI
@@ -51,6 +53,23 @@ func ParseTTL(s string) (*int64, error) {
 		return nil, err
 	}
 	return &secs, nil
+}
+
+// ParseTTLSeconds reads a TTL as a plain number of seconds, for callers that
+// have no "auto" to represent and want the number rather than a pointer. Zone
+// files are the case: a TTL slot there is always a value.
+//
+// The accepted spellings are exactly ParseTTL's, so the grammar cannot drift
+// between what `--ttl` takes and what a zone file may contain.
+func ParseTTLSeconds(s string) (int64, error) {
+	secs, err := parseTTLSeconds(strings.ToLower(strings.TrimSpace(s)), s)
+	if err != nil {
+		return 0, err
+	}
+	if err := checkTTLRange(secs, s); err != nil {
+		return 0, err
+	}
+	return secs, nil
 }
 
 // parseTTLSeconds reads v, already lowercased, as seconds. orig is the
@@ -97,8 +116,8 @@ func parseTTLSeconds(v, orig string) (int64, error) {
 		total += n * mult
 		// Checked inside the loop as well as after it, so a compound TTL
 		// cannot overflow int64 on its way to the range check.
-		if total > maxTTL {
-			return 0, errf("TTL %q exceeds the maximum of %d seconds", orig, maxTTL)
+		if total > MaxTTL {
+			return 0, &Error{Msg: fmt.Sprintf("TTL %q exceeds the maximum of %d seconds", orig, MaxTTL), err: ErrTTLRange}
 		}
 		i++
 	}
@@ -124,12 +143,18 @@ func badTTL(orig string) error {
 	)
 }
 
+// ErrTTLRange marks a TTL that parsed cleanly but fell outside 0..MaxTTL.
+// Callers that render their own wording — a zone file has a line number and a
+// syntax to point at — need to tell "not a TTL at all" from "a TTL that is too
+// large", because only the second is worth quoting a range for.
+var ErrTTLRange = errors.New("TTL out of range")
+
 func checkTTLRange(secs int64, orig string) error {
 	if secs < 0 {
-		return errf("TTL %q is negative", orig)
+		return &Error{Msg: fmt.Sprintf("TTL %q is negative", orig), err: ErrTTLRange}
 	}
-	if secs > maxTTL {
-		return errf("TTL %q exceeds the maximum of %d seconds", orig, maxTTL)
+	if secs > MaxTTL {
+		return &Error{Msg: fmt.Sprintf("TTL %q exceeds the maximum of %d seconds", orig, MaxTTL), err: ErrTTLRange}
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -262,7 +263,7 @@ func importFromDiscovery(
 		return nil, err
 	}
 
-	if cond := util.FindCondition(disc.Status.Conditions, "Discovered"); cond == nil || cond.Status != metav1.ConditionTrue {
+	if cond := apimeta.FindStatusCondition(disc.Status.Conditions, "Discovered"); cond == nil || cond.Status != metav1.ConditionTrue {
 		_, _ = fmt.Fprintf(errOut, "Discovering the records %s resolves to today…\n", zone.Spec.DomainName)
 		disc, err = waitForDiscovery(ctx, c, disc, timeout)
 		if err != nil {
@@ -330,7 +331,7 @@ func ensureDiscovery(ctx context.Context, c client.Client, zone *dnsv1alpha1.DNS
 	}
 	sort.Slice(mine, func(i, j int) bool { return mine[i].Name < mine[j].Name })
 	for _, d := range mine {
-		if cond := util.FindCondition(d.Status.Conditions, "Discovered"); cond != nil && cond.Status == metav1.ConditionTrue {
+		if cond := apimeta.FindStatusCondition(d.Status.Conditions, "Discovered"); cond != nil && cond.Status == metav1.ConditionTrue {
 			return d, nil
 		}
 	}
@@ -370,7 +371,7 @@ func waitForDiscovery(
 				return false, err
 			}
 			out = &got
-			if cond := util.FindCondition(got.Status.Conditions, "Discovered"); cond != nil {
+			if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Discovered"); cond != nil {
 				if cond.Status == metav1.ConditionTrue {
 					return true, nil
 				}
@@ -379,7 +380,7 @@ func waitForDiscovery(
 						"discovering zone records: "+strings.ToLower(cond.Message))
 				}
 			}
-			if cond := util.FindCondition(got.Status.Conditions, "Accepted"); cond != nil &&
+			if cond := apimeta.FindStatusCondition(got.Status.Conditions, "Accepted"); cond != nil &&
 				cond.Status == metav1.ConditionFalse {
 				return false, util.NewCLIError(util.ExitInvalid,
 					"the discovery request was rejected: "+strings.ToLower(cond.Message))

@@ -54,7 +54,7 @@ func Emit(w io.Writer, origin string, defaultTTL int64, records []Record) error 
 	if zone == "" {
 		return errf("cannot emit a zone file without an origin")
 	}
-	if defaultTTL <= 0 || defaultTTL > maxTTL {
+	if defaultTTL <= 0 || defaultTTL > rdata.MaxTTL {
 		defaultTTL = defaultEmitTTL
 	}
 

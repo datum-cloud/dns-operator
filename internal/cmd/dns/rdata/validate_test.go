@@ -3,6 +3,7 @@
 package rdata
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -836,6 +837,46 @@ func TestFormatTTL(t *testing.T) {
 // TestFormatTTLRoundTrips is the property that makes the humanized column
 // safe: whatever the table shows can be pasted straight back into --ttl and
 // mean the same thing.
+// TestParseTTLSecondsSharesTheGrammar pins the invariant that made bind stop
+// carrying its own TTL parser: whatever `--ttl` accepts, a zone file accepts,
+// and the two agree on the number.
+func TestParseTTLSecondsSharesTheGrammar(t *testing.T) {
+	for _, in := range []string{"300", "5m", "1h", "1d", "1w", "1h30m", "2W", "1.5h"} {
+		viaPtr, err := ParseTTL(in)
+		if err != nil {
+			t.Fatalf("ParseTTL(%q): %v", in, err)
+		}
+		viaSecs, err := ParseTTLSeconds(in)
+		if err != nil {
+			t.Fatalf("ParseTTLSeconds(%q): %v", in, err)
+		}
+		if viaPtr == nil || *viaPtr != viaSecs {
+			t.Errorf("%q: ParseTTL = %v, ParseTTLSeconds = %d", in, viaPtr, viaSecs)
+		}
+	}
+}
+
+// TestErrTTLRangeIsDistinguishable is what lets a caller render its own wording
+// for a too-large TTL without matching on the message text. bind does exactly
+// that, because a zone file has a line number to point at.
+func TestErrTTLRangeIsDistinguishable(t *testing.T) {
+	for _, in := range []string{"-1", "-5m", "2147483648", "9999w"} {
+		_, err := ParseTTL(in)
+		if !errors.Is(err, ErrTTLRange) {
+			t.Errorf("ParseTTL(%q) = %v, want an ErrTTLRange", in, err)
+		}
+	}
+	// A value that is not a TTL at all is a different failure.
+	if _, err := ParseTTL("later"); errors.Is(err, ErrTTLRange) {
+		t.Errorf(`ParseTTL("later") reported a range error: %v`, err)
+	}
+	// The sentinel must not leak into what the user reads.
+	_, err := ParseTTL("2147483648")
+	if got := err.Error(); got != `TTL "2147483648" exceeds the maximum of 2147483647 seconds` {
+		t.Errorf("message = %q", got)
+	}
+}
+
 func TestFormatTTLRoundTrips(t *testing.T) {
 	for secs := int64(0); secs <= 700000; secs += 7 {
 		rendered := FormatTTL(ptr(secs))

@@ -3,22 +3,19 @@
 package util
 
 import (
-	"fmt"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/duration"
 )
 
-// RelativeAge returns a compact age string for table cells (no "ago" suffix).
+// RelativeAge returns a compact age string for table cells (no "ago" suffix),
+// in the same shape kubectl's AGE column uses, so an age read here matches an
+// age read anywhere else in the ecosystem.
 //
-//	< 60s  → "Xs"
-//	< 60m  → "Xm"
-//	< 24h  → "Xh"
-//	>= 24h → "Xd"
-//
-// A zero or Unix-epoch timestamp renders as an em dash. DNSRecordSet's CRD
-// default seeds its conditions with lastTransitionTime 1970-01-01T00:00:00Z, so
-// a freshly created record set would otherwise report an age of 56 years.
+// A zero or Unix-epoch timestamp renders as an em dash rather than an age. The
+// API expresses "this never happened" as the epoch, and without the guard a
+// freshly created object would report an age of half a century.
 func RelativeAge(t metav1.Time) string {
 	if IsNeverTransitioned(t) {
 		return emDash
@@ -28,16 +25,7 @@ func RelativeAge(t metav1.Time) string {
 	if d < 0 {
 		d = 0
 	}
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd", int(d.Hours()/24))
-	}
+	return duration.HumanDuration(d)
 }
 
 // RelativeAgeVerbose returns an age string with an "ago" suffix for detail

@@ -3,6 +3,7 @@
 package bind
 
 import (
+	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
 	"strings"
 	"testing"
 )
@@ -213,7 +214,7 @@ func TestParseTTLTable(t *testing.T) {
 		"1W":         604800,
 		"1h30m":      5400,
 		"1w2d3h4m5s": 604800 + 2*86400 + 3*3600 + 4*60 + 5,
-		"2147483647": maxTTL,
+		"2147483647": rdata.MaxTTL,
 	}
 	for in, want := range ok {
 		got, err := parseTTL(in)

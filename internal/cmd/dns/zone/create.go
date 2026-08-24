@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -265,7 +266,7 @@ func waitForNameservers(ctx context.Context, c client.Client, name, domain strin
 
 			// An admission-rejected zone will never get nameservers; waiting
 			// out the timeout would hide the reason it failed.
-			if accepted := util.FindCondition(z.Status.Conditions, util.CondAccepted); accepted != nil &&
+			if accepted := apimeta.FindStatusCondition(z.Status.Conditions, util.CondAccepted); accepted != nil &&
 				accepted.Status == metav1.ConditionFalse {
 				rejected = util.NewCLIError(util.ExitInvalid,
 					fmt.Sprintf("the zone was rejected: %s", accepted.Message))

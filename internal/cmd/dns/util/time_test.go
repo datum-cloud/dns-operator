@@ -20,7 +20,14 @@ func TestRelativeAge(t *testing.T) {
 		{"seconds", metav1.NewTime(now.Add(-45 * time.Second)), "45s"},
 		{"just now", metav1.NewTime(now), "0s"},
 		{"minutes", metav1.NewTime(now.Add(-12 * time.Minute)), "12m"},
-		{"minute boundary", metav1.NewTime(now.Add(-60 * time.Second)), "1m"},
+		// kubectl's AGE format stays in seconds until two minutes, so 60s is
+		// "60s" and not "1m". Matching it is the point of using it.
+		{"minute boundary", metav1.NewTime(now.Add(-60 * time.Second)), "60s"},
+		{"two minute boundary", metav1.NewTime(now.Add(-2 * time.Minute)), "2m"},
+		// Under ten minutes the seconds are kept, which a hand-rolled formatter
+		// would have rounded away.
+		{"sub-ten minutes keeps seconds", metav1.NewTime(now.Add(-5*time.Minute - 30*time.Second)), "5m30s"},
+		{"sub-two days keeps hours", metav1.NewTime(now.Add(-30 * time.Hour)), "30h"},
 		{"hours", metav1.NewTime(now.Add(-3 * time.Hour)), "3h"},
 		{"days", metav1.NewTime(now.Add(-48 * time.Hour)), "2d"},
 		{"weeks", metav1.NewTime(now.Add(-14 * 24 * time.Hour)), "14d"},

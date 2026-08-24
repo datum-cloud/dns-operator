@@ -11,6 +11,7 @@ import (
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	corev1 "k8s.io/api/core/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -316,7 +317,7 @@ func TestEpochConditionSurvivesARealRoundTrip(t *testing.T) {
 		t.Fatalf("reading the record set back: %v", err)
 	}
 
-	programmed := util.FindCondition(fetched.Status.Conditions, "Programmed")
+	programmed := apimeta.FindStatusCondition(fetched.Status.Conditions, "Programmed")
 	if programmed == nil {
 		t.Fatalf("the Programmed condition did not round-trip; status: %+v", fetched.Status)
 	}

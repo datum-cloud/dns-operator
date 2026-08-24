@@ -32,23 +32,6 @@ func crdDefaultConditions() []metav1.Condition {
 	}
 }
 
-func TestFindCondition(t *testing.T) {
-	conds := []metav1.Condition{
-		cond("Accepted", metav1.ConditionTrue, "Accepted", ""),
-		cond("Programmed", metav1.ConditionFalse, "Conflict", "boom"),
-	}
-
-	if got := FindCondition(conds, "Programmed"); got == nil || got.Reason != "Conflict" {
-		t.Errorf("FindCondition(Programmed) = %#v, want the Conflict condition", got)
-	}
-	if got := FindCondition(conds, "Nonexistent"); got != nil {
-		t.Errorf("FindCondition(Nonexistent) = %#v, want nil", got)
-	}
-	if got := FindCondition(nil, "Programmed"); got != nil {
-		t.Errorf("FindCondition(nil) = %#v, want nil", got)
-	}
-}
-
 func TestZoneStatus(t *testing.T) {
 	tests := []struct {
 		name       string

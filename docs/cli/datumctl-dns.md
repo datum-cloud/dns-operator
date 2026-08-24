@@ -25,20 +25,6 @@ Other plugin commands:
 
 `datumctl dns version` needs no login, no project, and no network, so run it first whenever something else fails.
 
-## Before you begin
-
-Run these three commands, in order:
-
-```sh
-datumctl login
-datumctl ctx use <org>/<project>
-datumctl services enable dns.networking.miloapis.com --wait
-```
-
-`--wait` blocks until the platform reaches an answer. Approval can be a manual step by the service provider, so if you don't wait, check back with `datumctl services status dns.networking.miloapis.com`.
-
-If you skip the third step, the plugin offers to enable DNS the first time you run a command at a terminal. In a script it stops with exit code 3 instead of waiting for an answer.
-
 ## Get started
 
 ```sh

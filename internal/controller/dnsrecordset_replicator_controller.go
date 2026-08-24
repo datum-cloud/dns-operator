@@ -357,7 +357,9 @@ func (r *DNSRecordSetReplicator) SetupWithManager(mgr mcmanager.Manager, downstr
 		&dnsv1alpha1.DNSRecordSet{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.DNSRecordSet](&dnsv1alpha1.DNSRecordSet{}),
 	)
-	clusterSrc, err := src.ForCluster("", downstreamCl)
+	// ForCluster now also reports whether the source should engage with the
+	// cluster; no cluster filter is configured, so it is always true.
+	clusterSrc, _, err := src.ForCluster("", downstreamCl)
 	if err != nil {
 		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").String(), err)
 	}

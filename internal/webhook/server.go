@@ -9,6 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 )
 
 // clusterAwareWebhookServer wraps a webhook.Server to inject the project
@@ -32,7 +33,7 @@ func (s *clusterAwareWebhookServer) Register(path string, hook http.Handler) {
 		orig := h.Handler
 		h.Handler = admission.HandlerFunc(func(ctx context.Context, req admission.Request) admission.Response {
 			if clusterName := clusterNameFromExtra(req.UserInfo.Extra); clusterName != "" {
-				ctx = mccontext.WithCluster(ctx, clusterName)
+				ctx = mccontext.WithCluster(ctx, multicluster.ClusterName(clusterName))
 			}
 			return orig.Handle(ctx, req)
 		})

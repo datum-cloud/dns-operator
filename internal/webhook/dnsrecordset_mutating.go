@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,16 +35,12 @@ type DNSRecordSetMutator struct {
 	Client client.Client
 }
 
-var _ admission.CustomDefaulter = &DNSRecordSetMutator{}
+var _ admission.Defaulter[*dnsv1alpha1.DNSRecordSet] = &DNSRecordSetMutator{}
 
 // Default looks up the referenced DNSZone and sets display annotations.
 // Missing zones are non-fatal: annotations stay unset and ActivityPolicy
 // fallbacks still include the relative owner name.
-func (m *DNSRecordSetMutator) Default(ctx context.Context, obj runtime.Object) error {
-	rs, ok := obj.(*dnsv1alpha1.DNSRecordSet)
-	if !ok {
-		return fmt.Errorf("expected DNSRecordSet, got %T", obj)
-	}
+func (m *DNSRecordSetMutator) Default(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet) error {
 	if rs.Spec.DNSZoneRef.Name == "" {
 		return nil
 	}
@@ -98,7 +93,7 @@ func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Cl
 	}
 
 	cl, err := m.Manager.GetCluster(ctx, clusterName)
-	if err != nil && !strings.HasPrefix(clusterName, "/") {
+	if err != nil && !strings.HasPrefix(clusterName.String(), "/") {
 		cl, err = m.Manager.GetCluster(ctx, "/"+clusterName)
 	}
 	if err != nil {
@@ -111,8 +106,7 @@ func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Cl
 
 // SetupDNSRecordSetWebhook registers the mutating webhook with the manager.
 func SetupDNSRecordSetWebhook(mgr mcmanager.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager()).
-		For(&dnsv1alpha1.DNSRecordSet{}).
+	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &dnsv1alpha1.DNSRecordSet{}).
 		WithDefaulter(&DNSRecordSetMutator{
 			Manager: mgr,
 			Client:  mgr.GetLocalManager().GetClient(),

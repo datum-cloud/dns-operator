@@ -25,6 +25,7 @@ import (
 	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
@@ -829,7 +830,7 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 	b = b.For(&dnsv1alpha1.DNSZone{}).Owns(&dnsv1alpha1.DNSRecordSet{})
 
 	// Watch upstream Domain objects and enqueue only if a matching DNSZone exists.
-	b = b.Watches(&networkingv1alpha.Domain{}, func(clusterName string, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	b = b.Watches(&networkingv1alpha.Domain{}, func(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 		return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 			u, ok := obj.(*networkingv1alpha.Domain)
 			if !ok {
@@ -860,7 +861,9 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 		&dnsv1alpha1.DNSZone{},
 		downstreamclient.TypedEnqueueRequestForUpstreamOwner[*dnsv1alpha1.DNSZone](&dnsv1alpha1.DNSZone{}),
 	)
-	clusterSrc, err := src.ForCluster("", downstreamCl)
+	// ForCluster now also reports whether the source should engage with the
+	// cluster; no cluster filter is configured, so it is always true.
+	clusterSrc, _, err := src.ForCluster("", downstreamCl)
 	if err != nil {
 		return fmt.Errorf("failed to build downstream watch for %s: %w", dnsv1alpha1.GroupVersion.WithKind("DNSZone").String(), err)
 	}

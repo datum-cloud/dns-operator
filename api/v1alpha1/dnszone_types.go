@@ -39,7 +39,7 @@ type DNSZoneStatus struct {
 	// +optional
 	Nameservers []string `json:"nameservers,omitempty"`
 
-	// RecordCount is the number of DNSRecordSet resources in this namespace that reference this zone.
+	// RecordCount is the total number of DNS records in this zone.
 	// +optional
 	RecordCount int `json:"recordCount,omitempty"`
 

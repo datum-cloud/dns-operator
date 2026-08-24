@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/display"
@@ -247,7 +248,7 @@ func TestDNSRecordSetMutator_Default_projectClusterClient(t *testing.T) {
 	t.Run("bare project name retries with slash prefix", func(t *testing.T) {
 		t.Parallel()
 		mgr := &fakeMCManager{
-			clusters: map[string]cluster.Cluster{
+			clusters: map[multicluster.ClusterName]cluster.Cluster{
 				"/proj-1": &fakeCluster{client: projectClient},
 			},
 		}
@@ -326,11 +327,11 @@ func TestClusterNameFromExtra(t *testing.T) {
 // fakeMCManager implements only GetCluster for mutator tests.
 type fakeMCManager struct {
 	mcmanager.Manager
-	clusters map[string]cluster.Cluster
+	clusters map[multicluster.ClusterName]cluster.Cluster
 	err      error
 }
 
-func (f *fakeMCManager) GetCluster(_ context.Context, name string) (cluster.Cluster, error) {
+func (f *fakeMCManager) GetCluster(_ context.Context, name multicluster.ClusterName) (cluster.Cluster, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

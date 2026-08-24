@@ -369,23 +369,16 @@ func conditionsEqualIgnoringTransitionTime(a, b []metav1.Condition) bool {
 	return true
 }
 
-// accountingTestNS and accountingTestZoneNS are the namespaces the
-// zone-accounting tests below share.
+// Namespaces shared by the zone-accounting tests below.
 const (
 	accountingTestNS     = "datum-downstream-dnszone-accounting"
 	accountingTestZoneNS = "default"
 )
 
 // TestZoneAccountingSurvivesTheClusterNamePrefixChange reproduces the 2026-08-24
-// staging incident.
-//
-// Every accounting ConfigMap written before multicluster-runtime v0.23 stores an
-// owner whose cluster-name segment carries a leading slash, because that is what
-// the provider handed the reconciler at the time. After the upgrade the
-// reconciler computes the bare name, and a byte comparison declared every zone
-// in the fleet to be owned by somebody else within one reconcile sweep — which
-// parks each of them on Accepted=False/DNSZoneInUse and stops all DNS
-// reconciliation while PowerDNS keeps serving stale data as healthy.
+// staging incident: records written before multicluster-runtime v0.23 carry a
+// leading slash on the cluster name, and a byte comparison parked every zone in
+// the fleet on Accepted=False/DNSZoneInUse in one sweep.
 func TestZoneAccountingSurvivesTheClusterNamePrefixChange(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -428,9 +421,8 @@ func TestZoneAccountingSurvivesTheClusterNamePrefixChange(t *testing.T) {
 		t.Fatalf("a zone whose accounting predates the cluster-name change was reported as owned by another resource")
 	}
 
-	// The tolerance is needed once. The record must be rewritten forward, so the
-	// next reconcile matches exactly rather than relying on the compatibility
-	// path forever.
+	// Rewritten forward, so the next reconcile matches exactly rather than
+	// leaning on the compatibility path forever.
 	var after corev1.ConfigMap
 	if err := downstream.Get(context.Background(),
 		client.ObjectKey{Namespace: accountingNS, Name: domain}, &after); err != nil {
@@ -441,8 +433,8 @@ func TestZoneAccountingSurvivesTheClusterNamePrefixChange(t *testing.T) {
 	}
 }
 
-// TestZoneAccountingStillRejectsAGenuinelyDifferentOwner is the other half: the
-// compatibility above must not turn the ownership check into a rubber stamp.
+// TestZoneAccountingStillRejectsAGenuinelyDifferentOwner: the tolerance must not
+// turn the ownership check into a rubber stamp.
 func TestZoneAccountingStillRejectsAGenuinelyDifferentOwner(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -494,9 +486,9 @@ func TestZoneAccountingStillRejectsAGenuinelyDifferentOwner(t *testing.T) {
 	}
 }
 
-// TestCleanupReleasesAZoneWithLegacyAccounting covers the third comparison site.
-// A byte comparison there refuses to delete the ConfigMap on zone teardown,
-// leaking an entry that then blocks the domain from ever being claimed again.
+// TestCleanupReleasesAZoneWithLegacyAccounting covers the third comparison site,
+// where a byte comparison leaks the record on teardown and blocks the domain
+// from ever being reclaimed.
 func TestCleanupReleasesAZoneWithLegacyAccounting(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {

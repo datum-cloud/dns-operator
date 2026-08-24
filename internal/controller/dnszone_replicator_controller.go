@@ -391,39 +391,28 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 // ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by domainName,
 // and that its Data["owner"] matches the provided owner value. It creates the namespace/configmap if needed.
 // Returns owned=true when this zone owns the ConfigMap; owned=false if another owner holds it.
-// zoneOwnerKey normalizes a zone-ownership string so it can be compared across
-// the multicluster-runtime upgrade that changed how a cluster names itself.
+// zoneOwnerKey normalizes an owner string ("<clusterName>/<namespace>/<name>")
+// for comparison. multicluster-runtime v0.23 dropped the leading slash from
+// cluster names, so records written before it carry one extra slash.
 //
-// The stored owner is "<clusterName>/<namespace>/<name>". Before
-// multicluster-runtime v0.23 the provider handed the reconciler a cluster name
-// carrying a leading slash ("/my-project"); it now hands over the bare name
-// ("my-project"). Every accounting ConfigMap written before that upgrade
-// therefore holds one extra leading slash, and a byte comparison concludes that
-// somebody else owns the zone — for every zone in the fleet at once, which is
-// exactly what happened on 2026-08-24.
-//
-// Trimming the slash cannot collide two genuinely different owners: the
-// ConfigMap is keyed by domain name, so both sides already refer to the same
-// domain, and the only pair this makes equal is "x" and "/x" — the same logical
-// cluster before and after the upgrade.
+// The ConfigMap is already keyed by domain, so trimming only ever equates "x"
+// and "/x" — the same cluster either side of the upgrade.
 func zoneOwnerKey(owner string) string {
 	return strings.TrimPrefix(owner, "/")
 }
 
-// sameZoneOwner reports whether two ownership strings name the same owner,
-// tolerating the pre-v0.23 spelling. Use this for every ownership comparison;
-// a byte comparison is what made the upgrade an outage.
+// sameZoneOwner reports whether two owner strings name the same owner. Use it
+// for every ownership comparison; a byte comparison locked every zone out on
+// 2026-08-24.
 func sameZoneOwner(a, b string) bool {
 	return zoneOwnerKey(a) == zoneOwnerKey(b)
 }
 
-// adoptZoneOwner rewrites a legacy ownership record to the current spelling, so
-// the tolerance above is needed once per zone rather than forever.
+// adoptZoneOwner rewrites a legacy record to the current spelling, so the
+// tolerance is needed once per zone rather than forever.
 //
-// A failure here is logged and swallowed on purpose: ownership has already been
-// established by the time it is called, and refusing to reconcile because the
-// bookkeeping could not be tidied would turn a cosmetic problem back into the
-// outage this function exists to end.
+// Failure is logged and swallowed: ownership is already settled, and blocking
+// reconciliation over bookkeeping would restore the outage this ends.
 func (r *DNSZoneReplicator) adoptZoneOwner(ctx context.Context, cm *corev1.ConfigMap, owner string) {
 	base := cm.DeepCopy()
 	if cm.Data == nil {
@@ -519,9 +508,8 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 		}
 		return err
 	}
-	// Tolerant comparison here too. A byte comparison would refuse to release a
-	// zone whose ConfigMap predates the cluster-name change, leaking an
-	// accounting entry that then blocks the domain from ever being claimed again.
+	// Tolerant here too: a byte comparison would refuse to release a legacy
+	// record, leaking an entry that blocks the domain from ever being reclaimed.
 	if !sameZoneOwner(cm.Data["owner"], owner) {
 		// Do not delete if not owned by us
 		log.FromContext(ctx).Info("skipping accounting configmap delete; not owner", "namespace", ns, "configmap", cm.Name, "owner", cm.Data["owner"], "expectedOwner", owner)

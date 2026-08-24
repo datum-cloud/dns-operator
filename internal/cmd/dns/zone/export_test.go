@@ -199,3 +199,39 @@ func TestExportDecodesChunkedTXT(t *testing.T) {
 		t.Errorf("the exported DKIM key does not read back:\n got %.60q…\nwant %.60q…", got, key)
 	}
 }
+
+// TestExportWarnsAboutWhatTheFileCannotCarry covers the two facts a zone file
+// has nowhere to record, both of which only matter once the file leaves Datum —
+// which is the case export exists for.
+func TestExportWarnsAboutWhatTheFileCannotCarry(t *testing.T) {
+	alias := bulkSet(dnsv1alpha1.RRTypeALIAS, dnsv1alpha1.RecordEntry{
+		Name:  "cdn",
+		TTL:   ttlOf(300),
+		ALIAS: &dnsv1alpha1.ALIASRecordSpec{Content: "lb.example.net."},
+	})
+
+	gateway := bulkSet(dnsv1alpha1.RRTypeA, aRecord("edge", "203.0.113.1", ttlOf(300)))
+	gateway.Labels = map[string]string{
+		util.LabelSourceKind: util.ValueSourceKindGateway,
+		util.LabelSourceName: "public",
+	}
+
+	h := newHarness(t, newFakeClient(t, bulkZone(), alias, gateway))
+	if err := h.run("zone", "export", importDomain); err != nil {
+		t.Fatalf("export: %v\n%s", err, h.err.String())
+	}
+
+	warnings := h.err.String()
+	if !strings.Contains(warnings, "ALIAS is not a standard record type") {
+		t.Errorf("an exported ALIAS did not warn that other tooling rejects it:\n%s", warnings)
+	}
+	if !strings.Contains(warnings, "managed for you by the platform") {
+		t.Errorf("an exported machine-owned record did not warn that provenance is lost:\n%s", warnings)
+	}
+
+	// The warnings must not reach the file. Redirecting stdout is how anyone
+	// actually uses this command.
+	if strings.Contains(h.out.String(), "Warning:") {
+		t.Errorf("a warning leaked into the zone file:\n%s", h.out.String())
+	}
+}

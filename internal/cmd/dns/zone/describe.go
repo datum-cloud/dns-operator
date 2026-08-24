@@ -124,7 +124,27 @@ func printZoneDetail(out io.Writer, z *dnsv1alpha1.DNSZone, project string, sets
 		printDelegationInstructions(out, domain, d)
 	}
 
+	printZoneNextSteps(out, domain, word)
+}
+
+// printZoneNextSteps offers what is worth doing next, which depends on whether
+// the zone is working.
+//
+// A zone the platform has rejected is not serving changes, so "add a record" is
+// not a next step — it is an instruction to do something that will not take
+// effect, offered at the exact moment the reader is trying to find out what is
+// wrong.
+func printZoneNextSteps(out io.Writer, domain, status string) {
 	_, _ = fmt.Fprintf(out, "\nNext steps:\n")
+
+	if status == util.StatusRejected || status == util.StatusError {
+		_, _ = fmt.Fprintf(out, "  The zone is not serving changes while it is %s. The Status line above\n", strings.ToLower(status))
+		_, _ = fmt.Fprintf(out, "  carries the reason from the platform.\n\n")
+		_, _ = fmt.Fprintf(out, "  See what is there:       datumctl dns record list %s\n", domain)
+		_, _ = fmt.Fprintf(out, "  Keep a copy:             datumctl dns zone export %s --file %s.zone\n", domain, domain)
+		return
+	}
+
 	_, _ = fmt.Fprintf(out, "  List records:            datumctl dns record list %s\n", domain)
 	_, _ = fmt.Fprintf(out, "  Add a record:            datumctl dns record create %s www A 203.0.113.10\n", domain)
 	_, _ = fmt.Fprintf(out, "  Export as a zone file:   datumctl dns zone export %s\n", domain)

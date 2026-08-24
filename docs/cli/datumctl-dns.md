@@ -267,6 +267,9 @@ api  IN CNAME lb.example.net.
 @  IN MX 10 mail.example.com.
 ```
 
+> [!NOTE]
+> Two things a zone file can't carry, which `zone export` warns about on stderr. `ALIAS` isn't a standard record type, so other providers and BIND tooling reject those lines. And records Datum manages for you export as ordinary records, so importing the file elsewhere recreates them as yours.
+
 `record apply` compares a zone file against the live zone and makes the zone match:
 
 ```console

@@ -5,11 +5,13 @@ package zone
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
 	"github.com/spf13/cobra"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/cmd/dns/bind"
 	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
 )
@@ -77,6 +79,8 @@ func runExport(cmd *cobra.Command, domain, file string) error {
 			fmt.Sprintf("writing zone file for %s: %v", zone.Spec.DomainName, err)).WithCause(err)
 	}
 
+	printExportCaveats(cmd.ErrOrStderr(), sets, records)
+
 	if file == "" {
 		_, err := cmd.OutOrStdout().Write(buf.Bytes())
 		return err
@@ -87,4 +91,41 @@ func runExport(cmd *cobra.Command, domain, file string) error {
 	}
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Wrote %d record(s) to %s\n", len(records), file)
 	return nil
+}
+
+// printExportCaveats names the two things an exported file does not carry, on
+// stderr so the file itself stays clean when it is redirected.
+//
+// Both matter only when the file leaves Datum, which is exactly the case
+// `zone export` exists for, and neither is visible by reading the output.
+func printExportCaveats(w io.Writer, sets []dnsv1alpha1.DNSRecordSet, records []bind.Record) {
+	var aliases int
+	for _, r := range records {
+		if r.Type == dnsv1alpha1.RRTypeALIAS {
+			aliases++
+		}
+	}
+	if aliases > 0 {
+		// ALIAS is a provider extension, not an IANA type, so a standard parser
+		// rejects the line rather than ignoring it: named-checkzone and most
+		// other providers will refuse the whole file.
+		_, _ = fmt.Fprintf(w,
+			"Warning: %d ALIAS record(s) written. ALIAS is not a standard record type — other DNS providers and BIND tooling will reject those lines.\n",
+			aliases)
+	}
+
+	var managed int
+	for i := range sets {
+		if owned, _ := util.MachineOwned(sets[i].Labels); owned {
+			managed += len(sets[i].Spec.Records)
+		}
+	}
+	if managed > 0 {
+		// A zone file has nowhere to record who owns a record, so importing this
+		// file elsewhere recreates them as ordinary records that a controller
+		// will then contend with.
+		_, _ = fmt.Fprintf(w,
+			"Warning: %d of %d record(s) are managed for you by the platform. A zone file cannot record that, so importing this file elsewhere recreates them as ordinary records.\n",
+			managed, len(records))
+	}
 }

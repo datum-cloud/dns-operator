@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -414,5 +415,35 @@ func TestDescribeOutputName(t *testing.T) {
 	}
 	if got, want := h.out.String(), "example.com\n"; got != want {
 		t.Errorf("output = %q, want %q", got, want)
+	}
+}
+
+// TestDescribeRejectedDoesNotSuggestWriting checks the advice matches the state.
+// A rejected zone is not serving changes, so "add a record" is an instruction to
+// do something that will not take effect, offered exactly when the reader is
+// trying to work out what is wrong.
+func TestDescribeRejectedDoesNotSuggestWriting(t *testing.T) {
+	z := newZone("example-com", "example.com")
+	z.Status.Conditions = []metav1.Condition{{
+		Type:               "Accepted",
+		Status:             metav1.ConditionFalse,
+		Reason:             "DNSZoneInUse",
+		Message:            "DNSZone claimed by another resource",
+		LastTransitionTime: metav1.Now(),
+	}}
+	h := newHarness(t, newFakeClient(t, z))
+	if err := h.run("zone", "describe", "example.com"); err != nil {
+		t.Fatalf("zone describe: %v", err)
+	}
+
+	out := collapse(h.out.String())
+	if !strings.Contains(out, "Rejected") {
+		t.Fatalf("status is not Rejected:\n%s", h.out.String())
+	}
+	if !strings.Contains(out, "not serving changes") {
+		t.Errorf("a rejected zone did not say it is not serving changes:\n%s", h.out.String())
+	}
+	if strings.Contains(out, "Add a record:") {
+		t.Errorf("a rejected zone was told to add a record:\n%s", h.out.String())
 	}
 }

@@ -513,3 +513,19 @@ func TestEveryAdvertisedStatusTokenIsAccepted(t *testing.T) {
 		})
 	}
 }
+
+// TestListFilterExcludedDoesNotOfferOnboarding separates two empty results that
+// want opposite advice. A filter matching nothing on a populated zone previously
+// printed the empty-zone block, telling someone with a thousand records to
+// import a zone file.
+func TestListFilterExcludedDoesNotOfferOnboarding(t *testing.T) {
+	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", nil)))
+	requireNoError(t, h.run("record", "list", testDomain, "--name", "nosuchname"))
+
+	out := collapse(h.stdout())
+	mustContain(t, out, "No records in zone example.com match the given filters.")
+	mustContain(t, out, "Show every record: datumctl dns record list example.com")
+	if strings.Contains(out, "Get started") || strings.Contains(out, "Import a zone") {
+		t.Errorf("a filter that excluded every row offered the empty-zone onboarding block:\n%s", h.stdout())
+	}
+}

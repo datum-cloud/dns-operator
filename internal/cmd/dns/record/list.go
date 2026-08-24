@@ -120,6 +120,10 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 	}
 
 	rows := flatten(sets, zone)
+	// Kept so the empty state can tell "this zone holds nothing of the type you
+	// asked for" from "the row filters excluded everything", which want
+	// opposite advice.
+	beforeRowFilters := len(rows)
 	rows, err = filterRows(rows, opts, zone.Spec.DomainName)
 	if err != nil {
 		return err
@@ -150,7 +154,7 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 	}
 
 	if len(rows) == 0 {
-		printEmpty(out, zone.Spec.DomainName, opts, rrTypes)
+		printEmpty(out, zone.Spec.DomainName, opts, rrTypes, beforeRowFilters > 0)
 		return nil
 	}
 
@@ -354,11 +358,25 @@ func printNames(out io.Writer, rows []row) {
 
 // printEmpty is never an error. An empty zone is the normal first state, and a
 // filter that matches nothing is a question that got an answer.
-func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1alpha1.RRType) {
+// printEmpty explains an empty result. excludedByFilters reports that the zone
+// did hold matching records until the row filters removed them, which is a
+// different situation from a zone with nothing to show and wants the opposite
+// advice: offering to populate a zone that already holds a thousand records
+// reads as though they have been lost.
+func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1alpha1.RRType, excludedByFilters bool) {
+	// The headline reports what was asked; the advice below reports what to do
+	// about it, and the two turn on different questions.
 	if listIsFiltered(opts) {
 		_, _ = fmt.Fprintf(out, "No records in zone %s match the given filters.\n", domain)
 	} else {
 		_, _ = fmt.Fprintf(out, "No records found in zone %s.\n", domain)
+	}
+
+	if excludedByFilters {
+		_, _ = fmt.Fprintf(out, "\nNext steps:\n")
+		_, _ = fmt.Fprintf(out, "  Show every record:  datumctl dns record list %s\n", domain)
+		_, _ = fmt.Fprintf(out, "  Widen the filter:   datumctl dns record list %s --help\n", domain)
+		return
 	}
 
 	example := "www A 203.0.113.10"

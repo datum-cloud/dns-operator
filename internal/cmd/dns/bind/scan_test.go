@@ -3,9 +3,10 @@
 package bind
 
 import (
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
 	"strings"
 	"testing"
+
+	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
 )
 
 // The scanner is where the zone-file grammar's three traps live: a ";" that is

@@ -219,6 +219,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 
 	for owner, entries := range rrsetMap {
 		ownerRRSet, ok := BuildOwnerRRSet(zone.Spec.DomainName, recordSet.Spec.RecordType, owner, entries)
+		qualifyOwner := QualifyOwner(owner, zone.Spec.DomainName)
 
 		if !ok {
 			c.logger.Info("Failed to build owner RRSet", "owner", owner, "rrset", ownerRRSet)
@@ -227,7 +228,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 
 		c.logger.Info("Ensuring record set for owner", "owner", owner, "rrset", ownerRRSet)
-		zones, err := c.getPDNSRRSet(ctx, zone.Spec.DomainName, owner, recordSet.Spec.RecordType)
+		zones, err := c.getPDNSRRSet(ctx, zone.Spec.DomainName, qualifyOwner, recordSet.Spec.RecordType)
 		c.logger.Info("Fetched existing rrsets from PDNS", "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones, "err", err)
 
 		if err != nil {

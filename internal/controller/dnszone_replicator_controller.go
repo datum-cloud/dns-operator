@@ -391,6 +391,44 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 // ensureZoneAccounting ensures a ConfigMap exists in the accounting namespace keyed by domainName,
 // and that its Data["owner"] matches the provided owner value. It creates the namespace/configmap if needed.
 // Returns owned=true when this zone owns the ConfigMap; owned=false if another owner holds it.
+// zoneOwnerKey normalizes an owner string ("<clusterName>/<namespace>/<name>")
+// for comparison. multicluster-runtime v0.23 dropped the leading slash from
+// cluster names, so records written before it carry one extra slash.
+//
+// The ConfigMap is already keyed by domain, so trimming only ever equates "x"
+// and "/x" — the same cluster either side of the upgrade.
+func zoneOwnerKey(owner string) string {
+	return strings.TrimPrefix(owner, "/")
+}
+
+// sameZoneOwner reports whether two owner strings name the same owner. Use it
+// for every ownership comparison; a byte comparison locked every zone out on
+// 2026-08-24.
+func sameZoneOwner(a, b string) bool {
+	return zoneOwnerKey(a) == zoneOwnerKey(b)
+}
+
+// adoptZoneOwner rewrites a legacy record to the current spelling, so the
+// tolerance is needed once per zone rather than forever.
+//
+// Failure is logged and swallowed: ownership is already settled, and blocking
+// reconciliation over bookkeeping would restore the outage this ends.
+func (r *DNSZoneReplicator) adoptZoneOwner(ctx context.Context, cm *corev1.ConfigMap, owner string) {
+	base := cm.DeepCopy()
+	if cm.Data == nil {
+		cm.Data = map[string]string{}
+	}
+	previous := cm.Data["owner"]
+	cm.Data["owner"] = owner
+	if err := r.DownstreamClient.Patch(ctx, cm, client.MergeFrom(base)); err != nil {
+		log.FromContext(ctx).Error(err, "could not migrate zone accounting owner; will retry on the next reconcile",
+			"configmap", cm.Name, "from", previous, "to", owner)
+		return
+	}
+	log.FromContext(ctx).Info("migrated zone accounting owner to the current cluster-name spelling",
+		"configmap", cm.Name, "from", previous, "to", owner)
+}
+
 func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *dnsv1alpha1.DNSZone, owner string) (bool, error) {
 	ns := r.AccountingNamespace
 	if ns == "" {
@@ -430,8 +468,12 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 			if apierrors.IsAlreadyExists(cerr) {
 				// Re-fetch and compare
 				if gerr := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: upstream.Spec.DomainName}, &cm); gerr == nil {
-					owned := cm.Data["owner"] == owner
-					log.FromContext(ctx).Info("zone accounting exists after race", "namespace", ns, "configmap", upstream.Spec.DomainName, "owned", owned, "owner", cm.Data["owner"])
+					stored := cm.Data["owner"]
+					owned := sameZoneOwner(stored, owner)
+					log.FromContext(ctx).Info("zone accounting exists after race", "namespace", ns, "configmap", upstream.Spec.DomainName, "owned", owned, "owner", stored)
+					if owned && stored != owner {
+						r.adoptZoneOwner(ctx, &cm, owner)
+					}
 					return owned, nil
 				}
 			}
@@ -442,8 +484,12 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 	}
 
 	// Exists: check ownership
-	owned := cm.Data["owner"] == owner
-	log.FromContext(ctx).Info("zone accounting found (downstream)", "namespace", ns, "configmap", cm.Name, "owned", owned, "owner", cm.Data["owner"])
+	stored := cm.Data["owner"]
+	owned := sameZoneOwner(stored, owner)
+	log.FromContext(ctx).Info("zone accounting found (downstream)", "namespace", ns, "configmap", cm.Name, "owned", owned, "owner", stored)
+	if owned && stored != owner {
+		r.adoptZoneOwner(ctx, &cm, owner)
+	}
 	return owned, nil
 }
 
@@ -462,7 +508,9 @@ func (r *DNSZoneReplicator) cleanupZoneAccounting(ctx context.Context, upstream 
 		}
 		return err
 	}
-	if cm.Data["owner"] != owner {
+	// Tolerant here too: a byte comparison would refuse to release a legacy
+	// record, leaking an entry that blocks the domain from ever being reclaimed.
+	if !sameZoneOwner(cm.Data["owner"], owner) {
 		// Do not delete if not owned by us
 		log.FromContext(ctx).Info("skipping accounting configmap delete; not owner", "namespace", ns, "configmap", cm.Name, "owner", cm.Data["owner"], "expectedOwner", owner)
 		return nil

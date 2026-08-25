@@ -38,6 +38,12 @@ linters:
           - dupl
           - lll
         path: internal/*
+      # goconst on table-driven tests forces constants that hide what a case is
+      # asserting — `testOwner` in place of "www" makes the case less readable,
+      # not more — and the repeated literals are the fixtures themselves.
+      - linters:
+          - goconst
+        path: _test\.go
     paths:
       - third_party$
       - builtin$

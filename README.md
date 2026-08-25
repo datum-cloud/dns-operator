@@ -55,6 +55,8 @@ the [Architecture Overview](docs/architecture/README.md).
   conditions
 
 **Guides**
+- [`datumctl dns` plugin](docs/cli/datumctl-dns.md) — Install and use the CLI
+  for managing zones and records
 - [Service Catalog](config/components/service-catalog/README.md) — DNS as a
   billable platform service
 

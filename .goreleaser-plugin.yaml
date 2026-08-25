@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+#
+# Release configuration for the datumctl-dns plugin binary ONLY.
+#
+# The operator itself is not released by goreleaser: it ships as a container
+# image and a kustomize bundle built by .github/workflows/publish.yml. This
+# config is kept in its own file (rather than .goreleaser.yaml) so that a
+# plugin release can never touch those artifacts. Run it explicitly:
+#
+#   goreleaser release --config .goreleaser-plugin.yaml --clean
+#
+# Asset names must match the matrix datumctl expects for plugin installs, see
+# https://github.com/datum-cloud/datumctl/blob/main/examples/plugin-dns/README.md
+#
+#   datumctl-dns_Linux_x86_64.tar.gz    datumctl-dns_Darwin_x86_64.tar.gz
+#   datumctl-dns_Linux_arm64.tar.gz     datumctl-dns_Darwin_arm64.tar.gz
+#   datumctl-dns_Windows_x86_64.zip     checksums.txt
+version: 2
+
+project_name: datumctl-dns
+
+builds:
+  - id: datumctl-dns
+    binary: datumctl-dns # the name datumctl execs; must not carry os/arch suffixes
+    main: ./cmd/datumctl-dns
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # datumctl publishes no windows/arm64 asset name; drop the combination
+      # rather than shipping an archive nothing resolves to.
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      # .Version has the leading "v" stripped; the plugin manifest reports a
+      # v-prefixed semver, matching the compute plugin.
+      - "-X main.version=v{{ .Version }}"
+
+archives:
+  - id: datumctl-dns
+    ids:
+      - datumctl-dns
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    # Ship the binary and nothing else. goreleaser's default file set would add
+    # the repo README/LICENSE, but this repo's README documents the Kubernetes
+    # operator, not the plugin, so it would only mislead whoever extracts the
+    # archive.
+    files:
+      # "none*" is goreleaser's idiom for "no extra files": an empty list is
+      # indistinguishable from unset, so the default README/LICENSE globs would
+      # come back. This glob matches nothing.
+      - none*
+    # Produces datumctl-dns_Linux_x86_64.tar.gz and friends. Keep the archive
+    # flat: datumctl extracts the binary by name, not by path.
+    wrap_in_directory: false
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+
+# Two-column "<sha256>  <filename>" file, which is the format the
+# `datumctl plugin install owner/repo` path parses.
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  # The operator's own release notes are written by hand; keep plugin releases
+  # from replacing an existing release body.
+  mode: append
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

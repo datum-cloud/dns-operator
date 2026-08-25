@@ -80,6 +80,10 @@ release:
   # The operator's own release notes are written by hand; keep plugin releases
   # from replacing an existing release body.
   mode: append
+  # Dev tags (v0.7.0-dev.1) are previews, not the release users should land on.
+  # "auto" keys off the tag's prerelease suffix, so a GA tag still publishes as
+  # the latest release.
+  prerelease: auto
 
 changelog:
   sort: asc

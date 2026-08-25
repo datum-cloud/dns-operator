@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-federation
 spec:
+  concurrent: false
   timeouts:
     # The edge-replication script step below polls for a few minutes waiting
     # for Lightningstream to sync; give exec plenty of headroom.
@@ -23,7 +24,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-federation
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -40,7 +41,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-federation
+            name: powerdns-e2e
 
   - name: Create DNSZone on control
     try:
@@ -53,7 +54,7 @@ spec:
             name: fed-test-example
           spec:
             domainName: fed-test.example
-            dnsZoneClassName: powerdns-federation
+            dnsZoneClassName: powerdns-e2e
     - assert:
         cluster: control
         resource:
@@ -262,7 +263,7 @@ spec:
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
-          name: powerdns-federation
+          name: powerdns-e2e
         expect:
         - match:
             apiVersion: dns.networking.miloapis.com/v1alpha1

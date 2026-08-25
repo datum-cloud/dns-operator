@@ -4,6 +4,7 @@ kind: Test
 metadata:
   name: dns-operator-alias
 spec:
+  concurrent: false
   timeouts:
     # Our validation runs a couple of external DNS queries; default exec timeout (5s) is too tight.
     exec: 30s
@@ -22,7 +23,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -39,7 +40,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
 
   - name: Prereq - create DNSZoneClass in downstream
     try:
@@ -49,7 +50,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -66,7 +67,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-static-alias
+            name: powerdns-e2e
 
   - name: Create DNSZone upstream
     try:
@@ -79,7 +80,7 @@ spec:
             name: example-test
           spec:
             domainName: example.test
-            dnsZoneClassName: powerdns-static-alias
+            dnsZoneClassName: powerdns-e2e
     - assert:
         cluster: upstream
         resource:

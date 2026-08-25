@@ -26,7 +26,8 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	operatorconfig "go.miloapis.com/dns-operator/internal/config"
-	pdnsclient "go.miloapis.com/dns-operator/internal/pdns"
+	"go.miloapis.com/dns-operator/internal/dns"
+	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 )
 
 // conflictRequeueInterval is how long to wait before re-attempting a record
@@ -48,7 +49,7 @@ type PowerDNSRecordSetReconcileRequest struct {
 type DNSRecordSetPowerDNSReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	PDNS   pdnsclient.Interface
+	DNS    *dns.DNSHandler
 
 	// Config controls controller concurrency and rate limiting.
 	// When constructed by the binary, defaults are applied via server config defaulting.
@@ -141,7 +142,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		payload, ok := pdnsclient.BuildOwnerRRSet(zone.Spec.DomainName, dnsv1alpha1.RRType(req.RecordSetType), req.RecordSetName, entries)
 		if ok && len(payload.Records) > 0 {
 			wantDelete = false
-			pdnsErr = r.PDNS.ReplaceRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName, payload.TTL, payload.Records)
+			pdnsErr = r.DNS.Client.ReplaceRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName, payload.TTL, payload.Records)
 		}
 	}
 	if wantDelete {
@@ -154,7 +155,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		if aliasedOwnerExists(&rsList, req.RecordSetType, zone.Spec.DomainName, rrsetName, req.RecordSetName) {
 			logger.Info("owner name aliases a live RRset; skipping delete", "rrsetName", rrsetName)
 		} else {
-			pdnsErr = r.PDNS.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
+			pdnsErr = r.DNS.Client.DeleteRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName)
 		}
 	}
 	if pdnsErr != nil {
@@ -454,12 +455,18 @@ func splitRecordSetsByName(
 }
 
 func (r *DNSRecordSetPowerDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if r.PDNS == nil {
+	if r.DNS == nil {
 		cli, err := pdnsclient.NewFromEnv()
 		if err != nil {
 			return err
 		}
-		r.PDNS = cli
+
+		r.DNS = &dns.DNSHandler{
+			Client: &dns.DNSClient{
+				Name:          "powerdns",
+				DNSController: cli,
+			},
+		}
 	}
 
 	ctx := context.Background()

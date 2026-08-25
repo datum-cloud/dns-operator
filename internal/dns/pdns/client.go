@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,23 +14,9 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
+	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 )
-
-type Interface interface {
-	ReplaceRRSet(
-		ctx context.Context,
-		zone string,
-		recordType string,
-		ownerName string,
-		ttl int,
-		values []string,
-	) error
-
-	DeleteRRSet(
-		ctx context.Context,
-		zone, recordType, ownerName string,
-	) error
-}
 
 type Client struct {
 	BaseURL string
@@ -75,6 +62,14 @@ type createZoneRequest struct {
 	Kind        string   `json:"kind"` // "Native" or "Master"
 	Nameservers []string `json:"nameservers"`
 }
+
+// Init initializes the PDNS client.
+func (c *Client) Init() error {
+	return nil
+}
+
+// Shutdown is a no-op for the PDNS client.
+func (c *Client) Shutdown() {}
 
 // CreateZone creates an authoritative zone if it does not exist.
 func (c *Client) CreateZone(ctx context.Context, zone string, nameservers []string) error {
@@ -126,9 +121,15 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode/100 != 2 {
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", dnserrors.ErrZoneNotFound
+	}
+
+	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("pdns get zone failed: status %d", resp.StatusCode)
 	}
+
 	var zoneResponse struct {
 		Name string `json:"name"`
 	}
@@ -138,10 +139,29 @@ func (c *Client) GetZone(ctx context.Context, zone string) (string, error) {
 	return zoneResponse.Name, nil
 }
 
-// in package pdns (same file as CreateZone/GetZone)
-func (c *Client) DeleteZone(ctx context.Context, zone string) error {
+func (c *Client) EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) error {
+	// Get desired nameservers from the class spec
+	nss := c.GetZoneNameservers(ctx, zone, class)
+
+	if _, err := c.GetZone(ctx, zone.Spec.DomainName); err != nil {
+		if errors.Is(err, dnserrors.ErrZoneNotFound) {
+			// Zone does not exist, create it
+			if err := c.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
+				return err
+			}
+			return nil
+		}
+		return err
+	}
+
+	// TODO -> Implement zone update logic if needed (e.g., updating nameservers)
+
+	return nil
+}
+
+func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
-		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone+".", nil)
+		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone.Spec.DomainName+".", nil)
 	if err != nil {
 		return err
 	}
@@ -157,9 +177,32 @@ func (c *Client) DeleteZone(ctx context.Context, zone string) error {
 	if resp.StatusCode == http.StatusNotFound {
 		return nil // already gone
 	}
-	if resp.StatusCode/100 != 2 {
+	if resp.StatusCode == 204 {
+		return nil // deleted successfully
+	}
+	if resp.StatusCode != 200 {
 		return fmt.Errorf("pdns delete zone failed: status %d", resp.StatusCode)
 	}
+	return nil
+}
+
+func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string {
+	var desiredNS []string
+	if class.Spec.NameServerPolicy != nil &&
+		class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic &&
+		class.Spec.NameServerPolicy.Static != nil {
+		desiredNS = append(desiredNS, class.Spec.NameServerPolicy.Static.Servers...)
+	}
+
+	return dnsutils.NormalizeStringSlice(desiredNS)
+}
+
+func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+
+	return nil
+}
+
+func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
 	return nil
 }
 

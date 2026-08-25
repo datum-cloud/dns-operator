@@ -5,32 +5,15 @@ namespace: dns-agent-system
 
 resources:
   - ../../agent
-  - minio-deployment.yaml
-  - minio-service.yaml
-  - minio-pvc.yaml
-  - minio-credentials.yaml
 
 components:
   - ../../agent/components/namespace
 
-# Patch the replica count to 2
 patches:
   - target:
       kind: StatefulSet
       name: pdns-auth
     patch: |-
-      - op: replace
-        path: /spec/replicas
-        value: 2
       - op: add
         path: /spec/template/spec/containers/0/args/-
         value: --controller-class=powerdns-e2e
-
-generatorOptions:
-  disableNameSuffixHash: true
-
-configMapGenerator:
-  - name: lightningstream-config
-    behavior: replace
-    files:
-      - lightningstream.yaml

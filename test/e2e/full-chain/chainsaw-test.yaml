@@ -21,6 +21,7 @@ kind: Test
 metadata:
   name: dns-operator-full-chain
 spec:
+  concurrent: false
   timeouts:
     # The edge-replication script polls for a few minutes waiting for
     # Lightningstream to sync; give exec plenty of headroom.
@@ -42,7 +43,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-fullchain
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -59,7 +60,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-fullchain
+            name: powerdns-e2e
 
   - name: Prereq - create DNSZoneClass in downstream
     # The replicated DNSZone references this class by name on the downstream
@@ -71,7 +72,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-fullchain
+            name: powerdns-e2e
           spec:
             controllerName: powerdns
             nameServerPolicy:
@@ -88,7 +89,7 @@ spec:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
           metadata:
-            name: powerdns-fullchain
+            name: powerdns-e2e
 
   - name: Create DNSZone upstream
     try:
@@ -101,7 +102,7 @@ spec:
             name: fullchain-example
           spec:
             domainName: fullchain.example
-            dnsZoneClassName: powerdns-fullchain
+            dnsZoneClassName: powerdns-e2e
     - assert:
         cluster: upstream
         resource:
@@ -311,7 +312,7 @@ spec:
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
-          name: powerdns-fullchain
+          name: powerdns-e2e
         expect:
         - match:
             apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -323,7 +324,7 @@ spec:
         ref:
           apiVersion: dns.networking.miloapis.com/v1alpha1
           kind: DNSZoneClass
-          name: powerdns-fullchain
+          name: powerdns-e2e
         expect:
         - match:
             apiVersion: dns.networking.miloapis.com/v1alpha1

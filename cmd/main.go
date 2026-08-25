@@ -39,6 +39,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
+	"go.miloapis.com/dns-operator/internal/dns"
 	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -79,6 +80,8 @@ func main() {
 
 	var role string
 	var serverConfigFile string
+	var controllerClass string
+	var controllerClassType string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -105,6 +108,21 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
 	flag.StringVar(&role, "role", "downstream", "Role for this binary: downstream|replicator|all")
+
+	// specifies the class name (DNSZoneClass.metadata.name) which this controller should reconcile zones for
+	flag.StringVar(
+		&controllerClass,
+		"controller-class",
+		"datum-external-global-dns",
+		"The controller class to use for this instance. Defaults to 'datum-external-global-dns'",
+	)
+	// specifies the class type (DNSZoneClass.spec.controllerName) which this controller should reconcile zones for
+	flag.StringVar(
+		&controllerClassType,
+		"controller-class-type",
+		"powerdns",
+		"The controller class type to use for this instance. Defaults to 'powerdns'",
+	)
 
 	opts := zap.Options{
 		Development: true,
@@ -222,8 +240,17 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := (&controller.DNSZoneReconciler{Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme()}).SetupWithManager(mgr); err != nil {
+		dnsHandler, err := dns.New(controllerClass, controllerClassType)
+		if err != nil {
+			setupLog.Error(err, "unable to initialize DNS handler")
+			os.Exit(1)
+		}
+
+		if err := (&controller.DNSZoneReconciler{
+			Client:     mgr.GetClient(),
+			Scheme:     mgr.GetScheme(),
+			DNSHandler: dnsHandler,
+		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSZone")
 			os.Exit(1)
 		}
@@ -232,6 +259,7 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)
 		}
+
 		pdnsControllerCfg := serverConfig.Controllers.DNSRecordSetPowerDNS
 		if err := (&controller.DNSRecordSetPowerDNSReconciler{
 			Client: mgr.GetClient(),

@@ -21,12 +21,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/dns"
 )
 
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
 type DNSRecordSetReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme     *runtime.Scheme
+	DNSHandler *dns.DNSHandler
 }
 
 // downstreamRSFinalizer is the finalizer for the DNSRecordSetDownstream controller
@@ -42,7 +44,7 @@ const downstreamRSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
-	logger.Info("reconcile start")
+	logger.Info("dnsrecordset reconcile start")
 
 	var rs dnsv1alpha1.DNSRecordSet
 	if err := r.Get(ctx, req.NamespacedName, &rs); err != nil {
@@ -58,10 +60,12 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				logger.Error(err, "failed to add finalizer", "namespace", rs.Namespace, "name", rs.Name)
 				return ctrl.Result{}, err
 			}
+			logger.Info("Added finalizer to recordset")
 			return ctrl.Result{}, nil
 		}
 	} else {
 		if controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
+
 			base := rs.DeepCopy()
 			controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)
 			if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {

@@ -46,6 +46,7 @@ type pdnsAPIError struct {
 
 var ACCOUNT_OBSERVED_GENERATION = "OBSERVED_GENERATION"
 var ACCOUNT_OWNER = "OWNER"
+var ACCOUNT_OBJECT_UID = "OBJECT_UID"
 
 func (e *pdnsAPIError) Error() string {
 	if e.Body != "" {
@@ -170,6 +171,9 @@ func (c *Client) EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class
 }
 
 func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error {
+	if zone.Spec.DomainName == "" {
+		return nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone.Spec.DomainName+".", nil)
 	if err != nil {
@@ -254,24 +258,27 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 				statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
 			} else {
 				needsReplace := true
+				currentUID := ""
+				currentGeneration := int64(0)
 				for _, comment := range zones[0].Comments {
-					// Check if the comment contains the observed generation
-					if comment.Account == ACCOUNT_OBSERVED_GENERATION {
+					switch comment.Account {
+					case ACCOUNT_OBSERVED_GENERATION:
 						observedGeneration, err := strconv.ParseInt(comment.Content, 10, 64)
 						if err != nil {
 							c.logger.Error(err, "Failed to parse observed generation", "comment", comment.Content)
-							break
+							continue
 						}
-						if observedGeneration == recordSet.Generation {
-							// Observed generation matches, no need to replace
-							needsReplace = false
-						}
-						break
+						currentGeneration = observedGeneration
+					case ACCOUNT_OBJECT_UID:
+						currentUID = comment.Content
 					}
+				}
+				if currentGeneration == recordSet.Generation && currentUID == string(recordSet.UID) {
+					needsReplace = false
 				}
 
 				if needsReplace {
-					c.logger.Info("RRSet Needs Replacement. Observed generation does not match current generation", "owner", owner, "observedGeneration", zones[0].Comments, "currentGeneration", recordSet.Generation)
+					c.logger.Info("RRSet Needs Replacement. Metadata does not match current object", "owner", owner, "existingGeneration", currentGeneration, "existingUID", currentUID, "currentGeneration", recordSet.Generation, "currentUID", string(recordSet.UID))
 					statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
 				} else {
 					statusList = append(statusList, recordSetSuccessStatus(owner, recordSet.Status.RecordSets))
@@ -360,6 +367,7 @@ func (c *Client) replaceRRSetStatus(
 		ownerRRSet.Records,
 		fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name),
 		recordSet.Generation,
+		string(recordSet.UID),
 	)
 	if err != nil {
 		return recordSetErrorStatus(owner, err)
@@ -673,6 +681,7 @@ func (c *Client) ReplaceRRSet(
 	values []string,
 	ownerRef string,
 	observedGeneration int64,
+	objectUID string,
 ) error {
 	records := make([]rrsetRecord, 0, len(values))
 	for _, v := range values {
@@ -681,21 +690,29 @@ func (c *Client) ReplaceRRSet(
 		}
 		records = append(records, rrsetRecord{Content: v, Disabled: false})
 	}
+	comments := []zoneRRsetComment{{
+		Account:    ACCOUNT_OWNER,
+		Content:    ownerRef,
+		ModifiedAt: int(time.Now().Unix()),
+	}, {
+		Account:    ACCOUNT_OBSERVED_GENERATION,
+		Content:    fmt.Sprintf("%d", observedGeneration),
+		ModifiedAt: int(time.Now().Unix()),
+	}}
+	if objectUID != "" {
+		comments = append(comments, zoneRRsetComment{
+			Account:    ACCOUNT_OBJECT_UID,
+			Content:    objectUID,
+			ModifiedAt: int(time.Now().Unix()),
+		})
+	}
 	patch := []rrset{{
 		Name:       QualifyOwner(ownerName, zone),
 		Type:       recordType,
 		TTL:        ttl,
 		ChangeType: "REPLACE",
 		Records:    dedupeRecords(records),
-		Comments: []zoneRRsetComment{{
-			Account:    ACCOUNT_OWNER,
-			Content:    ownerRef,
-			ModifiedAt: int(time.Now().Unix()),
-		}, {
-			Account:    ACCOUNT_OBSERVED_GENERATION,
-			Content:    fmt.Sprintf("%d", observedGeneration),
-			ModifiedAt: int(time.Now().Unix()),
-		}},
+		Comments:   comments,
 	}}
 	return c.applyRRSetPatch(ctx, zone, patch)
 }

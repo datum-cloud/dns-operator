@@ -142,7 +142,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		payload, ok := pdnsclient.BuildOwnerRRSet(zone.Spec.DomainName, dnsv1alpha1.RRType(req.RecordSetType), req.RecordSetName, entries)
 		if ok && len(payload.Records) > 0 {
 			wantDelete = false
-			pdnsErr = r.DNS.Client.ReplaceRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName, payload.TTL, payload.Records, owner.Name, owner.Generation)
+			pdnsErr = r.DNS.Client.ReplaceRRSet(ctx, zone.Spec.DomainName, req.RecordSetType, req.RecordSetName, payload.TTL, payload.Records, owner.Name, owner.Generation, string(owner.UID))
 		}
 	}
 	if wantDelete {

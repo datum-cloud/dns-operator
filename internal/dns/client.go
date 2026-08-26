@@ -31,6 +31,7 @@ type DNSController interface {
 		values []string,
 		ownerRef string,
 		observedGeneration int64,
+		objectUID string,
 	) error
 
 	DeleteRRSet(

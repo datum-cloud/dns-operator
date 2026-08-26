@@ -35,6 +35,7 @@ type ReplaceCall struct {
 	OwnerName  string
 	TTL        int
 	Values     []string
+	OwnerUID   string
 }
 
 type DeleteCall struct {
@@ -93,6 +94,7 @@ func (f *FakeDNSClient) ReplaceRRSet(
 	values []string,
 	ownerRef string,
 	observedGeneration int64,
+	objectUID string,
 ) error {
 	f.ReplaceCalls = append(f.ReplaceCalls, ReplaceCall{
 		Zone:       zone,
@@ -100,6 +102,7 @@ func (f *FakeDNSClient) ReplaceRRSet(
 		OwnerName:  ownerName,
 		TTL:        ttl,
 		Values:     values,
+		OwnerUID:   objectUID,
 	})
 	return f.ReplaceErr
 }

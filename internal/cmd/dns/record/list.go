@@ -20,7 +20,49 @@ type listOptions struct {
 	name      string
 	status    string
 	managed   bool
-	noHeaders bool
+	noManaged bool
+	// wantManaged is the resolved answer to "whose records?", or nil for no
+	// filter at all. It is what separates --managed=false, which asks for your
+	// own records, from an absent flag, which asks for everything.
+	wantManaged *bool
+	noHeaders   bool
+}
+
+// resolveManaged folds the two spellings of the same question into one answer.
+//
+// --no-managed exists because that is how people reach for it, and because a
+// negated flag reads better in a script than a value on a positive one.
+// --managed=false keeps working and means the same thing: it already parsed
+// before this filter existed, where it silently meant "no filter", so leaving
+// it inert would be the more surprising choice.
+func (o *listOptions) resolveManaged(cmd *cobra.Command) error {
+	managedSet := cmd.Flags().Changed("managed")
+	noManagedSet := cmd.Flags().Changed("no-managed")
+
+	if managedSet && noManagedSet {
+		return util.UsageErrorf("--managed and --no-managed ask opposite questions; pass only one").
+			WithFix("use --managed for the records Datum manages, or --no-managed for your own.")
+	}
+
+	switch {
+	case managedSet:
+		o.wantManaged = &o.managed
+	case noManagedSet:
+		// --no-managed asks for the records Datum does NOT manage, so the
+		// wanted value is the negation.
+		want := !o.noManaged
+		o.wantManaged = &want
+	}
+	return nil
+}
+
+// managedFlagName reports which spelling the user actually typed, so a warning
+// quotes their own command line back at them.
+func (o *listOptions) managedFlagName() string {
+	if o.noManaged {
+		return "--no-managed"
+	}
+	return "--managed"
 }
 
 func listCommand() *cobra.Command {
@@ -61,7 +103,9 @@ them.`,
 	cmd.Flags().StringSliceVar(&opts.rrTypes, "type", nil, "Filter to these record types (comma separated, e.g. A,MX)")
 	cmd.Flags().StringVar(&opts.name, "name", "", "Filter to one owner name, relative to the zone (e.g. www, @)")
 	cmd.Flags().StringVar(&opts.status, "status", "", statusFilterUsage())
-	cmd.Flags().BoolVar(&opts.managed, "managed", false, "Show only platform- and Gateway-managed records")
+	cmd.Flags().BoolVar(&opts.managed, "managed", false, "Show only the records Datum manages for you")
+	cmd.Flags().BoolVar(&opts.noManaged, "no-managed", false,
+		"Show only your own records, excluding the ones Datum manages (same as --managed=false)")
 	cmd.Flags().BoolVar(&opts.noHeaders, "no-headers", false, "Omit the table header row (table and wide only)")
 
 	_ = cmd.RegisterFlagCompletionFunc("type", completeRRTypes)
@@ -76,6 +120,10 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 
 	format, err := util.ParseOutputFormat(outputFlag(cmd))
 	if err != nil {
+		return err
+	}
+
+	if err := opts.resolveManaged(cmd); err != nil {
 		return err
 	}
 
@@ -286,7 +334,7 @@ func filterRows(rows []row, opts *listOptions, zoneDomain string) ([]row, error)
 		if opts.status != "" && !statusMatches(r.status, opts.status) {
 			continue
 		}
-		if opts.managed && !r.prov.managed() {
+		if opts.wantManaged != nil && *opts.wantManaged != r.prov.managed() {
 			continue
 		}
 		out = append(out, r)
@@ -433,8 +481,8 @@ func warnUnfilterable(errOut io.Writer, opts *listOptions) {
 	if opts.status != "" {
 		ignored = append(ignored, "--status")
 	}
-	if opts.managed {
-		ignored = append(ignored, "--managed")
+	if opts.wantManaged != nil {
+		ignored = append(ignored, opts.managedFlagName())
 	}
 	if len(ignored) == 0 {
 		return
@@ -462,7 +510,7 @@ func isAre(n int) string {
 }
 
 func listIsFiltered(opts *listOptions) bool {
-	return len(opts.rrTypes) > 0 || opts.name != "" || opts.status != "" || opts.managed
+	return len(opts.rrTypes) > 0 || opts.name != "" || opts.status != "" || opts.wantManaged != nil
 }
 
 // exampleValue is the "Get started" line for a type, so a filtered-empty

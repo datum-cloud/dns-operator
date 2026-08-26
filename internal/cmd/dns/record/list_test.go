@@ -4,6 +4,7 @@ package record
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -600,5 +601,97 @@ func TestListDoesNotReportShorteningItDidNotDo(t *testing.T) {
 
 	if strings.Contains(h.stdout(), "shortened to fit") {
 		t.Errorf("a zone of short values reported shortening:\n%s", h.stdout())
+	}
+}
+
+// --managed reads as a question about who writes the record, and both answers
+// are useful: "what does Datum manage for me" and "what did I put here".
+// Without the second, a zone full of machine-written records has no view of the
+// handful a person actually authored.
+func TestListManagedFilterAnswersBothWays(t *testing.T) {
+	mine := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", ttl(300)))
+	theirs := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "_acme-challenge", TTL: ttl(60),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: `"gateway-token"`},
+	})
+	theirs.Labels = map[string]string{
+		util.LabelSourceKind: "Gateway",
+		util.LabelSourceName: "edge-gw",
+	}
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		want    string
+		exclude string
+	}{
+		{
+			name: "no flag shows both",
+			args: []string{"record", "list", testDomain},
+			want: "www", exclude: "",
+		},
+		{
+			name: "--managed shows only what Datum writes",
+			args: []string{"record", "list", testDomain, "--managed"},
+			want: "_acme-challenge", exclude: "www",
+		},
+		{
+			name: "--managed=false shows only your own",
+			args: []string{"record", "list", testDomain, "--managed=false"},
+			want: "www", exclude: "_acme-challenge",
+		},
+		{
+			// The spelling people reach for, and the one that reads better in a
+			// script than a value on a positive flag.
+			name: "--no-managed is the same request",
+			args: []string{"record", "list", testDomain, "--no-managed"},
+			want: "www", exclude: "_acme-challenge",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, testZone(), mine, theirs)
+			requireNoError(t, h.run(tc.args...))
+
+			out := h.stdout()
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output is missing %q:\n%s", tc.want, out)
+			}
+			if tc.exclude != "" && strings.Contains(out, tc.exclude) {
+				t.Errorf("output should not contain %q:\n%s", tc.exclude, out)
+			}
+		})
+	}
+
+	// The default must stay "show everything": an absent flag is not a filter.
+	h := newHarness(t, testZone(), mine, theirs)
+	requireNoError(t, h.run("record", "list", testDomain))
+	for _, want := range []string{"www", "_acme-challenge"} {
+		if !strings.Contains(h.stdout(), want) {
+			t.Errorf("the unfiltered list dropped %q:\n%s", want, h.stdout())
+		}
+	}
+}
+
+// The two spellings are opposites of each other, so asking for both at once is
+// a contradiction rather than a precedence puzzle to resolve silently.
+func TestListManagedAndNoManagedConflict(t *testing.T) {
+	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA,
+		aEntry("www", "203.0.113.10", ttl(300))))
+
+	err := h.run("record", "list", testDomain, "--managed", "--no-managed")
+	if err == nil {
+		t.Fatal("passing both flags succeeded, want a usage error")
+	}
+	var cliErr *util.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error is %T, want *util.CLIError", err)
+	}
+	if cliErr.Code() != util.ExitUsage {
+		t.Errorf("code = %d, want %d (DNS_USAGE)", cliErr.Code(), util.ExitUsage)
+	}
+	for _, want := range []string{"--managed", "--no-managed"} {
+		if !strings.Contains(cliErr.Error(), want) {
+			t.Errorf("message %q does not name %s", cliErr.Error(), want)
+		}
 	}
 }

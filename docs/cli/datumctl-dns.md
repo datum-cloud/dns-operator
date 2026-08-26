@@ -214,7 +214,9 @@ www      A       5m     203.0.113.11           Programmed
 5 records — 4 Programmed, 1 Pending
 ```
 
-Filters: `--type A,MX`, `--name www`, `--status programmed|pending|conflict|not-owner|error|rejected`, and `--managed` for records that Datum manages for you.
+Filters: `--type A,MX`, `--name www`, and `--status programmed|pending|conflict|not-owner|error|rejected`.
+
+Two more narrow by who writes the record: `--managed` shows the ones Datum manages for you, and `--no-managed` shows only your own. In a zone where another system writes most of the records, `--no-managed` is the view of what you actually put there. `--managed=false` means the same as `--no-managed`.
 
 Long values, such as a DKIM key, are shortened to keep the table readable, and the count of shortened values is reported below it. Use `-o wide` or `-o json` to see them in full.
 

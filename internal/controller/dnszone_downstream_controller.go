@@ -7,6 +7,8 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,10 +58,6 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// --- Ensure finalizer (non-deletion path) ---
 	if zone.DeletionTimestamp.IsZero() {
 		if !controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-
-			if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
-				return ctrl.Result{}, nil
-			}
 			base := zone.DeepCopy()
 			controllerutil.AddFinalizer(&zone, downstreamZoneFinalizer)
 			if err := r.Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
@@ -72,6 +70,31 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	} else {
 		// --- Deletion path: remove from PDNS, then drop finalizer ---
 		if controllerutil.ContainsFinalizer(&zone, downstreamZoneFinalizer) {
+			var rrs dnsv1alpha1.DNSRecordSetList
+			if err := r.List(ctx, &rrs,
+				client.InNamespace(zone.Namespace),
+				client.MatchingFields{"spec.DNSZoneRef.Name": zone.Name},
+			); err != nil {
+				ctrl.LoggerFrom(ctx).Error(err, "failed to list recordsets for zone", "zone", zone.Name, "namespace", zone.Namespace)
+				return ctrl.Result{}, err
+			}
+
+			if len(rrs.Items) > 0 {
+				logger.Info("Found recordsets for zone, requeuing for deletion", "count", len(rrs.Items))
+
+				// Manually triggering GB because once Zone is gone, we can't determine what class the recordset belongs to once deleted,
+				// so we can't rely on the GB to enqueue the recordsets for deletion.
+				for _, rrs := range rrs.Items {
+					logger.Info("Deleting recordset for zone", "recordset", rrs.Name)
+					err := r.Delete(ctx, &rrs)
+					if err != nil {
+						logger.Error(err, "failed to delete child recordset for zone", "recordset", rrs.Name)
+					}
+				}
+
+				return ctrl.Result{Requeue: true}, nil
+			}
+
 			err := r.DNSHandler.Client.DeleteZone(ctx, zone)
 
 			if err != nil {
@@ -97,6 +120,22 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	// Deepcopy for patching Status
+	base := zone.DeepCopy()
+
+	condAccepted := metav1.Condition{
+		Type:               CondAccepted,
+		Status:             metav1.ConditionTrue,
+		Reason:             ReasonAccepted,
+		Message:            "Zone Accepted",
+		ObservedGeneration: zone.Generation,
+		LastTransitionTime: metav1.Now(),
+	}
+	if apimeta.SetStatusCondition(&zone.Status.Conditions, condAccepted) {
+		logger.Info("Setting Accepted condition")
+		return ctrl.Result{}, r.Status().Patch(ctx, &zone, client.MergeFrom(base))
+	}
+
 	err := r.DNSHandler.Client.EnsureZone(ctx, zone, zc)
 
 	if err != nil {
@@ -104,19 +143,28 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Ensured zone in downstream controller")
-
 	// Update the status of the DNSZone with the nameservers from the downstream controller
 	desiredNS := r.DNSHandler.Client.GetZoneNameservers(ctx, zone, zc)
 	currentNS := dnsutils.NormalizeStringSlice(zone.Status.Nameservers)
 	if len(desiredNS) > 0 && !equality.Semantic.DeepEqual(currentNS, desiredNS) {
-		base := zone.DeepCopy()
 		zone.Status.Nameservers = desiredNS
 		if err := r.Status().Patch(ctx, &zone, client.MergeFrom(base)); err != nil {
 			logger.Error(err, "failed to update zone status")
 			return ctrl.Result{}, err
 		}
 		logger.Info("Updated zone status")
+	}
+
+	condProgrammed := metav1.Condition{
+		Type:               CondProgrammed,
+		Status:             metav1.ConditionTrue,
+		Reason:             ReasonProgrammed,
+		Message:            "Zone Programmed",
+		ObservedGeneration: zone.Generation,
+		LastTransitionTime: metav1.Now(),
+	}
+	if apimeta.SetStatusCondition(&zone.Status.Conditions, condProgrammed) {
+		return ctrl.Result{}, r.Status().Patch(ctx, &zone, client.MergeFrom(base))
 	}
 
 	return ctrl.Result{}, nil

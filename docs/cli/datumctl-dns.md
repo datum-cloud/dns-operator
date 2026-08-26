@@ -216,6 +216,8 @@ www      A       5m     203.0.113.11           Programmed
 
 Filters: `--type A,MX`, `--name www`, `--status programmed|pending|conflict|not-owner|error|rejected`, and `--managed` for records that Datum manages for you.
 
+Long values, such as a DKIM key, are shortened to keep the table readable, and the count of shortened values is reported below it. Use `-o wide` or `-o json` to see them in full.
+
 `datumctl dns record describe example.com @ MX` shows the value both as a single line and broken into named fields, plus the current status. Omit the type to see every record at that name.
 
 > [!NOTE]

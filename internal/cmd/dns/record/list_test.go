@@ -58,12 +58,14 @@ func TestListFlattensBucketsIntoRecords(t *testing.T) {
 		"@ MX 5m 10 mail.example.com. Programmed",
 		"@ NS 1h ns1.datum.net. Pending (platform)",
 		"@ NS 1h ns2.datum.net. Pending (platform)",
-		"@ SOA 1h ns1.datum.net. hostmaster.example.com. 1 10800 3600 604800 3600 Pending (platform)",
+		// The SOA is the one row in this fixture long enough to be shortened.
+		"@ SOA 1h ns1.datum.net. hostmaster.example.com. 1 10800 3600 604… Pending (platform)",
 		"_acme-challenge TXT 1m \"gateway-token\" Pending (managed by AI Edge)",
 		"api A Auto 203.0.113.12 Conflict",
 		"www A 5m 203.0.113.10 Programmed",
 		"www A 5m 203.0.113.11 Programmed",
 		"8 records — 3 Programmed, 4 Pending, 1 Conflict",
+		"1 value shortened to fit — see them in full with -o wide or -o json",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("row count = %d, want %d\n--- got ---\n%s", len(got), len(want), h.stdout())
@@ -527,5 +529,76 @@ func TestListFilterExcludedDoesNotOfferOnboarding(t *testing.T) {
 	mustContain(t, out, "Show every record: datumctl dns record list example.com")
 	if strings.Contains(out, "Get started") || strings.Contains(out, "Import a zone") {
 		t.Errorf("a filter that excluded every row offered the empty-zone onboarding block:\n%s", h.stdout())
+	}
+}
+
+// A DKIM key is the value that motivated this: tabwriter sizes the VALUE column
+// to its widest cell, so one 400-byte record indents every other row in the
+// zone. The default table shortens it; -o wide is the way to see it whole.
+func TestListShortensLongValuesUnlessWide(t *testing.T) {
+	key := `"v=DKIM1; k=rsa; p=` + strings.Repeat("M", 400) + `"`
+	dkim := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "sel._domainkey", TTL: ttl(300),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: key},
+	})
+
+	t.Run("the default table shortens it and says so", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain))
+
+		out := h.stdout()
+		if strings.Contains(out, strings.Repeat("M", 100)) {
+			t.Errorf("the full key reached the default table:\n%s", out)
+		}
+		if !strings.Contains(out, "…") {
+			t.Errorf("the value was cut without an ellipsis to show it:\n%s", out)
+		}
+		// Silent truncation would be worse than the whitespace it fixes.
+		if !strings.Contains(out, "1 value shortened to fit") {
+			t.Errorf("the shortened value was not reported:\n%s", out)
+		}
+		if !strings.Contains(out, "-o wide") {
+			t.Errorf("nothing pointed at the way to see it in full:\n%s", out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if len([]rune(line)) > 160 {
+				t.Errorf("a row is still %d columns wide:\n%s", len([]rune(line)), line)
+			}
+		}
+	})
+
+	t.Run("-o wide is the escape hatch and stays whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "wide"))
+
+		out := h.stdout()
+		// The displayed form escapes semicolons and re-chunks the value into
+		// character-strings, so the assertion is on a run that fits one chunk
+		// rather than on the stored string.
+		if !strings.Contains(out, strings.Repeat("M", 200)) {
+			t.Errorf("-o wide did not carry the full value:\n%.200s", out)
+		}
+		if strings.Contains(out, "shortened to fit") {
+			t.Errorf("-o wide reported shortening it had not done:\n%s", out)
+		}
+	})
+
+	t.Run("-o json is untouched", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "json"))
+		if !strings.Contains(h.stdout(), strings.Repeat("M", 200)) {
+			t.Errorf("-o json did not carry the full value:\n%.200s", h.stdout())
+		}
+	})
+}
+
+// An ordinary zone must not pick up a footer it has no reason to show.
+func TestListDoesNotReportShorteningItDidNotDo(t *testing.T) {
+	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA,
+		aEntry("www", "203.0.113.10", ttl(300))))
+	requireNoError(t, h.run("record", "list", testDomain))
+
+	if strings.Contains(h.stdout(), "shortened to fit") {
+		t.Errorf("a zone of short values reported shortening:\n%s", h.stdout())
 	}
 }

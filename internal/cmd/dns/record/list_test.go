@@ -4,6 +4,7 @@ package record
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -58,12 +59,14 @@ func TestListFlattensBucketsIntoRecords(t *testing.T) {
 		"@ MX 5m 10 mail.example.com. Programmed",
 		"@ NS 1h ns1.datum.net. Pending (platform)",
 		"@ NS 1h ns2.datum.net. Pending (platform)",
-		"@ SOA 1h ns1.datum.net. hostmaster.example.com. 1 10800 3600 604800 3600 Pending (platform)",
+		// The SOA is the one row in this fixture long enough to be shortened.
+		"@ SOA 1h ns1.datum.net. hostmaster.example.com. 1 10800 3600 604… Pending (platform)",
 		"_acme-challenge TXT 1m \"gateway-token\" Pending (managed by AI Edge)",
 		"api A Auto 203.0.113.12 Conflict",
 		"www A 5m 203.0.113.10 Programmed",
 		"www A 5m 203.0.113.11 Programmed",
 		"8 records — 3 Programmed, 4 Pending, 1 Conflict",
+		"1 value shortened to fit — see them in full with -o wide or -o json",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("row count = %d, want %d\n--- got ---\n%s", len(got), len(want), h.stdout())
@@ -527,5 +530,233 @@ func TestListFilterExcludedDoesNotOfferOnboarding(t *testing.T) {
 	mustContain(t, out, "Show every record: datumctl dns record list example.com")
 	if strings.Contains(out, "Get started") || strings.Contains(out, "Import a zone") {
 		t.Errorf("a filter that excluded every row offered the empty-zone onboarding block:\n%s", h.stdout())
+	}
+}
+
+// A DKIM key is the value that motivated this: tabwriter sizes the VALUE column
+// to its widest cell, so one 400-byte record indents every other row in the
+// zone. The default table shortens it; -o wide is the way to see it whole.
+func TestListShortensLongValuesUnlessWide(t *testing.T) {
+	key := `"v=DKIM1; k=rsa; p=` + strings.Repeat("M", 400) + `"`
+	dkim := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "sel._domainkey", TTL: ttl(300),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: key},
+	})
+
+	t.Run("the default table shortens it and says so", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain))
+
+		out := h.stdout()
+		if strings.Contains(out, strings.Repeat("M", 100)) {
+			t.Errorf("the full key reached the default table:\n%s", out)
+		}
+		if !strings.Contains(out, "…") {
+			t.Errorf("the value was cut without an ellipsis to show it:\n%s", out)
+		}
+		// Silent truncation would be worse than the whitespace it fixes.
+		if !strings.Contains(out, "1 value shortened to fit") {
+			t.Errorf("the shortened value was not reported:\n%s", out)
+		}
+		if !strings.Contains(out, "-o wide") {
+			t.Errorf("nothing pointed at the way to see it in full:\n%s", out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if len([]rune(line)) > 160 {
+				t.Errorf("a row is still %d columns wide:\n%s", len([]rune(line)), line)
+			}
+		}
+	})
+
+	t.Run("-o wide is the escape hatch and stays whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "wide"))
+
+		out := h.stdout()
+		// The displayed form escapes semicolons and re-chunks the value into
+		// character-strings, so the assertion is on a run that fits one chunk
+		// rather than on the stored string.
+		if !strings.Contains(out, strings.Repeat("M", 200)) {
+			t.Errorf("-o wide did not carry the full value:\n%.200s", out)
+		}
+		if strings.Contains(out, "shortened to fit") {
+			t.Errorf("-o wide reported shortening it had not done:\n%s", out)
+		}
+	})
+
+	t.Run("-o json is untouched", func(t *testing.T) {
+		h := newHarness(t, testZone(), dkim)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "json"))
+		if !strings.Contains(h.stdout(), strings.Repeat("M", 200)) {
+			t.Errorf("-o json did not carry the full value:\n%.200s", h.stdout())
+		}
+	})
+}
+
+// An ordinary zone must not pick up a footer it has no reason to show.
+func TestListDoesNotReportShorteningItDidNotDo(t *testing.T) {
+	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA,
+		aEntry("www", "203.0.113.10", ttl(300))))
+	requireNoError(t, h.run("record", "list", testDomain))
+
+	if strings.Contains(h.stdout(), "shortened to fit") {
+		t.Errorf("a zone of short values reported shortening:\n%s", h.stdout())
+	}
+}
+
+// --managed reads as a question about who writes the record, and both answers
+// are useful: "what does Datum manage for me" and "what did I put here".
+// Without the second, a zone full of machine-written records has no view of the
+// handful a person actually authored.
+func TestListManagedFilterAnswersBothWays(t *testing.T) {
+	mine := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", ttl(300)))
+	theirs := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "_acme-challenge", TTL: ttl(60),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: `"gateway-token"`},
+	})
+	theirs.Labels = map[string]string{
+		util.LabelSourceKind: "Gateway",
+		util.LabelSourceName: "edge-gw",
+	}
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		want    string
+		exclude string
+	}{
+		{
+			name: "no flag shows both",
+			args: []string{"record", "list", testDomain},
+			want: "www", exclude: "",
+		},
+		{
+			name: "--managed shows only what Datum writes",
+			args: []string{"record", "list", testDomain, "--managed"},
+			want: "_acme-challenge", exclude: "www",
+		},
+		{
+			name: "--managed=false shows only your own",
+			args: []string{"record", "list", testDomain, "--managed=false"},
+			want: "www", exclude: "_acme-challenge",
+		},
+		{
+			// The spelling people reach for, and the one that reads better in a
+			// script than a value on a positive flag.
+			name: "--no-managed is the same request",
+			args: []string{"record", "list", testDomain, "--no-managed"},
+			want: "www", exclude: "_acme-challenge",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, testZone(), mine, theirs)
+			requireNoError(t, h.run(tc.args...))
+
+			out := h.stdout()
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("output is missing %q:\n%s", tc.want, out)
+			}
+			if tc.exclude != "" && strings.Contains(out, tc.exclude) {
+				t.Errorf("output should not contain %q:\n%s", tc.exclude, out)
+			}
+		})
+	}
+
+	// The default must stay "show everything": an absent flag is not a filter.
+	h := newHarness(t, testZone(), mine, theirs)
+	requireNoError(t, h.run("record", "list", testDomain))
+	for _, want := range []string{"www", "_acme-challenge"} {
+		if !strings.Contains(h.stdout(), want) {
+			t.Errorf("the unfiltered list dropped %q:\n%s", want, h.stdout())
+		}
+	}
+}
+
+// The two spellings are opposites of each other, so asking for both at once is
+// a contradiction rather than a precedence puzzle to resolve silently.
+func TestListManagedAndNoManagedConflict(t *testing.T) {
+	h := newHarness(t, testZone(), recordSet(dnsv1alpha1.RRTypeA,
+		aEntry("www", "203.0.113.10", ttl(300))))
+
+	err := h.run("record", "list", testDomain, "--managed", "--no-managed")
+	if err == nil {
+		t.Fatal("passing both flags succeeded, want a usage error")
+	}
+	var cliErr *util.CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("error is %T, want *util.CLIError", err)
+	}
+	if cliErr.Code() != util.ExitUsage {
+		t.Errorf("code = %d, want %d (DNS_USAGE)", cliErr.Code(), util.ExitUsage)
+	}
+	for _, want := range []string{"--managed", "--no-managed"} {
+		if !strings.Contains(cliErr.Error(), want) {
+			t.Errorf("message %q does not name %s", cliErr.Error(), want)
+		}
+	}
+}
+
+// Names split into two populations: the ones people write, which are short
+// conventions, and the ones machines write, which carry an encoded identifier.
+// The default table is sized for the first and cuts the second.
+func TestListShortensMachineWrittenNames(t *testing.T) {
+	// 52 characters is what a base32-encoded 256-bit key costs, which is the
+	// shape that started this.
+	key := strings.Repeat("a", 52)
+	machine := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "_iroh." + key + ".connectors", TTL: ttl(5),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: `"addr=10.0.0.1:1"`},
+	})
+	// A DKIM selector is among the longest names a person actually writes, and
+	// must survive intact.
+	human := recordSet(dnsv1alpha1.RRTypeA, aEntry("selector1._domainkey", "203.0.113.10", ttl(300)))
+
+	h := newHarness(t, testZone(), machine, human)
+	requireNoError(t, h.run("record", "list", testDomain))
+	out := h.stdout()
+
+	if !strings.Contains(out, "selector1._domainkey") {
+		t.Errorf("a hand-written name was shortened:\n%s", out)
+	}
+	if strings.Contains(out, key) {
+		t.Errorf("the full encoded name reached the default table:\n%s", out)
+	}
+	if !strings.Contains(out, "1 name shortened to fit") {
+		t.Errorf("the shortened name was not reported:\n%s", out)
+	}
+
+	t.Run("-o wide keeps it whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), machine, human)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "wide"))
+		if !strings.Contains(h.stdout(), key) {
+			t.Errorf("-o wide did not carry the full name:\n%s", h.stdout())
+		}
+	})
+
+	// -o name is how a shortened row is turned back into something you can pass
+	// to describe or delete, so it must never shorten.
+	t.Run("-o name keeps it whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), machine, human)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "name"))
+		if !strings.Contains(h.stdout(), key) {
+			t.Errorf("-o name did not carry the full name:\n%s", h.stdout())
+		}
+	})
+}
+
+// Both counts appear in one line, and each reads naturally on its own.
+func TestShortenedNote(t *testing.T) {
+	for _, tc := range []struct {
+		names, values int
+		want          string
+	}{
+		{0, 0, ""},
+		{1, 0, "1 name shortened to fit — see them in full with -o wide or -o json"},
+		{0, 2, "2 values shortened to fit — see them in full with -o wide or -o json"},
+		{3, 4, "3 names and 4 values shortened to fit — see them in full with -o wide or -o json"},
+	} {
+		if got := shortenedNote(tc.names, tc.values); got != tc.want {
+			t.Errorf("shortenedNote(%d, %d) = %q, want %q", tc.names, tc.values, got, tc.want)
+		}
 	}
 }

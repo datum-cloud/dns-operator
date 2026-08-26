@@ -501,6 +501,109 @@ func TestEncodeSvcbParamsAndLine(t *testing.T) {
 	}
 }
 
+func TestReplaceRRSet_TracksUIDAndGeneration(t *testing.T) {
+	t.Parallel()
+
+	var captured patchZoneRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/zones/example.com.", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &captured)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	s := httptest.NewServer(mux)
+	defer s.Close()
+
+	c := NewClient(s.URL, "k")
+	if err := c.ReplaceRRSet(context.Background(), "example.com", "A", "www", 300, []string{"1.2.3.4"}, "default/rs", 1, "new-uid"); err != nil {
+		t.Fatalf("ReplaceRRSet error: %v", err)
+	}
+	if len(captured.RRSets) != 1 {
+		t.Fatalf("expected 1 rrset patch, got %#v", captured.RRSets)
+	}
+	if got := captured.RRSets[0].Comments; len(got) != 3 || got[0].Account != ACCOUNT_OWNER || got[1].Account != ACCOUNT_OBSERVED_GENERATION {
+		t.Fatalf("comments missing owner/generation metadata: %#v", got)
+	}
+	if got := captured.RRSets[0].Comments[0].Content; got != "default/rs" {
+		t.Fatalf("owner comment content = %q, want %q", got, "default/rs")
+	}
+	if got := captured.RRSets[0].Comments[1].Content; got != "1" {
+		t.Fatalf("generation comment content = %q, want %q", got, "1")
+	}
+	if got := captured.RRSets[0].Comments[2].Account; got != ACCOUNT_OBJECT_UID {
+		t.Fatalf("uid comment account = %q, want %q", got, ACCOUNT_OBJECT_UID)
+	}
+	if got := captured.RRSets[0].Comments[2].Content; got != "new-uid" {
+		t.Fatalf("uid comment content = %q, want %q", got, "new-uid")
+	}
+}
+
+func TestEnsureRecordSet_ReplacesWhenUIDChanges(t *testing.T) {
+	t.Parallel()
+
+	existing := zoneResponse{
+		Name: exampleCom,
+		RRSets: []zoneRRset{{
+			Name:    "www.example.com.",
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1"},
+				{Account: ACCOUNT_OBJECT_UID, Content: "old-uid"},
+			},
+		}},
+	}
+	var captured patchZoneRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/zones/example.com.", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(existing)
+		case http.MethodPatch:
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &captured)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/v1/servers/localhost/search-data", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode([]queryResponse{})
+	})
+
+	s := httptest.NewServer(mux)
+	defer s.Close()
+
+	c := NewClient(s.URL, "k")
+	rs := dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "default", UID: "new-uid", Generation: 1},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records: []dnsv1alpha1.RecordEntry{{
+				Name: "www",
+				A:    &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"},
+			}},
+		},
+	}
+	if _, err := c.EnsureRecordSet(context.Background(), dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"}}, rs); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+	if len(captured.RRSets) == 0 {
+		t.Fatal("expected a PATCH to replace stale recordset when UID changed")
+	}
+	if got := captured.RRSets[0].Comments[2].Content; got != "new-uid" {
+		t.Fatalf("patched UID comment = %q, want %q", got, "new-uid")
+	}
+}
+
 func TestApplyRecordSetAuthoritative_PatchIncludesDeletes(t *testing.T) {
 	t.Parallel()
 

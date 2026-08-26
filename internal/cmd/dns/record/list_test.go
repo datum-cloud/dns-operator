@@ -695,3 +695,68 @@ func TestListManagedAndNoManagedConflict(t *testing.T) {
 		}
 	}
 }
+
+// Names split into two populations: the ones people write, which are short
+// conventions, and the ones machines write, which carry an encoded identifier.
+// The default table is sized for the first and cuts the second.
+func TestListShortensMachineWrittenNames(t *testing.T) {
+	// 52 characters is what a base32-encoded 256-bit key costs, which is the
+	// shape that started this.
+	key := strings.Repeat("a", 52)
+	machine := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "_iroh." + key + ".connectors", TTL: ttl(5),
+		TXT: &dnsv1alpha1.TXTRecordSpec{Content: `"addr=10.0.0.1:1"`},
+	})
+	// A DKIM selector is among the longest names a person actually writes, and
+	// must survive intact.
+	human := recordSet(dnsv1alpha1.RRTypeA, aEntry("selector1._domainkey", "203.0.113.10", ttl(300)))
+
+	h := newHarness(t, testZone(), machine, human)
+	requireNoError(t, h.run("record", "list", testDomain))
+	out := h.stdout()
+
+	if !strings.Contains(out, "selector1._domainkey") {
+		t.Errorf("a hand-written name was shortened:\n%s", out)
+	}
+	if strings.Contains(out, key) {
+		t.Errorf("the full encoded name reached the default table:\n%s", out)
+	}
+	if !strings.Contains(out, "1 name shortened to fit") {
+		t.Errorf("the shortened name was not reported:\n%s", out)
+	}
+
+	t.Run("-o wide keeps it whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), machine, human)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "wide"))
+		if !strings.Contains(h.stdout(), key) {
+			t.Errorf("-o wide did not carry the full name:\n%s", h.stdout())
+		}
+	})
+
+	// -o name is how a shortened row is turned back into something you can pass
+	// to describe or delete, so it must never shorten.
+	t.Run("-o name keeps it whole", func(t *testing.T) {
+		h := newHarness(t, testZone(), machine, human)
+		requireNoError(t, h.run("record", "list", testDomain, "-o", "name"))
+		if !strings.Contains(h.stdout(), key) {
+			t.Errorf("-o name did not carry the full name:\n%s", h.stdout())
+		}
+	})
+}
+
+// Both counts appear in one line, and each reads naturally on its own.
+func TestShortenedNote(t *testing.T) {
+	for _, tc := range []struct {
+		names, values int
+		want          string
+	}{
+		{0, 0, ""},
+		{1, 0, "1 name shortened to fit — see them in full with -o wide or -o json"},
+		{0, 2, "2 values shortened to fit — see them in full with -o wide or -o json"},
+		{3, 4, "3 names and 4 values shortened to fit — see them in full with -o wide or -o json"},
+	} {
+		if got := shortenedNote(tc.names, tc.values); got != tc.want {
+			t.Errorf("shortenedNote(%d, %d) = %q, want %q", tc.names, tc.values, got, tc.want)
+		}
+	}
+}

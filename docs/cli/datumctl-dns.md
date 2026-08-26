@@ -218,7 +218,7 @@ Filters: `--type A,MX`, `--name www`, and `--status programmed|pending|conflict|
 
 Two more narrow by who writes the record: `--managed` shows the ones Datum manages for you, and `--no-managed` shows only your own. In a zone where another system writes most of the records, `--no-managed` is the view of what you actually put there. `--managed=false` means the same as `--no-managed`.
 
-Long values, such as a DKIM key, are shortened to keep the table readable, and the count of shortened values is reported below it. Use `-o wide` or `-o json` to see them in full.
+Long names and values are shortened to keep the table readable, and the counts are reported below it. Names are cut at 40 characters, which leaves the shapes people write — `www`, `_dmarc`, `_acme-challenge`, a DKIM selector — intact while shortening the encoded identifiers that automation writes. Use `-o wide` or `-o json` to see them in full, or `-o name` for the identifiers alone.
 
 `datumctl dns record describe example.com @ MX` shows the value both as a single line and broken into named fields, plus the current status. Omit the type to see every record at that name.
 

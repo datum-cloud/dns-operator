@@ -206,14 +206,12 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 		return nil
 	}
 
-	truncated := printTable(out, rows, format == util.OutputWide, opts.noHeaders)
+	shortNames, shortValues := printTable(out, rows, format == util.OutputWide, opts.noHeaders)
 	if !boolFlag(cmd, "quiet") {
 		_, _ = fmt.Fprintf(out, "\n%s — %s\n", countOf(len(rows), pluralize(len(rows), "record")), strings.Join(tally(rows), ", "))
-		// A shortened value is only honest if the reader is told where the rest
-		// of it went.
-		if truncated > 0 {
-			_, _ = fmt.Fprintf(out, "%s shortened to fit — see them in full with -o wide or -o json\n",
-				countOf(truncated, pluralize(truncated, "value")))
+		// Shortening is only honest if the reader is told where the rest went.
+		if note := shortenedNote(shortNames, shortValues); note != "" {
+			_, _ = fmt.Fprintln(out, note)
 		}
 	}
 	return nil
@@ -379,9 +377,23 @@ func firstWord(s string) string {
 // values this exists for.
 const maxValueWidth = 56
 
-// printTable renders the rows and reports how many values it had to shorten, so
-// the caller can say so rather than leaving a silent ellipsis.
-func printTable(out io.Writer, rows []row, wide, noHeaders bool) int {
+// maxNameWidth is how much of a record's owner name the default table shows.
+//
+// Names split into two populations. The ones people write are conventions with
+// fixed shapes — @, www, _dmarc, _acme-challenge, a DKIM selector — and run to
+// about twenty characters; the ones machines write carry an encoded identifier
+// and start around thirty-two: a hex digest, a UUID, or the fifty-two
+// characters a base32 public key costs. 40 sits in the gap, so a hand-written
+// name is shown whole and an encoded one is cut.
+//
+// Cutting a name is a real cost, because unlike a value a name is an argument:
+// `record describe` and `record delete` take one. The footer says so and points
+// at the output that carries them in full.
+const maxNameWidth = 40
+
+// printTable renders the rows and reports how many names and values it had to
+// shorten, so the caller can say so rather than leaving a silent ellipsis.
+func printTable(out io.Writer, rows []row, wide, noHeaders bool) (names, values int) {
 	tw := util.NewTabWriter(out)
 	if !noHeaders {
 		if wide {
@@ -390,7 +402,6 @@ func printTable(out io.Writer, rows []row, wide, noHeaders bool) int {
 			_, _ = fmt.Fprintf(tw, "NAME\tTYPE\tTTL\tVALUE\tSTATUS\n")
 		}
 	}
-	truncated := 0
 	for _, r := range rows {
 		status := r.status
 		if m := r.prov.marker(); m != "" {
@@ -403,15 +414,36 @@ func printTable(out io.Writer, rows []row, wide, noHeaders bool) int {
 				r.set.Name, util.RelativeAge(r.set.CreationTimestamp))
 			continue
 		}
-		value, cut := util.TruncateCell(util.OrDash(r.value), maxValueWidth)
-		if cut {
-			truncated++
+		name, nameCut := util.TruncateCell(r.name, maxNameWidth)
+		if nameCut {
+			names++
+		}
+		value, valueCut := util.TruncateCell(util.OrDash(r.value), maxValueWidth)
+		if valueCut {
+			values++
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			r.name, r.rrType, rdata.FormatTTL(r.ttl), value, status)
+			name, r.rrType, rdata.FormatTTL(r.ttl), value, status)
 	}
 	_ = tw.Flush()
-	return truncated
+	return names, values
+}
+
+// shortenedNote names what was cut, in the order the columns appear. A name is
+// called out separately from a value because it is the one a reader may need to
+// type back.
+func shortenedNote(names, values int) string {
+	var parts []string
+	if names > 0 {
+		parts = append(parts, countOf(names, pluralize(names, "name")))
+	}
+	if values > 0 {
+		parts = append(parts, countOf(values, pluralize(values, "value")))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " and ") + " shortened to fit — see them in full with -o wide or -o json"
 }
 
 // printNames emits the (name, type) pairs that address a record in every other

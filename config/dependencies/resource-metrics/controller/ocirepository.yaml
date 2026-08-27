@@ -1,0 +1,14 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: resource-metrics
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: oci://ghcr.io/milo-os/resource-metrics-kustomize
+  # Pinned to a branch bundle that ships a multi-arch (amd64+arm64) controller
+  # image (milo-os/resource-metrics#13). Bump to a v0.0.0-main tag once #13 and
+  # #14 (configurable OTLP endpoint) merge — at which point the endpoint patch
+  # below collapses to an OTEL_EXPORTER_OTLP_ENDPOINT env patch.
+  ref:
+    tag: v0.0.0-feat-multi-arch-arm64-image

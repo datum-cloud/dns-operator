@@ -1,0 +1,42 @@
+# PowerDNS agent overlay that points the agent at the Milo core control plane as
+# its DNS read (and status-write) source, for the DNS drift-detection e2e.
+#
+# Bases on ../agent-powerdns-federated (PR #60: PowerDNS agent + Lightningstream
+# + RustFS/S3 sync, deployed on the control cluster) and changes ONLY the agent's
+# API target — the PowerDNS, Lightningstream, and s3-credentials wiring are left
+# intact and inherited unchanged.
+#
+# What this overlay adds vs. agent-powerdns-federated:
+#   1. Replaces the agent server-config (configMapGenerator behavior:replace) with
+#      a milo-targeted one.
+#   2. Mounts a milo-kubeconfig Secret at /milo on the manager container and sets
+#      KUBECONFIG=/milo/kubeconfig (deployment-patch.yaml) — this is what actually
+#      retargets the downstream agent's read/write to the Milo core CP (see the
+#      note in server-config.yaml / deployment-patch.yaml).
+#   3. Ships the milo-kubeconfig Secret (in-cluster milo-apiserver + test-admin-token).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dns-agent-system
+
+resources:
+  - ../agent-powerdns-federated
+  - milo-kubeconfig-secret.yaml
+
+# Keep the deterministic name (base disables the name-suffix hash so the
+# StatefulSet's `agent-server-config` volume ref stays valid).
+generatorOptions:
+  disableNameSuffixHash: true
+
+# Replace the base agent server-config with the milo-targeted one.
+configMapGenerator:
+  - name: agent-server-config
+    behavior: replace
+    files:
+      - server-config.yaml
+
+patches:
+  - path: deployment-patch.yaml
+    target:
+      kind: StatefulSet
+      name: pdns-auth

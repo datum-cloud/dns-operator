@@ -1,0 +1,280 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+#
+# Orphan / engineering#346 regression: a DNSRecordSet exists on the downstream
+# (core) CP with no surviving upstream owner. We reproduce it by replicating a
+# record, scaling the replicator to 0 (so it can't cascade-delete the downstream
+# copy), then deleting the upstream object. The downstream copy is left behind =>
+# orphan. We assert the orphan recording rule fires and the alert becomes active,
+# then restore the replicator and assert it clears.
+#
+# Clusters (kubeconfigs provided by the Taskfile — see ../README.md):
+#   alpha  -> project CP alpha (UPSTREAM)                    ../kubeconfig-alpha
+#   core   -> Milo core control plane (DOWNSTREAM)           ../kubeconfig-core
+#   infra  -> kind cluster hosting VM + OTel + the           ../kubeconfig-infra
+#             replicator Deployment (ns dns-replicator-system)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-drift-orphan
+spec:
+  timeouts:
+    exec: 600s
+  clusters:
+    alpha:
+      kubeconfig: ../kubeconfig-alpha
+    core:
+      kubeconfig: ../kubeconfig-core
+    infra:
+      kubeconfig: ../kubeconfig-infra
+    replicator:
+      kubeconfig: ../kubeconfig-replicator
+  cluster: alpha
+  steps:
+    - name: Prereq - DNSZoneClass + DNSZone on upstream project CP alpha
+      try:
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszoneclass.yaml
+        - apply:
+            cluster: alpha
+            file: ../fixtures/dnszone.yaml
+        - assert:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              metadata:
+                name: drift-example
+                namespace: default
+
+    - name: Create DNSRecordSet on upstream and wait for downstream replica
+      try:
+        - create:
+            cluster: alpha
+            resource:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSRecordSet
+              metadata:
+                name: www-orphan
+                namespace: default
+              spec:
+                dnsZoneRef:
+                  name: drift-example
+                recordType: A
+                records:
+                  - name: www-orphan
+                    ttl: 60
+                    a:
+                      content: 192.0.2.20
+        - script:
+            cluster: core
+            timeout: 300s
+            content: |
+              set -eu
+              want="www-orphan"
+              attempts=30
+              i=0
+              while [ "$i" -lt "$attempts" ]; do
+                i=$((i+1))
+                got=$(kubectl get dnsrecordset -A \
+                  -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                  2>/dev/null || true)
+                echo "[attempt $i/$attempts] downstream upstream-name annotations: ${got}"
+                if printf '%s\n' "$got" | grep -qx "$want"; then
+                  echo "replicated copy present on core CP"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "replicated DNSRecordSet ($want) never appeared on core CP" >&2
+              exit 1
+
+    - name: Scale the replicator to 0 to prevent GC cascade
+      try:
+        - script:
+            cluster: replicator
+            timeout: 120s
+            content: |
+              set -eu
+              # Scaling every deployment in the replicator namespace avoids
+              # coupling the test to a specific deployment name. With no
+              # replicator running, deleting the upstream object cannot cascade
+              # to the downstream copy (they live on different control planes;
+              # only the replicator would remove it) — that leftover is the
+              # orphan.
+              kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=0
+              kubectl -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=90s || true
+              kubectl -n dns-replicator-system get pods
+
+    - name: Delete the upstream object, leaving the downstream copy orphaned
+      try:
+        - script:
+            cluster: alpha
+            timeout: 60s
+            content: |
+              set -eu
+              # The replicator is scaled to 0, so it will NOT remove its
+              # finalizer — a plain delete would hang. Strip the finalizer so the
+              # upstream fully deletes, leaving the downstream copy as a true
+              # orphan (the engineering#346 end state).
+              kubectl -n default patch dnsrecordset www-orphan \
+                --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+              kubectl -n default delete dnsrecordset www-orphan --wait=false || true
+        - script:
+            cluster: core
+            timeout: 60s
+            content: |
+              set -eu
+              # Confirm the downstream copy is still present (orphaned).
+              got=$(kubectl get dnsrecordset -A \
+                -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                2>/dev/null || true)
+              echo "downstream upstream-name annotations after upstream delete: ${got}"
+              printf '%s\n' "$got" | grep -qx "www-orphan"
+
+    - name: Poll VM until the orphan recording rule fires
+      try:
+        - script:
+            cluster: infra
+            # Budget generously: the orphan only materializes once the deleted
+            # upstream series ages out of VM's staleness window (default ~5m)
+            # so `unless` no longer cancels the downstream vector.
+            timeout: 540s
+            content: |
+              set -eu
+              vm_url="${VM_QUERY_URL:-http://vmsingle-telemetry-system-vm.telemetry-system.svc.cluster.local:8428/api/v1/query}"
+              query='dns:recordset_downstream_orphan{upstream_name="www-orphan"} > 0'
+              attempt=0
+              until [ "$attempt" -ge 48 ]; do
+                attempt=$((attempt+1))
+                echo "[orphan attempt $attempt] query: $query"
+                out=$(kubectl run e2e-vmq-orphan-$attempt \
+                        --rm -i --restart=Never --quiet \
+                        --image=curlimages/curl:8.10.1 \
+                        --timeout=20s \
+                        -- curl -fsS --max-time 5 \
+                           --data-urlencode "query=${query}" "${vm_url}" \
+                      || true)
+                json=$(printf '%s' "$out" | sed '/pod ".*" deleted/d')
+                echo "response: $json"
+                if printf '%s' "$json" | grep -Eq '"result":\s*\[\s*\{'; then
+                  echo "orphan detected by recording rule"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "dns:recordset_downstream_orphan never went > 0 for www-orphan" >&2
+              exit 1
+
+    - name: Assert the DNSDownstreamOrphanRecordSet alert is active
+      try:
+        - script:
+            cluster: infra
+            timeout: 180s
+            content: |
+              set -eu
+              vm_url="${VM_QUERY_URL:-http://vmsingle-telemetry-system-vm.telemetry-system.svc.cluster.local:8428/api/v1/query}"
+              # The alert carries `for: 10m`, so it sits in `pending` for 10m
+              # before `firing`. Waiting the full period would blow the e2e
+              # budget, so we accept EITHER pending or firing here (the alert is
+              # active on the correct series). To assert `firing` specifically,
+              # deploy the rules with a shortened `for:` in a test overlay — see
+              # ../README.md.
+              query='ALERTS{alertname="DNSDownstreamOrphanRecordSet",upstream_name="www-orphan"}'
+              attempt=0
+              until [ "$attempt" -ge 18 ]; do
+                attempt=$((attempt+1))
+                echo "[alert attempt $attempt] query: $query"
+                out=$(kubectl run e2e-vmq-orphan-alert-$attempt \
+                        --rm -i --restart=Never --quiet \
+                        --image=curlimages/curl:8.10.1 \
+                        --timeout=20s \
+                        -- curl -fsS --max-time 5 \
+                           --data-urlencode "query=${query}" "${vm_url}" \
+                      || true)
+                json=$(printf '%s' "$out" | sed '/pod ".*" deleted/d')
+                echo "response: $json"
+                if printf '%s' "$json" | grep -Eq '"alertstate":"(pending|firing)"'; then
+                  echo "DNSDownstreamOrphanRecordSet alert is active"
+                  exit 0
+                fi
+                sleep 10
+              done
+              echo "DNSDownstreamOrphanRecordSet never became active for www-orphan" >&2
+              exit 1
+
+    - name: Remediate (remove the leftover) and assert the orphan clears
+      try:
+        - script:
+            cluster: replicator
+            timeout: 180s
+            content: |
+              set -eu
+              # Restore the replicator for environment health. NOTE: it does NOT
+              # auto-GC the orphan — with the upstream owner gone there is no
+              # event to drive a reconcile of the leftover, so (exactly as in
+              # engineering#346) the downstream leftover PERSISTS until it is
+              # explicitly removed. That persistence is the whole reason this
+              # detection matters.
+              kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=1
+              kubectl -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=120s
+        - script:
+            cluster: core
+            timeout: 120s
+            content: |
+              set -eu
+              # Remediation: remove the orphaned downstream leftover (the manual
+              # fix that resolved #346). Locate it by its upstream-name annotation
+              # and strip the finalizer so it fully deletes.
+              row=$(kubectl get dnsrecordset -A \
+                -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                | awk '$3=="www-orphan"{print $1" "$2; exit}')
+              if [ -n "$row" ]; then
+                set -- $row
+                kubectl -n "$1" patch dnsrecordset "$2" --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+                kubectl -n "$1" delete dnsrecordset "$2" --wait=false || true
+                echo "removed orphaned leftover $1/$2"
+              else
+                echo "no leftover found (already removed)"
+              fi
+        - script:
+            cluster: core
+            timeout: 90s
+            content: |
+              set -eu
+              # Assert remediation at the source of truth: the orphaned downstream
+              # object is gone from the core CP. We deliberately do NOT poll the
+              # VM recording rule here — its series only clears once the removed
+              # object's samples age out of VM's ~5m staleness window, which makes
+              # a rule-based clear assertion slow and flaky. Once the object is
+              # gone, the rule is guaranteed to clear after staleness.
+              for i in $(seq 1 12); do
+                got=$(kubectl get dnsrecordset -A \
+                  -o jsonpath='{range .items[*]}{.metadata.annotations.meta\.datumapis\.com/upstream-name}{"\n"}{end}' \
+                  2>/dev/null || true)
+                if ! printf '%s\n' "$got" | grep -qx "www-orphan"; then
+                  echo "orphaned leftover removed from core CP — drift resolved at source"
+                  exit 0
+                fi
+                echo "[clear attempt $i] leftover still present; waiting"
+                sleep 5
+              done
+              echo "orphaned downstream leftover was not removed from the core CP" >&2
+              exit 1
+
+    - name: Teardown
+      try:
+        # Ensure the replicator is back up even if an earlier step failed.
+        - script:
+            cluster: replicator
+            timeout: 120s
+            content: |
+              set -eu
+              kubectl -n dns-replicator-system scale deployment/dns-operator-controller-manager --replicas=1 || true
+        - delete:
+            cluster: alpha
+            ref:
+              apiVersion: dns.networking.miloapis.com/v1alpha1
+              kind: DNSZone
+              namespace: default
+              name: drift-example

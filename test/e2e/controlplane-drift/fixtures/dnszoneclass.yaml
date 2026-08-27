@@ -1,0 +1,19 @@
+# Shared DNSZoneClass for the control-plane drift e2e. DNSZoneClass is
+# cluster-scoped, so it must be created on whichever control plane the
+# DNSZone/DNSRecordSet objects live on (the project CPs / "upstream" side).
+# Each scenario applies this to its upstream project CP (e.g. cluster: alpha)
+# before creating a DNSZone that references it by name.
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZoneClass
+metadata:
+  name: drift-powerdns
+spec:
+  controllerName: powerdns
+  nameServerPolicy:
+    mode: Static
+    static:
+      servers:
+      - ns1.drift.example.
+      - ns2.drift.example.
+  defaults:
+    defaultTTL: 300

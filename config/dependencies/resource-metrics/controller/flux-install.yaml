@@ -1,0 +1,51 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: resource-metrics
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  prune: true
+  wait: true
+  sourceRef:
+    kind: OCIRepository
+    name: resource-metrics
+  # resource-metrics' published overlays/test-infra already does what we need:
+  # discovery.mode=milo, collectRootControlPlane=true, the token-based
+  # milo-kubeconfig Secret, and the manager Deployment wiring. We only override
+  # the controller image (to the multi-arch tag) and the OTLP endpoint (our
+  # observability stack's collector lives in telemetry-system, not the overlay's
+  # default otel-collector-system).
+  path: overlays/test-infra
+  images:
+    - name: ghcr.io/milo-os/resource-metrics
+      newTag: v0.0.0-feat-multi-arch-arm64-image
+  patches:
+    # Point the operator at our OTel collector. Once milo-os/resource-metrics#14
+    # lands, replace this whole ConfigMap patch with a Deployment env patch:
+    #   env: [{name: OTEL_EXPORTER_OTLP_ENDPOINT, value: otel-collector-collector.telemetry-system:4317}]
+    - target:
+        kind: ConfigMap
+        name: resource-metrics-service-config
+      patch: |
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: resource-metrics-service-config
+        data:
+          server.yaml: |
+            apiVersion: apiserver.config.miloapis.com/v1alpha1
+            kind: ResourceMetricsOperator
+            discovery:
+              mode: milo
+              internalServiceDiscovery: false
+              discoveryKubeconfigPath: /etc/milo/kubeconfig
+              projectKubeconfigPath: /etc/milo/kubeconfig
+              collectRootControlPlane: true
+            otel:
+              endpoint: otel-collector-collector.telemetry-system:4317
+              insecure: true
+              collectionInterval: 5s
+              defaultMetricPrefix: ""

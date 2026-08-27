@@ -1,0 +1,46 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSOperator
+# Milo-targeted PowerDNS agent config for the DNS drift-detection e2e.
+#
+# In this environment the DNS CRDs (DNSZone/DNSRecordSet/DNSZoneClass in
+# dns.networking.miloapis.com/v1alpha1) live on the Milo *core* control plane
+# (milo-apiserver root scope), NOT on the local kind API. The PowerDNS agent
+# runs --role=downstream, so it must READ DNSRecordSets/DNSZones from the Milo
+# core CP and program PowerDNS.
+#
+# IMPORTANT — how the read/write source is actually retargeted for role=downstream:
+#   cmd/main.go's `case "downstream":` branch builds its manager and *all* three
+#   controllers (DNSZone, DNSRecordSet, DNSRecordSetPowerDNS) from
+#   ctrl.GetConfigOrDie() and mgr.GetClient(). It does NOT consult
+#   discovery.* or downstreamResourceManagement.kubeconfigPath at all — those
+#   fields are only read by the `case "replicator":` branch. So for a downstream
+#   agent, mode:single + downstreamResourceManagement.kubeconfigPath CANNOT
+#   retarget the read source on their own.
+#
+#   The actual retarget is done in kustomization/deployment-patch.yaml by setting
+#   the KUBECONFIG env var to /milo/kubeconfig on the manager container:
+#   ctrl.GetConfig() honors KUBECONFIG (no --kubeconfig flag is registered), so
+#   both the read (DNSRecordSet/DNSZone informers) and the write (status updates)
+#   resolve to the mounted Milo core-CP kubeconfig instead of the in-cluster kind
+#   API.
+#
+# The fields below are kept milo-targeted for consistency and to remain correct
+# if this agent is ever run as --role=replicator; they are inert for
+# --role=downstream.
+discovery:
+  mode: single
+  internalServiceDiscovery: false
+  # Inert under --role=downstream (single mode uses ctrl.GetConfigOrDie()); set
+  # to the mounted milo kubeconfig so it is correct if run as replicator.
+  discoveryKubeconfigPath: "/milo/kubeconfig"
+  projectKubeconfigPath: "/milo/kubeconfig"
+downstreamResourceManagement:
+  # Inert under --role=downstream (see note above); the KUBECONFIG env var in the
+  # deployment patch is what points the downstream client at the Milo core CP.
+  kubeconfigPath: "/milo/kubeconfig"
+
+controllers:
+  dnsRecordSetPowerDNS:
+    # maxConcurrentReconciles: 4
+    # rateLimiterBaseDelay: 1s
+    # rateLimiterMaxDelay: 30s

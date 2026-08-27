@@ -306,6 +306,10 @@ tasks:
       # point it at the control kubeconfig we just exported. `.` runs every
       # suite under test/e2e (alias, display-annotations, zones-and-records,
       # federation, full-chain).
+      #
+      # The drift suites deliberately live outside this tree, in test/e2e-drift:
+      # they need the Milo environment and the kubeconfigs that only
+      # env:chainsaw-milo builds, and `.` would otherwise discover them here.
       - cd test/e2e && KUBECONFIG=kubeconfig-control chainsaw test .
 
   env:down:
@@ -446,7 +450,7 @@ tasks:
       - |
         set -euo pipefail
         root="$(pwd)"
-        cd test/e2e/controlplane-drift
+        cd test/e2e-drift
         # infra + downstream are both the dns-control kind API: it hosts VM/OTel
         # and it is also where the replicator writes the shadow objects. They
         # get separate kubeconfigs so each scenario reads as what it is doing.
@@ -532,7 +536,7 @@ tasks:
           CMD: kubectl apply -f dev/crds/network-services
       - task: env:with-milo-admin
         vars:
-          CMD: kubectl apply -f test/e2e/controlplane-drift/fixtures/milo-projects.yaml
+          CMD: kubectl apply -f test/e2e-drift/fixtures/milo-projects.yaml
       - task: env:with-milo-admin
         vars:
           CMD: kubectl wait --for=condition=Ready project/alpha project/beta --timeout=120s

@@ -44,7 +44,7 @@ Customer projects  ──replicate──►  DNS infrastructure cluster  ──�
 - `config/observability/cluster-policy/` — `dns-downstream-metrics`, the downstream side, for the infrastructure cluster.
 - `config/observability/rules/` — the `dns-controlplane-drift` recording rules and alerts.
 - `config/dependencies/` and `config/overlays/` — the environment used to validate it end-to-end.
-- `test/e2e/controlplane-drift/` — automated tests for all three cases (healthy, orphan, missing).
+- `test/e2e-drift/` — automated tests for all three cases (healthy, orphan, missing).
 
 ## Try it
 

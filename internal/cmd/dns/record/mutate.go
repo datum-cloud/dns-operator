@@ -159,7 +159,18 @@ func createSet(
 			Records:    after,
 		},
 	}
-	if err := c.Create(ctx, obj, createOptions(dryRun)...); err != nil {
+	err = c.Create(ctx, obj, createOptions(dryRun)...)
+	if apierrors.IsAlreadyExists(err) {
+		// The conventional name is taken, and by a set this command may not
+		// write to: one it could have written to would have been resolved
+		// instead of arriving here. Let the server pick the suffix rather than
+		// guessing one, so two creates racing for the same type cannot choose
+		// the same name.
+		obj.Name = ""
+		obj.GenerateName = setObjectName(zone, t) + "-"
+		err = c.Create(ctx, obj, createOptions(dryRun)...)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &writeResult{action: actionCreated, set: obj, after: after}, nil

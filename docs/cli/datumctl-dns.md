@@ -142,6 +142,8 @@ $ datumctl dns record set example.com www A 203.0.113.20
 
 Add `--wait` to block until the record is live, or `--dry-run` to check a command without writing anything.
 
+You do not choose the record set a record goes into. The name and type are the key, and the command resolves them across every set of that type in the zone: it writes to the one already holding the name, so a second value joins the values it belongs with rather than starting a rival entry for the same key elsewhere. If no set holds the name it joins one you own, and if every set of that type belongs to a controller — a zone served by AI Edge, say — it creates a new one rather than writing where the controller would revert it. Records another system manages stay read-only either way.
+
 ## Enter record values
 
 Simple types take their value as a positional argument. Repeat the argument for multiple values:
@@ -219,6 +221,8 @@ Filters: `--type A,MX`, `--name www`, and `--status programmed|pending|conflict|
 Two more narrow by who writes the record: `--managed` shows the ones Datum manages for you, and `--no-managed` shows only your own. In a zone where another system writes most of the records, `--no-managed` is the view of what you actually put there. `--managed=false` means the same as `--no-managed`.
 
 Long names and values are shortened to keep the table readable, and the counts are reported below it. Names are cut at 40 characters, which leaves the shapes people write — `www`, `_dmarc`, `_acme-challenge`, a DKIM selector — intact while shortening the encoded identifiers that automation writes. Use `-o wide` or `-o json` to see them in full, or `-o name` for the identifiers alone.
+
+`-o wide` adds the record set each record came from. A zone's records of one type are not necessarily one object: the CLI writes to its own, and a system like AI Edge gets one per Gateway. When two of them carry an entry for the same name, every other column renders the rows identically and only the record set says which object to go and edit — which is what a `Conflict` or `Not owner` status is telling you to do.
 
 `datumctl dns record describe example.com @ MX` shows the value both as a single line and broken into named fields, plus the current status. Omit the type to see every record at that name.
 
@@ -299,7 +303,7 @@ Every command accepts `-o`:
 | Format | Use it for |
 |---|---|
 | `table` | The default, for reading at a terminal. |
-| `wide` | Adds columns. |
+| `wide` | Adds columns, including the record set each record belongs to. |
 | `json`, `yaml` | Full API objects, for scripts. |
 | `name` | Bare identifiers, for pipelines. |
 

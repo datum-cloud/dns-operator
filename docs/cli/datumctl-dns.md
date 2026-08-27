@@ -259,6 +259,8 @@ datumctl dns zone import example.com --discover
 
 TTLs are taken exactly as written in the file.
 
+Imported records follow the same placement rule as `record create`: each one joins the record set that already holds its name, and records another system manages are reported rather than overwritten. A record whose name a Gateway holds is refused; a different name in the same zone imports normally beside it.
+
 ## Export and apply a zone file
 
 Write the zone out in BIND format:

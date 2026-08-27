@@ -685,17 +685,17 @@ func (c *Client) ReplaceRRSet(
 ) error {
 	if recordType == string(dnsv1alpha1.RRTypeSOA) {
 		c.logger.Info("Updating SOA record: fetching current serial", "zone", zone, "owner", ownerName)
-		nextSerial, hasExistingSOA, err := c.nextSOASerial(ctx, zone, ownerName)
+		curSerial, hasExistingSOA, err := c.getSOASerial(ctx, zone, ownerName)
 		if err != nil {
 			return err
 		}
 		if hasExistingSOA {
-			c.logger.Info("Updating SOA record: incremented serial", "zone", zone, "owner", ownerName, "nextSerial", nextSerial)
-			values, err = applySOASerial(values, nextSerial)
+			c.logger.Info("Updating SOA record: reusing current serial, PDNS will increment on write", "zone", zone, "owner", ownerName, "curSerial", curSerial)
+			values, err = applySOASerial(values, curSerial)
 			if err != nil {
 				return err
 			}
-			c.logger.Info("Updating SOA record: applied incremented serial to desired value", "zone", zone, "owner", ownerName)
+			c.logger.Info("Updating SOA record: applied current serial to desired value", "zone", zone, "owner", ownerName)
 		} else {
 			c.logger.Info("Updating SOA record: no existing SOA in PDNS, keeping desired serial", "zone", zone, "owner", ownerName)
 		}
@@ -735,7 +735,7 @@ func (c *Client) ReplaceRRSet(
 	return c.applyRRSetPatch(ctx, zone, patch)
 }
 
-func (c *Client) nextSOASerial(ctx context.Context, zone, ownerName string) (string, bool, error) {
+func (c *Client) getSOASerial(ctx context.Context, zone, ownerName string) (string, bool, error) {
 	rrsets, err := c.getPDNSRRSet(ctx, zone, QualifyOwner(ownerName, zone), dnsv1alpha1.RRTypeSOA)
 	if err != nil {
 		return "", false, err
@@ -757,7 +757,7 @@ func (c *Client) nextSOASerial(ctx context.Context, zone, ownerName string) (str
 			return "", true, fmt.Errorf("parse current SOA serial %q: %w", fields[2], parseErr)
 		}
 		c.logger.Info("Fetched existing SOA serial", "zone", zone, "owner", ownerName, "currentSerial", fields[2])
-		return strconv.FormatUint(current+1, 10), true, nil
+		return strconv.FormatUint(current, 10), true, nil
 	}
 
 	return "", true, fmt.Errorf("SOA rrset for owner %s has no parseable records", ownerName)

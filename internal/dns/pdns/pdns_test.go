@@ -126,7 +126,7 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	}
 }
 
-func TestReplaceRRSet_SOAIncrementsCurrentSerial(t *testing.T) {
+func TestReplaceRRSet_SOAReusesCurrentSerial(t *testing.T) {
 	t.Parallel()
 
 	var getCalls int
@@ -188,8 +188,8 @@ func TestReplaceRRSet_SOAIncrementsCurrentSerial(t *testing.T) {
 		t.Fatalf("unexpected patch payload: %#v", captured)
 	}
 	serial := strings.Fields(captured.RRSets[0].Records[0].Content)[2]
-	if serial != "2026082608" {
-		t.Fatalf("expected incremented SOA serial 2026082608, got %s", serial)
+	if serial != "2026082607" {
+		t.Fatalf("expected current SOA serial 2026082607 to be reused, got %s", serial)
 	}
 }
 

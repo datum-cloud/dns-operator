@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -72,7 +73,7 @@ func applyEdit(
 	set := prefetched
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			refetched, err := findSet(ctx, c, zone, t, ownerName)
+			refetched, err := refetchTarget(ctx, c, zone, t, ownerName, set)
 			if err != nil {
 				return nil, err
 			}
@@ -126,6 +127,37 @@ func applyEdit(
 	}
 
 	return nil, conflictError(zone, t)
+}
+
+// refetchTarget re-reads the object a retry must reconcile against.
+//
+// When the first attempt had a set in hand, the retry goes back to THAT object.
+// Re-resolving instead would, in a zone with several sets of one type, hand the
+// retry a different object and write a plan computed against one set into
+// another — which is exactly the duplication the resolution rules exist to
+// prevent, arrived at through the back door. Resolution starts over only when
+// there was no object to begin with, or when it has since been deleted.
+func refetchTarget(
+	ctx context.Context,
+	c client.Client,
+	zone *dnsv1alpha1.DNSZone,
+	t dnsv1alpha1.RRType,
+	ownerName string,
+	prev *dnsv1alpha1.DNSRecordSet,
+) (*dnsv1alpha1.DNSRecordSet, error) {
+	if prev == nil {
+		return findSet(ctx, c, zone, t, ownerName)
+	}
+	var rs dnsv1alpha1.DNSRecordSet
+	err := c.Get(ctx, types.NamespacedName{Namespace: prev.Namespace, Name: prev.Name}, &rs)
+	switch {
+	case err == nil:
+		return &rs, nil
+	case apierrors.IsNotFound(err):
+		return findSet(ctx, c, zone, t, ownerName)
+	default:
+		return nil, util.ClassifyError(err)
+	}
 }
 
 // createSet writes the first bucket for a (zone, type) pair. The object name

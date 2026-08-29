@@ -108,9 +108,17 @@ spec:
 ### Multi-owner conflict resolution
 
 When several `DNSRecordSet` resources target the same zone, owner name, and
-record type, the agent programs a **single** owner (chosen by oldest creation
-timestamp, then name). The agent marks the others `Programmed=False` with reason
-`NotOwner`, so conflicting records never silently overwrite each other.
+record type, the agent programs a **single** owner, chosen by oldest creation
+timestamp and then by name. Each losing claim gets `Programmed=False` with
+reason `NotOwner` on its own entry in `status.recordSets[]`, so a record set
+that holds other names keeps reporting on those normally.
+
+Claims are compared by owner name as written, while the backend keys its record
+set on the qualified name. Two spellings of one name can therefore each win
+their own contest and then overwrite each other. See
+[Record Ownership](./record-ownership.md) for the full rules, including the
+intended handling of case and the apex, and
+[Conditions and Reasons](./conditions.md) for which reasons clear on their own.
 
 ## DNSZoneDiscovery
 

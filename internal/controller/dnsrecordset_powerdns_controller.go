@@ -368,25 +368,16 @@ func refreshProgrammedCondition(rs *dnsv1alpha1.DNSRecordSet) {
 		ObservedGeneration: rs.Generation,
 	}
 
-	reason := ReasonProgrammed
-	message := "All records programmed"
-	allTrue := true
-
-	for name := range names {
-		status := getRecordStatus(rs, name)
-		recordCond := apimeta.FindStatusCondition(status.Conditions, CondProgrammed)
-		if recordCond == nil || recordCond.Status != metav1.ConditionTrue {
-			allTrue = false
-			reason = ReasonPending
-			message = "One or more records not yet programmed"
-			break
-		}
+	statuses := make([]dnsv1alpha1.RecordSetStatus, 0, names.Len())
+	for _, name := range names.List() {
+		statuses = append(statuses, getRecordStatus(rs, name))
 	}
 
-	if allTrue {
+	allProgrammed, reason, message := aggregateProgrammedStatus(statuses)
+	if allProgrammed {
 		newCond.Status = metav1.ConditionTrue
 		newCond.Reason = ReasonProgrammed
-		newCond.Message = message
+		newCond.Message = "All records programmed"
 	} else {
 		newCond.Status = metav1.ConditionFalse
 		newCond.Reason = reason

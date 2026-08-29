@@ -1,7 +1,8 @@
 # Replicator overlay for the production-accurate Milo drift-detection e2e.
 # Mirrors config/overlays/replicator (namespace + webhook-cert patches) but runs
-# discovery.mode=milo with 2 active replicas and a milo-apiserver kubeconfig
-# instead of the single-mode downstream-kubeconfig Secret.
+# discovery.mode=milo with 2 active replicas, adding a milo-apiserver kubeconfig
+# for discovery alongside the downstream-kubeconfig Secret that overlay already
+# uses for the replicated shadow objects.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

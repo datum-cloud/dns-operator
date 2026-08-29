@@ -306,6 +306,10 @@ tasks:
       # point it at the control kubeconfig we just exported. `.` runs every
       # suite under test/e2e (alias, display-annotations, zones-and-records,
       # federation, full-chain).
+      #
+      # The drift suites deliberately live outside this tree, in test/e2e-drift:
+      # they need the Milo environment and the kubeconfigs that only
+      # env:chainsaw-milo builds, and `.` would otherwise discover them here.
       - cd test/e2e && KUBECONFIG=kubeconfig-control chainsaw test .
 
   env:down:
@@ -387,29 +391,49 @@ tasks:
       - KUBECONFIG={{.ENV_KUBECONFIG}} TASK_X_REMOTE_TASKFILES=1 task --yes test-infra:install-observability
 
   env:metrics-up:
-    desc: "Deploy resource-metrics (mode:milo + collectRootControlPlane) + the dns-metrics policy + drift rules"
+    desc: "Deploy both resource-metrics collectors (upstream mode:milo, downstream mode:single), their policies, and the drift rules"
     vars:
       KCTL: KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}}
     cmds:
-      # All Flux objects live on the LOCAL (dns-control) cluster. The controller
-      # Kustomization deploys onto it; the CRD Kustomization targets the Milo
-      # core CP via kubeConfig. Both reference the same OCIRepository, and both
-      # come from resource-metrics' published bundle (no vendored manifests, no
-      # local image build — the pinned bundle ships a multi-arch image).
+      # Two collectors, because the two replication seams are two API servers:
+      #   controller/  mode:milo   — engages every project CP, reads its policy
+      #                              from the Milo core CP  -> upstream series
+      #   downstream/  mode:single — collects dns-control's own apiserver, where
+      #                              the replicator writes the shadow objects,
+      #                              and reads its policy from there
+      #                                                     -> downstream series
+      # All Flux objects live on the LOCAL (dns-control) cluster; only the core
+      # CP Kustomization targets a different API server, via kubeConfig. Every
+      # manifest comes from resource-metrics' published bundle (no vendored
+      # manifests, no local image build — the pin ships a multi-arch image).
       - "{{.KCTL}} apply -k config/dependencies/resource-metrics/controller"
       - "{{.KCTL}} apply -k config/dependencies/resource-metrics/core-control-plane/crd"
+      - "{{.KCTL}} apply -k config/dependencies/resource-metrics/downstream"
       - "{{.KCTL}} -n flux-system wait ocirepository/resource-metrics --for=condition=Ready --timeout=120s"
-      # Installs the ResourceMetricsPolicy CRD onto the Milo core CP from the bundle.
+      # Installs the ResourceMetricsPolicy CRD onto each cluster from the bundle.
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-crd --for=condition=Ready --timeout=180s"
-      # The dns-metrics policy is dns-operator-owned (not in the bundle), so it's
-      # applied directly to the core CP after its CRD is Established.
+      - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-downstream-crd --for=condition=Ready --timeout=180s"
+      # Each policy goes to the cluster whose collector reads it, once that
+      # cluster's CRD is Established. dns-metrics is the same policy infra ships
+      # to production; dns-downstream-metrics is drift-detection specific.
+      # Applied as a plain file, not with `apply -k` on
+      # config/dependencies/resource-metrics/core-control-plane/policy: that
+      # kustomization references the policy outside its own root, which needs
+      # --load-restrictor LoadRestrictionsNone, and `kubectl apply -k` has no way
+      # to pass it. The kustomization stays as the reference for how infra wires
+      # this; here we apply what it points at.
       - task: env:with-milo-admin
         vars:
-          CMD: kubectl apply -f config/observability/dns-metrics-policy.yaml
+          CMD: kubectl apply -f config/milo/resource-metrics/policies/dns-metrics.yaml
+      - "{{.KCTL}} apply -k config/observability/cluster-policy"
       - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics --for=condition=Ready --timeout=300s"
+      - "{{.KCTL}} -n flux-system wait kustomization/resource-metrics-downstream --for=condition=Ready --timeout=300s"
+      # Same deployment name in both cases — the two collectors are told apart by
+      # namespace, not by name.
       - "{{.KCTL}} -n resource-metrics-system rollout status deploy/resource-metrics-controller-manager --timeout=150s"
-      - "{{.KCTL}} -n telemetry-system apply -f config/observability/dns-drift-rules.yaml"
-      - echo "✅ resource-metrics + dns-metrics policy + drift rules deployed"
+      - "{{.KCTL}} -n resource-metrics-downstream-system rollout status deploy/resource-metrics-controller-manager --timeout=150s"
+      - "{{.KCTL}} -n telemetry-system apply -k config/observability/rules"
+      - echo "✅ upstream + downstream resource-metrics, both policies, and the drift rules deployed"
 
   env:milo-all-up:
     desc: "Full clean bring-up: control+Milo, CRDs+projects, observability, resource-metrics, upstream replicator"
@@ -426,33 +450,31 @@ tasks:
       - |
         set -euo pipefail
         root="$(pwd)"
-        cd test/e2e/controlplane-drift
-        # infra = dns-control kind (VM + OTel); replicator = dns-upstream kind.
-        # Both kind APIs are host-reachable.
+        cd test/e2e-drift
+        # infra + downstream are both the dns-control kind API: it hosts VM/OTel
+        # and it is also where the replicator writes the shadow objects. They
+        # get separate kubeconfigs so each scenario reads as what it is doing.
+        # replicator = dns-upstream kind. All kind APIs are host-reachable.
         kind get kubeconfig --name {{.CONTROL_CLUSTER_NAME}} > kubeconfig-infra
+        cp kubeconfig-infra kubeconfig-downstream
         kind get kubeconfig --name {{.UPSTREAM_CLUSTER_NAME}} > kubeconfig-replicator
-        # alpha (project CP) + core (Milo core CP): reach milo-apiserver via a
-        # localhost port-forward — portable across macOS + Linux, since the
-        # gateway NodePort is not host-mapped and macOS can't reach the kind
-        # docker-network IP directly.
+        # alpha (project CP): reach milo-apiserver via a localhost port-forward —
+        # portable across macOS + Linux, since the gateway NodePort is not
+        # host-mapped and macOS can't reach the kind docker-network IP directly.
         KUBECONFIG="$root/{{.ENV_KUBECONFIG}}" kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} \
           -n milo-system port-forward svc/milo-apiserver 16443:6443 >/tmp/milo-pf-chainsaw.log 2>&1 &
         pf=$!; trap 'kill $pf 2>/dev/null || true' EXIT
         for i in $(seq 1 30); do curl -sk -o /dev/null -m2 https://127.0.0.1:16443/livez && break || sleep 1; done
-        for name in core alpha; do
-          kubectl config --kubeconfig=kubeconfig-$name set-credentials a --token=test-admin-token >/dev/null
-          kubectl config --kubeconfig=kubeconfig-$name set-context $name --cluster=$name --user=a >/dev/null
-          kubectl config --kubeconfig=kubeconfig-$name use-context $name >/dev/null
-        done
-        kubectl config --kubeconfig=kubeconfig-core set-cluster core \
-          --server=https://127.0.0.1:16443 --insecure-skip-tls-verify=true >/dev/null
+        kubectl config --kubeconfig=kubeconfig-alpha set-credentials a --token=test-admin-token >/dev/null
+        kubectl config --kubeconfig=kubeconfig-alpha set-context alpha --cluster=alpha --user=a >/dev/null
+        kubectl config --kubeconfig=kubeconfig-alpha use-context alpha >/dev/null
         kubectl config --kubeconfig=kubeconfig-alpha set-cluster alpha \
           --server=https://127.0.0.1:16443/apis/resourcemanager.miloapis.com/v1alpha1/projects/alpha/control-plane \
           --insecure-skip-tls-verify=true >/dev/null
         KUBECONFIG=kubeconfig-infra chainsaw test --config .chainsaw.yaml {{.CHAINSAW_SUITE | default "."}}
 
   env:upstream-milo-up:
-    desc: "Create dns-upstream and deploy the replicator (discovery.mode=milo, 2 replicas) pointed at Milo on dns-control"
+    desc: "Create dns-upstream and deploy the replicator (discovery.mode=milo, 2 replicas): discovery via Milo, shadow objects to dns-control's apiserver"
     cmds:
       - task: env:test-infra-cluster-up
         vars:
@@ -481,16 +503,28 @@ tasks:
         kubectl config --kubeconfig="$mk" use-context milo >/dev/null
         kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} create ns dns-replicator-system --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
         kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system create secret generic milo-kubeconfig --from-file=kubeconfig="$mk" --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
+      # Milo is only half the replicator's wiring: the shadow objects go to
+      # dns-control's own apiserver, a different API server than milo-apiserver.
+      # Export control's kubeconfig rewritten to the control-plane container's
+      # in-network address so pods on dns-upstream can reach it over the shared
+      # kind docker network — the same mechanism env:upstream-up uses.
+      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT={{.CONTROL_INCLUSTER_KUBECONFIG}} KIND_KUBECONFIG_INSECURE=true make export-kind-kubeconfig
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE={{.CONTROL_INCLUSTER_KUBECONFIG}} make secret-from-file
       - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/replicator-milo make kustomize-apply
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deploy/dns-operator-controller-manager --timeout=180s
       - echo "✅ replicator up on kind-{{.UPSTREAM_CLUSTER_NAME}} (mode=milo, 2 replicas)"
 
   env:milo-bootstrap:
-    desc: "Install DNS + networking CRDs into the Milo core CP and create the drift Org + projects (alpha, beta)"
+    desc: "Install DNS + networking CRDs into the Milo core CP and the downstream cluster, and create the drift Org + projects (alpha, beta)"
     cmds:
       - task: env:with-milo-admin
         vars:
           CMD: kubectl apply -k config/crd
+      # The DNS CRDs are needed on BOTH seams: the core CP shares them with every
+      # project CP (upstream), and dns-control's own apiserver stores the shadow
+      # objects the replicator writes (downstream). Production installs the
+      # downstream copy through the agent bundle, which pulls in config/crd.
+      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}} make install-dns-operator-crds
       # The replicator (dnszone/dnszonediscovery controllers) indexes Domain
       # (networking.datumapis.com); without its CRD, project-CP engagement fails
       # on cache-index setup. Generate the networking CRDs and install them into
@@ -502,7 +536,7 @@ tasks:
           CMD: kubectl apply -f dev/crds/network-services
       - task: env:with-milo-admin
         vars:
-          CMD: kubectl apply -f test/e2e/controlplane-drift/fixtures/milo-projects.yaml
+          CMD: kubectl apply -f test/e2e-drift/fixtures/milo-projects.yaml
       - task: env:with-milo-admin
         vars:
           CMD: kubectl wait --for=condition=Ready project/alpha project/beta --timeout=120s

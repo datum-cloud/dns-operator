@@ -1,0 +1,76 @@
+# Emits one series per replicated DNSRecordSet/DNSZone from the downstream
+# cluster, so the drift rules can diff the two replication seams. See
+# docs/enhancements/controlplane-drift-detection.md.
+#
+# Install this on the downstream cluster — the one whose apiserver stores the
+# shadow objects the replicator writes — next to a resource-metrics running
+# discovery.mode: single. It does NOT belong on the Milo core control plane.
+#
+# The upstream side needs no policy of its own. dns-metrics
+# (config/milo/resource-metrics/policies/dns-metrics.yaml) already emits
+# dns_record_set_info from every project control plane, and the rules join
+# against that.
+#
+# The replicator remaps namespaces downstream, so the join labels come from its
+# meta.datumapis.com/upstream-* annotations rather than from metadata. Objects
+# created directly on the downstream cluster (platform-owned records such as
+# datumdomains.net) carry no such annotations and resolve to empty labels; the
+# recording rules drop those rather than reporting them as ownerless.
+apiVersion: resourcemetrics.miloapis.com/v1alpha1
+kind: ResourceMetricsPolicy
+metadata:
+  name: dns-downstream-metrics
+spec:
+  generators:
+    - name: dns-record-set-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnsrecordsets
+      families:
+        - name: dns_record_set_downstream_info
+          help: "One series per replicated DNSRecordSet on the downstream cluster."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                # Reading an absent annotation key is a CEL error, which drops
+                # the series silently. Guard instead, and let the rules filter
+                # on the empty value.
+                - name: upstream_cluster
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-cluster-name' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-cluster-name'] : ''
+                - name: upstream_namespace
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-namespace' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-namespace'] : ''
+                - name: upstream_name
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-name' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-name'] : ''
+
+    - name: dns-zone-downstream-info
+      resource:
+        group: dns.networking.miloapis.com
+        version: v1alpha1
+        resource: dnszones
+      families:
+        - name: dns_zone_downstream_info
+          help: "One series per replicated DNSZone on the downstream cluster."
+          type: gauge
+          metrics:
+            - value: "1.0"
+              labels:
+                - name: upstream_cluster
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-cluster-name' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-cluster-name'] : ''
+                - name: upstream_namespace
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-namespace' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-namespace'] : ''
+                - name: upstream_name
+                  value: |
+                    has(object.metadata.annotations) && 'meta.datumapis.com/upstream-name' in object.metadata.annotations ?
+                      object.metadata.annotations['meta.datumapis.com/upstream-name'] : ''

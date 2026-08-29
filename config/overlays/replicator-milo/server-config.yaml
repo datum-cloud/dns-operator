@@ -1,23 +1,25 @@
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSOperator
-# Production-accurate Milo topology for the drift-detection e2e (Phase B).
+# Production-accurate Milo topology for the drift-detection e2e.
+#
 # The replicator discovers project (upstream) control planes through
-# milo-apiserver and writes replicated resources to the Milo core (downstream)
-# control plane. All three paths target the same milo-apiserver kubeconfig:
-#   - discovery:  lists ProjectControlPlane objects
-#   - project:    template rest-config the provider rewrites to per-project
-#                 aggregation paths
-#   - downstream: the core control plane where replicated DNSRecordSets land
-# VERIFY against the live env that the core control plane is reachable via the
-# same milo-apiserver endpoint (it is the root scope); if milo serves the core
-# CP at a distinct path, split downstreamResourceManagement.kubeconfigPath out.
+# milo-apiserver, and writes the replicated shadow objects to a SEPARATE
+# downstream cluster — not to Milo's core control plane. That split is what
+# production does: project CPs are served by milo, while the shadow objects live
+# in the DNS infrastructure cluster's own apiserver, alongside the agent that
+# programs PowerDNS from them.
+#
+#   discovery:  lists ProjectControlPlane objects on milo-apiserver
+#   project:    template rest-config the provider rewrites to per-project
+#               aggregation paths on the same milo-apiserver
+#   downstream: the downstream cluster's apiserver, mounted separately
 discovery:
   mode: milo
   internalServiceDiscovery: false
   discoveryKubeconfigPath: "/milo/kubeconfig"
   projectKubeconfigPath: "/milo/kubeconfig"
 downstreamResourceManagement:
-  kubeconfigPath: "/milo/kubeconfig"
+  kubeconfigPath: "/downstream/kubeconfig"
 
 controllers:
   dnsRecordSetPowerDNS:

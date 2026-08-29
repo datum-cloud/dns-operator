@@ -12,12 +12,18 @@ spec:
   sourceRef:
     kind: OCIRepository
     name: resource-metrics
-  # resource-metrics' published overlays/test-infra already does what we need:
-  # discovery.mode=milo, collectRootControlPlane=true, the token-based
-  # milo-kubeconfig Secret, and the manager Deployment wiring. We only override
-  # the controller image (to the multi-arch tag) and the OTLP endpoint (our
-  # observability stack's collector lives in telemetry-system, not the overlay's
-  # default otel-collector-system).
+  # This is the UPSTREAM collector: discovery.mode=milo, so it engages every
+  # project control plane and runs the dns-metrics policy there. The downstream
+  # cluster gets its own single-mode deployment (see ../downstream).
+  #
+  # resource-metrics' published overlays/test-infra already provides the
+  # token-based milo-kubeconfig Secret and the manager Deployment wiring. We
+  # override the controller image (to the multi-arch tag) and replace the config
+  # to point at our OTLP endpoint (our observability stack's collector lives in
+  # telemetry-system, not the overlay's default otel-collector-system) and to
+  # turn collectRootControlPlane back off — the overlay enables it, but the
+  # shadow objects live on the downstream cluster, not on Milo's root scope, so
+  # collecting root would add series without producing any downstream ones.
   path: overlays/test-infra
   images:
     - name: ghcr.io/milo-os/resource-metrics
@@ -43,7 +49,7 @@ spec:
               internalServiceDiscovery: false
               discoveryKubeconfigPath: /etc/milo/kubeconfig
               projectKubeconfigPath: /etc/milo/kubeconfig
-              collectRootControlPlane: true
+              collectRootControlPlane: false
             otel:
               endpoint: otel-collector-collector.telemetry-system:4317
               insecure: true

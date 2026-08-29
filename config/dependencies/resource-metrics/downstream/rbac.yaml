@@ -1,0 +1,83 @@
+# The downstream collector runs in its own namespace, so its ServiceAccount can
+# keep the bundle's name without colliding with the upstream one. Its
+# cluster-scoped role and binding cannot — two Flux Kustomizations applying the
+# same ClusterRole name would fight over ownership — so those are named for this
+# deployment and authored here rather than pulled from the bundle's
+# controller_rbac component.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: resource-metrics-downstream-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: resource-metrics-controller-manager
+  namespace: resource-metrics-downstream-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: resource-metrics-downstream
+rules:
+  # Mirrors the bundle's resource-metrics-manager-role: the policy watch plus
+  # the access preflight each collector runs before it starts an informer. Keep
+  # in step with config/rbac/role.yaml upstream.
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - selfsubjectaccessreviews
+    verbs:
+      - create
+  - apiGroups:
+      - resourcemetrics.miloapis.com
+    resources:
+      - resourcemetricspolicies
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - resourcemetrics.miloapis.com
+    resources:
+      - resourcemetricspolicies/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - resourcemetrics.miloapis.com
+    resources:
+      - resourcemetricspolicies/status
+    verbs:
+      - get
+      - patch
+      - update
+  # What the dns-downstream-metrics policy actually reads. On a project control
+  # plane a CRD owner opts in through resource-metrics' aggregated-reader
+  # ClusterRole; that aggregation does not cover a single-mode deployment, so the
+  # grant is direct.
+  - apiGroups:
+      - dns.networking.miloapis.com
+    resources:
+      - dnszones
+      - dnsrecordsets
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: resource-metrics-downstream
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: resource-metrics-downstream
+subjects:
+  - kind: ServiceAccount
+    name: resource-metrics-controller-manager
+    namespace: resource-metrics-downstream-system

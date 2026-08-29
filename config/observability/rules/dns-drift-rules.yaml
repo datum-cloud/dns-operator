@@ -1,0 +1,117 @@
+# Recording + alerting rules that diff the upstream and downstream DNS series to
+# detect replication drift. See docs/enhancements/controlplane-drift-detection.md.
+#
+# The two sides come from two resource-metrics deployments, so the metric names
+# alone keep them apart:
+#
+#   upstream    dns_record_set_info            dns-metrics policy, milo mode,
+#                                              one series per project CP
+#   downstream  dns_record_set_downstream_info dns-downstream-metrics policy,
+#                                              single mode, on the downstream cluster
+#
+# The replicator remaps namespaces downstream, so the sides share no metadata.
+# Both are normalized to (proj, upstream_namespace, upstream_name) to join on.
+#
+# This is a standard PrometheusRule: victoria-metrics-operator converts it to a
+# VMRule, which the default vmalert picks up. It deliberately carries no
+# resource-metrics-aggregator label — that aggregator is a separate vmalert with
+# its own datasource, and these rules belong on the standard alerting path.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: dns-controlplane-drift
+  labels:
+    managed-by: flux
+    app.kubernetes.io/part-of: dns-operator
+spec:
+  groups:
+    - name: dns.drift.recording
+      interval: 30s
+      rules:
+        # Upstream records, renamed onto the join key. milo_project_name is the
+        # project CP's name; metadata.namespace/name are the customer's own.
+        - record: dns:recordset_upstream:normalized
+          expr: |
+            label_replace(
+              label_replace(
+                label_replace(
+                  dns_record_set_info{milo_control_plane_type="project"},
+                  "proj", "$1", "milo_project_name", "(.*)"
+                ),
+                "upstream_namespace", "$1", "namespace", "(.*)"
+              ),
+              "upstream_name", "$1", "name", "(.*)"
+            )
+
+        # Downstream records, cluster label stripped of the "cluster-_" prefix
+        # the replicator writes (it maps the milo cluster key "/alpha" to
+        # "_alpha") to recover the bare project name.
+        #
+        # upstream_name!="" drops objects created directly on the downstream
+        # cluster — platform-owned records such as datumdomains.net — which have
+        # no upstream owner by design and are not drift.
+        - record: dns:recordset_downstream:scoped
+          expr: |
+            label_replace(
+              dns_record_set_downstream_info{upstream_name!=""},
+              "proj", "$1", "upstream_cluster", "cluster-_?(.*)"
+            )
+
+        # Orphan: a downstream record with no upstream owner — the engineering#346
+        # leftover that keeps "reserving" a name after its owner is deleted.
+        - record: dns:recordset_downstream_orphan
+          expr: |
+            dns:recordset_downstream:scoped
+              unless on(proj, upstream_namespace, upstream_name)
+            dns:recordset_upstream:normalized
+
+        # Missing: an upstream record with no downstream copy — replication stalled.
+        - record: dns:recordset_downstream_missing
+          expr: |
+            dns:recordset_upstream:normalized
+              unless on(proj, upstream_namespace, upstream_name)
+            dns:recordset_downstream:scoped
+
+    - name: dns.drift.alerts
+      rules:
+        - alert: DNSDownstreamOrphanRecordSet
+          # for: rides out normal replication/staleness lag, so only persistent
+          # drift pages.
+          expr: dns:recordset_downstream_orphan > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Orphaned downstream DNSRecordSet (no upstream owner)"
+            description: >-
+              DNSRecordSet {{ $labels.upstream_name }} in namespace
+              {{ $labels.upstream_namespace }} (project {{ $labels.proj }})
+              exists on the downstream cluster with no matching upstream owner.
+              This is the failure mode from engineering#346 and can block new
+              records for the same name. Runbook:
+              docs/troubleshooting/dnsrecordset-downstream-orphan.md
+
+        - alert: DNSDownstreamMissingRecordSet
+          expr: dns:recordset_downstream_missing > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Upstream DNSRecordSet not replicated downstream"
+            description: >-
+              DNSRecordSet {{ $labels.upstream_name }} in namespace
+              {{ $labels.upstream_namespace }} (project {{ $labels.proj }})
+              exists upstream but has no downstream copy — replication may be
+              stalled or a replica may not own this cluster.
+
+        - alert: DNSRecordSetNotAccepted
+          expr: dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "DNSRecordSet stuck not-Accepted for 15m"
+            description: >-
+              DNSRecordSet {{ $labels.name }} in namespace
+              {{ $labels.namespace }} has not reached Accepted=True
+              (reason {{ $labels.reason }}).

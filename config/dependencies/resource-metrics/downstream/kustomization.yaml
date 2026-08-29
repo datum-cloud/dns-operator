@@ -1,0 +1,9 @@
+# Deploys the downstream (discovery.mode=single) resource-metrics onto the
+# cluster that stores the replicated shadow objects, plus the RBAC letting it
+# read them. The CRD and the manager both come from the published bundle via
+# Flux; only the RBAC is ours.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - flux-install.yaml
+  - rbac.yaml

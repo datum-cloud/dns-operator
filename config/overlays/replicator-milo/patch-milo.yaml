@@ -1,6 +1,8 @@
 # Milo-mode replicator: 2 replicas with leader election OFF so both replicas
 # reconcile — this is what exercises the multicluster per-cluster ownership that
-# regressed in engineering#346 — plus the milo-apiserver kubeconfig mount.
+# regressed in engineering#346 — plus two kubeconfig mounts: milo-apiserver for
+# discovery and the project CPs, and the downstream cluster for the replicated
+# shadow objects. They are separate API servers, so they are separate Secrets.
 #
 # Note we DON'T restate the container args here: env and volume/volumeMount
 # lists merge by name under strategic merge, so we only patch what changes
@@ -22,7 +24,13 @@ spec:
             - name: milo-kubeconfig
               mountPath: /milo
               readOnly: true
+            - name: downstream-kubeconfig
+              mountPath: /downstream
+              readOnly: true
       volumes:
         - name: milo-kubeconfig
           secret:
             secretName: milo-kubeconfig
+        - name: downstream-kubeconfig
+          secret:
+            secretName: downstream-kubeconfig

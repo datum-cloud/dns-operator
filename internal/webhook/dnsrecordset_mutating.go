@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -17,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -45,7 +43,7 @@ func (m *DNSRecordSetMutator) Default(ctx context.Context, rs *dnsv1alpha1.DNSRe
 		return nil
 	}
 
-	cl := m.clientForZoneLookup(ctx)
+	cl := clusterClient(ctx, m.Manager, m.Client)
 	var zone dnsv1alpha1.DNSZone
 	key := types.NamespacedName{Namespace: rs.Namespace, Name: rs.Spec.DNSZoneRef.Name}
 	if err := cl.Get(ctx, key, &zone); err != nil {
@@ -78,36 +76,15 @@ func (m *DNSRecordSetMutator) stampActivityAnnotations(ctx context.Context, rs *
 	_ = display.EnsureActivityAnnotations(rs, &oldRS, zoneDomainName)
 }
 
-// clientForZoneLookup returns the project control plane client when cluster
-// context is available, otherwise the local Client.
-//
-// milo v0.7.4 engages cluster-scoped Projects as req.String() ("/projectname"),
-// while admission Extra carries the bare project name. Try both forms.
-func (m *DNSRecordSetMutator) clientForZoneLookup(ctx context.Context) client.Client {
-	if m.Manager == nil {
-		return m.Client
-	}
-	clusterName, ok := mccontext.ClusterFrom(ctx)
-	if !ok || clusterName == "" {
-		return m.Client
-	}
-
-	cl, err := m.Manager.GetCluster(ctx, clusterName)
-	if err != nil && !strings.HasPrefix(clusterName.String(), "/") {
-		cl, err = m.Manager.GetCluster(ctx, "/"+clusterName)
-	}
-	if err != nil {
-		logf.FromContext(ctx).V(1).Info("falling back to local client for DNSZone lookup",
-			"cluster", clusterName, "error", err)
-		return m.Client
-	}
-	return cl.GetClient()
-}
-
-// SetupDNSRecordSetWebhook registers the mutating webhook with the manager.
+// SetupDNSRecordSetWebhook registers the mutating and validating webhooks with
+// the manager.
 func SetupDNSRecordSetWebhook(mgr mcmanager.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr.GetLocalManager(), &dnsv1alpha1.DNSRecordSet{}).
 		WithDefaulter(&DNSRecordSetMutator{
+			Manager: mgr,
+			Client:  mgr.GetLocalManager().GetClient(),
+		}).
+		WithValidator(&DNSRecordSetValidator{
 			Manager: mgr,
 			Client:  mgr.GetLocalManager().GetClient(),
 		}).

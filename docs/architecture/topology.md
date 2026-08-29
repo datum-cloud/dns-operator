@@ -128,6 +128,15 @@ answers queries.
 - **Mutating webhook** — stamps display annotations (FQDNs, record values) onto
   record sets at admission, so downstream consumers render human-readable names
   without re-deriving them.
+- **Validating webhook** — refuses a write that newly claims an owner name
+  another record set already holds for the same record type in the same zone.
+  Ownership is first-come and only the first claimant is ever programmed, so a
+  second claim would sit unpublished; the refusal names the owner name and the
+  record set holding it. Only newly claimed names are checked, which leaves a
+  record set stored before the guard existed editable and its per-record
+  condition visible. The webhook is advisory rather than authoritative: it
+  fails open when ownership cannot be established, and the agent's first-come
+  election stays the backstop.
 
 ## Operator Configuration
 

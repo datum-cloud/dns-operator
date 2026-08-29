@@ -1,9 +1,11 @@
 # Admission webhooks (control-plane registration)
 
-Cross-cluster `MutatingWebhookConfiguration` for DNSRecordSet display
-annotations (`display-name` / `display-value`). The webhook **server** runs in
-the dns-operator manager; this bundle only registers admission with the
-control-plane apiserver.
+Cross-cluster admission registration for `DNSRecordSet`: a
+`MutatingWebhookConfiguration` for display annotations (`display-name` /
+`display-value`) and a `ValidatingWebhookConfiguration` that refuses a write
+newly claiming an owner name another record set already holds for the same
+record type in the same zone. The webhook **server** runs in the dns-operator
+manager; this bundle only registers admission with the control-plane apiserver.
 
 ## Why a separate path
 
@@ -14,11 +16,18 @@ apply. Hand-authoring the MWC in infra decoupled those versions and caused a
 production write outage when `failurePolicy: Fail` hit a build with nothing
 listening on `:9443` (see [#69](https://github.com/datum-cloud/dns-operator/issues/69)).
 
-`failurePolicy` is `Fail`. With co-versioned registration, a missing webhook
-should block DNSRecordSet writes rather than admit without activity
-annotations (Ignore has no self-recovery for the audit event that already
-fired). Always apply this path from the same OCI tag as the manager
+The mutating `failurePolicy` is `Fail`. With co-versioned registration, a
+missing webhook should block DNSRecordSet writes rather than admit without
+activity annotations (Ignore has no self-recovery for the audit event that
+already fired). Always apply this path from the same OCI tag as the manager
 Deployment.
+
+The validating `failurePolicy` is `Ignore`. The owner name guard moves a
+failure that already has a deterministic outcome to the moment it can be
+corrected; it decides nothing the agent's first-come election does not decide
+again. A guard that blocked every DNS write while the webhook was unreachable
+would trade a late condition for the outage in #69, and the per-record
+`NotOwner` condition still reports anything that slips through.
 
 This directory is **not** included in `config/default` or the replicator
 overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
@@ -28,6 +37,7 @@ overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
 | Kind | Name | Notes |
 | ---- | ---- | ----- |
 | `MutatingWebhookConfiguration` | `dns-operator-mutating-webhook-configuration` | `failurePolicy: Fail`; Service ref is `dns-operator-webhook-service` / `datum-dns-system` |
+| `ValidatingWebhookConfiguration` | `dns-operator-validating-webhook-configuration` | `failurePolicy: Ignore`; same Service ref |
 
 No Service and no kustomize `namespace` transformer: Flux `targetNamespace`
 must not rewrite `clientConfig.service.namespace`.

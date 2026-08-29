@@ -36,6 +36,10 @@ patches:
     target:
       kind: MutatingWebhookConfiguration
       name: mutating-webhook-configuration
+  - path: patch-vwc-ca-injection.yaml
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration
   - path: patch-serving-cert-dns.yaml
     target:
       kind: Certificate

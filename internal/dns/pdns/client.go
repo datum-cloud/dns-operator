@@ -683,6 +683,24 @@ func (c *Client) ReplaceRRSet(
 	observedGeneration int64,
 	objectUID string,
 ) error {
+	if recordType == string(dnsv1alpha1.RRTypeSOA) {
+		c.logger.Info("Updating SOA record: fetching current serial", "zone", zone, "owner", ownerName)
+		curSerial, hasExistingSOA, err := c.getSOASerial(ctx, zone, ownerName)
+		if err != nil {
+			return err
+		}
+		if hasExistingSOA {
+			c.logger.Info("Updating SOA record: reusing current serial, PDNS will increment on write", "zone", zone, "owner", ownerName, "curSerial", curSerial)
+			values, err = applySOASerial(values, curSerial)
+			if err != nil {
+				return err
+			}
+			c.logger.Info("Updating SOA record: applied current serial to desired value", "zone", zone, "owner", ownerName)
+		} else {
+			c.logger.Info("Updating SOA record: no existing SOA in PDNS, keeping desired serial", "zone", zone, "owner", ownerName)
+		}
+	}
+
 	records := make([]rrsetRecord, 0, len(values))
 	for _, v := range values {
 		if v == "" {
@@ -715,6 +733,53 @@ func (c *Client) ReplaceRRSet(
 		Comments:   comments,
 	}}
 	return c.applyRRSetPatch(ctx, zone, patch)
+}
+
+func (c *Client) getSOASerial(ctx context.Context, zone, ownerName string) (string, bool, error) {
+	rrsets, err := c.getPDNSRRSet(ctx, zone, QualifyOwner(ownerName, zone), dnsv1alpha1.RRTypeSOA)
+	if err != nil {
+		return "", false, err
+	}
+	if len(rrsets) == 0 {
+		return "", false, nil
+	}
+	if len(rrsets) > 1 {
+		return "", true, fmt.Errorf("multiple SOA rrsets returned for owner %s", ownerName)
+	}
+
+	for _, rec := range rrsets[0].Records {
+		fields := strings.Fields(rec.Content)
+		if len(fields) < 3 {
+			continue
+		}
+		current, parseErr := strconv.ParseUint(fields[2], 10, 64)
+		if parseErr != nil {
+			return "", true, fmt.Errorf("parse current SOA serial %q: %w", fields[2], parseErr)
+		}
+		c.logger.Info("Fetched existing SOA serial", "zone", zone, "owner", ownerName, "currentSerial", fields[2])
+		return strconv.FormatUint(current, 10), true, nil
+	}
+
+	return "", true, fmt.Errorf("SOA rrset for owner %s has no parseable records", ownerName)
+}
+
+func applySOASerial(values []string, serial string) ([]string, error) {
+	out := make([]string, 0, len(values))
+	updated := false
+	for _, value := range values {
+		fields := strings.Fields(value)
+		if len(fields) < 3 {
+			out = append(out, value)
+			continue
+		}
+		fields[2] = serial
+		out = append(out, strings.Join(fields, " "))
+		updated = true
+	}
+	if !updated {
+		return nil, fmt.Errorf("failed to apply SOA serial %s to desired values", serial)
+	}
+	return out, nil
 }
 
 // DeleteRRSet removes the referenced (type, owner) RRset from PDNS.

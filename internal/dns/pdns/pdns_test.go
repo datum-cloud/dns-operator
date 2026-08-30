@@ -126,6 +126,120 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	}
 }
 
+func TestReplaceRRSet_SOAReusesCurrentSerial(t *testing.T) {
+	t.Parallel()
+
+	var getCalls int
+	var patchCalls int
+	var captured patchZoneRequest
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/zones/example.com.", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			_ = json.NewEncoder(w).Encode(zoneResponse{
+				Name: exampleCom,
+				RRSets: []zoneRRset{{
+					Name: exampleCom,
+					Type: "SOA",
+					TTL:  300,
+					Records: []zoneRRsetRecord{{
+						Content: "ns1.example.net. hostmaster.example.net. 2026082607 10800 3600 604800 3600",
+					}},
+				}},
+			})
+		case http.MethodPatch:
+			patchCalls++
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &captured)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := NewClient(ts.URL, "key")
+	err := c.ReplaceRRSet(
+		context.Background(),
+		"example.com",
+		"SOA",
+		"@",
+		300,
+		[]string{"ns1.example.net. hostmaster.example.net. 2026082601 10800 3600 604800 3600"},
+		"default:rs",
+		42,
+		"uid-1",
+	)
+	if err != nil {
+		t.Fatalf("ReplaceRRSet error: %v", err)
+	}
+
+	if getCalls != 1 {
+		t.Fatalf("expected 1 GET call to fetch SOA serial, got %d", getCalls)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("expected 1 PATCH call, got %d", patchCalls)
+	}
+	if len(captured.RRSets) != 1 || len(captured.RRSets[0].Records) != 1 {
+		t.Fatalf("unexpected patch payload: %#v", captured)
+	}
+	serial := strings.Fields(captured.RRSets[0].Records[0].Content)[2]
+	if serial != "2026082607" {
+		t.Fatalf("expected current SOA serial 2026082607 to be reused, got %s", serial)
+	}
+}
+
+func TestReplaceRRSet_NonSOADoesNotFetchSerial(t *testing.T) {
+	t.Parallel()
+
+	var getCalls int
+	var patchCalls int
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/zones/example.com.", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			_ = json.NewEncoder(w).Encode(zoneResponse{Name: exampleCom, RRSets: nil})
+		case http.MethodPatch:
+			patchCalls++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := NewClient(ts.URL, "key")
+	err := c.ReplaceRRSet(
+		context.Background(),
+		"example.com",
+		"A",
+		"www",
+		300,
+		[]string{"1.2.3.4"},
+		"default:rs",
+		42,
+		"uid-1",
+	)
+	if err != nil {
+		t.Fatalf("ReplaceRRSet error: %v", err)
+	}
+
+	if getCalls != 0 {
+		t.Fatalf("expected no GET calls for non-SOA updates, got %d", getCalls)
+	}
+	if patchCalls != 1 {
+		t.Fatalf("expected 1 PATCH call, got %d", patchCalls)
+	}
+}
+
 func TestBuildRRSets_NormalizationAndFormats(t *testing.T) {
 	t.Parallel()
 

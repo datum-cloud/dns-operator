@@ -47,3 +47,7 @@ patches:
     target:
       kind: MutatingWebhookConfiguration
       name: mutating-webhook-configuration
+  - path: ../replicator/patch-vwc-ca-injection.yaml
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration

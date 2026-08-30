@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-# Cross-cluster MutatingWebhookConfiguration for DNSRecordSet display
-# annotations. Applied to the control-plane apiserver via Flux; the webhook
-# Service lives on the deployment cluster (datum-dns-system).
+# Cross-cluster admission registration for DNSRecordSet: display annotations
+# (mutating) and owner name conflicts (validating). Applied to the
+# control-plane apiserver via Flux; the webhook Service lives on the deployment
+# cluster (datum-dns-system).
 #
 # NOT composed into config/default or operator overlays. Consume with the same
 # OCIRepository semver as the manager image so registration cannot outrun the
@@ -12,3 +13,4 @@ kind: Kustomization
 
 resources:
   - mutating-webhook-configuration.yaml
+  - validating-webhook-configuration.yaml

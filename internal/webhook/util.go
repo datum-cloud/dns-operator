@@ -2,7 +2,16 @@
 
 package webhook
 
-import authv1 "k8s.io/api/authentication/v1"
+import (
+	"context"
+	"strings"
+
+	authv1 "k8s.io/api/authentication/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+)
 
 const (
 	// ParentNameExtraKey is set by Milo on project-scoped admission requests.
@@ -21,4 +30,30 @@ func clusterNameFromExtra(extra map[string]authv1.ExtraValue) string {
 		return parentNames[0]
 	}
 	return ""
+}
+
+// clusterClient returns the project control plane client when cluster context
+// is available, otherwise local.
+//
+// milo v0.7.4 engages cluster-scoped Projects as req.String() ("/projectname"),
+// while admission Extra carries the bare project name. Try both forms.
+func clusterClient(ctx context.Context, mgr mcmanager.Manager, local client.Client) client.Client {
+	if mgr == nil {
+		return local
+	}
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok || clusterName == "" {
+		return local
+	}
+
+	cl, err := mgr.GetCluster(ctx, clusterName)
+	if err != nil && !strings.HasPrefix(clusterName.String(), "/") {
+		cl, err = mgr.GetCluster(ctx, "/"+clusterName)
+	}
+	if err != nil {
+		logf.FromContext(ctx).V(1).Info("falling back to local client for cluster-scoped lookup",
+			"cluster", clusterName, "error", err)
+		return local
+	}
+	return cl.GetClient()
 }

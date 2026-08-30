@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,8 +277,11 @@ func TestReconcile_SingleOwner_PDNSError(t *testing.T) {
 	if prog == nil {
 		t.Fatalf("expected aggregate CondProgrammed condition")
 	}
-	if prog.Status != metav1.ConditionFalse || prog.Reason != controller.ReasonPending {
+	if prog.Status != metav1.ConditionFalse || prog.Reason != controller.ReasonPDNSError {
 		t.Fatalf("unexpected aggregate condition: %+v", prog)
+	}
+	if !strings.Contains(prog.Message, ownerName) || !strings.Contains(prog.Message, cond.Message) {
+		t.Fatalf("aggregate message should name the blocked record and its cause: %+v", prog)
 	}
 }
 
@@ -453,6 +457,17 @@ func TestReconcile_OwnerConflict_NotOwnerCondition(t *testing.T) {
 	otherCond := apimeta.FindStatusCondition(otherSt.Conditions, controller.CondProgrammed)
 	if otherCond == nil || otherCond.Status != metav1.ConditionFalse || otherCond.Reason != controller.ReasonNotOwner {
 		t.Fatalf("unexpected other condition: %+v", otherCond)
+	}
+
+	otherProg := apimeta.FindStatusCondition(otherUpdated.Status.Conditions, controller.CondProgrammed)
+	if otherProg == nil {
+		t.Fatalf("expected aggregate CondProgrammed condition on the non-owner")
+	}
+	if otherProg.Status != metav1.ConditionFalse || otherProg.Reason != controller.ReasonNotOwner {
+		t.Fatalf("unexpected aggregate condition on the non-owner: %+v", otherProg)
+	}
+	if !strings.Contains(otherProg.Message, ownerName) || !strings.Contains(otherProg.Message, otherCond.Message) {
+		t.Fatalf("aggregate message should name the blocked record and its cause: %+v", otherProg)
 	}
 }
 

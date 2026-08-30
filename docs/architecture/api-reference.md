@@ -139,6 +139,21 @@ and `PDNSError` (the backend rejected the change). See
 [Replication Model](./replication.md#status-synthesis) for how the operator
 synthesizes conditions across clusters.
 
+On a `DNSRecordSet`, `Programmed` aggregates the per-record conditions in
+`status.recordSets[]`, and distinguishes a record set that is still converging
+from one that cannot proceed:
+
+| Aggregate `Programmed` | Meaning |
+|------------------------|---------|
+| `True` / `Programmed` | Every record is realized in the backend. |
+| `False` / `Pending` | One or more records have not been programmed yet; no record has reported a cause. |
+| `False` / *a per-record reason* | At least one record cannot be programmed until something changes. The reason is that record's own reason and the message names the record and the cause. |
+
+When several records are blocked for different reasons, the aggregate reports
+the reason of the first blocked record in record-name order and lists every
+blocked record in its message. A caller can therefore treat any reason other
+than `Pending` as needing attention, without reading `status.recordSets[]`.
+
 > [!NOTE]
 >
 > This reference covers the user-facing API. The `DNSOperator` object that

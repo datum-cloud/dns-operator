@@ -168,14 +168,7 @@ func (r *DNSRecordSetReconciler) updateStatus(ctx context.Context, rs *dnsv1alph
 			LastTransitionTime: metav1.Now(),
 		}
 	} else {
-		allProgrammed := true
-		for _, status := range statuses {
-			cond := apimeta.FindStatusCondition(status.Conditions, CondProgrammed)
-			if cond == nil || cond.Status != metav1.ConditionTrue {
-				allProgrammed = false
-				break
-			}
-		}
+		allProgrammed, reason, message := aggregateProgrammedStatus(statuses)
 		if allProgrammed {
 			condProgrammed = metav1.Condition{
 				Type:               CondProgrammed,
@@ -189,8 +182,8 @@ func (r *DNSRecordSetReconciler) updateStatus(ctx context.Context, rs *dnsv1alph
 			condProgrammed = metav1.Condition{
 				Type:               CondProgrammed,
 				Status:             metav1.ConditionFalse,
-				Reason:             ReasonPending,
-				Message:            "One or more records not yet programmed",
+				Reason:             reason,
+				Message:            message,
 				ObservedGeneration: rs.Generation,
 				LastTransitionTime: metav1.Now(),
 			}

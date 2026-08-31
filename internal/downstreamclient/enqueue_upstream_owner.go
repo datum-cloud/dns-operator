@@ -3,7 +3,6 @@ package downstreamclient
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -117,7 +116,7 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 					Namespace: meta[UpstreamOwnerNamespaceAnnotation],
 				},
 			},
-			ClusterName: multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(meta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-")),
+			ClusterName: multicluster.ClusterName(ProjectNameFromOwnerMeta(meta)),
 		}
 		result[request] = empty{}
 	}

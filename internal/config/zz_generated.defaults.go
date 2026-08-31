@@ -36,4 +36,15 @@ func SetObjectDefaults_DNSOperator(in *DNSOperator) {
 			panic(err)
 		}
 	}
+	if in.Usage.Endpoint == "" {
+		in.Usage.Endpoint = "http://localhost:9880/cloudevents"
+	}
+	if in.Usage.FlushInterval == nil {
+		if err := json.Unmarshal([]byte(`"60s"`), &in.Usage.FlushInterval); err != nil {
+			panic(err)
+		}
+	}
+	if in.Usage.ProtobufListenAddress == "" {
+		in.Usage.ProtobufListenAddress = "127.0.0.1:4242"
+	}
 }

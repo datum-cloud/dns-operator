@@ -21,3 +21,8 @@ jobs:
         uses: golangci/golangci-lint-action@v8
         with:
           version: v2.4.0
+          # Official v2.4.0 binaries were built with Go 1.25 and refuse
+          # go.mod 1.26. Compile with the toolchain from setup-go instead.
+          # The action value is goinstall (not go); unknown modes fall
+          # through to a release binary download.
+          install-mode: goinstall

@@ -7,6 +7,8 @@
 # Note we DON'T restate the container args here: env and volume/volumeMount
 # lists merge by name under strategic merge, so we only patch what changes
 # (LEADER_ELECT=false) and inherit the base args (--role, --server-config, …).
+# Usage inventory must stay disabled: NeedLeaderElection is ignored when
+# leader election is off, and two replicas would double-bill gauges.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

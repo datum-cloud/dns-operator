@@ -156,17 +156,17 @@ func (c *Client) EnsureZone(ctx context.Context, zone dnsv1alpha1.DNSZone, class
 
 	if _, err := c.GetZone(ctx, zone.Spec.DomainName); err != nil {
 		if errors.Is(err, dnserrors.ErrZoneNotFound) {
-			// Zone does not exist, create it
 			if err := c.CreateZone(ctx, zone.Spec.DomainName, nss); err != nil {
 				return err
 			}
-			return nil
+		} else {
+			return err
 		}
-		return err
 	}
 
-	// TODO -> Implement zone update logic if needed (e.g., updating nameservers)
-
+	if err := c.stampUsageIdentity(ctx, zone); err != nil {
+		return fmt.Errorf("stamping usage identity on %s: %w", zone.Spec.DomainName, err)
+	}
 	return nil
 }
 

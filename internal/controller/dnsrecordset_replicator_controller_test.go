@@ -42,6 +42,7 @@ func (s annotatingStrategy) SetControllerReference(_ context.Context, owner, con
 	annotations[downstreamclient.UpstreamOwnerKindAnnotation] = "DNSRecordSet"
 	annotations[downstreamclient.UpstreamOwnerNameAnnotation] = owner.GetName()
 	annotations[downstreamclient.UpstreamOwnerNamespaceAnnotation] = owner.GetNamespace()
+	annotations[downstreamclient.UpstreamOwnerUIDAnnotation] = string(owner.GetUID())
 	controlled.SetAnnotations(annotations)
 	return nil
 }
@@ -109,6 +110,7 @@ func TestEnsureDownstreamRecordSet_NewShadowGetsAnnotations(t *testing.T) {
 		downstreamclient.UpstreamOwnerKindAnnotation:        "DNSRecordSet",
 		downstreamclient.UpstreamOwnerNameAnnotation:        longName,
 		downstreamclient.UpstreamOwnerNamespaceAnnotation:   "default",
+		downstreamclient.UpstreamOwnerUIDAnnotation:         "upstream-uid-1",
 	}
 	for k, want := range wantAnnotations {
 		if got := shadow.Annotations[k]; got != want {

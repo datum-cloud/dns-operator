@@ -120,7 +120,24 @@ const (
 	UpstreamOwnerKindAnnotation        = "meta.datumapis.com/upstream-kind"
 	UpstreamOwnerNameAnnotation        = "meta.datumapis.com/upstream-name"
 	UpstreamOwnerNamespaceAnnotation   = "meta.datumapis.com/upstream-namespace"
+	UpstreamOwnerUIDAnnotation         = "meta.datumapis.com/upstream-uid"
 )
+
+// OwnerMeta returns upstream owner metadata from the object, preferring
+// annotations but falling back to labels for resources created before the
+// labels-to-annotations migration.
+func OwnerMeta(obj metav1.Object) map[string]string {
+	return upstreamOwnerMeta(obj)
+}
+
+// ProjectNameFromOwnerMeta decodes the Milo project name from the
+// upstream-cluster-name annotation (cluster-{name} with '/' encoded as '_').
+func ProjectNameFromOwnerMeta(ownerMeta map[string]string) string {
+	if ownerMeta == nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.ReplaceAll(ownerMeta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-")
+}
 
 func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Context, owner, controlled metav1.Object, opts ...controllerutil.OwnerReferenceOption) error {
 	// TODO(jreese) add owner validation
@@ -145,6 +162,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 		UpstreamOwnerKindAnnotation:        gvk.Kind,
 		UpstreamOwnerNameAnnotation:        owner.GetName(),
 		UpstreamOwnerNamespaceAnnotation:   owner.GetNamespace(),
+		UpstreamOwnerUIDAnnotation:         string(owner.GetUID()),
 	}
 
 	downstreamClient := c.GetClient()
@@ -177,6 +195,7 @@ func (c *mappedNamespaceResourceStrategy) SetControllerReference(ctx context.Con
 	annotations[UpstreamOwnerKindAnnotation] = anchorAnnotations[UpstreamOwnerKindAnnotation]
 	annotations[UpstreamOwnerNameAnnotation] = anchorAnnotations[UpstreamOwnerNameAnnotation]
 	annotations[UpstreamOwnerNamespaceAnnotation] = anchorAnnotations[UpstreamOwnerNamespaceAnnotation]
+	annotations[UpstreamOwnerUIDAnnotation] = anchorAnnotations[UpstreamOwnerUIDAnnotation]
 	controlled.SetAnnotations(annotations)
 
 	return nil

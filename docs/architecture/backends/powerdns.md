@@ -28,6 +28,12 @@ PowerDNS instance it programs:
 | `pdns-recursor` | Loopback-only resolver used for `ALIAS` expansion |
 | LightningStream (`sync`) | Snapshots this pod's LMDB and merges peers' snapshots |
 
+The agent also listens on `127.0.0.1:4242` for PowerDNS protobuf query logs and
+emits billed `zone/queries` events from every pod that answers queries. The
+writer stamps compact billing identity as PowerDNS domain metadata
+(`DATUM-USAGE`); LightningStream copies it to edge pods so they can attribute
+without `DNSZone` CRs. See [Usage Metering](../usage.md).
+
 Three properties of this arrangement matter when reasoning about writes:
 
 - **The agent programs PowerDNS over loopback.** It connects to the PowerDNS

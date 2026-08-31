@@ -146,6 +146,7 @@ See the [API Reference](./api-reference.md) for complete field documentation.
   status synthesis
 - [DNS Backends](./backends/README.md) — Backend model and available backends,
   including the [PowerDNS backend](./backends/powerdns.md)
+- [Usage Metering](./usage.md) — Query volume and inventory emission to billing
 - [API Reference](./api-reference.md) — Full resource schema and conditions
 
 ## References

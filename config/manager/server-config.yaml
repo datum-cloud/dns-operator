@@ -14,4 +14,10 @@ controllers:
     # rateLimiterBaseDelay: 1s
     # rateLimiterMaxDelay: 30s
 
+# usage:
+#   enabled: true
+#   endpoint: http://localhost:9880/cloudevents
+#   location: us-east-1
+#   flushInterval: 60s
+
  

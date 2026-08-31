@@ -37,6 +37,8 @@ specific cloud or cluster technology.
 - Ensure a default `SOA` and `NS` record set exist for each zone.
 - Account for zone ownership so two tenants cannot claim the same domain.
 - Synthesize `Accepted` / `Programmed` status back onto the tenant's resources.
+- Emit hosted-zone and record-inventory usage gauges. See
+  [Usage Metering](./usage.md).
 
 The replicator holds credentials for the authoritative cluster and for each
 control plane it discovers; tenants never receive access to the authoritative
@@ -54,6 +56,10 @@ cluster. See [Replication Model](./replication.md) for the internals.
   backend, resolving multi-owner conflicts to a single writer.
 - Report realized status (`Programmed`, per-record results) on the shadow
   objects, which the replicator mirrors upstream.
+- Count authoritative query responses from PowerDNS protobuf logs and emit
+  `zone/queries` usage events. Writer pods attribute from `DNSZone` shadows;
+  edge pods attribute from `DATUM-USAGE` metadata replicated with the LMDB.
+  See [Usage Metering](./usage.md).
 
 The agent is the **only writer** to the DNS backend, in two senses. It is the
 only component that programs authoritative data at all, and it is leader-elected,
@@ -153,6 +159,11 @@ instance. Sample:
 | `discovery.projectKubeconfigPath` | — | Connection template for discovered project control planes. |
 | `downstreamResourceManagement.kubeconfigPath` | — | Kubeconfig for the authoritative (downstream) cluster. |
 | `downstreamResourceManagement.dnsZoneAccountingNamespace` | `datum-downstream-dnszone-accounting` | Namespace holding the zone ownership ledger. |
+| `usage.enabled` | `false` | Emit billed usage to the Vector Agent. Off so e2e without Vector stays quiet. |
+| `usage.endpoint` | `http://localhost:9880/cloudevents` | CloudEvents URL for the node-local Vector Agent. |
+| `usage.location` | — | Datum point-of-presence / region; omitted from events when empty. |
+| `usage.flushInterval` | `60s` | How often query deltas and inventory gauges are emitted. |
+| `usage.protobufListenAddress` | `127.0.0.1:4242` | TCP address the downstream manager binds for PowerDNS protobuf logs. |
 
 Each backend contributes its own `controllers.<backend>` tuning and connection
 settings. For the PowerDNS controller options and environment variables, see

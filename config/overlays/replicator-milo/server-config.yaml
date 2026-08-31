@@ -26,3 +26,12 @@ controllers:
     # maxConcurrentReconciles: 4
     # rateLimiterBaseDelay: 1s
     # rateLimiterMaxDelay: 30s
+
+# usage:
+# Inventory gauges require leader election. This overlay runs 2 replicas with
+# LEADER_ELECT=false, so the manager refuses to register InventoryReporter
+# even if usage.enabled is set. Do not enable usage here.
+#   enabled: true
+#   endpoint: http://localhost:9880/cloudevents
+#   location: us-east-1
+#   flushInterval: 60s

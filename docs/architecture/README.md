@@ -129,6 +129,14 @@ lose others. See [Record Ownership](./record-ownership.md) for the election
 rules, when ownership moves, and how the operator decides whether two spellings
 of a name are the same claim.
 
+### DNSSEC
+
+The service does not sign the zones it is authoritative for, and there is no
+field anywhere in the API that turns signing on. This is a non-goal of the
+design, not a feature waiting to be built, so a domain delegated here has to
+have DNSSEC switched off at its registrar first. See [DNSSEC](./dnssec.md) for
+the reasoning and for what would justify revisiting it.
+
 ## Technology Stack
 
 | Component | Technology | Purpose |
@@ -163,6 +171,8 @@ See the [API Reference](./api-reference.md) for complete field documentation.
   status synthesis
 - [DNS Backends](./backends/README.md) — Backend model and available backends,
   including the [PowerDNS backend](./backends/powerdns.md)
+- [DNSSEC](./dnssec.md) — Why zones are unsigned, and what delegating a signed
+  domain requires
 - [API Reference](./api-reference.md) — Full resource schema and conditions
 
 ## References

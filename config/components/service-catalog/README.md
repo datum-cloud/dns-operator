@@ -15,7 +15,7 @@ API-surface repo.
 | Kind                   | Name                          | What it declares                                                            |
 | ---------------------- | ----------------------------- | --------------------------------------------------------------------------- |
 | `Service`              | `dns-networking-miloapis-com` | `serviceName`, display metadata, producer owner.                            |
-| `ServiceConfiguration` | `dns-networking-miloapis-com` | DNS MonitoredResourceTypes, metrics, and billing routing. _(Phase 2 — TBD)_ |
+| `ServiceConfiguration` | `dns-networking-miloapis-com` | DNS MonitoredResourceTypes, metrics, and billing routing.                   |
 
 Ships in `phase: Published`.
 
@@ -40,10 +40,11 @@ objects stamped `app.kubernetes.io/managed-by: services-operator`.
 Producers must not author those downstream CRDs directly — edit the
 `ServiceConfiguration` and let the fan-out catch up.
 
-The DNS `ServiceConfiguration` is tracked as Phase 2 of the catalog
-registration (metering): query volume, hosted zones, and record-set
-inventory. See the
-[catalog registration issue](https://github.com/datum-cloud/dns-operator/issues/44).
+The DNS `ServiceConfiguration` meters three signals: authoritative
+query volume (`zone/queries`), hosted-zone footprint (`zone/hosted`),
+and record-set inventory (`recordset/active`). Declaring `zone/queries`
+is the metering contract; emitting those query events from the PowerDNS
+data plane is the remaining usage-pipeline work.
 
 ## Immutability after `Published`
 

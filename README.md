@@ -51,6 +51,8 @@ the [Architecture Overview](docs/architecture/README.md).
   and the serving layer
 - [Replication Model](docs/architecture/replication.md) — How desired state and
   status move between clusters
+- [Usage Metering](docs/architecture/usage.md) — Query volume and inventory
+  emission to billing
 - [API Reference](docs/architecture/api-reference.md) — Full resource schema and
   conditions
 

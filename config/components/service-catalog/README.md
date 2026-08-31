@@ -41,10 +41,9 @@ Producers must not author those downstream CRDs directly — edit the
 `ServiceConfiguration` and let the fan-out catch up.
 
 The DNS `ServiceConfiguration` meters three signals: authoritative
-query volume (`zone/queries`), hosted-zone footprint (`zone/hosted`),
-and record-set inventory (`recordset/active`). Declaring `zone/queries`
-is the metering contract; emitting those query events from the PowerDNS
-data plane is the remaining usage-pipeline work.
+query volume (`zone/queries`), hosted-zone footprint (`zones`), and
+record inventory (`records/active`). The operator emits events against
+those meters; see [Usage Metering](../../../docs/architecture/usage.md).
 
 ## Immutability after `Published`
 

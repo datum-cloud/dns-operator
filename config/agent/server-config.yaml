@@ -14,4 +14,13 @@ controllers:
     # rateLimiterBaseDelay: 1s
     # rateLimiterMaxDelay: 30s
 
+# Usage emission is off by default so e2e environments without a Vector
+# Agent stay quiet. Enable in environments that run the billing pipeline.
+# usage:
+#   enabled: true
+#   endpoint: http://localhost:9880/cloudevents
+#   location: us-east-1
+#   flushInterval: 60s
+#   protobufListenAddress: 127.0.0.1:4242
+
  

@@ -20,6 +20,8 @@ type DNSOperator struct {
 	DownstreamResourceManagement DownstreamResourceManagementConfig `json:"downstreamResourceManagement"`
 
 	Controllers ControllersConfig `json:"controllers"`
+
+	Usage UsageConfig `json:"usage"`
 }
 
 // +k8s:deepcopy-gen=true
@@ -105,4 +107,36 @@ func (c *DownstreamResourceManagementConfig) RestConfig() (*rest.Config, error) 
 	}
 
 	return clientcmd.BuildConfigFromFlags("", c.KubeconfigPath)
+}
+
+// +k8s:deepcopy-gen=true
+
+// UsageConfig controls emission of billed DNS usage events.
+type UsageConfig struct {
+	// Enabled turns on usage emission to the billing pipeline.
+	// When false, the downstream collector still accepts PowerDNS protobuf
+	// so the sidecar can connect, but events are discarded.
+	//
+	// +default=false
+	Enabled bool `json:"enabled"`
+
+	// Endpoint is the Vector Agent CloudEvents URL.
+	//
+	// +default="http://localhost:9880/cloudevents"
+	Endpoint string `json:"endpoint"`
+
+	// Location is the Datum point-of-presence / region serving this instance.
+	// Emitted as the `location` dimension. Empty omits the dimension.
+	Location string `json:"location"`
+
+	// FlushInterval is how often query deltas and inventory gauges are emitted.
+	//
+	// +default="60s"
+	FlushInterval *metav1.Duration `json:"flushInterval"`
+
+	// ProtobufListenAddress is the TCP address the downstream manager binds to
+	// receive PowerDNS protobuf query/response logs.
+	//
+	// +default="127.0.0.1:4242"
+	ProtobufListenAddress string `json:"protobufListenAddress"`
 }

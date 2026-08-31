@@ -40,6 +40,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/controller"
 	"go.miloapis.com/dns-operator/internal/dns"
+	"go.miloapis.com/dns-operator/internal/usage"
 	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -157,6 +158,20 @@ func main() {
 	config.SetObjectDefaults_DNSOperator(&serverConfig)
 
 	setupLog.Info("server config", "config", serverConfig)
+
+	usageRecorder, err := usage.NewRecorder(serverConfig.Usage)
+	if err != nil {
+		setupLog.Error(err, "unable to construct usage recorder")
+		os.Exit(1)
+	}
+	usageInterval := 60 * time.Second
+	if serverConfig.Usage.FlushInterval != nil {
+		usageInterval = serverConfig.Usage.FlushInterval.Duration
+	}
+	protobufListen := serverConfig.Usage.ProtobufListenAddress
+	if protobufListen == "" {
+		protobufListen = "127.0.0.1:4242"
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -284,6 +299,18 @@ func main() {
 			os.Exit(1)
 		}
 
+		if err := mgr.Add(&usage.Collector{
+			Client:     mgr.GetClient(),
+			Store:      usageIdentityStore(dnsHandler),
+			Recorder:   usageRecorder,
+			Location:   serverConfig.Usage.Location,
+			ListenAddr: protobufListen,
+			Interval:   usageInterval,
+		}); err != nil {
+			setupLog.Error(err, "unable to add usage collector")
+			os.Exit(1)
+		}
+
 		setupLog.Info("starting downstream manager")
 		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 			setupLog.Error(err, "problem running manager")
@@ -365,6 +392,20 @@ func main() {
 		if err := mcmgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 			setupLog.Error(err, "unable to set up ready check")
 			os.Exit(1)
+		}
+
+		if serverConfig.Usage.Enabled {
+			if !enableLeaderElection {
+				setupLog.Info("skipping usage inventory reporter: leader election is required to avoid double-counting gauges")
+			} else if err := mcmgr.GetLocalManager().Add(&usage.InventoryReporter{
+				Client:   downstreamCluster.GetClient(),
+				Recorder: usageRecorder,
+				Location: serverConfig.Usage.Location,
+				Interval: usageInterval,
+			}); err != nil {
+				setupLog.Error(err, "unable to add usage inventory reporter")
+				os.Exit(1)
+			}
 		}
 
 		// Start everything concurrently (no explicit wait-for-engagement loop)
@@ -485,4 +526,15 @@ func ignoreCanceled(err error) error {
 		return nil
 	}
 	return err
+}
+
+func usageIdentityStore(handler *dns.DNSHandler) usage.IdentityStore {
+	if handler == nil || handler.Client == nil {
+		return nil
+	}
+	store, ok := handler.Client.DNSController.(usage.IdentityStore)
+	if !ok {
+		return nil
+	}
+	return store
 }

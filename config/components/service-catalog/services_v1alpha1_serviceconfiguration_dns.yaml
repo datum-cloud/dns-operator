@@ -14,6 +14,12 @@ spec:
     name: dns-networking-miloapis-com
   phase: Published
   version: v1
+  # A service whose configuration lists no supported location class is skipped
+  # when locations are offered to a project, so without this DNS is live and
+  # reaches no consumer's location list.
+  locations:
+    supportedClasses:
+      - datum-managed
   monitoredResourceTypes:
     - type: dns.networking.miloapis.com/DNSZone
       displayName: DNS Zone

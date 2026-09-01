@@ -158,8 +158,15 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		// Continue with downstream processing - don't return early
 	}
 	// Ensure the downstream recordset object mirrors the upstream spec
-	if _, err = r.ensureDownstreamRecordSet(ctx, strategy, &upstream); err != nil {
+	operation, err := r.ensureDownstreamRecordSet(ctx, strategy, &upstream)
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if operation == controllerutil.OperationResultCreated {
+		// The cached client may not observe the new shadow immediately. Its create
+		// event will enqueue another reconcile once it is visible; reading it here
+		// turns normal cache propagation into NotFound/AlreadyExists error bursts.
+		return ctrl.Result{}, nil
 	}
 
 	// Mirror downstream status (conditions + records) when the shadow exists

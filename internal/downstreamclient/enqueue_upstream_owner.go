@@ -117,10 +117,19 @@ func (e *enqueueRequestForOwner[object]) getOwnerReconcileRequest(obj metav1.Obj
 					Namespace: meta[UpstreamOwnerNamespaceAnnotation],
 				},
 			},
-			ClusterName: multicluster.ClusterName(strings.TrimPrefix(strings.ReplaceAll(meta[UpstreamOwnerClusterNameAnnotation], "_", "/"), "cluster-")),
+			ClusterName: upstreamClusterName(meta[UpstreamOwnerClusterNameAnnotation]),
 		}
 		result[request] = empty{}
 	}
+}
+
+// upstreamClusterName decodes the label-safe cluster name stored on downstream
+// objects. Before multicluster-runtime v0.23, cluster names carried a leading
+// slash, so legacy objects encode "cluster-_project" while current objects use
+// "cluster-project". The manager now registers both as "project".
+func upstreamClusterName(encoded string) multicluster.ClusterName {
+	decoded := strings.ReplaceAll(strings.TrimPrefix(encoded, "cluster-"), "_", "/")
+	return multicluster.ClusterName(strings.TrimPrefix(decoded, "/"))
 }
 
 // upstreamOwnerMeta returns upstream owner metadata from the object,

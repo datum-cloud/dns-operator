@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
 
@@ -88,7 +89,7 @@ func TestGetOwnerReconcileRequest_Annotations(t *testing.T) {
 				Namespace: "my-namespace",
 			},
 		},
-		ClusterName: "/my/cluster",
+		ClusterName: "my/cluster",
 	}
 
 	for req := range result {
@@ -127,13 +128,29 @@ func TestGetOwnerReconcileRequest_LabelsFallback(t *testing.T) {
 				Namespace: "my-namespace",
 			},
 		},
-		ClusterName: "/my/cluster",
+		ClusterName: "my/cluster",
 	}
 
 	for req := range result {
 		if req != want {
 			t.Errorf("got request %+v, want %+v", req, want)
 		}
+	}
+}
+
+func TestUpstreamClusterNameNormalizesLegacyPrefix(t *testing.T) {
+	tests := map[string]multicluster.ClusterName{
+		"cluster-_my_cluster": "my/cluster",
+		"cluster-my_cluster":  "my/cluster",
+		"cluster-project":     "project",
+	}
+
+	for encoded, want := range tests {
+		t.Run(encoded, func(t *testing.T) {
+			if got := upstreamClusterName(encoded); got != want {
+				t.Errorf("upstreamClusterName(%q) = %q, want %q", encoded, got, want)
+			}
+		})
 	}
 }
 

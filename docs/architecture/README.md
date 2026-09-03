@@ -116,6 +116,19 @@ tenant control plane. A user watching a `DNSZone` therefore sees `Programmed=Tru
 only after the zone actually serves. See [Replication Model](./replication.md)
 for how the operator synthesizes status across the two clusters.
 
+A `DNSRecordSet` reports a second layer of status, one condition per owner name
+it holds, and the reasons that say why a record is blocked live there. See
+[Conditions and Reasons](./conditions.md) for what each reason means and whether
+it clears on its own.
+
+### Record Ownership
+
+An owner name within a zone belongs to one `DNSRecordSet` at a time, per record
+type, decided first-come. A record set holding several names can own some and
+lose others. See [Record Ownership](./record-ownership.md) for the election
+rules, when ownership moves, and how the operator decides whether two spellings
+of a name are the same claim.
+
 ## Technology Stack
 
 | Component | Technology | Purpose |
@@ -140,6 +153,10 @@ See the [API Reference](./api-reference.md) for complete field documentation.
 
 ## Learn More
 
+- [Record Ownership](./record-ownership.md) — Who owns a name in a zone, and
+  when that changes
+- [Conditions and Reasons](./conditions.md) — What each status reason means, and
+  whether it needs a person
 - [Deployment Topology](./topology.md) — Roles, control planes, and the serving
   layer
 - [Replication Model](./replication.md) — Shadow objects, namespace mapping, and

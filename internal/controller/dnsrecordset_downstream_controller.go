@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/dns"
 )
 
@@ -34,7 +35,23 @@ type DNSRecordSetReconciler struct {
 	client.Client
 	Scheme     *runtime.Scheme
 	DNSHandler *dns.DNSHandler
+
+	// Config tunes the controller's concurrency and retry backoff. A zero value
+	// falls back to the same defaults the server config declares.
+	Config config.DNSRecordSetPowerDNSControllerConfig
 }
+
+const (
+	// defaultRecordSetMaxConcurrentReconciles matches the server config default.
+	// PowerDNS runs with lmdb-shards=1 and therefore admits one writer at a
+	// time, so this is deliberately modest: it is enough that a single large
+	// record set no longer blocks every other zone, without queueing writers
+	// behind a lock.
+	defaultRecordSetMaxConcurrentReconciles = 4
+
+	defaultRecordSetRateLimiterBaseDelay = 1 * time.Second
+	defaultRecordSetRateLimiterMaxDelay  = 30 * time.Second
+)
 
 // downstreamRSFinalizer is the finalizer for the DNSRecordSetDownstream controller
 const downstreamRSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset-downstream"
@@ -263,8 +280,21 @@ func (r *DNSRecordSetReconciler) setAcceptedCondition(
 //   - Requeues DNSRecordSets when their DNSZone (same ns, same spec.zoneName) changes
 //   - Uses an exponential backoff rate limiter for gentle retries while waiting on zone readiness
 func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	maxConcurrentReconciles := r.Config.MaxConcurrentReconciles
+	if maxConcurrentReconciles <= 0 {
+		maxConcurrentReconciles = defaultRecordSetMaxConcurrentReconciles
+	}
+	baseDelay := defaultRecordSetRateLimiterBaseDelay
+	if r.Config.RateLimiterBaseDelay != nil {
+		baseDelay = r.Config.RateLimiterBaseDelay.Duration
+	}
+	maxDelay := defaultRecordSetRateLimiterMaxDelay
+	if r.Config.RateLimiterMaxDelay != nil {
+		maxDelay = r.Config.RateLimiterMaxDelay.Duration
+	}
+
 	// index DNSRecordSet by spec.DNSZoneRef.Name for quick fan-out from a DNSZone event
-	rl := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](1*time.Second, 30*time.Second)
+	rl := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](baseDelay, maxDelay)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dnsv1alpha1.DNSRecordSet{}).
@@ -290,7 +320,8 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(zoneBecameProgrammed()),
 		).
 		WithOptions(controller.Options{
-			RateLimiter: rl,
+			RateLimiter:             rl,
+			MaxConcurrentReconciles: maxConcurrentReconciles,
 		}).
 		Named("dnsrecordset").
 		Complete(r)

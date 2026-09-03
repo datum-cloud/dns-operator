@@ -27,10 +27,16 @@ type ControllersConfig struct {
 	DNSRecordSetPowerDNS DNSRecordSetPowerDNSControllerConfig `json:"dnsRecordSetPowerDNS"`
 }
 
+// DNSRecordSetPowerDNSControllerConfig tunes the controller that programs
+// DNSRecordSets into PowerDNS.
 // +k8s:deepcopy-gen=true
 type DNSRecordSetPowerDNSControllerConfig struct {
-	// MaxConcurrentReconciles is the maximum number of concurrent reconciles for the
-	// dnsrecordset-powerdns controller.
+	// MaxConcurrentReconciles is the maximum number of DNSRecordSets programmed
+	// into PowerDNS at once.
+	//
+	// PowerDNS runs with lmdb-shards=1 and admits a single writer, so this is
+	// kept modest: it exists so one large record set cannot block every other
+	// zone behind it, not to parallelise writes.
 	//
 	// +default=4
 	MaxConcurrentReconciles int `json:"maxConcurrentReconciles"`

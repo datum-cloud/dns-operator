@@ -15,11 +15,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -152,8 +155,28 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, r.Status().Patch(ctx, &rs, client.MergeFrom(base))
 	}
 
+	// Nothing to program: the records at this generation are already in the
+	// provider and the status says so. Every status write the controller makes
+	// comes back as an update event, so without this the object reprograms
+	// itself once per write — for a record set holding thousands of names that
+	// is the difference between a reconcile and a reconcile loop. Drift written
+	// outside the operator is still corrected on the manager's resync.
+	if recordSetProgrammedAtGeneration(&rs) {
+		logger.Info("RecordSet already programmed at this generation", "generation", rs.Generation)
+		return ctrl.Result{}, nil
+	}
+
 	statuses, err := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
 	return ctrl.Result{}, r.updateStatus(ctx, &rs, err, statuses)
+}
+
+// recordSetProgrammedAtGeneration reports whether the record set's current spec
+// generation has already been programmed successfully.
+func recordSetProgrammedAtGeneration(rs *dnsv1alpha1.DNSRecordSet) bool {
+	cond := apimeta.FindStatusCondition(rs.Status.Conditions, CondProgrammed)
+	return cond != nil &&
+		cond.Status == metav1.ConditionTrue &&
+		cond.ObservedGeneration == rs.Generation
 }
 
 func (r *DNSRecordSetReconciler) updateStatus(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet, err error, statuses []dnsv1alpha1.RecordSetStatus) error {
@@ -250,10 +273,6 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&dnsv1alpha1.DNSZone{},
 			handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []ctrl.Request {
 				zone := obj.(*dnsv1alpha1.DNSZone)
-				cond := apimeta.FindStatusCondition(zone.Status.Conditions, CondProgrammed)
-				if cond == nil || cond.Status != metav1.ConditionTrue {
-					return nil
-				}
 				var rrs dnsv1alpha1.DNSRecordSetList
 				if err := mgr.GetClient().List(ctx, &rrs,
 					client.InNamespace(zone.Namespace),
@@ -268,12 +287,42 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				}
 				return out
 			}),
+			builder.WithPredicates(zoneBecameProgrammed()),
 		).
 		WithOptions(controller.Options{
 			RateLimiter: rl,
 		}).
 		Named("dnsrecordset").
 		Complete(r)
+}
+
+// zoneBecameProgrammed admits only the DNSZone events that can change what a
+// record set should do: the zone is programmed and was not before.
+//
+// The fan-out this gates enqueues every record set in a zone, so an unfiltered
+// watch turned each of a zone's own status writes into a full reconcile of every
+// record set it holds. A zone that is already programmed and stays programmed
+// tells its record sets nothing new.
+func zoneBecameProgrammed() predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			return zoneProgrammed(e.Object)
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !zoneProgrammed(e.ObjectOld) && zoneProgrammed(e.ObjectNew)
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+func zoneProgrammed(obj client.Object) bool {
+	zone, ok := obj.(*dnsv1alpha1.DNSZone)
+	if !ok {
+		return false
+	}
+	cond := apimeta.FindStatusCondition(zone.Status.Conditions, CondProgrammed)
+	return cond != nil && cond.Status == metav1.ConditionTrue
 }
 
 // cleanupPDNSForRecordSet ensures the RRsets represented by rs are removed from PDNS.

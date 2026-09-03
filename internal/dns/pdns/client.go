@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,7 +210,20 @@ func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZon
 	return dnsutils.NormalizeStringSlice(desiredNS)
 }
 
+// EnsureRecordSet makes the RRsets a DNSRecordSet declares match PowerDNS, and
+// prunes the owner names this record set previously wrote and no longer wants.
+//
+// The whole reconcile costs one zone read plus at most one PATCH per
+// patchChunkSize changes, no matter how many owner names the record set holds.
+// A Datum record set is a bucket — one object carries every record of a type in
+// a zone — so a read or a write per owner name turns a 5,000 record object into
+// thousands of sequential round trips, which is what stalled every other zone
+// behind it.
 func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+	zoneName := zone.Spec.DomainName
+	recordType := string(recordSet.Spec.RecordType)
+	ownerRef := recordSetOwnerRef(recordSet)
+
 	statusList := make([]dnsv1alpha1.RecordSetStatus, 0, len(recordSet.Spec.Records))
 
 	rrsetMap := make(map[string][]dnsv1alpha1.RecordEntry)
@@ -221,100 +233,148 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		rrsetMap[owner] = append(rrsetMap[owner], recordSet.Spec.Records[i])
 	}
 
-	for owner, entries := range rrsetMap {
-		ownerRRSet, ok := BuildOwnerRRSet(zone.Spec.DomainName, recordSet.Spec.RecordType, owner, entries)
-		qualifyOwner := QualifyOwner(owner, zone.Spec.DomainName)
+	existing, err := c.getPDNSZoneRRSets(ctx, zoneName)
+	if err != nil {
+		c.logger.Error(err, "Failed to fetch zone rrsets from PowerDNS", "zone", zoneName)
+		return nil, err
+	}
 
+	// The qualified owner names this record set wants to exist, used below to
+	// decide which of the names it already owns are now surplus.
+	desired := make(map[string]struct{}, len(rrsetMap))
+
+	replaces := make([]rrset, 0, len(rrsetMap))
+	// replacedStatus[i] is the statusList entry that replaces[i] decides, so a
+	// failed patch can be reported against exactly the owners it carried.
+	replacedStatus := make([]int, 0, len(rrsetMap))
+
+	owners := make([]string, 0, len(rrsetMap))
+	for owner := range rrsetMap {
+		owners = append(owners, owner)
+	}
+	sort.Strings(owners)
+
+	for _, owner := range owners {
+		ownerRRSet, ok := BuildOwnerRRSet(zoneName, recordSet.Spec.RecordType, owner, rrsetMap[owner])
 		if !ok {
-			c.logger.Info("Failed to build owner RRSet", "owner", owner, "rrset", ownerRRSet)
+			c.logger.Info("Failed to build owner RRSet", "owner", owner)
 			statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("failed to build owner RRSet for owner %s", owner)))
 			continue
 		}
 
-		c.logger.Info("Ensuring record set for owner", "owner", owner, "rrset", ownerRRSet)
-		zones, err := c.getPDNSRRSet(ctx, zone.Spec.DomainName, qualifyOwner, recordSet.Spec.RecordType)
-		c.logger.Info("Fetched existing rrsets from PDNS", "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones, "err", err)
+		qualified := QualifyOwner(owner, zoneName)
+		desired[qualified] = struct{}{}
 
-		if err != nil {
-			// Set programmed to False on API errors
-			statusList = append(statusList, recordSetErrorStatus(owner, err))
+		current, found := existing[rrsetKey{name: qualified, typ: recordType}]
+		if found && c.rrsetMatchesObject(current, recordSet) {
+			statusList = append(statusList, recordSetSuccessStatus(owner, recordSet.Status.RecordSets))
 			continue
 		}
 
-		if len(zones) == 0 {
-			// Not configured. Easy path we configure it and return
-			statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
-		} else {
-			// Zones returned.
-			if len(zones) > 1 {
-				// This should not happen. We should only have one RRSet per owner per type. Log an error and continue.
-				c.logger.Error(fmt.Errorf("multiple rrsets returned for owner %s", owner), "zone", zone.Spec.DomainName, "owner", owner, "rrsets", zones)
-				statusList = append(statusList, recordSetErrorStatus(owner, fmt.Errorf("multiple RRSets returned for owner %s", owner)))
-				continue
-			}
+		replaces = append(replaces, buildReplaceRRSet(
+			zoneName,
+			recordType,
+			owner,
+			ownerRRSet.TTL,
+			ownerRRSet.Records,
+			ownerRef,
+			recordSet.Generation,
+			string(recordSet.UID),
+			current.Comments,
+		))
+		statusList = append(statusList, recordSetCreatedStatus(owner))
+		replacedStatus = append(replacedStatus, len(statusList)-1)
+	}
 
-			if zones[0].Comments == nil {
-				// this happens when the record set was created previously and doesn't have the OWNER comment. We will replace it with the new one.
-				statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
-			} else {
-				needsReplace := true
-				currentUID := ""
-				currentGeneration := int64(0)
-				for _, comment := range zones[0].Comments {
-					switch comment.Account {
-					case ACCOUNT_OBSERVED_GENERATION:
-						observedGeneration, err := strconv.ParseInt(comment.Content, 10, 64)
-						if err != nil {
-							c.logger.Error(err, "Failed to parse observed generation", "comment", comment.Content)
-							continue
-						}
-						currentGeneration = observedGeneration
-					case ACCOUNT_OBJECT_UID:
-						currentUID = comment.Content
-					}
-				}
-				if currentGeneration == recordSet.Generation && currentUID == string(recordSet.UID) {
-					needsReplace = false
-				}
+	// Deletion phase. The zone read already says which owner names of this type
+	// this record set owns, so the surplus ones are a local diff — no global
+	// comment search, which is unscoped and therefore couples every zone in the
+	// database to this reconcile.
+	deletes := make([]rrset, 0)
+	for key, current := range existing {
+		if key.typ != recordType {
+			continue
+		}
+		if _, wanted := desired[key.name]; wanted {
+			continue
+		}
+		// A record set only prunes the owner names it wrote itself. Names owned
+		// by another DNSRecordSet of the same type, or by nothing at all, belong
+		// to whoever holds them.
+		if rrsetOwnerRef(current) != ownerRef {
+			continue
+		}
+		c.logger.Info("Deleting RecordSet from PowerDNS", "owner", key.name, "recordType", key.typ, "recordSet", recordSet.Name)
+		deletes = append(deletes, newDeleteRRSet(key.name, key.typ))
+	}
+	sortRRSets(deletes)
 
-				if needsReplace {
-					c.logger.Info("RRSet Needs Replacement. Metadata does not match current object", "owner", owner, "existingGeneration", currentGeneration, "existingUID", currentUID, "currentGeneration", recordSet.Generation, "currentUID", string(recordSet.UID))
-					statusList = append(statusList, c.replaceRRSetStatus(ctx, zone.Spec.DomainName, recordSet, owner, ownerRRSet))
-				} else {
-					statusList = append(statusList, recordSetSuccessStatus(owner, recordSet.Status.RecordSets))
-				}
+	for _, chunk := range chunkRRSets(replaces) {
+		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
+			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
+			for _, idx := range replacedStatus[chunk.start:chunk.end] {
+				statusList[idx] = recordSetErrorStatus(statusList[idx].Name, err)
 			}
 		}
 	}
 
-	// Deletion Phase
-	curRecordSet, err := c.queryDNSByComment(ctx, fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name))
-
-	if err != nil {
-		c.logger.Error(err, "Failed to query PDNS for record set", "recordSet", recordSet.Name)
-		return nil, err
-	}
-
-	for _, cur := range curRecordSet {
-		if cur.Type != string(recordSet.Spec.RecordType) {
-			// Ignore this record type
-			continue
-		}
-
-		if !slices.ContainsFunc(statusList, func(s dnsv1alpha1.RecordSetStatus) bool {
-			QualifiedOwner := QualifyOwner(s.Name, zone.Spec.DomainName)
-			return QualifiedOwner == cur.Name
-		}) {
-			// This owner is not in the desired state, delete it
-			c.logger.Info("Deleting RecordSet from PowerDNS", "owner", cur.Name, "recordType", cur.Type, "recordSet", recordSet.Name)
-			err := c.DeleteRRSet(ctx, zone.Spec.DomainName, string(recordSet.Spec.RecordType), cur.Name)
-			if err != nil {
-				c.logger.Error(err, "failed to delete recordset from PowerDNS")
-			}
+	for _, chunk := range chunkRRSets(deletes) {
+		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
+			c.logger.Error(err, "failed to delete recordsets from PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
 		}
 	}
 
 	return statusList, nil
+}
+
+// rrsetMatchesObject reports whether the RRset already in PowerDNS was written
+// by this object at this generation, in which case it needs no rewrite.
+func (c *Client) rrsetMatchesObject(current zoneRRset, recordSet dnsv1alpha1.DNSRecordSet) bool {
+	if current.Comments == nil {
+		// Written before the operator stamped ownership metadata, or by
+		// something else entirely. Rewrite it so it carries the metadata.
+		return false
+	}
+
+	currentUID := ""
+	currentGeneration := int64(0)
+	for _, comment := range current.Comments {
+		switch comment.Account {
+		case ACCOUNT_OBSERVED_GENERATION:
+			observedGeneration, err := strconv.ParseInt(comment.Content, 10, 64)
+			if err != nil {
+				c.logger.Error(err, "Failed to parse observed generation", "comment", comment.Content)
+				continue
+			}
+			currentGeneration = observedGeneration
+		case ACCOUNT_OBJECT_UID:
+			currentUID = comment.Content
+		}
+	}
+
+	if currentGeneration == recordSet.Generation && currentUID == string(recordSet.UID) {
+		return true
+	}
+
+	c.logger.Info("RRSet Needs Replacement. Metadata does not match current object", "owner", current.Name, "existingGeneration", currentGeneration, "existingUID", currentUID, "currentGeneration", recordSet.Generation, "currentUID", string(recordSet.UID))
+	return false
+}
+
+// recordSetOwnerRef is the value stamped into an RRset's OWNER comment to record
+// which DNSRecordSet wrote it.
+func recordSetOwnerRef(recordSet dnsv1alpha1.DNSRecordSet) string {
+	return fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name)
+}
+
+// rrsetOwnerRef returns the DNSRecordSet an RRset was written by, or "" when it
+// carries no ownership comment.
+func rrsetOwnerRef(rr zoneRRset) string {
+	for _, comment := range rr.Comments {
+		if comment.Account == ACCOUNT_OWNER {
+			return comment.Content
+		}
+	}
+	return ""
 }
 
 func makeProgrammedStatus(owner string, status metav1.ConditionStatus, reason, message string) dnsv1alpha1.RecordSetStatus {
@@ -351,39 +411,18 @@ func recordSetSuccessStatus(owner string, current []dnsv1alpha1.RecordSetStatus)
 	return recordSetCreatedStatus(owner)
 }
 
-func (c *Client) replaceRRSetStatus(
-	ctx context.Context,
-	zoneName string,
-	recordSet dnsv1alpha1.DNSRecordSet,
-	owner string,
-	ownerRRSet OwnerRRSet,
-) dnsv1alpha1.RecordSetStatus {
-	err := c.ReplaceRRSet(
-		ctx,
-		zoneName,
-		string(recordSet.Spec.RecordType),
-		owner,
-		ownerRRSet.TTL,
-		ownerRRSet.Records,
-		fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name),
-		recordSet.Generation,
-		string(recordSet.UID),
-	)
-	if err != nil {
-		return recordSetErrorStatus(owner, err)
-	}
-	return recordSetCreatedStatus(owner)
-}
-
-func (c *Client) getPDNSRRSet(ctx context.Context, zoneName string, rrset_name string, rrset_type dnsv1alpha1.RRType) ([]zoneRRset, error) {
+// getPDNSZoneRRSets reads every RRset in a zone in one request and indexes them
+// by qualified owner name and type.
+//
+// There is no cheaper server-side query for "every A record in this zone":
+// PowerDNS only honours rrset_type alongside rrset_name, so a type filter on its
+// own returns the whole zone anyway. One zone read costs roughly six per-owner
+// reads while covering every owner name in it.
+func (c *Client) getPDNSZoneRRSets(ctx context.Context, zoneName string) (map[rrsetKey]zoneRRset, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/v1/servers/localhost/zones/"+zoneName+".", nil)
 	if err != nil {
 		return nil, err
 	}
-	query := req.URL.Query()
-	query.Set("rrset_name", rrset_name)
-	query.Set("rrset_type", string(rrset_type))
-	req.URL.RawQuery = query.Encode()
 	req.Header.Set("X-API-Key", c.APIKey)
 
 	resp, err := c.HTTP.Do(req)
@@ -403,85 +442,56 @@ func (c *Client) getPDNSRRSet(ctx context.Context, zoneName string, rrset_name s
 	if err := json.NewDecoder(resp.Body).Decode(&zr); err != nil {
 		return nil, err
 	}
-	return zr.RRSets, nil
-}
 
-func (c *Client) queryDNSByComment(ctx context.Context, commentContent string) ([]queryResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/v1/servers/localhost/search-data", nil)
-	if err != nil {
-		return nil, err
+	out := make(map[rrsetKey]zoneRRset, len(zr.RRSets))
+	for _, rr := range zr.RRSets {
+		out[rrsetKey{name: rr.Name, typ: rr.Type}] = rr
 	}
-	query := req.URL.Query()
-	query.Set("q", commentContent)
-	query.Set("max", fmt.Sprintf("%d", 9999))
-	query.Set("object_type", "comment")
-	req.URL.RawQuery = query.Encode()
-	req.Header.Set("X-API-Key", c.APIKey)
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, dnserrors.ErrZoneNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, &pdnsAPIError{Status: resp.StatusCode, Body: readRespBody(resp, 64<<10)}
-	}
-
-	var qr []queryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&qr); err != nil {
-		return nil, err
-	}
-	return qr, nil
+	return out, nil
 }
 
 func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
-	rrsetMap := make(map[string][]dnsv1alpha1.RecordEntry)
+	zoneName := zone.Spec.DomainName
+	recordType := string(recordSet.Spec.RecordType)
+	ownerRef := recordSetOwnerRef(recordSet)
 
-	for i := range recordSet.Spec.Records {
-		owner := recordSet.Spec.Records[i].Name
-		rrsetMap[owner] = append(rrsetMap[owner], recordSet.Spec.Records[i])
-	}
-
-	for owner := range rrsetMap {
-		patch := []rrset{{
-			Name:       QualifyOwner(owner, zone.Spec.DomainName),
-			Type:       string(recordSet.Spec.RecordType),
-			ChangeType: "DELETE",
-			Records:    []rrsetRecord{},
-		}}
-		err := c.applyRRSetPatch(ctx, zone.Spec.DomainName, patch)
-		if err != nil {
-			c.logger.Error(err, "Failed to delete record set from PowerDNS", "owner", owner, "recordType", recordSet.Spec.RecordType)
-			return err
-		}
-	}
-
-	curRecordSet, err := c.queryDNSByComment(ctx, fmt.Sprintf("%s:%s", recordSet.Namespace, recordSet.Name))
+	existing, err := c.getPDNSZoneRRSets(ctx, zoneName)
 	if err != nil {
-		c.logger.Error(err, "Failed to query record set by comment from PowerDNS", "recordSet", recordSet.Name)
+		if errors.Is(err, dnserrors.ErrZoneNotFound) {
+			// The zone is already gone, so its RRsets are too.
+			return nil
+		}
+		c.logger.Error(err, "Failed to fetch zone rrsets from PowerDNS", "zone", zoneName)
 		return err
 	}
 
-	// In case there are any extra owners in PDNS that are not in the desired state, we need to delete them as well.
-	for _, cur := range curRecordSet {
-		if cur.Type != string(recordSet.Spec.RecordType) {
-			// Ignore this record type
+	targets := make(map[string]struct{}, len(recordSet.Spec.Records))
+	for i := range recordSet.Spec.Records {
+		qualified := QualifyOwner(recordSet.Spec.Records[i].Name, zoneName)
+		if _, found := existing[rrsetKey{name: qualified, typ: recordType}]; found {
+			targets[qualified] = struct{}{}
+		}
+	}
+
+	// Owner names this record set wrote that its spec no longer mentions.
+	for key, current := range existing {
+		if key.typ != recordType {
 			continue
 		}
+		if rrsetOwnerRef(current) == ownerRef {
+			targets[key.name] = struct{}{}
+		}
+	}
 
-		patch := []rrset{{
-			Name:       cur.Name,
-			Type:       cur.Type,
-			ChangeType: "DELETE",
-			Records:    []rrsetRecord{},
-		}}
-		err := c.applyRRSetPatch(ctx, zone.Spec.DomainName, patch)
-		if err != nil {
-			c.logger.Error(err, "Failed to delete record set from PowerDNS", "owner", cur.Name, "recordType", cur.Type)
+	deletes := make([]rrset, 0, len(targets))
+	for name := range targets {
+		deletes = append(deletes, newDeleteRRSet(name, recordType))
+	}
+	sortRRSets(deletes)
+
+	for _, chunk := range chunkRRSets(deletes) {
+		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
+			c.logger.Error(err, "Failed to delete record set from PowerDNS", "zone", zoneName, "recordType", recordType)
 			return err
 		}
 	}
@@ -563,6 +573,85 @@ type rrset struct {
 	Comments   []zoneRRsetComment `json:"comments,omitempty"`
 }
 
+// MarshalJSON sends an explicit empty comment list with every DELETE.
+//
+// PowerDNS's LMDB backend does not remove an RRset's comments when the RRset
+// itself is deleted: a patch that omits the key leaves the rows behind, and a
+// zone accumulates comment-only shells for names that no longer have records.
+// Only DELETE gets the empty list — sending it on a REPLACE would strip the
+// ownership metadata off RRsets whose writers do not manage comments.
+func (r rrset) MarshalJSON() ([]byte, error) {
+	type rrsetPayload rrset
+	if r.ChangeType == changeTypeDelete && r.Comments == nil {
+		return json.Marshal(struct {
+			rrsetPayload
+			Comments []zoneRRsetComment `json:"comments"`
+		}{rrsetPayload(r), []zoneRRsetComment{}})
+	}
+	return json.Marshal(rrsetPayload(r))
+}
+
+// rrsetKey identifies an RRset within a zone. PowerDNS keys on the qualified
+// owner name together with the record type, so both are needed to look one up.
+type rrsetKey struct {
+	name string
+	typ  string
+}
+
+const (
+	changeTypeReplace = "REPLACE"
+	changeTypeDelete  = "DELETE"
+
+	// patchChunkSize bounds how many rrsets travel in a single PATCH. One
+	// request per reconcile is the goal; this only exists so a record set with
+	// thousands of owner names does not build one enormous body.
+	patchChunkSize = 500
+)
+
+// rrsetChunk is a window onto a slice of rrsets, carrying the bounds so callers
+// can map a failed chunk back onto the owners it covered.
+type rrsetChunk struct {
+	rrsets     []rrset
+	start, end int
+}
+
+func chunkRRSets(rrsets []rrset) []rrsetChunk {
+	if len(rrsets) == 0 {
+		return nil
+	}
+	out := make([]rrsetChunk, 0, (len(rrsets)+patchChunkSize-1)/patchChunkSize)
+	for start := 0; start < len(rrsets); start += patchChunkSize {
+		end := start + patchChunkSize
+		if end > len(rrsets) {
+			end = len(rrsets)
+		}
+		out = append(out, rrsetChunk{rrsets: rrsets[start:end], start: start, end: end})
+	}
+	return out
+}
+
+func sortRRSets(patch []rrset) {
+	sort.Slice(patch, func(i, j int) bool {
+		if patch[i].Type != patch[j].Type {
+			return patch[i].Type < patch[j].Type
+		}
+		if patch[i].Name != patch[j].Name {
+			return patch[i].Name < patch[j].Name
+		}
+		return patch[i].ChangeType < patch[j].ChangeType
+	})
+}
+
+// newDeleteRRSet builds the DELETE change for one RRset.
+func newDeleteRRSet(qualifiedName, recordType string) rrset {
+	return rrset{
+		Name:       qualifiedName,
+		Type:       recordType,
+		ChangeType: changeTypeDelete,
+		Records:    []rrsetRecord{},
+	}
+}
+
 type patchZoneRequest struct {
 	RRSets []rrset `json:"rrsets"`
 }
@@ -596,15 +685,6 @@ type zoneRRsetComment struct {
 type zoneRRsetRecord struct {
 	Content  string `json:"content"`
 	Disabled bool   `json:"disabled"`
-}
-
-type queryResponse struct {
-	Content    string `json:"content"`
-	Name       string `json:"name"`
-	ObjectType string `json:"object_type"`
-	Type       string `json:"type"`
-	Zone       string `json:"zone"`
-	ZoneId     string `json:"zone_id"`
 }
 
 // ApplyRecordSetAuthoritative ensures rrsets for the given record type match exactly the owners provided
@@ -683,6 +763,25 @@ func (c *Client) ReplaceRRSet(
 	observedGeneration int64,
 	objectUID string,
 ) error {
+	return c.applyRRSetPatch(ctx, zone, []rrset{buildReplaceRRSet(
+		zone, recordType, ownerName, ttl, values, ownerRef, observedGeneration, objectUID, nil,
+	)})
+}
+
+// buildReplaceRRSet builds the REPLACE change for one owner name, stamped with
+// the ownership metadata the reconcile guard reads back. existingComments are
+// the comments PowerDNS currently holds for this RRset, if any.
+func buildReplaceRRSet(
+	zone string,
+	recordType string,
+	ownerName string,
+	ttl int,
+	values []string,
+	ownerRef string,
+	observedGeneration int64,
+	objectUID string,
+	existingComments []zoneRRsetComment,
+) rrset {
 	records := make([]rrsetRecord, 0, len(values))
 	for _, v := range values {
 		if v == "" {
@@ -690,57 +789,64 @@ func (c *Client) ReplaceRRSet(
 		}
 		records = append(records, rrsetRecord{Content: v, Disabled: false})
 	}
+
 	comments := []zoneRRsetComment{{
-		Account:    ACCOUNT_OWNER,
-		Content:    ownerRef,
-		ModifiedAt: int(time.Now().Unix()),
+		Account: ACCOUNT_OWNER,
+		Content: ownerRef,
 	}, {
-		Account:    ACCOUNT_OBSERVED_GENERATION,
-		Content:    fmt.Sprintf("%d", observedGeneration),
-		ModifiedAt: int(time.Now().Unix()),
+		Account: ACCOUNT_OBSERVED_GENERATION,
+		Content: fmt.Sprintf("%d", observedGeneration),
 	}}
 	if objectUID != "" {
 		comments = append(comments, zoneRRsetComment{
-			Account:    ACCOUNT_OBJECT_UID,
-			Content:    objectUID,
-			ModifiedAt: int(time.Now().Unix()),
+			Account: ACCOUNT_OBJECT_UID,
+			Content: objectUID,
 		})
 	}
-	patch := []rrset{{
+
+	return rrset{
 		Name:       QualifyOwner(ownerName, zone),
 		Type:       recordType,
 		TTL:        ttl,
-		ChangeType: "REPLACE",
+		ChangeType: changeTypeReplace,
 		Records:    dedupeRecords(records),
-		Comments:   comments,
-	}}
-	return c.applyRRSetPatch(ctx, zone, patch)
+		Comments:   stampComments(comments, existingComments, int(time.Now().Unix())),
+	}
+}
+
+// stampComments carries the existing modified_at forward for every comment whose
+// content has not changed, and timestamps only the ones that did change.
+//
+// PowerDNS's LMDB backend content-addresses a comment over a struct that
+// includes modified_at, so restamping an otherwise identical comment stores a
+// new row rather than replacing the old one. A record set rewritten repeatedly
+// therefore grows the comment table without bound, which is what turned a
+// reconcile loop into a database that only ever got slower.
+func stampComments(desired, existing []zoneRRsetComment, now int) []zoneRRsetComment {
+	out := make([]zoneRRsetComment, 0, len(desired))
+	for _, comment := range desired {
+		comment.ModifiedAt = now
+		for _, current := range existing {
+			if current.Account == comment.Account && current.Content == comment.Content && current.ModifiedAt != 0 {
+				comment.ModifiedAt = current.ModifiedAt
+				break
+			}
+		}
+		out = append(out, comment)
+	}
+	return out
 }
 
 // DeleteRRSet removes the referenced (type, owner) RRset from PDNS.
 func (c *Client) DeleteRRSet(ctx context.Context, zone, recordType, ownerName string) error {
-	patch := []rrset{{
-		Name:       QualifyOwner(ownerName, zone),
-		Type:       recordType,
-		ChangeType: "DELETE",
-		Records:    []rrsetRecord{},
-	}}
-	return c.applyRRSetPatch(ctx, zone, patch)
+	return c.applyRRSetPatch(ctx, zone, []rrset{newDeleteRRSet(QualifyOwner(ownerName, zone), recordType)})
 }
 
 func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset) error {
 	if len(patch) == 0 {
 		return nil
 	}
-	sort.Slice(patch, func(i, j int) bool {
-		if patch[i].Type != patch[j].Type {
-			return patch[i].Type < patch[j].Type
-		}
-		if patch[i].Name != patch[j].Name {
-			return patch[i].Name < patch[j].Name
-		}
-		return patch[i].ChangeType < patch[j].ChangeType
-	})
+	sortRRSets(patch)
 	payload := patchZoneRequest{RRSets: patch}
 	body, _ := json.Marshal(payload)
 

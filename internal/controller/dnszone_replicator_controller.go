@@ -247,6 +247,9 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if err := r.ensureDomain(ctx, upstreamCl.GetClient(), &upstream); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := r.ensureDomainRef(ctx, upstreamCl.GetClient(), &upstream); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// Never provision DNS for a domain the requester hasn't proven they own.
 	// Without this gate, any syntactically valid domain name gets a live PowerDNS
@@ -650,34 +653,9 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 		}
 	}
 
-	// DomainRef: populate from upstream Domain object that matches spec.domainName.
-	var dlist networkingv1alpha.DomainList
-	if err := c.List(
-		ctx,
-		&dlist,
-		client.InNamespace(upstream.Namespace),
-		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", upstream.Spec.DomainName)},
-	); err != nil {
+	newRef, err := r.desiredDomainRef(ctx, c, upstream)
+	if err != nil {
 		return err
-	}
-	var newRef *dnsv1alpha1.DomainRef
-	if len(dlist.Items) > 0 {
-		// Try to find one thats verified first else pick the first one.
-		indx := 0
-		for i, d := range dlist.Items {
-			if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
-				indx = i
-				break
-			}
-		}
-
-		d := dlist.Items[indx]
-		newRef = &dnsv1alpha1.DomainRef{
-			Name: d.Name,
-			Status: dnsv1alpha1.DomainRefStatus{
-				Nameservers: normalizeDomainNameservers(d.Status.Nameservers),
-			},
-		}
 	}
 	if !equality.Semantic.DeepEqual(normalizeDomainRef(upstream.Status.DomainRef), newRef) {
 		upstream.Status.DomainRef = newRef
@@ -806,21 +784,69 @@ func (r *DNSZoneReplicator) ensureDomain(ctx context.Context, c client.Client, u
 	return c.Create(ctx, &newDomain)
 }
 
-// isDomainVerified reports whether a Domain matching domainName in namespace
-// has completed ownership verification. A domain with no matching Domain yet
-// (e.g. the object was just created and hasn't reconciled) is treated as
-// unverified.
-func (r *DNSZoneReplicator) isDomainVerified(ctx context.Context, c client.Client, namespace, domainName string) (bool, error) {
+// desiredDomainRef resolves the Domain the zone should point at, or nil when no
+// Domain exists for the zone's domain name yet.
+func (r *DNSZoneReplicator) desiredDomainRef(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) (*dnsv1alpha1.DomainRef, error) {
 	var dlist networkingv1alpha.DomainList
 	if err := c.List(
 		ctx,
 		&dlist,
-		client.InNamespace(namespace),
-		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", domainName)},
+		client.InNamespace(upstream.Namespace),
+		client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", upstream.Spec.DomainName)},
 	); err != nil {
+		return nil, err
+	}
+	if len(dlist.Items) == 0 {
+		return nil, nil
+	}
+	// Prefer a verified Domain, otherwise take the first.
+	indx := 0
+	for i, d := range dlist.Items {
+		if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
+			indx = i
+			break
+		}
+	}
+	d := dlist.Items[indx]
+	return &dnsv1alpha1.DomainRef{
+		Name: d.Name,
+		Status: dnsv1alpha1.DomainRefStatus{
+			Nameservers: normalizeDomainNameservers(d.Status.Nameservers),
+		},
+	}, nil
+}
+
+// ensureDomainRef publishes the zone's link to its Domain before the
+// verification gate runs. Ownership verification finds candidate zones through
+// status.domainRef, so a zone the gate holds back without that link is
+// invisible to the check that would release it.
+func (r *DNSZoneReplicator) ensureDomainRef(ctx context.Context, c client.Client, upstream *dnsv1alpha1.DNSZone) error {
+	desired, err := r.desiredDomainRef(ctx, c, upstream)
+	if err != nil {
+		return err
+	}
+	if equality.Semantic.DeepEqual(normalizeDomainRef(upstream.Status.DomainRef), desired) {
+		return nil
+	}
+	base := upstream.DeepCopy()
+	upstream.Status.DomainRef = desired
+	return c.Status().Patch(ctx, upstream, client.MergeFrom(base))
+}
+
+// isDomainVerified reports whether ownership of domainName has been proven in
+// namespace. A verified Domain for the name itself counts, and so does one for
+// any parent of it: a namespace holds a single project, and proving ownership
+// of a domain proves ownership of the names beneath it. A name with no verified
+// Domain at or above it is treated as unverified.
+func (r *DNSZoneReplicator) isDomainVerified(ctx context.Context, c client.Client, namespace, domainName string) (bool, error) {
+	var dlist networkingv1alpha.DomainList
+	if err := c.List(ctx, &dlist, client.InNamespace(namespace)); err != nil {
 		return false, err
 	}
 	for _, d := range dlist.Items {
+		if !domainCovers(d.Spec.DomainName, domainName) {
+			continue
+		}
 		if apimeta.IsStatusConditionTrue(d.Status.Conditions, networkingv1alpha.DomainConditionVerified) {
 			return true, nil
 		}
@@ -885,17 +911,18 @@ func (r *DNSZoneReplicator) SetupWithManager(mgr mcmanager.Manager, downstreamCl
 			if !ok {
 				return nil
 			}
-			// Find upstream DNSZone(s) in the same namespace as the Domain.
+			// Find upstream DNSZone(s) in the same namespace whose domain this
+			// Domain covers. A zone under a verified parent provisions off that
+			// parent, so the parent's verification has to wake it too.
 			var zones dnsv1alpha1.DNSZoneList
-			if err := cl.GetClient().List(ctx, &zones,
-				client.InNamespace(obj.GetNamespace()),
-				client.MatchingFieldsSelector{Selector: fields.OneTermEqualSelector("spec.domainName", u.Spec.DomainName)},
-			); err != nil {
+			if err := cl.GetClient().List(ctx, &zones, client.InNamespace(obj.GetNamespace())); err != nil {
 				return nil
 			}
-			// TODO: ideally there is only ever one DNSZone with the same spec.domainName in the same namespace.
 			var reqs []mcreconcile.Request
 			for i := range zones.Items {
+				if !domainCovers(u.Spec.DomainName, zones.Items[i].Spec.DomainName) {
+					continue
+				}
 				reqs = append(reqs, mcreconcile.Request{
 					ClusterName: clusterName,
 					Request:     crreconcile.Request{NamespacedName: types.NamespacedName{Namespace: zones.Items[i].Namespace, Name: zones.Items[i].Name}},

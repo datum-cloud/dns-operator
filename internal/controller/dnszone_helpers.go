@@ -4,6 +4,7 @@ package controller
 
 import (
 	"sort"
+	"strings"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -43,4 +44,23 @@ func normalizeDomainNameservers(in []networkingv1alpha.Nameserver) []networkingv
 		return out[a].Hostname < out[b].Hostname
 	})
 	return out
+}
+
+// domainCovers reports whether candidate is name itself or a parent of it.
+// Names are compared without case or a trailing dot, so "example.com" covers
+// "a.b.example.com" and does not cover "notexample.com".
+func domainCovers(candidate, name string) bool {
+	candidate = normalizeDomainName(candidate)
+	name = normalizeDomainName(name)
+	if candidate == "" || name == "" {
+		return false
+	}
+	if candidate == name {
+		return true
+	}
+	return strings.HasSuffix(name, "."+candidate)
+}
+
+func normalizeDomainName(in string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(in), "."))
 }

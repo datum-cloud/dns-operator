@@ -104,10 +104,15 @@ func listSets(ctx context.Context, c client.Client, zone *dnsv1alpha1.DNSZone, r
 // none exists yet.
 //
 // More than one set per (zone, type) is possible — nothing in the API forbids
-// it — so when several come back the one that already holds the owner name
-// wins, and otherwise the first by object name. Picking deterministically
-// matters more than picking cleverly: the same command must hit the same
-// object every time.
+// it, and a zone served by a Gateway routinely has several — so the pick is
+// made in order: the set that already holds the owner name, then the first set
+// a user may write to, then nil. Picking deterministically matters more than
+// picking cleverly: the same command must hit the same object every time.
+//
+// The owner name is the key, not the object. Two sets of the same type may
+// each carry an entry for the same name, which is how a zone ends up with the
+// Conflict and Not owner statuses `record list` shows; resolving to the set
+// that already holds the name is what keeps a write from adding a third.
 func findSet(ctx context.Context, c client.Client, zone *dnsv1alpha1.DNSZone, t dnsv1alpha1.RRType, ownerName string) (*dnsv1alpha1.DNSRecordSet, error) {
 	sets, err := listSets(ctx, c, zone, []dnsv1alpha1.RRType{t})
 	if err != nil {
@@ -137,7 +142,25 @@ func findSet(ctx context.Context, c client.Client, zone *dnsv1alpha1.DNSZone, t 
 			return first, nil
 		}
 	}
-	return &sets[0], nil
+
+	// No set holds the name yet. It joins one of the zone's existing buckets
+	// for this type rather than starting a second one — but never a
+	// controller's bucket. A controller owns the NAMES inside its set, not the
+	// type: appending an unrelated name there is reverted on the next
+	// reconcile, and is refused outright by the write guard, which inspects
+	// whichever set this returns. Handing back a machine-owned set therefore
+	// made every name of that type uncreatable in a zone where a controller
+	// happened to own the first one, under an error that named a record the
+	// controller has nothing to do with.
+	for i := range sets {
+		if !isMachineOwned(&sets[i]) {
+			return &sets[i], nil
+		}
+	}
+
+	// Every set of this type belongs to a controller. nil means "create a new
+	// one", which is the only place this record can safely live.
+	return nil, nil
 }
 
 // setHasOwner reports whether a set carries any entry for an owner name.

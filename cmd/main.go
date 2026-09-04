@@ -270,6 +270,7 @@ func main() {
 			Client:     mgr.GetClient(),
 			Scheme:     mgr.GetScheme(),
 			DNSHandler: dnsHandler,
+			Config:     serverConfig.Controllers.DNSRecordSetPowerDNS,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)

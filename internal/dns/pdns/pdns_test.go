@@ -3,6 +3,7 @@ package pdns
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -574,11 +576,6 @@ func TestEnsureRecordSet_ReplacesWhenUIDChanges(t *testing.T) {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})
-	mux.HandleFunc("/api/v1/servers/localhost/search-data", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode([]queryResponse{})
-	})
-
 	s := httptest.NewServer(mux)
 	defer s.Close()
 
@@ -870,5 +867,345 @@ func TestBuildRRSets_DeduplicatesRecords(t *testing.T) {
 	rr = buildRRSets("example.com", rsCNAME)
 	if len(rr) != 1 || len(rr[0].Records) != 1 || rr[0].Records[0].Content != targetExampleNet {
 		t.Fatalf("expected CNAME deduped to single record, got %#v", rr)
+	}
+}
+
+// pdnsStub is a fake PowerDNS API that records how a reconcile talked to it:
+// how many zone reads it issued, how many PATCHes, and what each one carried.
+type pdnsStub struct {
+	zone     zoneResponse
+	gets     int
+	getQuery []string
+	searches int
+	patches  []patchZoneRequest
+	bodies   []string
+}
+
+func newPDNSStub(t *testing.T, zone zoneResponse) (*pdnsStub, *Client) {
+	t.Helper()
+	stub := &pdnsStub{zone: zone}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/servers/localhost/zones/example.com.", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			stub.gets++
+			stub.getQuery = append(stub.getQuery, r.URL.RawQuery)
+			_ = json.NewEncoder(w).Encode(stub.zone)
+		case http.MethodPatch:
+			body, _ := io.ReadAll(r.Body)
+			var captured patchZoneRequest
+			_ = json.Unmarshal(body, &captured)
+			stub.patches = append(stub.patches, captured)
+			stub.bodies = append(stub.bodies, string(body))
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/api/v1/servers/localhost/search-data", func(w http.ResponseWriter, r *http.Request) {
+		stub.searches++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	})
+
+	s := httptest.NewServer(mux)
+	t.Cleanup(s.Close)
+
+	return stub, NewClient(s.URL, "k")
+}
+
+// aRecordSet builds the shape the incident is about: one object holding every A
+// record in a zone, owned by default:rs with UID "uid".
+func aRecordSet(generation int64, owners ...string) dnsv1alpha1.DNSRecordSet {
+	records := make([]dnsv1alpha1.RecordEntry, 0, len(owners))
+	for _, owner := range owners {
+		records = append(records, dnsv1alpha1.RecordEntry{
+			Name: owner,
+			A:    &dnsv1alpha1.ARecordSpec{Content: "1.2.3.4"},
+		})
+	}
+	return dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "default", UID: types.UID("uid"), Generation: generation},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			RecordType: dnsv1alpha1.RRTypeA,
+			Records:    records,
+		},
+	}
+}
+
+var testZone = dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"}}
+
+// A record set is a bucket holding every record of a type in a zone, so the
+// number of round trips a reconcile makes must not scale with the number of
+// owner names in it: one zone read, one PATCH.
+func TestEnsureRecordSet_ReadsZoneOnceAndPatchesOnce(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom})
+
+	owners := make([]string, 0, 50)
+	for i := 0; i < 50; i++ {
+		owners = append(owners, fmt.Sprintf("host%02d", i))
+	}
+
+	statuses, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...))
+	if err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+
+	if stub.gets != 1 {
+		t.Fatalf("expected exactly 1 zone read for %d owners, got %d", len(owners), stub.gets)
+	}
+	if stub.getQuery[0] != "" {
+		// PowerDNS only honours rrset_type alongside rrset_name, so a filtered
+		// read costs the same as the full zone while returning less.
+		t.Fatalf("expected an unfiltered zone read, got query %q", stub.getQuery[0])
+	}
+	if stub.searches != 0 {
+		t.Fatalf("expected no global comment search, got %d", stub.searches)
+	}
+	if len(stub.patches) != 1 {
+		t.Fatalf("expected 1 PATCH for %d owners, got %d", len(owners), len(stub.patches))
+	}
+	if len(stub.patches[0].RRSets) != len(owners) {
+		t.Fatalf("expected %d rrsets in the batched patch, got %d", len(owners), len(stub.patches[0].RRSets))
+	}
+	if len(statuses) != len(owners) {
+		t.Fatalf("expected a status per owner, got %d", len(statuses))
+	}
+	for _, st := range statuses {
+		if st.Conditions[0].Status != metav1.ConditionTrue {
+			t.Fatalf("owner %q not programmed: %+v", st.Name, st.Conditions[0])
+		}
+	}
+}
+
+// Batched writes are chunked so a record set with thousands of owner names does
+// not build one enormous body.
+func TestEnsureRecordSet_ChunksLargePatches(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom})
+
+	total := patchChunkSize + 7
+	owners := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		owners = append(owners, fmt.Sprintf("host%04d", i))
+	}
+
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...)); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+
+	if len(stub.patches) != 2 {
+		t.Fatalf("expected 2 chunked PATCHes for %d owners, got %d", total, len(stub.patches))
+	}
+	if got := len(stub.patches[0].RRSets); got != patchChunkSize {
+		t.Fatalf("first chunk = %d rrsets, want %d", got, patchChunkSize)
+	}
+	if got := len(stub.patches[1].RRSets); got != total-patchChunkSize {
+		t.Fatalf("second chunk = %d rrsets, want %d", got, total-patchChunkSize)
+	}
+}
+
+// An owner name this record set wrote and no longer declares is pruned from the
+// zone read alone — the global comment search is not scoped to a zone, so using
+// it here made every reconcile scan the whole database.
+func TestEnsureRecordSet_DeletesSurplusOwnersWithoutCommentSearch(t *testing.T) {
+	t.Parallel()
+
+	owned := func(name string) zoneRRset {
+		return zoneRRset{
+			Name:    name,
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1", ModifiedAt: 100},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
+			},
+		}
+	}
+	foreign := owned("other.example.com.")
+	foreign.Comments[0].Content = "default:rs2"
+
+	unowned := zoneRRset{
+		Name:    "manual.example.com.",
+		Type:    "A",
+		TTL:     300,
+		Records: []zoneRRsetRecord{{Content: "9.9.9.9"}},
+	}
+
+	stub, c := newPDNSStub(t, zoneResponse{
+		Name:   exampleCom,
+		RRSets: []zoneRRset{owned("www.example.com."), owned("gone.example.com."), foreign, unowned},
+	})
+
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www")); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+
+	if stub.searches != 0 {
+		t.Fatalf("expected no global comment search, got %d", stub.searches)
+	}
+
+	deleted := []string{}
+	for _, patch := range stub.patches {
+		for _, rr := range patch.RRSets {
+			if rr.ChangeType != changeTypeDelete {
+				t.Fatalf("unexpected %s for %q: www is unchanged and should not be rewritten", rr.ChangeType, rr.Name)
+			}
+			deleted = append(deleted, rr.Name)
+		}
+	}
+
+	if !reflect.DeepEqual(deleted, []string{"gone.example.com."}) {
+		t.Fatalf("deleted %v, want only the surplus name this record set owns", deleted)
+	}
+}
+
+// PowerDNS's LMDB backend does not clear an RRset's comments when the RRset is
+// deleted, so the DELETE has to say so explicitly.
+func TestDeleteRRSet_ClearsComments(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom})
+
+	if err := c.DeleteRRSet(context.Background(), "example.com", "A", "www"); err != nil {
+		t.Fatalf("DeleteRRSet error: %v", err)
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("expected 1 PATCH, got %d", len(stub.bodies))
+	}
+	if !strings.Contains(stub.bodies[0], `"comments":[]`) {
+		t.Fatalf("DELETE payload does not clear comments: %s", stub.bodies[0])
+	}
+}
+
+func TestReplaceRRSet_OmitsEmptyCommentsOnlyForDeletes(t *testing.T) {
+	t.Parallel()
+
+	// A REPLACE that carries no comments must not send an empty list: doing so
+	// would strip ownership metadata written by another code path.
+	body, err := json.Marshal(rrset{Name: "www.example.com.", Type: "A", ChangeType: changeTypeReplace, Records: []rrsetRecord{}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "comments") {
+		t.Fatalf("REPLACE payload should omit comments entirely: %s", body)
+	}
+}
+
+// An unchanged comment keeps its modified_at. The LMDB backend content-addresses
+// comment rows over a struct that includes the timestamp, so restamping an
+// identical comment stores a new row and the table only grows.
+func TestEnsureRecordSet_PreservesCommentTimestamps(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{
+		Name: exampleCom,
+		RRSets: []zoneRRset{{
+			Name:    "www.example.com.",
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 12345},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1", ModifiedAt: 12345},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 12345},
+			},
+		}},
+	})
+
+	// Generation 2: the generation comment changes, the other two do not.
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2, "www")); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+
+	if len(stub.patches) != 1 || len(stub.patches[0].RRSets) != 1 {
+		t.Fatalf("expected a single rrset patch, got %+v", stub.patches)
+	}
+	byAccount := map[string]zoneRRsetComment{}
+	for _, comment := range stub.patches[0].RRSets[0].Comments {
+		byAccount[comment.Account] = comment
+	}
+	if got := byAccount[ACCOUNT_OWNER].ModifiedAt; got != 12345 {
+		t.Fatalf("owner comment restamped to %d, want the existing 12345", got)
+	}
+	if got := byAccount[ACCOUNT_OBJECT_UID].ModifiedAt; got != 12345 {
+		t.Fatalf("uid comment restamped to %d, want the existing 12345", got)
+	}
+	if got := byAccount[ACCOUNT_OBSERVED_GENERATION]; got.Content != "2" || got.ModifiedAt == 12345 {
+		t.Fatalf("changed generation comment should be restamped, got %+v", got)
+	}
+}
+
+// The guard that skips an RRset already written at this generation still reads
+// its metadata from the bulk zone read.
+func TestEnsureRecordSet_SkipsRRSetAlreadyAtThisGeneration(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{
+		Name: exampleCom,
+		RRSets: []zoneRRset{{
+			Name:    "www.example.com.",
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "3", ModifiedAt: 100},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
+			},
+		}},
+	})
+
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(3, "www")); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+	if len(stub.patches) != 0 {
+		t.Fatalf("expected no writes for an unchanged record set, got %+v", stub.patches)
+	}
+}
+
+func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{
+		Name: exampleCom,
+		RRSets: []zoneRRset{
+			{Name: "www.example.com.", Type: "A", Records: []zoneRRsetRecord{{Content: "1.2.3.4"}}},
+			{
+				Name:     "gone.example.com.",
+				Type:     "A",
+				Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
+				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs"}},
+			},
+			{
+				Name:     "other.example.com.",
+				Type:     "A",
+				Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
+				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs2"}},
+			},
+		},
+	})
+
+	if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "www", "absent")); err != nil {
+		t.Fatalf("DeleteRecordSet error: %v", err)
+	}
+
+	if len(stub.patches) != 1 {
+		t.Fatalf("expected 1 batched PATCH, got %d", len(stub.patches))
+	}
+	names := []string{}
+	for _, rr := range stub.patches[0].RRSets {
+		names = append(names, rr.Name)
+	}
+	// "absent" is not in the zone, so it needs no write; "other" belongs to
+	// another record set.
+	if !reflect.DeepEqual(names, []string{"gone.example.com.", "www.example.com."}) {
+		t.Fatalf("deleted %v, want the declared name and the surplus name this record set owns", names)
 	}
 }

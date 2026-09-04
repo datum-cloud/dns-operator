@@ -145,3 +145,30 @@ func TestNormalizeDomainRef(t *testing.T) {
 		t.Fatalf("expected input nameservers to remain unsorted")
 	}
 }
+
+func TestDomainCovers(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate string
+		domain    string
+		want      bool
+	}{
+		{"exact match", "example.com", "example.com", true},
+		{"parent covers child", "example.com", "child.example.com", true},
+		{"parent covers deeper descendant", "example.com", "a.b.example.com", true},
+		{"case and trailing dot ignored", "Example.COM.", "Child.Example.com", true},
+		{"child does not cover parent", "child.example.com", "example.com", false},
+		{"shared suffix is not a parent", "example.com", "notexample.com", false},
+		{"unrelated domain", "example.net", "example.com", false},
+		{"empty candidate", "", "example.com", false},
+		{"empty domain", "example.com", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := domainCovers(tt.candidate, tt.domain); got != tt.want {
+				t.Fatalf("domainCovers(%q, %q) = %v, want %v", tt.candidate, tt.domain, got, tt.want)
+			}
+		})
+	}
+}

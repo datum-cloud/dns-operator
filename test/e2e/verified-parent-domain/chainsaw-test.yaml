@@ -1,0 +1,142 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kyverno/chainsaw/main/.schemas/json/test-chainsaw-v1alpha1.json
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: dns-operator-verified-parent-domain
+# The other suites mark each zone's own Domain verified before asserting it
+# provisions, which is the state a tenant reaches for a domain they registered.
+# This suite covers the other shape a tenant uses: a zone under a domain they
+# have already proven, with no proof of its own. Nothing else exercises it, and
+# it is the case that stopped provisioning when the ownership gate landed.
+spec:
+  concurrent: false
+  clusters:
+    upstream:
+      kubeconfig: ../kubeconfig-upstream
+    downstream:
+      kubeconfig: ../kubeconfig-downstream
+  cluster: upstream
+  steps:
+  - name: Prereq - create DNSZoneClass in upstream
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-e2e
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-e2e
+
+  - name: Prereq - create DNSZoneClass in downstream
+    try:
+    - create:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-e2e
+          spec:
+            controllerName: powerdns
+            nameServerPolicy:
+              mode: Static
+              static:
+                servers:
+                - ns1.example.com
+                - ns2.example.com
+            defaults:
+              defaultTTL: 300
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZoneClass
+          metadata:
+            name: powerdns-e2e
+
+  - name: Prove ownership of the parent domain
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: Domain
+          metadata:
+            name: parent.e2e-verified.example
+          spec:
+            domainName: parent.e2e-verified.example
+    - script:
+        cluster: upstream
+        content: |
+          kubectl patch domain parent.e2e-verified.example -n "$NAMESPACE" \
+            --subresource=status --type=merge \
+            -p "{\"status\":{\"conditions\":[{\"type\":\"Verified\",\"status\":\"True\",\"reason\":\"E2EHarnessVerified\",\"message\":\"marked verified by the e2e harness\",\"lastTransitionTime\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}]}}"
+
+  - name: Create a DNSZone for a subdomain of the proven parent
+    try:
+    - create:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: child-parent-e2e-verified-example
+          spec:
+            domainName: child.parent.e2e-verified.example
+            dnsZoneClassName: powerdns-e2e
+
+  - name: Confirm the zone provisions without proof of its own
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: dns.networking.miloapis.com/v1alpha1
+          kind: DNSZone
+          metadata:
+            name: child-parent-e2e-verified-example
+          status:
+            (conditions[?type == 'Accepted']):
+            - status: "True"
+            (conditions[?type == 'Programmed']):
+            - status: "True"
+            nameservers:
+            - ns1.example.com
+            - ns2.example.com
+
+  - name: Confirm the child's own Domain was never verified
+    # If this were verified, the zone above could have provisioned off its own
+    # proof and the suite would no longer guard the parent path.
+    try:
+    - assert:
+        cluster: upstream
+        resource:
+          apiVersion: networking.datumapis.com/v1alpha
+          kind: Domain
+          metadata:
+            name: child.parent.e2e-verified.example
+    - script:
+        cluster: upstream
+        content: |
+          verified=$(kubectl get domain child.parent.e2e-verified.example -n "$NAMESPACE" \
+            -o jsonpath='{.status.conditions[?(@.type=="Verified")].status}')
+          if [ "$verified" = "True" ]; then
+            echo "child Domain reports Verified=True; the suite no longer proves the parent path"
+            exit 1
+          fi

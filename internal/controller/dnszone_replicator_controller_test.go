@@ -331,6 +331,131 @@ func TestDNSZoneReplicatorIsDomainVerified(t *testing.T) {
 			t.Fatal("expected no domain to mean not verified")
 		}
 	})
+
+	// A per-run subdomain of a domain the project already owns is the shape
+	// that stopped provisioning when the gate landed: the project has proven
+	// the parent, so the child needs no proof of its own.
+	t.Run("subdomain of a verified domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "child.verified.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if !verified {
+			t.Fatal("expected a subdomain of a verified domain to be verified")
+		}
+	})
+
+	t.Run("deep subdomain of a verified domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "a.b.verified.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if !verified {
+			t.Fatal("expected a deep subdomain of a verified domain to be verified")
+		}
+	})
+
+	t.Run("subdomain of a pending domain", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "child.pending.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if verified {
+			t.Fatal("expected a subdomain of an unverified domain to stay unverified")
+		}
+	})
+
+	t.Run("shared suffix is not a parent", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, ns, "notverified.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if verified {
+			t.Fatal("expected a name merely sharing a suffix to stay unverified")
+		}
+	})
+
+	t.Run("verified domain in another namespace", func(t *testing.T) {
+		t.Parallel()
+		verified, err := r.isDomainVerified(context.Background(), fakeClient, "other", "child.verified.example.com")
+		if err != nil {
+			t.Fatalf("isDomainVerified: %v", err)
+		}
+		if verified {
+			t.Fatal("expected another project's proof not to carry over")
+		}
+	})
+}
+
+// TestDNSZoneReplicatorEnsureDomainRefPublishesBeforeTheGate covers the link a
+// zone needs while it is still held back: ownership verification finds zones
+// through status.domainRef, so a zone waiting on verification with no link is
+// invisible to the check that would release it.
+func TestDNSZoneReplicatorEnsureDomainRefPublishesBeforeTheGate(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add dns scheme: %v", err)
+	}
+	if err := networkingv1alpha.AddToScheme(scheme); err != nil {
+		t.Fatalf("add networking scheme: %v", err)
+	}
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pending-zone", Generation: 1},
+		Spec: dnsv1alpha1.DNSZoneSpec{
+			DomainName:       "pending.example.com",
+			DNSZoneClassName: "pdns",
+		},
+	}
+	domain := &networkingv1alpha.Domain{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "pending.example.com"},
+		Spec:       networkingv1alpha.DomainSpec{DomainName: "pending.example.com"},
+		Status: networkingv1alpha.DomainStatus{
+			Conditions: []metav1.Condition{
+				{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionFalse},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&dnsv1alpha1.DNSZone{}).
+		WithObjects(zone, domain).
+		WithIndex(&networkingv1alpha.Domain{}, "spec.domainName", func(obj client.Object) []string {
+			d := obj.(*networkingv1alpha.Domain)
+			if d.Spec.DomainName == "" {
+				return nil
+			}
+			return []string{d.Spec.DomainName}
+		}).
+		Build()
+
+	r := &DNSZoneReplicator{}
+
+	if err := r.ensureDomainRef(context.Background(), fakeClient, zone); err != nil {
+		t.Fatalf("ensureDomainRef: %v", err)
+	}
+
+	var stored dnsv1alpha1.DNSZone
+	if err := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(zone), &stored); err != nil {
+		t.Fatalf("get stored zone: %v", err)
+	}
+	if stored.Status.DomainRef == nil {
+		t.Fatal("expected the zone to publish its Domain link while unverified")
+	}
+	if stored.Status.DomainRef.Name != domain.Name {
+		t.Fatalf("DomainRef.Name = %q, want %q", stored.Status.DomainRef.Name, domain.Name)
+	}
+
+	if err := r.ensureDomainRef(context.Background(), fakeClient, zone); err != nil {
+		t.Fatalf("ensureDomainRef (repeat): %v", err)
+	}
 }
 
 func statusEqualIgnoringTransitionTime(a, b dnsv1alpha1.DNSZoneStatus) bool {

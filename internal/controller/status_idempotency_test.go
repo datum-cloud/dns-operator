@@ -857,9 +857,9 @@ func (w *allTrackingStatusWriter) Patch(ctx context.Context, obj client.Object, 
 	return w.StatusWriter.Patch(ctx, obj, patch, opts...)
 }
 
-// TestZoneReplicator_SteadyState_NoWrites verifies that a fully-converged
-// DNSZone reconcile produces zero writes to either upstream or downstream.
-// Any write triggers a watch event that re-enqueues the reconciler.
+// TestZoneReplicator_SteadyState_NoWrites walks a converged DNSZone through the
+// same helper sequence Reconcile runs and asserts it writes nothing to either
+// side. Any write triggers a watch event that re-enqueues the reconciler.
 func TestZoneReplicator_SteadyState_NoWrites(t *testing.T) {
 	t.Parallel()
 	scheme := newFullTestScheme(t)
@@ -908,6 +908,9 @@ func TestZoneReplicator_SteadyState_NoWrites(t *testing.T) {
 			Nameservers: []networkingv1alpha.Nameserver{
 				{Hostname: "ns1.example.com", IPs: []networkingv1alpha.NameserverIP{{Address: "192.0.2.5"}}},
 				{Hostname: "ns2.example.com", IPs: []networkingv1alpha.NameserverIP{{Address: "192.0.2.10"}}},
+			},
+			Conditions: []metav1.Condition{
+				{Type: networkingv1alpha.DomainConditionVerified, Status: metav1.ConditionTrue, Reason: "Verified", LastTransitionTime: now},
 			},
 		},
 	}
@@ -996,9 +999,9 @@ func TestZoneReplicator_SteadyState_NoWrites(t *testing.T) {
 		AccountingNamespace: "dns-zone-accounting",
 	}
 
-	// Simulate a steady-state reconcile:
-	// 1. ensureZoneAccounting (read only)
-	owned, err := r.ensureZoneAccounting(context.Background(), zone, "single/default/zone-a")
+	ctx := context.Background()
+
+	owned, err := r.ensureZoneAccounting(ctx, zone, "single/default/zone-a")
 	if err != nil {
 		t.Fatalf("ensureZoneAccounting: %v", err)
 	}
@@ -1006,34 +1009,39 @@ func TestZoneReplicator_SteadyState_NoWrites(t *testing.T) {
 		t.Fatalf("expected zone to be owned")
 	}
 
-	// 2. ensureDownstreamZone (should be no-op)
-	_, err = r.ensureDownstreamZone(context.Background(), strategy, zone)
-	if err != nil {
-		t.Fatalf("ensureDownstreamZone: %v", err)
-	}
-
-	// 3. ensureDomain (already exists)
-	if err := r.ensureDomain(context.Background(), upstreamClient, zone); err != nil {
+	if err := r.ensureDomain(ctx, upstreamClient, zone); err != nil {
 		t.Fatalf("ensureDomain: %v", err)
 	}
 
-	// 4. updateStatus (first call)
-	if err := r.updateStatus(context.Background(), upstreamClient, strategy, zone); err != nil {
+	if err := r.ensureDomainRef(ctx, upstreamClient, zone); err != nil {
+		t.Fatalf("ensureDomainRef: %v", err)
+	}
+
+	verified, err := r.isDomainVerified(ctx, upstreamClient, zone.Namespace, zone.Spec.DomainName)
+	if err != nil {
+		t.Fatalf("isDomainVerified: %v", err)
+	}
+	if !verified {
+		t.Fatalf("expected domain to be verified")
+	}
+
+	if _, err := r.ensureDownstreamZone(ctx, strategy, zone); err != nil {
+		t.Fatalf("ensureDownstreamZone: %v", err)
+	}
+
+	if err := r.updateStatus(ctx, upstreamClient, strategy, zone); err != nil {
 		t.Fatalf("updateStatus call 1: %v", err)
 	}
 
-	// 5. ensureSOARecordSet (already exists)
-	if err := r.ensureSOARecordSet(context.Background(), upstreamClient, zone); err != nil {
+	if err := r.ensureSOARecordSet(ctx, upstreamClient, zone); err != nil {
 		t.Fatalf("ensureSOARecordSet: %v", err)
 	}
 
-	// 6. ensureNSRecordSet (already exists)
-	if err := r.ensureNSRecordSet(context.Background(), upstreamClient, zone); err != nil {
+	if err := r.ensureNSRecordSet(ctx, upstreamClient, zone); err != nil {
 		t.Fatalf("ensureNSRecordSet: %v", err)
 	}
 
-	// 7. updateStatus (second call)
-	if err := r.updateStatus(context.Background(), upstreamClient, strategy, zone); err != nil {
+	if err := r.updateStatus(ctx, upstreamClient, strategy, zone); err != nil {
 		t.Fatalf("updateStatus call 2: %v", err)
 	}
 

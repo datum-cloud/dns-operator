@@ -92,6 +92,12 @@ jobs:
             echo "=== [$ctx] dns-operator agent logs (manager) ==="
             kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c manager --tail=200 || true
             echo ""
+            echo "=== [$ctx] dnsdist logs ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c dnsdist --tail=200 || true
+            echo ""
+            echo "=== [$ctx] pdns-auth logs ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c pdns --tail=200 || true
+            echo ""
             echo "=== [$ctx] lightningstream logs ==="
             kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c lightningstream --tail=200 || true
             echo ""

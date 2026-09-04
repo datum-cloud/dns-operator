@@ -24,7 +24,8 @@ PowerDNS instance it programs:
 | Container | Role |
 |-----------|------|
 | Downstream agent | Reconciles shadow resources and programs PowerDNS |
-| `pdns-auth` | Authoritative server; owns this pod's LMDB store |
+| `pdns-auth` | Authoritative server; owns this pod's LMDB store; loopback-only |
+| `dnsdist` | Public UDP/TCP :53; forwards to Auth; emits dnstap |
 | `pdns-recursor` | Loopback-only resolver used for `ALIAS` expansion |
 | LightningStream (`sync`) | Snapshots this pod's LMDB and merges peers' snapshots |
 
@@ -85,10 +86,16 @@ than the query path:
 1. A [LightningStream](https://github.com/PowerDNS/lightningstream) sidecar
    snapshots the LMDB store to shared, S3-compatible object storage.
 2. Each serving node runs a read-only PowerDNS with a LightningStream sidecar
-   that pulls the snapshots and answers queries.
+   that pulls the snapshots. **dnsdist** binds public UDP/TCP :53 and forwards
+   to Authoritative on loopback `:5301`. Authoritative does not listen on the
+   pod IP.
+3. dnsdist emits [dnstap](https://dnstap.info/) over a Frame Stream Unix socket
+   at `/run/dnsdist/dnstap.sock`. A listener (Vector) binds that socket; dnsdist
+   reconnects until it appears. Query metering belongs on that stream, not on
+   Authoritative protobuf logs — Auth 5.1 has `protobuf-servers`, not dnstap.
 
 Serving nodes hold only their local replica, so the deployment can add nodes
-anywhere object storage is reachable. A serving node can also run a local
+anywhere object storage is reachable. A serving node also runs a local
 recursor to expand `ALIAS` records at query time. See
 [Deployment Topology](../topology.md#authoritative-serving-and-state-replication)
 for how the serving layer fits the wider system.

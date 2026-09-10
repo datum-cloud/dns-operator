@@ -1,6 +1,6 @@
 module go.miloapis.com/dns-operator
 
-go 1.25.8
+go 1.26.0
 
 require (
 	github.com/docker/docker v28.5.1+incompatible
@@ -79,7 +79,7 @@ require (
 	github.com/weppos/publicsuffix-go v0.30.1-0.20230422193905-8fecedd899db // indirect
 	github.com/yl2chen/cidranger v1.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/crypto v0.56.0 // indirect
 	golang.org/x/mod v0.40.0 // indirect
 )
 

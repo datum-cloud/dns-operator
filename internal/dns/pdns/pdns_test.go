@@ -1199,7 +1199,7 @@ func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
 	if len(stub.patches) != 1 {
 		t.Fatalf("expected 1 batched PATCH, got %d", len(stub.patches))
 	}
-	names := []string{}
+	names := make([]string, 0, len(stub.patches[0].RRSets))
 	for _, rr := range stub.patches[0].RRSets {
 		names = append(names, rr.Name)
 	}

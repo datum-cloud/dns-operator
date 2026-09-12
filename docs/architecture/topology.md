@@ -113,7 +113,8 @@ resolvers reach the nearest one.
 **How** a backend replicates its data and serves it is backend-specific — zone
 transfers, shared storage, and clustered databases are all valid approaches. For
 the PowerDNS mechanism — LMDB snapshots shipped through LightningStream to object
-storage, with a local recursor for `ALIAS` expansion — see [PowerDNS Backend →
+storage, dnsdist in front of Authoritative for public queries, and a local
+recursor for `ALIAS` expansion — see [PowerDNS Backend →
 Storage and Serving](./backends/powerdns.md#storage-and-serving).
 
 Each zone's `NS` and `SOA` records advertise nameserver names from the

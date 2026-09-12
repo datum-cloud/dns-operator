@@ -5,6 +5,7 @@ metadata:
 spec:
   selector:
     app.kubernetes.io/name: pdns-auth
+  # targetPort 53 is dnsdist (Auth is loopback-only on 5301).
   ports:
   - name: dns
     port: 53

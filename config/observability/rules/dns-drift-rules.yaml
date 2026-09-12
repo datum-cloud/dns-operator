@@ -30,12 +30,29 @@ spec:
       rules:
         # Upstream records, renamed onto the join key. milo_project_name is the
         # project CP's name; metadata.namespace/name are the customer's own.
+        #
+        # The milo.* labels are OTel *resource* attributes, and how they reach
+        # the datasource depends on the ingest path: a Prometheus-remote-write
+        # hop sanitizes the keys to milo_project_name, while a native OTLP hop
+        # keeps the original dotted milo.project.name. Staging pushes OTLP
+        # straight at VictoriaMetrics and so carries the dotted spelling; the
+        # e2e stack's collector remote-writes and so carries the underscored
+        # one. Accept either, renaming the dotted branch onto the underscored
+        # names so everything below this point sees one spelling. Only the
+        # milo.* resource attributes need this — the generator's own datapoint
+        # labels (namespace, name, upstream_*, condition) have no dots to
+        # sanitize and are identical on both paths.
         - record: dns:recordset_upstream:normalized
           expr: |
             label_replace(
               label_replace(
                 label_replace(
-                  dns_record_set_info{milo_control_plane_type="project"},
+                  dns_record_set_info{milo_control_plane_type="project"}
+                    or
+                  label_replace(
+                    {__name__="dns_record_set_info", "milo.control_plane.type"="project"},
+                    "milo_project_name", "$1", "milo.project.name", "(.*)"
+                  ),
                   "proj", "$1", "milo_project_name", "(.*)"
                 ),
                 "upstream_namespace", "$1", "namespace", "(.*)"
@@ -105,7 +122,11 @@ spec:
               stalled or a replica may not own this cluster.
 
         - alert: DNSRecordSetNotAccepted
-          expr: dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
+          # Dual label spelling, as in dns:recordset_upstream:normalized above.
+          expr: |
+            dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
+              or
+            {__name__="dns_record_set_status_condition", condition="Accepted", "milo.control_plane.type"="project"} == 0
           for: 15m
           labels:
             severity: warning

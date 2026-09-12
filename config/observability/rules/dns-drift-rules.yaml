@@ -121,6 +121,13 @@ spec:
               exists upstream but has no downstream copy — replication may be
               stalled or a replica may not own this cluster.
 
+        # A record sits not-Accepted mostly for reasons only its owner can
+        # clear: the DNSZone it names is withheld pending domain-ownership
+        # verification, or claimed by another resource. That is the system
+        # working, not an operator failure, and it persists until the customer
+        # acts — so this is severity: info, which the Alertmanager route
+        # blackholes rather than posting to Slack or paging. It stays visible
+        # in vmalert and Grafana for whoever is looking at a specific project.
         - alert: DNSRecordSetNotAccepted
           # Dual label spelling, as in dns:recordset_upstream:normalized above.
           expr: |
@@ -129,10 +136,12 @@ spec:
             {__name__="dns_record_set_status_condition", condition="Accepted", "milo.control_plane.type"="project"} == 0
           for: 15m
           labels:
-            severity: warning
+            severity: info
           annotations:
             summary: "DNSRecordSet stuck not-Accepted for 15m"
             description: >-
               DNSRecordSet {{ $labels.name }} in namespace
               {{ $labels.namespace }} has not reached Accepted=True
-              (reason {{ $labels.reason }}).
+              (reason {{ $labels.reason }}). Usually the referenced DNSZone is
+              awaiting domain-ownership verification, which only the project
+              owner can complete.

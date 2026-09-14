@@ -131,14 +131,20 @@ spec:
         - alert: DNSRecordSetNotAccepted
           # Dual label spelling, as in dns:recordset_upstream:normalized above.
           expr: |
-            dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
-              or
-            {__name__="dns_record_set_status_condition", condition="Accepted", "milo.control_plane.type"="project"} == 0
+            label_replace(
+              dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
+                or
+              label_replace(
+                {__name__="dns_record_set_status_condition", condition="Accepted", "milo.control_plane.type"="project"} == 0,
+                "milo_project_name", "$1", "milo.project.name", "(.*)"
+              ),
+              "proj", "$1", "milo_project_name", "(.*)"
+            )
           for: 15m
           labels:
             severity: info
           annotations:
-            summary: "DNSRecordSet stuck not-Accepted for 15m"
+            summary: "DNSRecordSet {{ $labels.name }} in project {{ $labels.proj }} is not Accepted"
             description: >-
               DNSRecordSet {{ $labels.name }} in namespace
               {{ $labels.namespace }} has not reached Accepted=True

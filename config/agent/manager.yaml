@@ -60,10 +60,12 @@ spec:
             mkdir -p /lmdb
             chown -R 953:953 /lmdb
             chmod 0775 /lmdb
-            # PDNS (auth + recursor) need writable runtime dirs on a read-only root filesystem.
-            mkdir -p /run/pdns /run/pdns/recursor
-            chown -R 953:953 /run/pdns
-            chmod 0755 /run/pdns /run/pdns/recursor
+            # PDNS (auth + recursor) and dnsdist need writable runtime dirs on a
+            # read-only root filesystem. dnsdist connects to a dnstap Frame Stream
+            # socket that a listener (Vector) binds under /run/dnsdist.
+            mkdir -p /run/pdns /run/pdns/recursor /run/dnsdist
+            chown -R 953:953 /run/pdns /run/dnsdist
+            chmod 0755 /run/pdns /run/pdns/recursor /run/dnsdist
             if [ -f /run/pdns/api-key ]; then chmod 0444 /run/pdns/api-key; fi
         securityContext:
           runAsUser: 0
@@ -73,6 +75,8 @@ spec:
             mountPath: /lmdb
           - name: pdns-shared
             mountPath: /run/pdns
+          - name: dnsdist-run
+            mountPath: /run/dnsdist
       containers:
       - command:
         - /manager
@@ -135,12 +139,6 @@ spec:
         image: powerdns/pdns-auth-51:latest
         imagePullPolicy: IfNotPresent
         ports:
-          - containerPort: 53
-            name: dns
-            protocol: UDP
-          - containerPort: 53
-            name: dns-tcp
-            protocol: TCP
           - containerPort: 8082
             name: api
             protocol: TCP
@@ -159,27 +157,60 @@ spec:
             exec pdns_server \
               --api-key="$(cat /run/pdns/api-key)" --api=yes --webserver-port=8082
         securityContext:
-          # NOTE: pdns must start as root (uid 0) despite `drop: ALL` +
+          # Auth binds loopback :5301 (unprivileged). Public :53 is dnsdist.
+          runAsUser: 953
+          runAsGroup: 953
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - "ALL"
+      - name: dnsdist
+        image: powerdns/dnsdist-20:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 53
+            name: dns
+            protocol: UDP
+          - containerPort: 53
+            name: dns-tcp
+            protocol: TCP
+        env:
+          - name: POD_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+        command:
+          - /usr/local/bin/dnsdist
+        args:
+          - --supervised
+          - --disable-syslog
+          - --uid
+          - pdns
+          - --gid
+          - pdns
+          - -C
+          - /etc/dnsdist/dnsdist.conf
+        volumeMounts:
+          - name: dnsdist-config
+            mountPath: /etc/dnsdist
+            readOnly: true
+          - name: dnsdist-run
+            mountPath: /run/dnsdist
+        securityContext:
+          # NOTE: dnsdist must start as root (uid 0) despite `drop: ALL` +
           # `add: NET_BIND_SERVICE` below - Kubernetes/containerd does not
           # populate the Linux *ambient* capability set when translating
           # SecurityContext into the container's OCI spec, and without
-          # ambient capabilities, added capabilities do NOT survive an
-          # exec() into a normal (non-file-capability) binary for a non-root
-          # UID - see capabilities(7). Concretely: running this container as
+          # ambient capabilities, added capabilities do NOT survive exec()
+          # into a normal (non-file-capability) binary for a non-root UID -
+          # see capabilities(7). Concretely: running this container as
           # `runAsUser: 953` with `capabilities.add: [NET_BIND_SERVICE]`
-          # results in `pdns_server` getting a Permission denied binding to
-          # UDP/TCP :53, because the capability never survives past the
-          # `sh -c` -> `pdns_server` exec chain. Root is exempt from that
-          # exec-time capability-computation rule, so we start as root and
-          # let PowerDNS's own `setuid=pdns`/`setgid=pdns` in pdns.conf drop
-          # privileges internally after binding - the pattern the upstream
-          # image is designed around. SETUID/SETGID are added so pdns can
-          # perform that internal drop under `drop: ALL`. DAC_OVERRIDE is
-          # needed too: `drop: ALL` also strips root's usual free pass
-          # around filesystem permission checks, and /run/pdns (the shared
-          # emptyDir also used for the control socket) is chowned to
-          # 953:953 by the init-dirs initContainer - without DAC_OVERRIDE
-          # root can't create the pdns.controlsocket file there.
+          # results in `dnsdist` getting Permission denied binding UDP/TCP
+          # :53. Root is exempt from that exec-time capability-computation
+          # rule, so we start as root and pass `--uid pdns --gid pdns` so
+          # dnsdist drops after bind. SETUID/SETGID are added so that drop
+          # works under `drop: ALL`.
           runAsUser: 0
           runAsGroup: 0
           allowPrivilegeEscalation: false
@@ -187,7 +218,14 @@ spec:
           capabilities:
             drop:
             - "ALL"
-            add: ["NET_BIND_SERVICE", "SETUID", "SETGID", "DAC_OVERRIDE"]
+            add: ["NET_BIND_SERVICE", "SETUID", "SETGID"]
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
       - name: pdns-recursor
         image: powerdns/pdns-recursor-51:latest
         imagePullPolicy: IfNotPresent
@@ -312,5 +350,10 @@ spec:
       - name: pdns-config
         configMap:
           name: pdns-config
+      - name: dnsdist-config
+        configMap:
+          name: dnsdist-config
+      - name: dnsdist-run
+        emptyDir: {}
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

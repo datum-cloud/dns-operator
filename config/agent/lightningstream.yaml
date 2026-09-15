@@ -50,13 +50,10 @@ storage:
     # changes.
     remove_old_instances_interval: 168h   # 1 week
 
-# The tomb sweeper reclaims LMDB entries whose tombstones have aged past the
-# retention. It is not storage.cleanup above, which removes snapshots.
-#
-# Both estates read this file, so each supplies its own values through the
-# lightningstream container's env. retention_days must exceed the longest PoP
-# outage worth recovering from: an instance that rejoins after it can resurrect
-# the rows a sweep reclaimed (PowerDNS/lightningstream#90).
+# Reclaims LMDB entries whose tombstones aged past the retention. Not storage.cleanup
+# above, which removes snapshots. Both estates read this file, so each sets its own
+# values through the container env. retention_days must exceed the longest PoP outage
+# worth recovering from (PowerDNS/lightningstream#90).
 sweeper:
   enabled: ${LS_SWEEPER_ENABLED}
   retention_days: ${LS_SWEEPER_RETENTION_DAYS}

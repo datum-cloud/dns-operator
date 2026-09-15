@@ -49,3 +49,15 @@ storage:
     # snapshot, and subsequently written a new snapshots that incorporates these
     # changes.
     remove_old_instances_interval: 168h   # 1 week
+
+# Reclaims LMDB entries whose tombstones aged past the retention. Not storage.cleanup
+# above, which removes snapshots. Both estates read this file, so whether it runs comes
+# from the container env; unset leaves it off.
+#
+# retention_days is not templated. An enabled sweeper with no retention set resolves to
+# 0, which sweeps every tombstone at once and destroys the recovery window. Seven days
+# exceeds the longest PoP outage worth recovering from (PowerDNS/lightningstream#90) and
+# matches remove_old_instances_interval above.
+sweeper:
+  enabled: ${LS_SWEEPER_ENABLED}
+  retention_days: 7

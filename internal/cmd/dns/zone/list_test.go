@@ -20,7 +20,12 @@ func populatedZones() []*dnsv1alpha1.DNSZone {
 			withRecordCount(12),
 			delegated("ns1.datum.net.", "ns2.datum.net.")),
 		newZone("staging-acme-io-def456", "staging.acme.io",
-			pending(), withRecordCount(2), withAge(3*time.Minute)),
+			// PAST THE TEN-MINUTE BOUNDARY ON PURPOSE. HumanDuration prints "%dm%ds" below ten
+			// minutes and drops the seconds above it, so a fixture of exactly 3m rendered "3m"
+			// only when the render finished inside the same second the fixture was built, and
+			// "3m1s" otherwise. Same commit, two runs, one red. Eleven minutes renders "11m" for
+			// a full minute of drift.
+			pending(), withRecordCount(2), withAge(11*time.Minute)),
 		newZone("old-acme-io-ghi789", "old.acme.io",
 			broken(),
 			withRecordCount(8), withAge(21*24*time.Hour),
@@ -45,7 +50,7 @@ func TestListTable(t *testing.T) {
 		"NAME              STATUS    RECORDS   NAMESERVERS                      DELEGATED   AGE",
 		"example.com       OK        12        ns1.datum.net., ns2.datum.net.   yes         14d",
 		"old.acme.io       Error     8         ns1.datum.net., ns2.datum.net.   no          21d",
-		"staging.acme.io   Pending   2         —                                unknown     3m",
+		"staging.acme.io   Pending   2         —                                unknown     11m",
 		"",
 		"3 zones — 1 OK, 1 Pending, 0 Rejected, 1 Error",
 		"",

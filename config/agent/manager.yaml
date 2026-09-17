@@ -132,7 +132,7 @@ spec:
         - name: pdns-shared
           mountPath: /run/pdns
       - name: pdns
-        image: powerdns/pdns-auth-51:latest
+        image: powerdns/pdns-auth-51:5.1.4
         imagePullPolicy: IfNotPresent
         ports:
           - containerPort: 53
@@ -189,7 +189,7 @@ spec:
             - "ALL"
             add: ["NET_BIND_SERVICE", "SETUID", "SETGID", "DAC_OVERRIDE"]
       - name: pdns-recursor
-        image: powerdns/pdns-recursor-51:latest
+        image: powerdns/pdns-recursor-54:5.4.6
         imagePullPolicy: IfNotPresent
         # Recursor is only used by pdns-auth via localhost for ALIAS expansion.
         ports:

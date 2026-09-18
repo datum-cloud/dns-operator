@@ -3,12 +3,16 @@
 package agent
 
 import (
+	"fmt"
+	"io/fs"
+	"path"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	agentdocs "go.miloapis.com/dns-operator/docs/agent"
 	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
 )
 
@@ -131,7 +135,36 @@ func TestDiagnosisCopyUsesNoInternalVocabulary(t *testing.T) {
 			checkCopy(t, name+"."+c.Reason+".Remediation", c.Remediation, terms, names...)
 		}
 		for i, s := range d.NextSteps {
-			checkCopy(t, name+".NextSteps["+string(rune('0'+i))+"]", s, terms, names...)
+			checkCopy(t, fmt.Sprintf("%s.NextSteps[%d]", name, i), s, terms, names...)
+		}
+	}
+}
+
+// TestPublishedDocsUseNoInternalVocabulary covers the knowledge document and
+// the skills. They may say "controller" or "condition" — they address the
+// assistant — but a skill that says "shadow zone" produces an answer that
+// says "shadow zone".
+func TestPublishedDocsUseNoInternalVocabulary(t *testing.T) {
+	terms := internalVocabulary()
+	entries, err := fs.ReadDir(agentdocs.FS, agentdocs.SkillsDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.SkillsDir, err)
+	}
+	files := make([]string, 0, 1+len(entries))
+	files = append(files, agentdocs.KnowledgeFile)
+	for _, e := range entries {
+		files = append(files, path.Join(agentdocs.SkillsDir, e.Name()))
+	}
+	if len(files) < 4 {
+		t.Fatalf("found %d published documents, want the knowledge document and at least three skills", len(files))
+	}
+	for _, name := range files {
+		b, err := fs.ReadFile(agentdocs.FS, name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			checkCopy(t, fmt.Sprintf("%s:%d", name, i+1), line, terms)
 		}
 	}
 }

@@ -1,0 +1,153 @@
+Datum DNS: resource model, conditions, and provenance
+
+This is orientation, not a procedure. When a customer's question matches a
+known failure shape, load the matching skill instead of reasoning from this
+document alone — it tells you what things mean, not what to check first.
+
+## The resource model
+
+Everything lives under the API group dns.networking.miloapis.com/v1alpha1,
+in four kinds:
+
+- DNSZone: a customer's domain. spec.domainName is immutable once set.
+- DNSRecordSet: records grouped by zone and by DNS record type (A, AAAA,
+  CNAME, TXT, and so on). One DNSRecordSet holds one or more owner names,
+  and each owner name inside it is tracked and reported on independently.
+- DNSZoneClass: cluster-scoped. Names the controller and the nameserver
+  policy a zone is provisioned under. Customers do not create these.
+- DNSZoneDiscovery: a one-shot snapshot of what a domain currently
+  resolves to, used when importing an existing zone that was managed
+  elsewhere before.
+
+The fact worth holding onto: a record set is not a record. A DNSRecordSet
+named "www-a" might hold only "www", or it might hold "www", "app", and
+"@" together, each with its own status. Ownership is tracked per (zone,
+record type, owner name), not per DNSRecordSet object.
+
+## Reading conditions: the taxonomy
+
+Every DNSZone and DNSRecordSet reports an Accepted condition (admission)
+and a Programmed condition (whether it is live in the DNS backend).
+Reasons on Programmed fall into a few buckets:
+
+- Self-clearing, no customer action needed: Pending,
+  PendingDomainVerification (but see below — this one still needs the
+  customer to act on a different object).
+- Needs a person to act, and never clears by itself: NotOwner, Conflict,
+  DNSZoneInUse.
+- Depends on the message: PDNSError. The same reason covers a value the
+  customer typed wrong, a zone still coming up, and a backend hiccup —
+  read the message, don't stop at the reason code.
+- Anything else you don't recognize: treat it as needing attention rather
+  than assuming it's healthy. An unrecognized reason is far more likely to
+  be a new failure than a new success.
+
+The single most important thing to get right: Pending is the absence of a
+cause, not a promise of progress. A record waiting on a zone that never
+finishes provisioning is Pending forever, and reading it as "still working
+normally" after an hour is a wrong answer that sounds confident. Healthy
+only within a bounded window — the diagnose tools already carry that
+window and tell you when a wait has gone on too long.
+
+## Where the real status lives
+
+For a DNSRecordSet, the answer to "is this record live" is
+status.recordSets[], one entry per owner name, never the top-level
+Programmed condition. That top-level condition is a rollup: it names only
+the first blocked name in sorted order, plus "and N more" if there are
+others. Reading it alone hides everything but the alphabetically first
+problem.
+
+Owner names must be compared qualified and case-folded before you decide
+two entries refer to the same thing. The backend treats "www",
+"WWW.example.com", and "www.example.com." as identical, but a record set
+can carry status for more than one spelling of the same name at once, and
+those entries can disagree — one saying Programmed, the other saying
+Conflict. The diagnose tools already do this matching for you; don't
+compare owner-name strings yourself.
+
+## Record types and the surprises
+
+Fourteen record types are supported: A, AAAA, ALIAS, CNAME, TXT, MX, SRV,
+CAA, NS, SOA, PTR, TLSA, HTTPS, SVCB. A few behaviors are easy to miss:
+
+- CNAME and ALIAS are single-valued. Extra values submitted alongside one
+  are silently dropped, not rejected.
+- TXT content is quoted and semicolons are escaped automatically.
+- SOA's serial number defaults to a date-stamped value if not set.
+- TTL defaults to 300 seconds when the customer doesn't set one. Nothing
+  enforces a minimum or maximum TTL anywhere in the system.
+
+## The owner-name spelling trap
+
+This is a live, documented sharp edge, not a hypothetical. When a record
+is created, ownership of a name is decided by comparing spellings exactly
+as typed — "www" and "WWW" are different as far as that decision is
+concerned — but the backend itself keys everything on the fully qualified,
+case-folded name. So it's possible for two different spellings of the
+same name to both "win" their own ownership check, both write to the same
+underlying record at the DNS backend, and neither ever reports NotOwner —
+whichever wrote most recently silently wins, and the other looks fine in
+its own status while serving nothing.
+
+If a customer describes a record that "looks right but serves the old
+value," or a record that seems fine in one place and broken in another,
+suspect two spellings of one name before anything else. The guidance is
+simple: pick one spelling per name and use it consistently.
+
+One more edge on this: a name written as a full, absolute FQDN is taken at
+face value and is not checked against the zone it's attached to. Sending
+an out-of-zone FQDN reaches the DNS backend, which then rejects it with an
+"outside the zone" style message.
+
+## Provenance: who actually owns a record
+
+Not every DNSRecordSet is created by the customer. Three other producers
+write them, and editing one that belongs to a controller doesn't stick —
+the controller reverts it:
+
+- The AI Edge (Datum's Gateway DNS integration) creates and manages
+  records that route traffic through it. These carry a small set of
+  labels marking them as controller-owned.
+- The iroh connector writes TXT records for its own endpoint verification.
+- An external-dns integration can also manage records here, marked with
+  its own label.
+- The zone's own SOA and apex NS records are created by Datum itself and
+  carry no labels at all — they're recognized by their shape (record
+  type and owner name), not a marker.
+
+When a customer wants to edit something and it's controller-managed, the
+right answer names which controller owns it and points them at editing
+the source object, not this record.
+
+## Delegation and verification: separate from programming
+
+A zone being "Programmed" only means Datum finished writing its own
+default records. It says nothing about whether the domain's registrar has
+actually pointed at Datum's nameservers. Those are two independent facts:
+- The nameservers Datum assigned live on the zone's own status.
+- What the registrar has actually published is a separate, observed
+  value, and it can simply be unknown if nobody has checked yet — unknown
+  is not the same as "not delegated," and reporting it that way sends a
+  customer to blame their registrar for a check that never ran.
+
+Domain ownership verification is a different, earlier gate entirely, on a
+separate Domain object. Until a domain passes verification, nothing about
+its DNS zone gets provisioned at all, no matter what the zone's own
+conditions say.
+
+## DNSSEC is not supported
+
+This is severe enough to say plainly, not as a footnote: if a domain has
+DNSSEC turned on at the registrar, or has old DS records still cached at
+the parent, delegating it to Datum's nameservers without disabling DNSSEC
+first will make it stop resolving for anyone using a validating resolver
+— and that failure can look completely healthy from every angle available
+here.
+
+## What this assistant cannot see
+
+Be honest about the edges: resolver-side caching behavior, anything about
+the customer's registrar account itself, and DNS propagation beyond what
+a live query happens to report at the moment you ask. Say so rather than
+guessing at answers that depend on data outside this system.

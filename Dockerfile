@@ -1,4 +1,9 @@
-# Build the manager binary
+# Build the manager and dns-mcp binaries.
+#
+# ONE image carries both. They are released together and share the condition
+# vocabulary: internal/agent's catalog classifies every reason the operator's
+# controllers publish. Each Deployment picks its binary with `command`; see
+# config/manager and config/components/dns-mcp.
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
@@ -31,11 +36,26 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
       -X main.buildDate=${BUILD_DATE}" \
     -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
+# dns-mcp carries its version as an MCP protocol constant, not an ldflags
+# variable, so the build metadata above is not stamped into it.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w" \
+    -o dns-mcp ./cmd/dns-mcp
+
+# Use distroless as minimal base image to package the binaries
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
+#
+# The nonroot variant has no shell and no package manager, which matters most
+# for dns-mcp: it is the process an untrusted model's tool calls reach. It
+# holds no credential of its own — an unbound ServiceAccount, a
+# credential-free kubeconfig — see config/components/dns-mcp/service_account.yaml.
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/dns-mcp .
 USER 65532:65532
 
+# The manager keeps the entrypoint it has always had, so nothing that runs
+# this image bare changes behavior. dns-mcp's Deployment overrides it with
+# `command`.
 ENTRYPOINT ["/manager"]

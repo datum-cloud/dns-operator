@@ -13,23 +13,45 @@ import (
 )
 
 // Condition types and reasons the operator publishes. They are duplicated here
-// rather than imported from internal/controller so the CLI does not pull the
-// controller's dependency tree into the plugin binary.
-// CondAccepted and CondProgrammed are exported so commands can read these
+// rather than imported from internal/controller so this package — shared by
+// the CLI plugin and the dns-mcp server — does not pull the controller's
+// dependency tree into either binary.
+// CondAccepted and CondProgrammed are exported so callers can read these
 // conditions directly via FindCondition without re-spelling the string.
 const (
 	CondAccepted   = "Accepted"
 	CondProgrammed = "Programmed"
+	CondDiscovered = "Discovered"
 )
 
 const (
 	condAccepted   = CondAccepted
 	condProgrammed = CondProgrammed
+)
 
-	reasonPending   = "Pending"
-	reasonNotOwner  = "NotOwner"
-	reasonPDNSError = "PDNSError"
-	reasonConflict  = "Conflict"
+// Condition reasons the operator publishes, exported for internal/agent's
+// catalog as well as this package's own classification below. Duplicated from
+// internal/controller for the same reason the condition types above are: so
+// neither the CLI plugin nor the dns-mcp server pulls in the controller's
+// dependency tree just to spell a reason string.
+const (
+	ReasonAccepted                  = "Accepted"
+	ReasonPending                   = "Pending"
+	ReasonInvalidDNSRecordSet       = "InvalidDNSRecordSet"
+	ReasonProgrammed                = "Programmed"
+	ReasonDiscovered                = "Discovered"
+	ReasonDNSZoneInUse              = "DNSZoneInUse"
+	ReasonNotOwner                  = "NotOwner"
+	ReasonPDNSError                 = "PDNSError"
+	ReasonConflict                  = "Conflict"
+	ReasonPendingDomainVerification = "PendingDomainVerification"
+)
+
+const (
+	reasonPending   = ReasonPending
+	reasonNotOwner  = ReasonNotOwner
+	reasonPDNSError = ReasonPDNSError
+	reasonConflict  = ReasonConflict
 )
 
 // Status words. The first word of each is the filter token a --status flag
@@ -168,6 +190,20 @@ func ownerConditions(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone, condType str
 		found = append(found, apimeta.FindStatusCondition(rs.Status.RecordSets[i].Conditions, condType))
 	}
 	return found
+}
+
+// OwnerConditions is ownerConditions, exported for internal/agent's diagnosis
+// walk, which needs the raw per-name conditions rather than the reduced
+// status word RecordStatus returns.
+func OwnerConditions(rs *dnsv1alpha1.DNSRecordSet, ownerName, zone, condType string) []*metav1.Condition {
+	return ownerConditions(rs, ownerName, zone, condType)
+}
+
+// QualifyOwner is qualifyOwner, exported for internal/agent, which needs to
+// group a record set's per-name status entries by resolved identity the same
+// way RecordStatus does.
+func QualifyOwner(owner, zone string) string {
+	return qualifyOwner(owner, zone)
 }
 
 // statusSeverity ranks the status words so a fold across several entries can

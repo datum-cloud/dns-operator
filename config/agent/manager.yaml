@@ -223,7 +223,7 @@ spec:
             mountPath: /etc/powerdns
             readOnly: true
       - name: lightningstream
-        image: powerdns/lightningstream:main
+        image: powerdns/lightningstream:1.0.3
         imagePullPolicy: IfNotPresent
         command: ["lightningstream"]
         ports:

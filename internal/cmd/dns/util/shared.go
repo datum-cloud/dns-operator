@@ -63,4 +63,5 @@ var (
 	RecordStatusInZone = sharedutil.RecordStatusInZone
 	DelegationState    = sharedutil.DelegationState
 	MachineOwned       = sharedutil.MachineOwned
+	IsPlatformShape    = sharedutil.IsPlatformShape
 )

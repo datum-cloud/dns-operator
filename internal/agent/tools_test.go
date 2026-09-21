@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
 )
@@ -159,6 +160,118 @@ func TestZoneDiagnose(t *testing.T) {
 	}
 }
 
+func TestDelegationCheckRequiresName(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+	if _, _, err := delegationCheck(deps)(context.Background(), nil, DelegationCheckInput{}); err == nil {
+		t.Fatal("want an error when name is empty")
+	}
+}
+
+func TestDelegationCheckUnknownWithNoDomainLinked(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+	_, out, err := delegationCheck(deps)(context.Background(), nil, DelegationCheckInput{Name: "healthy-com"})
+	if err != nil {
+		t.Fatalf("dns_delegation_check: %v", err)
+	}
+	if out.State != sharedutil.DelegationUnknown {
+		t.Errorf("State = %q, want Unknown", out.State)
+	}
+	if out.DomainLinked {
+		t.Error("DomainLinked = true, want false: the fixture zone has no Domain object")
+	}
+}
+
+func TestDelegationCheckPartial(t *testing.T) {
+	z := zone("partial.com",
+		cond(sharedutil.CondAccepted, "True", sharedutil.ReasonAccepted, "ok"),
+		cond(sharedutil.CondProgrammed, "True", sharedutil.ReasonProgrammed, "ok"))
+	z.Name = "partial-com"
+	z.Status.Nameservers = []string{"ns1.datum.net.", "ns2.datum.net."}
+	z.Status.DomainRef = &dnsv1alpha1.DomainRef{
+		Name: "partial-com",
+		Status: dnsv1alpha1.DomainRefStatus{
+			Nameservers: []networkingv1alpha.Nameserver{{Hostname: "ns1.datum.net."}},
+		},
+	}
+
+	reader := fixtureReader()
+	reader.zones = append(reader.zones, *z)
+	deps := fixtureDeps(reader)
+
+	_, out, err := delegationCheck(deps)(context.Background(), nil, DelegationCheckInput{Name: "partial-com"})
+	if err != nil {
+		t.Fatalf("dns_delegation_check: %v", err)
+	}
+	if out.State != sharedutil.DelegationPartial {
+		t.Fatalf("State = %q, want Partial", out.State)
+	}
+	if !out.DomainLinked {
+		t.Error("DomainLinked = false, want true")
+	}
+	byHost := make(map[string]bool, len(out.Nameservers))
+	for _, ns := range out.Nameservers {
+		byHost[ns.Hostname] = ns.Set
+	}
+	if !byHost["ns1.datum.net."] {
+		t.Error("ns1.datum.net. Set = false, want true")
+	}
+	if byHost["ns2.datum.net."] {
+		t.Error("ns2.datum.net. Set = true, want false")
+	}
+}
+
+func TestRecordsListSurfacesProvenance(t *testing.T) {
+	z := zone("managed.com",
+		cond(sharedutil.CondAccepted, "True", sharedutil.ReasonAccepted, "ok"),
+		cond(sharedutil.CondProgrammed, "True", sharedutil.ReasonProgrammed, "ok"))
+	z.Name = "managed-com"
+
+	gatewayRS := recordSet("app-a", []dnsv1alpha1.RecordEntry{{Name: "app"}},
+		ownerStatus("app.managed.com.", cond(sharedutil.CondProgrammed, "True", sharedutil.ReasonProgrammed, "live")))
+	gatewayRS.Spec.DNSZoneRef.Name = z.Name
+	gatewayRS.Labels = map[string]string{
+		sharedutil.LabelSourceKind:      sharedutil.ValueSourceKindGateway,
+		sharedutil.LabelDNSManaged:      sharedutil.ValueDNSManaged,
+		sharedutil.LabelManagedBy:       sharedutil.ValueManagedByNetworking,
+		sharedutil.LabelSourceName:      "web",
+		sharedutil.LabelSourceNamespace: "shop",
+	}
+
+	reader := fixtureReader()
+	reader.zones = append(reader.zones, *z)
+	reader.recordSets[z.Name] = []dnsv1alpha1.DNSRecordSet{*gatewayRS}
+	deps := fixtureDeps(reader)
+
+	_, out, err := recordsList(deps)(context.Background(), nil, RecordsListInput{Zone: z.Name})
+	if err != nil {
+		t.Fatalf("dns_records_list: %v", err)
+	}
+	if len(out.Records) != 1 {
+		t.Fatalf("got %d records, want 1", len(out.Records))
+	}
+	row := out.Records[0]
+	if row.Provenance != string(sharedutil.ProvenanceGateway) {
+		t.Errorf("Provenance = %q, want %q", row.Provenance, sharedutil.ProvenanceGateway)
+	}
+	if row.ProvenanceSource != "shop/web" {
+		t.Errorf("ProvenanceSource = %q, want shop/web", row.ProvenanceSource)
+	}
+}
+
+func TestRecordsGetSurfacesProvenance(t *testing.T) {
+	deps := fixtureDeps(fixtureReader())
+	_, out, err := recordsGet(deps)(context.Background(), nil, RecordsGetInput{Name: "www-healthy"})
+	if err != nil {
+		t.Fatalf("dns_records_get: %v", err)
+	}
+	if len(out.RecordSet.OwnerNames) != 1 {
+		t.Fatalf("got %d owner names, want 1", len(out.RecordSet.OwnerNames))
+	}
+	if got := out.RecordSet.OwnerNames[0].Provenance; got != string(sharedutil.ProvenanceUser) {
+		t.Errorf("Provenance = %q, want %q", got, sharedutil.ProvenanceUser)
+	}
+}
+
 func TestRecordsListRequiresZone(t *testing.T) {
 	deps := fixtureDeps(fixtureReader())
 	if _, _, err := recordsList(deps)(context.Background(), nil, RecordsListInput{}); err == nil {
@@ -230,6 +343,9 @@ func TestToolsFailWhenDepsUnavailable(t *testing.T) {
 	if _, _, err := zoneDiagnose(failing)(context.Background(), nil, ZoneDiagnoseInput{Name: "x"}); err == nil {
 		t.Error("dns_zone_diagnose: want an error when deps fail")
 	}
+	if _, _, err := delegationCheck(failing)(context.Background(), nil, DelegationCheckInput{Name: "x"}); err == nil {
+		t.Error("dns_delegation_check: want an error when deps fail")
+	}
 	if _, _, err := recordsList(failing)(context.Background(), nil, RecordsListInput{Zone: "x"}); err == nil {
 		t.Error("dns_records_list: want an error when deps fail")
 	}
@@ -269,7 +385,7 @@ func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 	}
 
 	want := map[string]bool{
-		ToolZonesList: false, ToolZonesGet: false, ToolZoneDiagnose: false,
+		ToolZonesList: false, ToolZonesGet: false, ToolZoneDiagnose: false, ToolDelegationCheck: false,
 		ToolRecordsList: false, ToolRecordsGet: false, ToolRecordDiagnose: false,
 	}
 	for _, tool := range res.Tools {

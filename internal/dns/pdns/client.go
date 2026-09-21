@@ -571,16 +571,30 @@ type rrset struct {
 	ChangeType string             `json:"changetype"`
 	Records    []rrsetRecord      `json:"records"`
 	Comments   []zoneRRsetComment `json:"comments,omitempty"`
+
+	// commentsOnly sends this change as the REPLACE that clears an RRset's
+	// comments: see commentsOnlyReplace.
+	commentsOnly bool
 }
 
-// MarshalJSON sends an explicit empty comment list with every DELETE.
+// MarshalJSON writes the comment-clearing REPLACE, and the empty comment list
+// on a DELETE.
 //
-// PowerDNS's LMDB backend does not remove an RRset's comments when the RRset
-// itself is deleted: a patch that omits the key leaves the rows behind, and a
-// zone accumulates comment-only shells for names that no longer have records.
-// Only DELETE gets the empty list — sending it on a REPLACE would strip the
-// ownership metadata off RRsets whose writers do not manage comments.
+// The clearing REPLACE carries no "records" key: applyReplace reads the
+// submitted records only when that key is an array, so leaving it out is what
+// keeps the REPLACE to the comments. The DELETE's empty list is what the API
+// reference asks for and removes nothing on this backend. An ordinary REPLACE
+// must not send one, or it strips the ownership metadata off RRsets whose
+// writers do not manage comments.
 func (r rrset) MarshalJSON() ([]byte, error) {
+	if r.commentsOnly {
+		return json.Marshal(struct {
+			Name       string             `json:"name"`
+			Type       string             `json:"type"`
+			ChangeType string             `json:"changetype"`
+			Comments   []zoneRRsetComment `json:"comments"`
+		}{r.Name, r.Type, r.ChangeType, []zoneRRsetComment{}})
+	}
 	type rrsetPayload rrset
 	if r.ChangeType == changeTypeDelete && r.Comments == nil {
 		return json.Marshal(struct {
@@ -604,7 +618,9 @@ const (
 
 	// patchChunkSize bounds how many rrsets travel in a single PATCH. One
 	// request per reconcile is the goal; this only exists so a record set with
-	// thousands of owner names does not build one enormous body.
+	// thousands of owner names does not build one enormous body. A chunk of
+	// deletes sends twice this many changes, one clear per delete, against the
+	// client's fixed timeout.
 	patchChunkSize = 500
 )
 
@@ -650,6 +666,72 @@ func newDeleteRRSet(qualifiedName, recordType string) rrset {
 		ChangeType: changeTypeDelete,
 		Records:    []rrsetRecord{},
 	}
+}
+
+// commentsOnlyReplace builds the REPLACE that removes an RRset's comments and
+// leaves its records alone. It is named for what it puts on the wire, because
+// that is the part a reader cannot infer: the effect is stated by its only
+// caller, clearCommentsBehindDeletes.
+//
+// PowerDNS's API reference says a DELETE removes the RRset "including all
+// comments", and applyDelete says the same in a source comment. On the LMDB
+// backend neither is true: applyDelete calls replaceRRSet, which touches only
+// the records table, so only a REPLACE reaches replaceComments.
+//
+// datum-cloud/dns-operator#158 carries the measurement, and PowerDNS/pdns#18051
+// reports the backend behaviour upstream. If that is fixed, this REPLACE and
+// the call to it become dead weight and should go.
+func commentsOnlyReplace(qualifiedName, recordType string) rrset {
+	return rrset{
+		Name:         qualifiedName,
+		Type:         recordType,
+		ChangeType:   changeTypeReplace,
+		commentsOnly: true,
+	}
+}
+
+// clearCommentsBehindDeletes returns the patch with a comment-clearing REPLACE
+// behind every DELETE.
+//
+// The pair is one operation: PowerDNS applies a patch in the order it is listed
+// inside one write transaction, and the LMDB backend writes records and
+// comments through the same handle, so it commits together or not at all.
+//
+// It goes behind rather than in front because EnsureRecordSet reads an RRset's
+// ownership out of its comments. Cleared first, a delete that then did not
+// happen would leave a name that still answers and that nothing can prune.
+//
+// A patch may not both replace and delete one RRset. PowerDNS refuses that with
+// "Duplicate RRset" and rejects every other change travelling with it, so it is
+// refused here, where the error can name it. No caller builds one.
+func clearCommentsBehindDeletes(patch []rrset) ([]rrset, error) {
+	replaced := make(map[rrsetKey]struct{}, len(patch))
+	for _, rr := range patch {
+		if rr.ChangeType == changeTypeReplace {
+			replaced[patchIdentity(rr)] = struct{}{}
+		}
+	}
+
+	out := make([]rrset, 0, len(patch))
+	for _, rr := range patch {
+		if rr.ChangeType != changeTypeDelete {
+			out = append(out, rr)
+			continue
+		}
+		if _, alsoReplaced := replaced[patchIdentity(rr)]; alsoReplaced {
+			return nil, fmt.Errorf("patch both replaces and deletes %s %s", rr.Type, rr.Name)
+		}
+		out = append(out, rr, commentsOnlyReplace(rr.Name, rr.Type))
+	}
+	return out, nil
+}
+
+// patchIdentity is how PowerDNS tells one RRset from another inside a patch: by
+// owner name case-insensitively, and by type. QualifyOwner keeps whatever case
+// the spec wrote and the backend lowercases, so comparing the strings we hold
+// would pass a pair PowerDNS then refuses whole.
+func patchIdentity(rr rrset) rrsetKey {
+	return rrsetKey{name: strings.ToLower(rr.Name), typ: strings.ToUpper(rr.Type)}
 }
 
 type patchZoneRequest struct {
@@ -732,23 +814,9 @@ func (c *Client) ApplyRecordSetAuthoritative(ctx context.Context, zone string, r
 		}
 	}
 
-	// Compose patch payload (deterministic order helps debugging/tests)
-	patch := append(desired, deletes...)
-	sort.Slice(patch, func(i, j int) bool {
-		if patch[i].Type != patch[j].Type {
-			return patch[i].Type < patch[j].Type
-		}
-		if patch[i].Name != patch[j].Name {
-			return patch[i].Name < patch[j].Name
-		}
-		// DELETEs last so REPLACEs win when both accidentally appear
-		if patch[i].ChangeType != patch[j].ChangeType {
-			return patch[i].ChangeType < patch[j].ChangeType
-		}
-		return false
-	})
-
-	return c.applyRRSetPatch(ctx, zone, patch)
+	// applyRRSetPatch sorts what it is given. A name is either desired or
+	// surplus, never both, and it refuses a patch that is given both.
+	return c.applyRRSetPatch(ctx, zone, append(desired, deletes...))
 }
 
 // ReplaceRRSet ensures a single (type, owner) RRset matches the provided values exactly.
@@ -847,7 +915,11 @@ func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset
 		return nil
 	}
 	sortRRSets(patch)
-	payload := patchZoneRequest{RRSets: patch}
+	rrsets, err := clearCommentsBehindDeletes(patch)
+	if err != nil {
+		return fmt.Errorf("building the patch for zone %s: %w", zone, err)
+	}
+	payload := patchZoneRequest{RRSets: rrsets}
 	body, _ := json.Marshal(payload)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,

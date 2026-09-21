@@ -1054,6 +1054,11 @@ func TestEnsureRecordSet_DeletesSurplusOwnersWithoutCommentSearch(t *testing.T) 
 	deleted := []string{}
 	for _, patch := range stub.patches {
 		for _, rr := range patch.RRSets {
+			// Every DELETE brings its clear, a REPLACE for the same name. Only
+			// the deletions answer this test.
+			if rr.ChangeType == changeTypeReplace && rr.Records == nil {
+				continue
+			}
 			if rr.ChangeType != changeTypeDelete {
 				t.Fatalf("unexpected %s for %q: www is unchanged and should not be rewritten", rr.ChangeType, rr.Name)
 			}
@@ -1066,9 +1071,10 @@ func TestEnsureRecordSet_DeletesSurplusOwnersWithoutCommentSearch(t *testing.T) 
 	}
 }
 
-// PowerDNS's LMDB backend does not clear an RRset's comments when the RRset is
-// deleted, so the DELETE has to say so explicitly.
-func TestDeleteRRSet_ClearsComments(t *testing.T) {
+// The LMDB backend leaves an RRset's comments behind whatever the DELETE
+// payload says, so a clear follows every DELETE: a REPLACE with an empty
+// comment list and no records key.
+func TestDeleteRRSet_ClearsCommentsAfterTheDelete(t *testing.T) {
 	t.Parallel()
 
 	stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom})
@@ -1079,8 +1085,114 @@ func TestDeleteRRSet_ClearsComments(t *testing.T) {
 	if len(stub.bodies) != 1 {
 		t.Fatalf("expected 1 PATCH, got %d", len(stub.bodies))
 	}
-	if !strings.Contains(stub.bodies[0], `"comments":[]`) {
-		t.Fatalf("DELETE payload does not clear comments: %s", stub.bodies[0])
+
+	var raw struct {
+		RRSets []map[string]json.RawMessage `json:"rrsets"`
+	}
+	if err := json.Unmarshal([]byte(stub.bodies[0]), &raw); err != nil {
+		t.Fatalf("unmarshal patch: %v", err)
+	}
+	if len(raw.RRSets) != 2 {
+		t.Fatalf("expected the delete and the clear, got %d changes: %s", len(raw.RRSets), stub.bodies[0])
+	}
+
+	del, clearing := raw.RRSets[0], raw.RRSets[1]
+	if got := string(del["changetype"]); got != `"DELETE"` {
+		t.Fatalf("the delete must come first, got %s: %s", got, stub.bodies[0])
+	}
+	if got := string(clearing["changetype"]); got != `"REPLACE"` {
+		t.Fatalf("the clear must follow the delete and be a REPLACE, got %s: %s", got, stub.bodies[0])
+	}
+	for _, key := range []string{"name", "type"} {
+		if string(clearing[key]) != string(del[key]) {
+			t.Fatalf("the clear addresses %s %s, the delete %s: %s", key, clearing[key], del[key], stub.bodies[0])
+		}
+	}
+	if got := string(clearing["comments"]); got != "[]" {
+		t.Fatalf("the clear must send an empty comment list, got %q: %s", got, stub.bodies[0])
+	}
+	// A records key would replace the records, and a TTL is only read beside
+	// them. Either one turns the clear into a rewrite of the RRset.
+	for _, key := range []string{"records", "ttl"} {
+		if _, present := clearing[key]; present {
+			t.Fatalf("the clear must not carry %q: %s", key, stub.bodies[0])
+		}
+	}
+	// The API reference asks for an empty comment list on a DELETE. It changes
+	// nothing on this backend; the clear is what removes the rows.
+	if got := string(del["comments"]); got != "[]" {
+		t.Fatalf("DELETE payload does not carry an empty comment list, got %q: %s", got, stub.bodies[0])
+	}
+}
+
+// Every delete path goes through applyRRSetPatch, so every one clears. A path
+// that grew its own patch call shows up here as a delete with no clear.
+func TestApplyRRSetPatch_ClearsCommentsBehindEveryDelete(t *testing.T) {
+	t.Parallel()
+
+	inZone := func(name string) zoneRRset {
+		return zoneRRset{
+			Name:    name,
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1", ModifiedAt: 100},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
+			},
+		}
+	}
+	zone := zoneResponse{Name: exampleCom, RRSets: []zoneRRset{inZone("www.example.com."), inZone("gone.example.com.")}}
+
+	cases := map[string]func(*Client) error{
+		"DeleteRRSet": func(c *Client) error {
+			return c.DeleteRRSet(context.Background(), "example.com", "A", "gone")
+		},
+		"DeleteRecordSet": func(c *Client) error {
+			return c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "gone"))
+		},
+		"EnsureRecordSet": func(c *Client) error {
+			_, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www"))
+			return err
+		},
+		"ApplyRecordSetAuthoritative": func(c *Client) error {
+			return c.ApplyRecordSetAuthoritative(context.Background(), "example.com", aRecordSet(1, "www"))
+		},
+	}
+
+	for name, deleteSomething := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stub, c := newPDNSStub(t, zone)
+			if err := deleteSomething(c); err != nil {
+				t.Fatalf("%s error: %v", name, err)
+			}
+
+			deletes, clears := 0, 0
+			for _, patch := range stub.patches {
+				for i, rr := range patch.RRSets {
+					if rr.ChangeType != changeTypeDelete {
+						continue
+					}
+					deletes++
+					if i == len(patch.RRSets)-1 {
+						t.Fatalf("%s: DELETE of %q is last in its patch, so nothing cleared its comments", name, rr.Name)
+					}
+					after := patch.RRSets[i+1]
+					if after.ChangeType != changeTypeReplace || after.Name != rr.Name || after.Type != rr.Type || after.Records != nil {
+						t.Fatalf("%s: DELETE of %q is not followed by its clearing REPLACE, but by %+v", name, rr.Name, after)
+					}
+					clears++
+				}
+			}
+			if deletes == 0 {
+				t.Fatalf("%s deleted nothing, so this case proves nothing", name)
+			}
+			if clears != deletes {
+				t.Fatalf("%s: %d deletes, %d clears", name, deletes, clears)
+			}
+		})
 	}
 }
 
@@ -1201,11 +1313,111 @@ func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
 	}
 	names := make([]string, 0, len(stub.patches[0].RRSets))
 	for _, rr := range stub.patches[0].RRSets {
+		// The clear behind each DELETE carries the same name.
+		if rr.ChangeType != changeTypeDelete {
+			continue
+		}
 		names = append(names, rr.Name)
 	}
 	// "absent" is not in the zone, so it needs no write; "other" belongs to
 	// another record set.
 	if !reflect.DeepEqual(names, []string{"gone.example.com.", "www.example.com."}) {
 		t.Fatalf("deleted %v, want the declared name and the surplus name this record set owns", names)
+	}
+}
+
+// A patch that replaces and deletes one RRset says two things at once. PowerDNS
+// would refuse it for the duplicate REPLACE the clear adds, rejecting every
+// other change travelling with it, so it is refused here with the RRset named.
+func TestApplyRRSetPatch_RefusesToReplaceAndDeleteOneRRSet(t *testing.T) {
+	t.Parallel()
+
+	// PowerDNS identifies an RRset by a case-insensitive name, and the CRD
+	// permits any case. The second spelling is the same patch to PowerDNS.
+	for name, replaced := range map[string]string{
+		"as written":    "www.example.com.",
+		"in other case": "WWW.example.com.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom})
+
+			err := c.applyRRSetPatch(context.Background(), "example.com", []rrset{
+				{Name: replaced, Type: "A", TTL: 300, ChangeType: changeTypeReplace, Records: []rrsetRecord{{Content: "1.2.3.4"}}},
+				newDeleteRRSet("www.example.com.", "A"),
+				newDeleteRRSet("gone.example.com.", "A"),
+			})
+			if err == nil {
+				t.Fatal("expected the patch to be refused")
+			}
+			if !strings.Contains(err.Error(), "www.example.com.") {
+				t.Fatalf("the error must name the RRset, got: %v", err)
+			}
+			if len(stub.bodies) != 0 {
+				t.Fatalf("nothing should reach PowerDNS, got %d patches: %v", len(stub.bodies), stub.bodies)
+			}
+		})
+	}
+}
+
+// A production record set holds thousands of owner names and its deletions
+// travel in chunks, so each DELETE must meet its clear inside one request: a
+// pair split across two PATCHes is two transactions, and the first commits the
+// defect this change removes.
+//
+// The assertions answer different questions. Adjacency says the clear sits
+// behind its own DELETE. The request count is what catches a clear built before
+// the chunking, which doubles the changes. While patchChunkSize is even a
+// pre-chunk build cannot actually split a pair, so only the count sees it.
+func TestEnsureRecordSet_KeepsEachClearWithItsDeleteInOneRequest(t *testing.T) {
+	t.Parallel()
+
+	const owned = patchChunkSize + 100
+	rrsets := make([]zoneRRset, 0, owned)
+	for i := 0; i < owned; i++ {
+		rrsets = append(rrsets, zoneRRset{
+			Name:    fmt.Sprintf("host%04d.example.com.", i),
+			Type:    "A",
+			TTL:     300,
+			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1", ModifiedAt: 100},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
+			},
+		})
+	}
+	stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom, RRSets: rrsets})
+
+	// The record set now declares none of the names it owns, so every one of
+	// them is surplus.
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2)); err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+
+	deletes, clears := 0, 0
+	for n, patch := range stub.patches {
+		for i, rr := range patch.RRSets {
+			if rr.ChangeType != changeTypeDelete {
+				continue
+			}
+			deletes++
+			if i == len(patch.RRSets)-1 {
+				t.Fatalf("patch %d ends on the DELETE of %q, so its clear fell into the next request",
+					n, rr.Name)
+			}
+			if after := patch.RRSets[i+1]; after.Name != rr.Name || after.ChangeType != changeTypeReplace {
+				t.Fatalf("patch %d: DELETE of %q is followed by %s %q", n, rr.Name, after.ChangeType, after.Name)
+			}
+			clears++
+		}
+	}
+
+	if deletes != owned || clears != owned {
+		t.Fatalf("%d deletes and %d clears for %d surplus names", deletes, clears, owned)
+	}
+	// The chunking still bounds the request: 600 names is two requests, not one.
+	if len(stub.patches) != 2 {
+		t.Fatalf("expected %d names to travel in 2 requests, got %d", owned, len(stub.patches))
 	}
 }

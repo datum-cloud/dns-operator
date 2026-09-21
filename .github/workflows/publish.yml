@@ -23,6 +23,8 @@ jobs:
     secrets: inherit
 
   publish-kustomize-bundles:
+    # The bundle names the image by tag, so it must not be published until that image exists.
+    needs: [publish-container-image]
     permissions:
       id-token: write
       contents: read

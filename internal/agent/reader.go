@@ -27,6 +27,8 @@ type Reader interface {
 	ListRecordSets(ctx context.Context, namespace, zoneName string) ([]dnsv1alpha1.DNSRecordSet, error)
 	// GetRecordSet returns one DNSRecordSet by name.
 	GetRecordSet(ctx context.Context, namespace, name string) (*dnsv1alpha1.DNSRecordSet, error)
+	// GetZoneDiscovery returns one DNSZoneDiscovery by name.
+	GetZoneDiscovery(ctx context.Context, namespace, name string) (*dnsv1alpha1.DNSZoneDiscovery, error)
 }
 
 // ClientReader implements Reader against a controller-runtime client.
@@ -85,4 +87,13 @@ func (r *ClientReader) GetRecordSet(ctx context.Context, namespace, name string)
 		return nil, fmt.Errorf("getting record set %s/%s: %w", namespace, name, err)
 	}
 	return &rs, nil
+}
+
+func (r *ClientReader) GetZoneDiscovery(ctx context.Context, namespace, name string) (*dnsv1alpha1.DNSZoneDiscovery, error) {
+	var d dnsv1alpha1.DNSZoneDiscovery
+	key := client.ObjectKey{Namespace: namespace, Name: name}
+	if err := r.Client.Get(ctx, key, &d); err != nil {
+		return nil, fmt.Errorf("getting zone discovery %s/%s: %w", namespace, name, err)
+	}
+	return &d, nil
 }

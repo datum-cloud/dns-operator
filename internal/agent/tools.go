@@ -281,6 +281,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 			"it is user-actionable, a platform fault, transient, or stalled, next steps, and which " +
 			"skill covers the full procedure. Read-only.",
 	}, recordDiagnose(deps))
+
+	registerRecordRenderTool(s, deps)
+	registerZoneDiscoveryTool(s, deps)
 }
 
 // ---------------------------------------------------------------- handlers

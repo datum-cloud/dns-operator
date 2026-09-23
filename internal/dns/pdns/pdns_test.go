@@ -1255,74 +1255,87 @@ func TestEnsureRecordSet_PreservesCommentTimestamps(t *testing.T) {
 }
 
 // The guard that skips an RRset already written at this generation still reads
-// its metadata from the bulk zone read.
+// its metadata from the bulk zone read, whatever case the spec spells the name
+// in: PowerDNS returns it lowercased.
 func TestEnsureRecordSet_SkipsRRSetAlreadyAtThisGeneration(t *testing.T) {
 	t.Parallel()
 
-	stub, c := newPDNSStub(t, zoneResponse{
-		Name: exampleCom,
-		RRSets: []zoneRRset{{
-			Name:    "www.example.com.",
-			Type:    "A",
-			TTL:     300,
-			Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
-			Comments: []zoneRRsetComment{
-				{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
-				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "3", ModifiedAt: 100},
-				{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
-			},
-		}},
-	})
+	for _, owner := range []string{"www", "WWW"} {
+		t.Run(owner, func(t *testing.T) {
+			t.Parallel()
+			stub, c := newPDNSStub(t, zoneResponse{
+				Name: exampleCom,
+				RRSets: []zoneRRset{{
+					Name:    "www.example.com.",
+					Type:    "A",
+					TTL:     300,
+					Records: []zoneRRsetRecord{{Content: "1.2.3.4"}},
+					Comments: []zoneRRsetComment{
+						{Account: ACCOUNT_OWNER, Content: "default:rs", ModifiedAt: 100},
+						{Account: ACCOUNT_OBSERVED_GENERATION, Content: "3", ModifiedAt: 100},
+						{Account: ACCOUNT_OBJECT_UID, Content: "uid", ModifiedAt: 100},
+					},
+				}},
+			})
 
-	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(3, "www")); err != nil {
-		t.Fatalf("EnsureRecordSet error: %v", err)
-	}
-	if len(stub.patches) != 0 {
-		t.Fatalf("expected no writes for an unchanged record set, got %+v", stub.patches)
+			if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(3, owner)); err != nil {
+				t.Fatalf("EnsureRecordSet error: %v", err)
+			}
+			if len(stub.patches) != 0 {
+				t.Fatalf("expected no writes for an unchanged record set, got %+v", stub.patches)
+			}
+		})
 	}
 }
 
+// The declared name carries no ownership comment, so only its spelling finds
+// it, and PowerDNS returns that spelling lowercased.
 func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
 	t.Parallel()
 
-	stub, c := newPDNSStub(t, zoneResponse{
-		Name: exampleCom,
-		RRSets: []zoneRRset{
-			{Name: "www.example.com.", Type: "A", Records: []zoneRRsetRecord{{Content: "1.2.3.4"}}},
-			{
-				Name:     "gone.example.com.",
-				Type:     "A",
-				Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
-				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs"}},
-			},
-			{
-				Name:     "other.example.com.",
-				Type:     "A",
-				Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
-				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs2"}},
-			},
-		},
-	})
+	for _, owner := range []string{"www", "WWW"} {
+		t.Run(owner, func(t *testing.T) {
+			t.Parallel()
+			stub, c := newPDNSStub(t, zoneResponse{
+				Name: exampleCom,
+				RRSets: []zoneRRset{
+					{Name: "www.example.com.", Type: "A", Records: []zoneRRsetRecord{{Content: "1.2.3.4"}}},
+					{
+						Name:     "gone.example.com.",
+						Type:     "A",
+						Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
+						Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs"}},
+					},
+					{
+						Name:     "other.example.com.",
+						Type:     "A",
+						Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
+						Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs2"}},
+					},
+				},
+			})
 
-	if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "www", "absent")); err != nil {
-		t.Fatalf("DeleteRecordSet error: %v", err)
-	}
+			if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, owner, "absent")); err != nil {
+				t.Fatalf("DeleteRecordSet error: %v", err)
+			}
 
-	if len(stub.patches) != 1 {
-		t.Fatalf("expected 1 batched PATCH, got %d", len(stub.patches))
-	}
-	names := make([]string, 0, len(stub.patches[0].RRSets))
-	for _, rr := range stub.patches[0].RRSets {
-		// The clear behind each DELETE carries the same name.
-		if rr.ChangeType != changeTypeDelete {
-			continue
-		}
-		names = append(names, rr.Name)
-	}
-	// "absent" is not in the zone, so it needs no write; "other" belongs to
-	// another record set.
-	if !reflect.DeepEqual(names, []string{"gone.example.com.", "www.example.com."}) {
-		t.Fatalf("deleted %v, want the declared name and the surplus name this record set owns", names)
+			if len(stub.patches) != 1 {
+				t.Fatalf("expected 1 batched PATCH, got %d", len(stub.patches))
+			}
+			names := make([]string, 0, len(stub.patches[0].RRSets))
+			for _, rr := range stub.patches[0].RRSets {
+				// The clear behind each DELETE carries the same name.
+				if rr.ChangeType != changeTypeDelete {
+					continue
+				}
+				names = append(names, rr.Name)
+			}
+			// "absent" is not in the zone, so it needs no write; "other" belongs to
+			// another record set.
+			if !reflect.DeepEqual(names, []string{"gone.example.com.", "www.example.com."}) {
+				t.Fatalf("deleted %v, want the declared name and the surplus name this record set owns", names)
+			}
+		})
 	}
 }
 

@@ -83,9 +83,11 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 
 // startPDNSLMDB starts the version and the backend the control plane runs.
 // Both are needed to see datum-cloud/dns-operator#158.
-func startPDNSLMDB(t *testing.T, apiKey string) (baseURL string, terminate func()) {
+func startPDNSLMDB(t *testing.T) (baseURL, apiKey string, terminate func()) {
 	t.Helper()
-	return startPDNSWith(t, "powerdns/pdns-auth-51:5.1.4", apiKey, writePDNSAuthWithLMDB)
+	apiKey = "itest-key"
+	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.4", apiKey, writePDNSAuthWithLMDB)
+	return baseURL, apiKey, terminate
 }
 
 func startPDNSWith(t *testing.T, image, apiKey string, writeConf func(t *testing.T, dir, apiKey string)) (baseURL string, terminate func()) {
@@ -493,8 +495,7 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 // the defect was reachable.
 func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)
@@ -599,6 +600,45 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	}
 }
 
+// TestPDNS_LMDB_AMixedCaseNameSurvivesTheNextReconcile is #173. PowerDNS stores
+// a name lowercased, and a record set that spells it in uppercase must still find
+// it there on the next reconcile rather than prune it as surplus.
+func TestPDNS_LMDB_AMixedCaseNameSurvivesTheNextReconcile(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client := NewClient(baseURL, apiKey)
+	ctx := context.Background()
+	const zoneName = "case.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+
+	// "lower" was never affected, so it shows the fold changed nothing that
+	// already worked.
+	recordSet := aRecordSet(1, "WWW", "lower")
+	for call := 1; call <= 2; call++ {
+		if _, err := client.EnsureRecordSet(ctx, zone, recordSet); err != nil {
+			t.Fatalf("EnsureRecordSet, call %d: %v", call, err)
+		}
+		for _, owner := range []string{"www", "lower"} {
+			if records, comments, _ := rrsetCounts(ctx, t, client, zoneName, owner, "A"); records != 1 || comments != 3 {
+				t.Fatalf("after call %d, %s holds records=%d comments=%d, want 1 and 3", call, owner, records, comments)
+			}
+		}
+	}
+
+	if err := client.DeleteRecordSet(ctx, zone, recordSet); err != nil {
+		t.Fatalf("DeleteRecordSet: %v", err)
+	}
+	if got := zoneCommentTotal(ctx, t, client, zoneName); got != 0 {
+		t.Fatalf("the zone holds %d comments after the record set was deleted, want 0", got)
+	}
+}
+
 // rrsetCounts reports the records and comments PowerDNS holds for one RRset,
 // and whether the zone lists it at all. A shell left behind is listed with no
 // records, which is the state #158 is about.
@@ -661,8 +701,7 @@ func patchRaw(ctx context.Context, t *testing.T, client *Client, zoneName, body 
 // uncommitted state is invisible through the API.
 func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)
@@ -725,8 +764,7 @@ func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 // name fails it, including one this test never mentions.
 func TestPDNS_LMDB_ARecordSetLeavesTheCommentCountWhereItFoundIt(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)

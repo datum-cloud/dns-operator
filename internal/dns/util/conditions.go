@@ -264,9 +264,10 @@ func classifyProgrammed(c *metav1.Condition) (word, detail string) {
 // qualifyOwner reduces an owner name to the form the DNS backend keys an RRset
 // by, so two spellings of one name compare equal.
 //
-// It mirrors the operator's own QualifyOwner (internal/pdns/client.go), with
-// the addition of case folding: DNS names are case-insensitive, and the backend
-// treats "WWW" and "www" as one name even though a byte comparison does not.
+// It mirrors the operator's own QualifyOwner (internal/dns/pdns/client.go),
+// which also folds case: DNS names are case-insensitive, and the backend treats
+// "WWW" and "www" as one name even though a byte comparison does not. This one
+// also trims whitespace and a trailing dot on the zone.
 // With no zone, only the parts that do not need one are normalised.
 func qualifyOwner(owner, zone string) string {
 	owner = strings.ToLower(strings.TrimSpace(owner))

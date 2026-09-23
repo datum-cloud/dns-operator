@@ -727,9 +727,7 @@ func clearCommentsBehindDeletes(patch []rrset) ([]rrset, error) {
 }
 
 // patchIdentity is how PowerDNS tells one RRset from another inside a patch: by
-// owner name case-insensitively, and by type. QualifyOwner keeps whatever case
-// the spec wrote and the backend lowercases, so comparing the strings we hold
-// would pass a pair PowerDNS then refuses whole.
+// owner name case-insensitively, and by type.
 func patchIdentity(rr rrset) rrsetKey {
 	return rrsetKey{name: strings.ToLower(rr.Name), typ: strings.ToUpper(rr.Type)}
 }
@@ -1302,13 +1300,15 @@ func makeSimpleRRSet(name, typ string, ttl int, values []string) rrset {
 }
 
 // QualifyOwner returns the absolute RRset name PowerDNS keys an owner on within
-// zone. It accepts every spelling the API allows: "@" or the empty string for
-// the apex, a relative label such as "api", or an already-absolute name ending
-// in a dot. Several spellings therefore collapse to one RRset — "api" and
-// "api.example.com." both qualify to "api.example.com." in zone example.com —
-// so callers comparing two owner names for RRset identity must compare their
-// qualified forms rather than the raw values.
+// zone, in the lowercase PowerDNS stores it in. It accepts every spelling the API
+// allows: "@" or the empty string for the apex, a relative label such as "api",
+// or an already-absolute name ending in a dot. Several spellings therefore
+// collapse to one RRset — "api", "API" and "api.example.com." all qualify to
+// "api.example.com." in zone example.com — so callers comparing two owner names
+// for RRset identity must compare their qualified forms rather than the raw
+// values.
 func QualifyOwner(owner, zone string) string {
+	owner, zone = strings.ToLower(owner), strings.ToLower(zone)
 	if owner == "@" || owner == "" {
 		return zone + "."
 	}

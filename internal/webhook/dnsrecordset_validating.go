@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -146,7 +145,7 @@ func newOwnerClaims(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) map[str
 }
 
 func qualifiedOwnerKey(ownerName, zoneDomainName string) string {
-	return strings.ToLower(pdnsclient.QualifyOwner(ownerName, zoneDomainName))
+	return pdnsclient.QualifyOwner(ownerName, zoneDomainName)
 }
 
 func firstClaimant(a, b *dnsv1alpha1.DNSRecordSet) *dnsv1alpha1.DNSRecordSet {

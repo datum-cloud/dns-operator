@@ -173,6 +173,9 @@ func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error
 	if zone.Spec.DomainName == "" {
 		return nil
 	}
+	if err := c.clearZoneComments(ctx, zone.Spec.DomainName); err != nil {
+		return fmt.Errorf("clearing the comments of zone %s: %w", zone.Spec.DomainName, err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
 		c.BaseURL+"/api/v1/servers/localhost/zones/"+zone.Spec.DomainName+".", nil)
 	if err != nil {
@@ -195,6 +198,41 @@ func (c *Client) DeleteZone(ctx context.Context, zone dnsv1alpha1.DNSZone) error
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("pdns delete zone failed: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// clearZoneComments removes the comments of every RRset in a zone.
+//
+// Deleting a zone on the LMDB backend removes its records and leaves its
+// comments as live rows. Once the zone is gone no API call reaches them, and a
+// zone created later under the same name inherits them. So the clear comes
+// before the delete. datum-cloud/dns-operator#172.
+//
+// That is the opposite order to clearCommentsBehindDeletes, and safe here: a
+// zone delete removes every RRset without reading who owns it, so a clear that
+// lands before a failed delete strands nothing the retry does not remove.
+func (c *Client) clearZoneComments(ctx context.Context, zoneName string) error {
+	existing, err := c.getPDNSZoneRRSets(ctx, zoneName)
+	if errors.Is(err, dnserrors.ErrZoneNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	clears := make([]rrset, 0, len(existing))
+	for _, current := range existing {
+		if len(current.Comments) > 0 {
+			clears = append(clears, commentsOnlyReplace(current.Name, current.Type))
+		}
+	}
+	sortRRSets(clears)
+
+	for _, chunk := range chunkRRSets(clears) {
+		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -670,8 +708,7 @@ func newDeleteRRSet(qualifiedName, recordType string) rrset {
 
 // commentsOnlyReplace builds the REPLACE that removes an RRset's comments and
 // leaves its records alone. It is named for what it puts on the wire, because
-// that is the part a reader cannot infer: the effect is stated by its only
-// caller, clearCommentsBehindDeletes.
+// that is the part a reader cannot infer: the effect is stated by its callers.
 //
 // PowerDNS's API reference says a DELETE removes the RRset "including all
 // comments", and applyDelete says the same in a source comment. On the LMDB
@@ -680,7 +717,7 @@ func newDeleteRRSet(qualifiedName, recordType string) rrset {
 //
 // datum-cloud/dns-operator#158 carries the measurement, and PowerDNS/pdns#18051
 // reports the backend behaviour upstream. If that is fixed, this REPLACE and
-// the call to it become dead weight and should go.
+// the calls to it become dead weight and should go.
 func commentsOnlyReplace(qualifiedName, recordType string) rrset {
 	return rrset{
 		Name:         qualifiedName,

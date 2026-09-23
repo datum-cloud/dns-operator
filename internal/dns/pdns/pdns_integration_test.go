@@ -2,12 +2,17 @@ package pdns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
 )
 
 func writePDNSAuthWithSQLite(t *testing.T, dir, apiKey string) {
@@ -83,9 +89,11 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 
 // startPDNSLMDB starts the version and the backend the control plane runs.
 // Both are needed to see datum-cloud/dns-operator#158.
-func startPDNSLMDB(t *testing.T, apiKey string) (baseURL string, terminate func()) {
+func startPDNSLMDB(t *testing.T) (baseURL, apiKey string, terminate func()) {
 	t.Helper()
-	return startPDNSWith(t, "powerdns/pdns-auth-51:5.1.4", apiKey, writePDNSAuthWithLMDB)
+	apiKey = "itest-key"
+	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.4", apiKey, writePDNSAuthWithLMDB)
+	return baseURL, apiKey, terminate
 }
 
 func startPDNSWith(t *testing.T, image, apiKey string, writeConf func(t *testing.T, dir, apiKey string)) (baseURL string, terminate func()) {
@@ -493,8 +501,7 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 // the defect was reachable.
 func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)
@@ -533,7 +540,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 
 	// No comments at all: it must delete it cleanly rather than fail on
 	// having nothing to remove.
-	if err := patchRaw(ctx, t, client, zoneName,
+	if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
 		`{"rrsets":[{"name":"`+QualifyOwner("bare", zoneName)+`","type":"A","ttl":300,"changetype":"REPLACE","records":[{"content":"8.8.8.8","disabled":false}]}]}`); err != nil {
 		t.Fatalf("write the uncommented RRset: %v", err)
 	}
@@ -549,7 +556,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	}
 
 	// The control: the DELETE on its own, as the API reference describes it.
-	if err := patchRaw(ctx, t, client, zoneName,
+	if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
 		fmt.Sprintf(`{"rrsets":[{"name":%q,"type":"A","changetype":"DELETE","comments":[]}]}`,
 			QualifyOwner("control", zoneName))); err != nil {
 		t.Fatalf("the control DELETE changed nothing, so it proves nothing: %v", err)
@@ -631,11 +638,11 @@ func zoneCommentTotal(ctx context.Context, t *testing.T, client *Client, zoneNam
 	return total
 }
 
-// patchRaw sends a patch body straight to PowerDNS, so a test can set up state
-// the client itself would never write.
-func patchRaw(ctx context.Context, t *testing.T, client *Client, zoneName, body string) error {
+// sendRaw sends a request for a zone straight to PowerDNS, so a test can set up
+// state the client itself would never write.
+func sendRaw(ctx context.Context, t *testing.T, client *Client, method, zoneName, body string) error {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+	req, err := http.NewRequestWithContext(ctx, method,
 		client.BaseURL+"/api/v1/servers/localhost/zones/"+zoneName+".", strings.NewReader(body))
 	if err != nil {
 		return err
@@ -648,7 +655,7 @@ func patchRaw(ctx context.Context, t *testing.T, client *Client, zoneName, body 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("patch returned %d", resp.StatusCode)
+		return fmt.Errorf("%s returned %d", method, resp.StatusCode)
 	}
 	return nil
 }
@@ -661,8 +668,7 @@ func patchRaw(ctx context.Context, t *testing.T, client *Client, zoneName, body 
 // uncommitted state is invisible through the API.
 func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)
@@ -725,8 +731,7 @@ func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 // name fails it, including one this test never mentions.
 func TestPDNS_LMDB_ARecordSetLeavesTheCommentCountWhereItFoundIt(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
-	const apiKey = "itest-key"
-	baseURL, stop := startPDNSLMDB(t, apiKey)
+	baseURL, apiKey, stop := startPDNSLMDB(t)
 	defer stop()
 
 	client := NewClient(baseURL, apiKey)
@@ -759,5 +764,136 @@ func TestPDNS_LMDB_ARecordSetLeavesTheCommentCountWhereItFoundIt(t *testing.T) {
 	if after := zoneCommentTotal(ctx, t, client, zoneName); after != before {
 		t.Fatalf("the zone holds %d comments after the record set was created and deleted, and held %d "+
 			"before it existed; %d were stranded", after, before, after-before)
+	}
+}
+
+// TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments is #172's acceptance
+// criterion: a zone deleted and created again under the same name comes back
+// with no comments on it.
+func TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client := NewClient(baseURL, apiKey)
+	ctx := context.Background()
+	nameservers := []string{"ns1.example.net", "ns2.example.net"}
+
+	// recreate writes one record set into a new zone, deletes the zone the way
+	// it is told to, and creates it again. It returns the comments the new zone
+	// holds before anything has been written to it.
+	recreate := func(t *testing.T, zoneName string, deleteZone func(dnsv1alpha1.DNSZone) error) int {
+		t.Helper()
+		zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+		if err := client.CreateZone(ctx, zoneName, nameservers); err != nil {
+			t.Fatalf("CreateZone: %v", err)
+		}
+		if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www", "shell")); err != nil {
+			t.Fatalf("EnsureRecordSet: %v", err)
+		}
+		// A bare DELETE leaves a shell: no records and all three comments, which
+		// is what a zone delete meets in practice.
+		if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
+			fmt.Sprintf(`{"rrsets":[{"name":%q,"type":"A","changetype":"DELETE"}]}`,
+				QualifyOwner("shell", zoneName))); err != nil {
+			t.Fatalf("leave a shell: %v", err)
+		}
+		if got := zoneCommentTotal(ctx, t, client, zoneName); got != 6 {
+			t.Fatalf("%s holds %d comments before its delete, want 6", zoneName, got)
+		}
+		if err := deleteZone(zone); err != nil {
+			t.Fatalf("deleting %s: %v", zoneName, err)
+		}
+		// CreateZone accepts a zone that already exists, so a delete that never
+		// happened would otherwise read as a clean recreate.
+		if _, err := client.GetZone(ctx, zoneName); !errors.Is(err, dnserrors.ErrZoneNotFound) {
+			t.Fatalf("%s is still there after its delete: GetZone returned %v", zoneName, err)
+		}
+		if err := client.CreateZone(ctx, zoneName, nameservers); err != nil {
+			t.Fatalf("CreateZone again: %v", err)
+		}
+		return zoneCommentTotal(ctx, t, client, zoneName)
+	}
+
+	// The control: the zone DELETE on its own, as the API reference describes it.
+	bare := func(zone dnsv1alpha1.DNSZone) error {
+		return sendRaw(ctx, t, client, http.MethodDelete, zone.Spec.DomainName, "")
+	}
+	if got := recreate(t, "control.test", bare); got != 6 {
+		t.Fatalf("the control came back with %d comments, want 6: this backend does not show the defect, "+
+			"so the reading below is not evidence", got)
+	}
+
+	viaClient := func(zone dnsv1alpha1.DNSZone) error { return client.DeleteZone(ctx, zone) }
+	if got := recreate(t, "fixed.test", viaClient); got != 0 {
+		t.Fatalf("the zone came back with %d comments left by the zone deleted before it", got)
+	}
+}
+
+// TestPDNS_LMDB_AZoneDeleteThatFailsKeepsTheRecords covers the one state that
+// clearing first creates: the comments are gone and the zone is not.
+//
+// A proxy in front of PowerDNS refuses the zone DELETE, so the clear lands and
+// the delete does not. The records must survive it, and the retry must find
+// nothing left to clear.
+func TestPDNS_LMDB_AZoneDeleteThatFailsKeepsTheRecords(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	backend, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("parse %s: %v", baseURL, err)
+	}
+	forward := httputil.NewSingleHostReverseProxy(backend)
+	var refuseDelete atomic.Bool
+	var patches atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && refuseDelete.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if r.Method == http.MethodPatch {
+			patches.Add(1)
+		}
+		forward.ServeHTTP(w, r)
+	}))
+	defer proxy.Close()
+
+	client := NewClient(proxy.URL, apiKey)
+	ctx := context.Background()
+	const zoneName = "refused.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www")); err != nil {
+		t.Fatalf("EnsureRecordSet: %v", err)
+	}
+
+	refuseDelete.Store(true)
+	patches.Store(0)
+	if err := client.DeleteZone(ctx, zone); err == nil {
+		t.Fatal("DeleteZone reported success for a zone DELETE the proxy refused")
+	}
+	if got := patches.Load(); got == 0 {
+		t.Fatal("DeleteZone sent no clear before the refused delete, so the reading below proves nothing")
+	}
+	if records, comments, _ := rrsetCounts(ctx, t, client, zoneName, "www", "A"); records != 1 || comments != 0 {
+		t.Fatalf("after the clear and a refused delete, www holds records=%d comments=%d, want 1 and 0",
+			records, comments)
+	}
+
+	refuseDelete.Store(false)
+	patches.Store(0)
+	if err := client.DeleteZone(ctx, zone); err != nil {
+		t.Fatalf("DeleteZone on the retry: %v", err)
+	}
+	if got := patches.Load(); got != 0 {
+		t.Fatalf("the retry sent %d PATCHes to a zone with no comments left, want none", got)
+	}
+	if _, err := client.GetZone(ctx, zoneName); !errors.Is(err, dnserrors.ErrZoneNotFound) {
+		t.Fatalf("the zone is still there after the retry: GetZone returned %v", err)
 	}
 }

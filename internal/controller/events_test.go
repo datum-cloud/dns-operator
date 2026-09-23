@@ -19,6 +19,7 @@ import (
 const (
 	testZoneName  = "my-zone"
 	testNamespace = "default"
+	kindDNSZone   = "DNSZone"
 )
 
 // --------------------------------------------------------------------------
@@ -446,8 +447,8 @@ func TestEmitZoneEvent_RegardingIsZone(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", len(fc.events))
 	}
 	ref := fc.events[0].Regarding
-	if ref.Kind != "DNSZone" {
-		t.Errorf("Regarding.Kind = %q, want %q", ref.Kind, "DNSZone")
+	if ref.Kind != kindDNSZone {
+		t.Errorf("Regarding.Kind = %q, want %q", ref.Kind, kindDNSZone)
 	}
 	if ref.Name != testZoneName {
 		t.Errorf("Regarding.Name = %q, want %q", ref.Name, testZoneName)
@@ -983,8 +984,8 @@ func TestEmitRecordSetEvent_RelatedIsZone(t *testing.T) {
 	if related == nil {
 		t.Fatal("Related = nil, want non-nil DNSZone reference")
 	}
-	if related.Kind != "DNSZone" {
-		t.Errorf("Related.Kind = %q, want %q", related.Kind, "DNSZone")
+	if related.Kind != kindDNSZone {
+		t.Errorf("Related.Kind = %q, want %q", related.Kind, kindDNSZone)
 	}
 	if related.Name != testZoneName {
 		t.Errorf("Related.Name = %q, want %q", related.Name, testZoneName)

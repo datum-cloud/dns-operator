@@ -309,11 +309,11 @@ spec:
         cluster: downstream
         content: |
           set -eu
-          # The record set's three ownership comments, so the reading after the
-          # delete is known to see comments at all.
+          # Three ownership comments on each of the SOA, NS and A record sets, so
+          # the reading after the delete is known to see comments at all.
           key=$(kubectl -n dns-agent-system exec sts/pdns-auth -c pdns -- cat /run/pdns/api-key)
           got=$(kubectl -n default exec pod/dnsutils -- sh -c "curl -fsS -H 'X-API-Key: $key' http://pdns-auth.dns-agent-system.svc.cluster.local:8082/api/v1/servers/localhost/zones/example.com. | jq '[.rrsets[].comments | length] | add'")
-          [ "$got" = 3 ] || { echo "zone holds $got comments before the delete, want 3" >&2; exit 1; }
+          [ "$got" = 9 ] || { echo "zone holds $got comments before the delete, want 9" >&2; exit 1; }
     - delete:
         cluster: upstream
         ref:
@@ -346,10 +346,10 @@ spec:
         content: |
           set -eu
           # Deleting the record set leaves the zone's comments where they were
-          # before it existed: SOA and NS carry none.
+          # before it existed: the SOA and NS record sets' six.
           key=$(kubectl -n dns-agent-system exec sts/pdns-auth -c pdns -- cat /run/pdns/api-key)
           got=$(kubectl -n default exec pod/dnsutils -- sh -c "curl -fsS -H 'X-API-Key: $key' http://pdns-auth.dns-agent-system.svc.cluster.local:8082/api/v1/servers/localhost/zones/example.com. | jq '[.rrsets[].comments | length] | add'")
-          [ "$got" = 0 ] || { echo "zone holds $got comments after the delete, want 0" >&2; exit 1; }
+          [ "$got" = 6 ] || { echo "zone holds $got comments after the delete, want 6" >&2; exit 1; }
     - assert:
         cluster: upstream
         resource:

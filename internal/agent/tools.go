@@ -25,12 +25,13 @@ import (
 // later phase, only renders a proposed manifest for review; it never applies
 // one.
 const (
-	ToolZonesList      = "dns_zones_list"
-	ToolZonesGet       = "dns_zones_get"
-	ToolZoneDiagnose   = "dns_zone_diagnose"
-	ToolRecordsList    = "dns_records_list"
-	ToolRecordsGet     = "dns_records_get"
-	ToolRecordDiagnose = "dns_record_diagnose"
+	ToolZonesList       = "dns_zones_list"
+	ToolZonesGet        = "dns_zones_get"
+	ToolZoneDiagnose    = "dns_zone_diagnose"
+	ToolDelegationCheck = "dns_delegation_check"
+	ToolRecordsList     = "dns_records_list"
+	ToolRecordsGet      = "dns_records_get"
+	ToolRecordDiagnose  = "dns_record_diagnose"
 )
 
 // ToolDeps is what one request's tool calls operate over: where to read
@@ -107,6 +108,34 @@ type ZoneDiagnoseInput struct {
 	Name string `json:"name" jsonschema:"DNSZone object name, e.g. \"example-com\""`
 }
 
+// DelegationCheckInput names the zone whose delegation to check.
+type DelegationCheckInput struct {
+	Name string `json:"name" jsonschema:"DNSZone object name, e.g. \"example-com\""`
+}
+
+// NameserverStatus is one assigned nameserver and whether the registrar
+// actually publishes it.
+type NameserverStatus struct {
+	Hostname string `json:"hostname"`
+	Set      bool   `json:"set"`
+}
+
+// DelegationCheckOutput is the expected-versus-observed nameserver
+// comparison for one zone.
+type DelegationCheckOutput struct {
+	// State is Complete, Partial, Incomplete, or Unknown. Unknown means
+	// the registrar has never been observed, not that delegation is
+	// broken — see DomainLinked and Nameservers below for why.
+	State string `json:"state"`
+	// Nameservers is every nameserver Datum assigned, each marked with
+	// whether the registrar was observed to publish it.
+	Nameservers []NameserverStatus `json:"nameservers"`
+	// DomainLinked reports whether the zone has a Domain object to check
+	// delegation against at all. False here is the other reason State can
+	// be Unknown, distinct from "linked but not observed yet".
+	DomainLinked bool `json:"domainLinked"`
+}
+
 // RecordsListInput names the zone whose records to list.
 type RecordsListInput struct {
 	Zone string `json:"zone" jsonschema:"DNSZone object name, e.g. \"example-com\""`
@@ -119,6 +148,14 @@ type RecordRow struct {
 	OwnerName string `json:"ownerName"`
 	Status    string `json:"status"`
 	Detail    string `json:"detail,omitempty"`
+	// Provenance is who created this owner name: user, platform (the
+	// operator's own SOA/apex NS), gateway (AI Edge), iroh, or
+	// external-dns. Anything other than user is reverted or put at risk
+	// by a hand edit here — see the managed-record-refused skill.
+	Provenance string `json:"provenance"`
+	// ProvenanceSource names the owning object, when Provenance carries
+	// one (empty for user and platform).
+	ProvenanceSource string `json:"provenanceSource,omitempty"`
 }
 
 // RecordsListOutput is every owner name in the zone, worst first.
@@ -131,10 +168,13 @@ type RecordsGetInput struct {
 	Name string `json:"name" jsonschema:"DNSRecordSet object name, e.g. \"www-a\""`
 }
 
-// RecordEntryView is one owner name and its per-name status.
+// RecordEntryView is one owner name, its per-name status, and its
+// provenance.
 type RecordEntryView struct {
-	Name       string          `json:"name"`
-	Conditions []ConditionView `json:"conditions,omitempty"`
+	Name             string          `json:"name"`
+	Conditions       []ConditionView `json:"conditions,omitempty"`
+	Provenance       string          `json:"provenance"`
+	ProvenanceSource string          `json:"provenanceSource,omitempty"`
 }
 
 // RecordSetView is a DNSRecordSet's identity and status, without its values.
@@ -196,19 +236,35 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, zoneDiagnose(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:  ToolDelegationCheck,
+		Title: "Check zone delegation",
+		Description: "Compare the nameservers Datum assigned to a zone against what the registrar " +
+			"actually publishes, one nameserver at a time. State is Complete when every nameserver is " +
+			"set, Partial when some are, Incomplete when none are, and Unknown when nothing can be " +
+			"compared yet — either no Domain is linked to this zone at all, or one is linked but the " +
+			"registrar has never been observed. Unknown means \"not yet checked\", never \"broken\": " +
+			"reporting it as a delegation failure sends a customer to fix a registrar setting that was " +
+			"simply never looked at. Read-only.",
+	}, delegationCheck(deps))
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:  ToolRecordsList,
 		Title: "List records in a zone",
 		Description: "List every owner name across every DNSRecordSet in one zone, with each name's " +
-			"status. The status comes from status.recordSets[] per owner name, never from a record " +
-			"set's top-level Programmed condition, which only names the first blocked name and rolls " +
-			"the rest into \"and N more\". Worst first. Read-only.",
+			"status and provenance. The status comes from status.recordSets[] per owner name, never " +
+			"from a record set's top-level Programmed condition, which only names the first blocked " +
+			"name and rolls the rest into \"and N more\". Provenance is user, platform (the operator's " +
+			"own SOA/apex NS), gateway (AI Edge), iroh, or external-dns — anything other than user is " +
+			"reverted or put at risk by editing it here, so check this before suggesting any change. " +
+			"Worst first. Read-only.",
 	}, recordsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:  ToolRecordsGet,
 		Title: "Get record set detail",
-		Description: "Get one DNSRecordSet by name with the condition for every owner name it holds. " +
-			"Use when you need the raw per-name status rather than a diagnosis. Read-only.",
+		Description: "Get one DNSRecordSet by name with the condition and provenance for every owner " +
+			"name it holds. Use when you need the raw per-name status rather than a diagnosis. " +
+			"Read-only.",
 	}, recordsGet(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -312,6 +368,36 @@ func zoneDiagnose(deps DepsFor) mcp.ToolHandlerFor[ZoneDiagnoseInput, Diagnosis]
 	}
 }
 
+func delegationCheck(deps DepsFor) mcp.ToolHandlerFor[DelegationCheckInput, DelegationCheckOutput] {
+	return func(
+		ctx context.Context, _ *mcp.CallToolRequest, in DelegationCheckInput,
+	) (*mcp.CallToolResult, DelegationCheckOutput, error) {
+		d, err := deps(ctx)
+		if err != nil {
+			return nil, DelegationCheckOutput{}, err
+		}
+		if in.Name == "" {
+			return nil, DelegationCheckOutput{}, fmt.Errorf("name is required")
+		}
+
+		zone, err := d.Reader.GetZone(ctx, d.Namespace, in.Name)
+		if err != nil {
+			return nil, DelegationCheckOutput{}, err
+		}
+
+		delegation := sharedutil.DelegationState(zone)
+		out := DelegationCheckOutput{
+			State:        delegation.State,
+			DomainLinked: delegation.Linked,
+			Nameservers:  make([]NameserverStatus, 0, len(delegation.Expected)),
+		}
+		for _, ns := range delegation.Expected {
+			out.Nameservers = append(out.Nameservers, NameserverStatus{Hostname: ns, Set: delegation.IsSet(ns)})
+		}
+		return nil, out, nil
+	}
+}
+
 func recordsList(deps DepsFor) mcp.ToolHandlerFor[RecordsListInput, RecordsListOutput] {
 	return func(
 		ctx context.Context, _ *mcp.CallToolRequest, in RecordsListInput,
@@ -338,12 +424,15 @@ func recordsList(deps DepsFor) mcp.ToolHandlerFor[RecordsListInput, RecordsListO
 			rs := &sets[i]
 			for _, entry := range rs.Spec.Records {
 				word, detail := sharedutil.RecordStatusInZone(rs, entry.Name, zone.Spec.DomainName)
+				ownership := sharedutil.ClassifyOwnership(rs.Labels, rs.Spec.RecordType, entry.Name, zone.Spec.DomainName)
 				out.Records = append(out.Records, RecordRow{
-					RecordSet: rs.Name,
-					Type:      string(rs.Spec.RecordType),
-					OwnerName: entry.Name,
-					Status:    word,
-					Detail:    detail,
+					RecordSet:        rs.Name,
+					Type:             string(rs.Spec.RecordType),
+					OwnerName:        entry.Name,
+					Status:           word,
+					Detail:           detail,
+					Provenance:       string(ownership.Provenance),
+					ProvenanceSource: ownership.Source,
 				})
 			}
 		}
@@ -369,7 +458,16 @@ func recordsGet(deps DepsFor) mcp.ToolHandlerFor[RecordsGetInput, RecordsGetOutp
 		if err != nil {
 			return nil, RecordsGetOutput{}, err
 		}
-		return nil, RecordsGetOutput{RecordSet: toRecordSetView(rs)}, nil
+
+		var zoneDomain string
+		if rs.Spec.DNSZoneRef.Name != "" {
+			zone, err := d.Reader.GetZone(ctx, d.Namespace, rs.Spec.DNSZoneRef.Name)
+			if err != nil {
+				return nil, RecordsGetOutput{}, err
+			}
+			zoneDomain = zone.Spec.DomainName
+		}
+		return nil, RecordsGetOutput{RecordSet: toRecordSetView(rs, zoneDomain)}, nil
 	}
 }
 
@@ -468,7 +566,7 @@ func toZoneView(z *dnsv1alpha1.DNSZone) ZoneView {
 	return view
 }
 
-func toRecordSetView(rs *dnsv1alpha1.DNSRecordSet) RecordSetView {
+func toRecordSetView(rs *dnsv1alpha1.DNSRecordSet, zoneDomain string) RecordSetView {
 	view := RecordSetView{
 		Name:       rs.Name,
 		Zone:       rs.Spec.DNSZoneRef.Name,
@@ -477,9 +575,12 @@ func toRecordSetView(rs *dnsv1alpha1.DNSRecordSet) RecordSetView {
 		OwnerNames: make([]RecordEntryView, 0, len(rs.Status.RecordSets)),
 	}
 	for _, st := range rs.Status.RecordSets {
+		ownership := sharedutil.ClassifyOwnership(rs.Labels, rs.Spec.RecordType, st.Name, zoneDomain)
 		view.OwnerNames = append(view.OwnerNames, RecordEntryView{
-			Name:       st.Name,
-			Conditions: toConditionViews(st.Conditions),
+			Name:             st.Name,
+			Conditions:       toConditionViews(st.Conditions),
+			Provenance:       string(ownership.Provenance),
+			ProvenanceSource: ownership.Source,
 		})
 	}
 	return view

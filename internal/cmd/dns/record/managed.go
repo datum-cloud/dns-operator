@@ -72,9 +72,10 @@ func classify(rs *dnsv1alpha1.DNSRecordSet, entry dnsv1alpha1.RecordEntry, zoneD
 }
 
 // isPlatformShape reports whether a (type, owner name) pair is one the platform
-// creates and depends on. It is the single definition of the platform tier, and
-// both the display path (classify) and the guard path (platformRisk) go through
-// it so the two cannot answer differently for the same record.
+// creates and depends on. It is util.IsPlatformShape, the one definition shared
+// with the diagnostic agent, so both the display path (classify) and the guard
+// path (platformRisk) here — and dns_records_list's provenance column — cannot
+// answer differently for the same record.
 //
 // Protection rests on the two facts about a record that a third party cannot
 // spell differently: which zone it belongs to, and its shape. Membership is
@@ -95,19 +96,10 @@ func classify(rs *dnsv1alpha1.DNSRecordSet, entry dnsv1alpha1.RecordEntry, zoneD
 //
 // The literal spelling of the owner name. rdata.IsApex tests the string, so an
 // apex NS entry stored as "example.com." rather than "@" was not recognised and
-// its delegation was pruned away. IsApexIn puts both sides through FQDN, the
-// same rule pdns.QualifyOwner applies.
+// its delegation was pruned away. util.IsPlatformShape qualifies both sides the
+// same way pdns.QualifyOwner does.
 func isPlatformShape(t dnsv1alpha1.RRType, ownerName, zoneDomain string) bool {
-	switch t {
-	case dnsv1alpha1.RRTypeSOA:
-		// A zone has exactly one SOA and the platform depends on it whatever
-		// object happens to hold it.
-		return true
-	case dnsv1alpha1.RRTypeNS:
-		return rdata.IsApexIn(ownerName, zoneDomain)
-	default:
-		return false
-	}
+	return util.IsPlatformShape(t, ownerName, zoneDomain)
 }
 
 // isMachineOwned reports whether a controller owns this record set.

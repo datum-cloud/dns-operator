@@ -24,10 +24,11 @@ const (
 // fakeReader serves canned objects so the tools can be exercised without a
 // cluster.
 type fakeReader struct {
-	zones      []dnsv1alpha1.DNSZone
-	recordSets map[string][]dnsv1alpha1.DNSRecordSet // keyed by zone object name
-	byName     map[string]*dnsv1alpha1.DNSRecordSet  // keyed by record set object name
-	err        error
+	zones       []dnsv1alpha1.DNSZone
+	recordSets  map[string][]dnsv1alpha1.DNSRecordSet    // keyed by zone object name
+	byName      map[string]*dnsv1alpha1.DNSRecordSet     // keyed by record set object name
+	discoveries map[string]*dnsv1alpha1.DNSZoneDiscovery // keyed by discovery object name
+	err         error
 }
 
 var _ Reader = (*fakeReader)(nil)
@@ -60,6 +61,16 @@ func (f *fakeReader) GetRecordSet(_ context.Context, _, name string) (*dnsv1alph
 		return rs, nil
 	}
 	return nil, errors.New("record set not found")
+}
+
+func (f *fakeReader) GetZoneDiscovery(_ context.Context, _, name string) (*dnsv1alpha1.DNSZoneDiscovery, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if d, ok := f.discoveries[name]; ok {
+		return d, nil
+	}
+	return nil, errors.New("zone discovery not found")
 }
 
 func fixtureDeps(r Reader) DepsFor {
@@ -386,7 +397,8 @@ func TestRegisterToolsPublishesExactlyTheDocumentedSet(t *testing.T) {
 
 	want := map[string]bool{
 		ToolZonesList: false, ToolZonesGet: false, ToolZoneDiagnose: false, ToolDelegationCheck: false,
-		ToolRecordsList: false, ToolRecordsGet: false, ToolRecordDiagnose: false,
+		ToolRecordsList: false, ToolRecordsGet: false, ToolRecordDiagnose: false, ToolRecordRender: false,
+		ToolZoneDiscoveryGet: false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; !ok {

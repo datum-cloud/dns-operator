@@ -98,6 +98,7 @@ spec:
           for: 10m
           labels:
             severity: warning
+            service: dns
           annotations:
             summary: "Orphaned downstream DNSRecordSet (no upstream owner)"
             description: >-
@@ -113,6 +114,7 @@ spec:
           for: 10m
           labels:
             severity: warning
+            service: dns
           annotations:
             summary: "Upstream DNSRecordSet not replicated downstream"
             description: >-
@@ -137,6 +139,7 @@ spec:
           for: 15m
           labels:
             severity: info
+            service: dns
           annotations:
             summary: "DNSRecordSet stuck not-Accepted for 15m"
             description: >-

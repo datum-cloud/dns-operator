@@ -89,6 +89,45 @@ spec:
               unless on(proj, upstream_namespace, upstream_name)
             dns:recordset_downstream:scoped
 
+        # A record can remain Pending while its parent zone is waiting for
+        # domain-ownership verification. Join the record to its zone and keep
+        # only records whose zone has been accepted, so the child alert does
+        # not fan out one informational alert per record under an unverified
+        # zone. The two branches accept both OTLP label spellings.
+        - record: dns:recordset_not_accepted:accepted_zone
+          expr: |
+            (
+              (
+                dns_record_set_status_condition{
+                  condition="Accepted", milo_control_plane_type="project"
+                } == 0
+                or
+                {
+                  __name__="dns_record_set_status_condition",
+                  condition="Accepted", "milo.control_plane.type"="project"
+                } == 0
+              )
+              * on (cluster, namespace, name) group_left(dns_zone_name)
+              dns_record_set_info
+            )
+            and on (cluster, namespace, dns_zone_name)
+            (
+              label_join(
+                dns_zone_status_condition{
+                  condition="Accepted", milo_control_plane_type="project"
+                } == 1,
+                "dns_zone_name", "", "name"
+              )
+              or
+              label_join(
+                {
+                  __name__="dns_zone_status_condition",
+                  condition="Accepted", "milo.control_plane.type"="project"
+                } == 1,
+                "dns_zone_name", "", "name"
+              )
+            )
+
     - name: dns.drift.alerts
       rules:
         - alert: DNSDownstreamOrphanRecordSet
@@ -129,11 +168,12 @@ spec:
         # blackholes rather than posting to Slack or paging. It stays visible
         # in vmalert and Grafana for whoever is looking at a specific project.
         - alert: DNSRecordSetNotAccepted
-          # Dual label spelling, as in dns:recordset_upstream:normalized above.
+          # A record should only be called out after its parent zone is
+          # accepted. An unverified zone intentionally holds every child
+          # record in Pending; the zone-level alert is the single actionable
+          # signal for that state.
           expr: |
-            dns_record_set_status_condition{condition="Accepted", milo_control_plane_type="project"} == 0
-              or
-            {__name__="dns_record_set_status_condition", condition="Accepted", "milo.control_plane.type"="project"} == 0
+            dns:recordset_not_accepted:accepted_zone
           for: 15m
           labels:
             severity: info

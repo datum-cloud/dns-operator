@@ -64,7 +64,8 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 		want                string
 		system, subresource bool
 	}
-	fixtures := []fixture{
+	fixtures := make([]fixture, 0, 74)
+	fixtures = append(fixtures, []fixture{
 		{name: "create domain", verb: "create", request: spec("example.com"), want: "Alice created zone example.com"},
 		{name: "delete domain from response", verb: "delete", request: map[string]any{"kind": "DeleteOptions"}, response: spec("example.com"), want: "Alice deleted zone example.com"},
 		{name: "partial patch omitting domain", request: map[string]any{"spec": map[string]any{"zoneClassName": "public"}}, response: spec("example.com"), want: "Alice updated zone example.com"},
@@ -88,7 +89,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 		{name: "malformed JSON operations", request: []any{nil, "invalid", map[string]any{"op": nil}, map[string]any{"op": "add", "path": nil}}},
 		{name: "system update", request: spec("example.com"), system: true},
 		{name: "status update", request: spec("example.com"), subresource: true},
-	}
+	}...)
 	for _, value := range []any{nil, "", 42, false, []any{}, map[string]any{}} {
 		fixtures = append(fixtures,
 			fixture{name: fmt.Sprintf("create invalid domain %T/%v", value, value), verb: "create", request: spec(value), want: "Alice created a DNS zone"},

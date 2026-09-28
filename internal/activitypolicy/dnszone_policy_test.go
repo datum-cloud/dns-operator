@@ -63,8 +63,10 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 		request, response   any
 		want                string
 		system, subresource bool
+		code                int
+		omitStatus          bool
 	}
-	fixtures := make([]fixture, 0, 74)
+	fixtures := make([]fixture, 0, 127)
 	fixtures = append(fixtures, []fixture{
 		{name: "create domain", verb: "create", request: spec("example.com"), want: "Alice created zone example.com"},
 		{name: "delete domain from response", verb: "delete", request: map[string]any{"kind": "DeleteOptions"}, response: spec("example.com"), want: "Alice deleted zone example.com"},
@@ -109,6 +111,16 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 			fixtures = append(fixtures, fixture{name: op + " " + path, request: patch(op, path), response: spec("example.com"), want: "Alice updated zone example.com"})
 		}
 	}
+	for _, verb := range []string{"create", "update", "patch", "delete"} {
+		for _, code := range []int{401, 403, 404, 409, 422, 500} {
+			fixtures = append(fixtures,
+				fixture{name: fmt.Sprintf("rejected %s %d with domain", verb, code), verb: verb, code: code, request: spec("example.com"), response: spec("example.com")},
+				fixture{name: fmt.Sprintf("rejected %s %d null domain", verb, code), verb: verb, code: code, request: spec(nil), response: map[string]any{"kind": "Status", "status": "Failure"}},
+			)
+		}
+		fixtures = append(fixtures, fixture{name: verb + " without response status", verb: verb, omitStatus: true, request: spec("example.com")})
+	}
+	fixtures = append(fixtures, fixture{name: "accepted deletion", verb: "delete", code: 202, want: "Alice deleted a DNS zone"})
 	expressionRE := regexp.MustCompile(`\{\{\s*(.+?)\s*\}\}`)
 	for _, fx := range fixtures {
 		t.Run(fx.name, func(t *testing.T) {
@@ -125,6 +137,13 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 				objectRef["subresource"] = "status"
 			}
 			audit := map[string]any{"verb": verb, "user": map[string]any{"username": username}, "objectRef": objectRef}
+			code := fx.code
+			if code == 0 {
+				code = 200
+			}
+			if !fx.omitStatus {
+				audit["responseStatus"] = map[string]any{"code": code}
+			}
 			if fx.request != nil {
 				audit["requestObject"] = fx.request
 			}
@@ -132,7 +151,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 				audit["responseObject"] = fx.response
 			}
 			want := fx.want
-			if want == "" && !fx.system && !fx.subresource {
+			if want == "" && !fx.system && !fx.subresource && !fx.omitStatus && code >= 200 && code < 300 {
 				want = "Alice updated a DNS zone"
 			}
 			got := ""

@@ -10,7 +10,7 @@
 #                                              single mode, on the downstream cluster
 #
 # The replicator remaps namespaces downstream, so the sides share no metadata.
-# Both are normalized to (proj, upstream_namespace, upstream_name) to join on.
+# Both are normalized to (project, upstream_namespace, upstream_name) to join on.
 #
 # This is a standard PrometheusRule: victoria-metrics-operator converts it to a
 # VMRule, which the default vmalert picks up. It deliberately carries no
@@ -53,7 +53,7 @@ spec:
                     {__name__="dns_record_set_info", "milo.control_plane.type"="project"},
                     "milo_project_name", "$1", "milo.project.name", "(.*)"
                   ),
-                  "proj", "$1", "milo_project_name", "(.*)"
+                  "project", "$1", "milo_project_name", "(.*)"
                 ),
                 "upstream_namespace", "$1", "namespace", "(.*)"
               ),
@@ -71,16 +71,18 @@ spec:
           expr: |
             label_replace(
               dns_record_set_downstream_info{upstream_name!=""},
-              "proj", "$1", "upstream_cluster", "cluster-_?(.*)"
+              "project", "$1", "upstream_cluster", "cluster-_?(.*)"
             )
 
+        # Ignore old recording-rule samples without the explicit project label
+        # while migrating from the former abbreviated label.
         # Orphan: a downstream record with no upstream owner — the engineering#346
         # leftover that keeps "reserving" a name after its owner is deleted.
         - record: dns:recordset_downstream_orphan
           expr: |
-            dns:recordset_downstream:scoped
-              unless on(proj, upstream_namespace, upstream_name)
-            dns:recordset_upstream:normalized
+            dns:recordset_downstream:scoped{project!=""}
+              unless on(project, upstream_namespace, upstream_name)
+            dns:recordset_upstream:normalized{project!=""}
 
         # A record whose parent zone is absent cannot be replicated. Normalize
         # project identity on the zone inventory as well: names and namespaces
@@ -96,7 +98,7 @@ spec:
                   {__name__="dns_zone_info", "milo.control_plane.type"="project"},
                   "milo_project_name", "$1", "milo.project.name", "(.*)"
                 ),
-                "proj", "$1", "milo_project_name", "(.*)"
+                "project", "$1", "milo_project_name", "(.*)"
               ),
               "dns_zone_name", "$1", "name", "(.*)"
             )
@@ -107,12 +109,12 @@ spec:
         - record: dns:recordset_downstream_missing
           expr: |
             (
-              dns:recordset_upstream:normalized
-                and on(proj, namespace, dns_zone_name)
-              dns:zone_upstream:normalized
+              dns:recordset_upstream:normalized{project!=""}
+                and on(project, namespace, dns_zone_name)
+              dns:zone_upstream:normalized{project!=""}
             )
-              unless on(proj, upstream_namespace, upstream_name)
-            dns:recordset_downstream:scoped
+              unless on(project, upstream_namespace, upstream_name)
+            dns:recordset_downstream:scoped{project!=""}
 
         # A record can remain Pending while its parent zone is waiting for
         # domain-ownership verification. Join the record to its zone and keep
@@ -158,7 +160,7 @@ spec:
         - alert: DNSDownstreamOrphanRecordSet
           # for: rides out normal replication/staleness lag, so only persistent
           # drift pages.
-          expr: dns:recordset_downstream_orphan > 0
+          expr: dns:recordset_downstream_orphan{project!=""} > 0
           for: 10m
           labels:
             severity: warning
@@ -167,14 +169,14 @@ spec:
             summary: "Orphaned downstream DNSRecordSet (no upstream owner)"
             description: >-
               DNSRecordSet {{ $labels.upstream_name }} in namespace
-              {{ $labels.upstream_namespace }} (project {{ $labels.proj }})
+              {{ $labels.upstream_namespace }} (project {{ $labels.project }})
               exists on the downstream cluster with no matching upstream owner.
               This is the failure mode from engineering#346 and can block new
               records for the same name. Runbook:
               docs/troubleshooting/dnsrecordset-downstream-orphan.md
 
         - alert: DNSDownstreamMissingRecordSet
-          expr: dns:recordset_downstream_missing > 0
+          expr: dns:recordset_downstream_missing{project!=""} > 0
           for: 10m
           labels:
             severity: warning
@@ -183,7 +185,7 @@ spec:
             summary: "Upstream DNSRecordSet not replicated downstream"
             description: >-
               DNSRecordSet {{ $labels.upstream_name }} in namespace
-              {{ $labels.upstream_namespace }} (project {{ $labels.proj }})
+              {{ $labels.upstream_namespace }} (project {{ $labels.project }})
               references existing DNSZone {{ $labels.dns_zone_name }} but has no
               downstream copy — replication may be stalled or a replica may not
               own this cluster.

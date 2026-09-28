@@ -35,24 +35,24 @@ tests:
   - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="downstream-orphan"}
     values: 1x40
   promql_expr_test:
-  - expr: sum by (upstream_name) (dns:recordset_downstream_missing)
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_missing)
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="pending-missing"}'
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
       value: 1
-    - labels: '{upstream_name="valid-missing"}'
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
       value: 1
-  - expr: sum by (upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
+  - expr: sum by (project, upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="pending-missing"}'
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
       value: 1
-    - labels: '{upstream_name="valid-missing"}'
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
       value: 1
-  - expr: sum by (upstream_name) (dns:recordset_downstream_orphan)
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_orphan)
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="downstream-orphan"}'
+    - labels: '{project="alpha",upstream_name="downstream-orphan"}'
       value: 1
 - name: OTLP dotted labels
   interval: 30s
@@ -88,22 +88,22 @@ tests:
   - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="downstream-orphan"}
     values: 1x40
   promql_expr_test:
-  - expr: sum by (upstream_name) (dns:recordset_downstream_missing)
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_missing)
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="pending-missing"}'
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
       value: 1
-    - labels: '{upstream_name="valid-missing"}'
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
       value: 1
-  - expr: sum by (upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
+  - expr: sum by (project, upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="pending-missing"}'
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
       value: 1
-    - labels: '{upstream_name="valid-missing"}'
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
       value: 1
-  - expr: sum by (upstream_name) (dns:recordset_downstream_orphan)
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_orphan)
     eval_time: 20m
     exp_samples:
-    - labels: '{upstream_name="downstream-orphan"}'
+    - labels: '{project="alpha",upstream_name="downstream-orphan"}'
       value: 1

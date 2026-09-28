@@ -61,13 +61,9 @@ func internalVocabulary() []bannedTerm {
 func apiIdentifiers() []string {
 	seen := map[string]struct{}{
 		PatternOrphanedBackendRecord: {},
-		SkillZoneNotResolving:        {},
-		SkillRecordNotProgrammed:     {},
-		SkillConflictingRecord:       {},
-		SkillRecordNotOwner:          {},
-		SkillDelegationCheck:         {},
-		SkillDomainVerification:      {},
-		SkillManagedRecord:           {},
+	}
+	for _, skill := range AllSkills() {
+		seen[skill] = struct{}{}
 	}
 	for _, info := range AllReasons() {
 		seen[info.Reason] = struct{}{}
@@ -165,6 +161,96 @@ func TestPublishedDocsUseNoInternalVocabulary(t *testing.T) {
 		}
 		for i, line := range strings.Split(string(b), "\n") {
 			checkCopy(t, fmt.Sprintf("%s:%d", name, i+1), line, terms)
+		}
+	}
+}
+
+// Patch's own limits, from its capability composition. Past either one the
+// document is truncated or dropped in a customer's conversation, and nothing
+// in this repo would otherwise show that: the server serves the file happily
+// at any size, and the loss happens on the assistant's side.
+const (
+	maxKnowledgeBytes = 32 * 1024
+	maxSkillBytes     = 64 * 1024
+)
+
+// TestPublishedDocsFitTheAssistantsCaps holds the published documents to the
+// sizes the assistant will actually read. The knowledge document is the one
+// under real pressure, since it is fetched whole on every turn that touches
+// DNS, and it grows every time someone adds a record type or a condition
+// reason.
+func TestPublishedDocsFitTheAssistantsCaps(t *testing.T) {
+	b, err := fs.ReadFile(agentdocs.FS, agentdocs.KnowledgeFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.KnowledgeFile, err)
+	}
+	if len(b) == 0 {
+		t.Errorf("%s is empty", agentdocs.KnowledgeFile)
+	}
+	if len(b) >= maxKnowledgeBytes {
+		t.Errorf("%s is %d bytes, which the assistant truncates at %d",
+			agentdocs.KnowledgeFile, len(b), maxKnowledgeBytes)
+	}
+
+	entries, err := fs.ReadDir(agentdocs.FS, agentdocs.SkillsDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.SkillsDir, err)
+	}
+	for _, e := range entries {
+		name := path.Join(agentdocs.SkillsDir, e.Name())
+		b, err := fs.ReadFile(agentdocs.FS, name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if len(b) == 0 {
+			t.Errorf("%s is empty, so loading it costs a turn and returns nothing", name)
+		}
+		if len(b) >= maxSkillBytes {
+			t.Errorf("%s is %d bytes, which is truncated when loaded at %d",
+				name, len(b), maxSkillBytes)
+		}
+	}
+}
+
+// TestEverySkillNamedIsPublished pins the skill names to the files the
+// server serves, in both directions. A diagnosis that names a runbook
+// nobody published sends the assistant to a 404 exactly when it has
+// decided it needs the procedure, and nothing else in the build notices:
+// the name is a string, and the file is embedded separately.
+func TestEverySkillNamedIsPublished(t *testing.T) {
+	entries, err := fs.ReadDir(agentdocs.FS, agentdocs.SkillsDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.SkillsDir, err)
+	}
+	published := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		published[strings.TrimSuffix(e.Name(), ".md")] = struct{}{}
+	}
+
+	named := make(map[string]struct{}, len(AllSkills()))
+	for _, skill := range AllSkills() {
+		named[skill] = struct{}{}
+		if _, ok := published[skill]; !ok {
+			t.Errorf("skill %q is named in a diagnosis but %s/%s.md is not embedded",
+				skill, agentdocs.SkillsDir, skill)
+		}
+	}
+	for name := range published {
+		if _, ok := named[name]; !ok {
+			t.Errorf("%s/%s.md is published but no skill name refers to it, so the assistant "+
+				"has no way to reach it", agentdocs.SkillsDir, name)
+		}
+	}
+
+	// AllSkills is hand-maintained, so pin the catalog to it too: an entry
+	// pointing at a skill the list forgot would slip past the check above.
+	for _, info := range AllReasons() {
+		if info.Skill == "" {
+			continue
+		}
+		if _, ok := named[info.Skill]; !ok {
+			t.Errorf("catalog entry %q names skill %q, which AllSkills does not list",
+				info.Reason, info.Skill)
 		}
 	}
 }

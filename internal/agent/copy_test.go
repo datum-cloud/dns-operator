@@ -165,6 +165,53 @@ func TestPublishedDocsUseNoInternalVocabulary(t *testing.T) {
 	}
 }
 
+// Patch's own limits, from its capability composition. Past either one the
+// document is truncated or dropped in a customer's conversation, and nothing
+// in this repo would otherwise show that: the server serves the file happily
+// at any size, and the loss happens on the assistant's side.
+const (
+	maxKnowledgeBytes = 32 * 1024
+	maxSkillBytes     = 64 * 1024
+)
+
+// TestPublishedDocsFitTheAssistantsCaps holds the published documents to the
+// sizes the assistant will actually read. The knowledge document is the one
+// under real pressure, since it is fetched whole on every turn that touches
+// DNS, and it grows every time someone adds a record type or a condition
+// reason.
+func TestPublishedDocsFitTheAssistantsCaps(t *testing.T) {
+	b, err := fs.ReadFile(agentdocs.FS, agentdocs.KnowledgeFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.KnowledgeFile, err)
+	}
+	if len(b) == 0 {
+		t.Errorf("%s is empty", agentdocs.KnowledgeFile)
+	}
+	if len(b) >= maxKnowledgeBytes {
+		t.Errorf("%s is %d bytes, which the assistant truncates at %d",
+			agentdocs.KnowledgeFile, len(b), maxKnowledgeBytes)
+	}
+
+	entries, err := fs.ReadDir(agentdocs.FS, agentdocs.SkillsDir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", agentdocs.SkillsDir, err)
+	}
+	for _, e := range entries {
+		name := path.Join(agentdocs.SkillsDir, e.Name())
+		b, err := fs.ReadFile(agentdocs.FS, name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if len(b) == 0 {
+			t.Errorf("%s is empty, so loading it costs a turn and returns nothing", name)
+		}
+		if len(b) >= maxSkillBytes {
+			t.Errorf("%s is %d bytes, which is truncated when loaded at %d",
+				name, len(b), maxSkillBytes)
+		}
+	}
+}
+
 // TestEverySkillNamedIsPublished pins the skill names to the files the
 // server serves, in both directions. A diagnosis that names a runbook
 // nobody published sends the assistant to a 404 exactly when it has

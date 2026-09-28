@@ -15,8 +15,10 @@ Three alerts, each pointing at the specific record and customer project involved
 | Alert | What it means | What to do |
 |---|---|---|
 | **DNSDownstreamOrphanRecordSet** | A record exists on the serving control plane with **no owner** in any customer project — a leftover that can block the customer from reusing that hostname (the #346 case). | Remove the orphaned record on the serving control plane. The alert labels name the project, namespace, and record. |
-| **DNSDownstreamMissingRecordSet** | A record exists in a **customer project but was never replicated** to the serving side — the customer's change isn't taking effect. | Check replicator health for that project; the record isn't live until it replicates. |
+| **DNSDownstreamMissingRecordSet** | A record and its parent zone exist in a **customer project, but the record was never replicated** to the serving side — the customer's change isn't taking effect. | Check replicator health for that project; the record isn't live until it replicates. |
 | **DNSRecordSetNotAccepted** | A customer's record has been sitting **un-accepted** (e.g. a misconfigured zone). | Inspect the record's status conditions in the customer project. |
+
+Records referencing a missing parent zone are excluded from the replication alert: the operator deliberately waits for that zone. Their `Accepted=False` status identifies the missing zone. Zone matching includes project and namespace, and does not require `Accepted` or `Programmed`, so records that never replicate remain detectable.
 
 Alerts only fire after the condition **persists** (`for: 10m`), so normal replication lag never pages anyone.
 
@@ -66,3 +68,10 @@ The upstream series already exist — `dns-metrics` runs in production today. Wh
 > `discovery.collectRootControlPlane: true` is **not** the way to get these series. It collects Milo's root control plane, and the replicated copies do not live there — they live in the infrastructure cluster's own apiserver.
 
 Validate the new series in staging for one metrics-retention window before wiring the alerts to paging.
+
+## Alert rule regression tests
+
+Run `hack/test-observability-rules.sh` with Python 3, PyYAML, and promtool 3+
+(or set `PROMTOOL` to its path). CI checks both metric label formats, missing
+parents, project/namespace isolation, healthy replicas, and genuine missing
+replicas without an Accepted status.

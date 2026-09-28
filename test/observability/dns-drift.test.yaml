@@ -1,0 +1,109 @@
+# Missing parents must not page; real drift must still fire without Accepted status.
+evaluation_interval: 30s
+tests:
+- name: Prometheus underscored labels
+  interval: 30s
+  input_series:
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="missing-parent",dns_zone_name="absent",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="wrong-project",dns_zone_name="other-project",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="wrong-namespace",dns_zone_name="other-namespace",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="root-only",dns_zone_name="root-zone",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="valid-missing",dns_zone_name="valid",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="pending-missing",dns_zone_name="pending",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="replicated",dns_zone_name="valid",record_type="A"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="valid"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="pending"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="beta",milo_control_plane_type="project",namespace="default",name="other-project"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="other",name="other-namespace"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="root",namespace="default",name="root-zone"}
+    values: 1x40
+  - series: dns_zone_status_condition{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="pending",condition="Accepted"}
+    values: '0x40'
+  - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="replicated"}
+    values: 1x40
+  - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="downstream-orphan"}
+    values: 1x40
+  promql_expr_test:
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_missing)
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
+      value: 1
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
+      value: 1
+  - expr: sum by (project, upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
+      value: 1
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
+      value: 1
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_orphan)
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="downstream-orphan"}'
+      value: 1
+- name: OTLP dotted labels
+  interval: 30s
+  input_series:
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="missing-parent",dns_zone_name="absent",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="wrong-project",dns_zone_name="other-project",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="wrong-namespace",dns_zone_name="other-namespace",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="root-only",dns_zone_name="root-zone",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="valid-missing",dns_zone_name="valid",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="pending-missing",dns_zone_name="pending",record_type="A"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="replicated",dns_zone_name="valid",record_type="A"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="valid"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="pending"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="beta","milo.control_plane.type"="project",namespace="default",name="other-project"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="other",name="other-namespace"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="root",namespace="default",name="root-zone"}
+    values: 1x40
+  - series: dns_zone_status_condition{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="pending",condition="Accepted"}
+    values: '0x40'
+  - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="replicated"}
+    values: 1x40
+  - series: dns_record_set_downstream_info{upstream_cluster="cluster-_alpha",upstream_namespace="default",upstream_name="downstream-orphan"}
+    values: 1x40
+  promql_expr_test:
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_missing)
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
+      value: 1
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
+      value: 1
+  - expr: sum by (project, upstream_name) (ALERTS{alertname="DNSDownstreamMissingRecordSet",alertstate="firing"})
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="pending-missing"}'
+      value: 1
+    - labels: '{project="alpha",upstream_name="valid-missing"}'
+      value: 1
+  - expr: sum by (project, upstream_name) (dns:recordset_downstream_orphan)
+    eval_time: 20m
+    exp_samples:
+    - labels: '{project="alpha",upstream_name="downstream-orphan"}'
+      value: 1

@@ -114,6 +114,8 @@ const (
 	SkillDelegationCheck     = "delegation-check"
 	SkillDomainVerification  = "domain-verification"
 	SkillManagedRecord       = "managed-record-refused"
+	SkillRecordCreate        = "record-create"
+	SkillZoneImport          = "zone-import"
 )
 
 // catalog is the full reason vocabulary. Entries key off
@@ -266,4 +268,23 @@ func AllReasons() []ReasonInfo {
 	out := make([]ReasonInfo, len(catalog))
 	copy(out, catalog)
 	return out
+}
+
+// AllSkills returns every skill name this package can name in a diagnosis.
+// A binding advertises exactly this set, and
+// TestEverySkillNamedIsPublished pins it to the files actually embedded:
+// naming a runbook the server does not serve sends the assistant to a 404
+// at the moment it has decided it needs help.
+func AllSkills() []string {
+	return []string{
+		SkillZoneNotResolving,
+		SkillRecordNotProgrammed,
+		SkillConflictingRecord,
+		SkillRecordNotOwner,
+		SkillDelegationCheck,
+		SkillDomainVerification,
+		SkillManagedRecord,
+		SkillRecordCreate,
+		SkillZoneImport,
+	}
 }

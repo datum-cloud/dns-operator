@@ -139,7 +139,7 @@ func registerRecordRenderTool(s *mcp.Server, deps DepsFor) {
 			"manifest to resources_plan, since planning a second object of the same type does not merge " +
 			"with the first, it conflicts with it. For CNAME, the warnings say when the name is the " +
 			"zone apex or already used by something else, either of which the API will reject. Load the " +
-			"record-create skill before using this. Read-only in that it writes nothing itself; the " +
+			SkillRecordCreate + " skill before using this. Read-only in that it writes nothing itself; the " +
 			"manifest is then passed to resources_plan and, once the person agrees, resources_apply.",
 	}, recordRender(deps))
 }

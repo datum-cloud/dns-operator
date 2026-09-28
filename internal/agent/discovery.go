@@ -55,8 +55,8 @@ func registerZoneDiscoveryTool(s *mcp.Server, deps DepsFor) {
 			"same way dns_record_render's input does. This is a one-time snapshot, not a live query — " +
 			"say so if a customer asks whether it reflects the domain right now. Check the Discovered " +
 			"condition before treating the record sets as complete; a snapshot that hasn't finished may " +
-			"list only some of what the domain actually serves. Load the zone-import skill before using " +
-			"this. Read-only.",
+			"list only some of what the domain actually serves. Load the " + SkillZoneImport + " skill " +
+			"before using this. Read-only.",
 	}, zoneDiscoveryGet(deps))
 }
 

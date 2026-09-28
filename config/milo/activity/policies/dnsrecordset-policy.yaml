@@ -22,6 +22,9 @@
 apiVersion: activity.miloapis.com/v1alpha1
 kind: ActivityPolicy
 metadata:
+  labels:
+    meta.datumapis.com/service: dns
+    meta.datumapis.com/team: delivery
   name: dns.networking.miloapis.com-dnsrecordset
 spec:
   resource:

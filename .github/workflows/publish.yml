@@ -34,5 +34,12 @@ jobs:
       bundle-name: ghcr.io/datum-cloud/dns-operator-kustomize
       bundle-path: config
       image-name: ghcr.io/datum-cloud/dns-operator
-      image-overlays: config/manager,config/agent
+      # Every path here gets the built tag stamped into it. A path left out
+      # keeps whatever its manifests say, and components/dns-mcp says
+      # :latest, which docker/metadata-action only moves on a release. The
+      # MCP server would then run the last released build while the rest of
+      # the operator ran the one this bundle was cut from, and because the
+      # pull policy is Always, two replicas restarting either side of a
+      # release would not even match each other.
+      image-overlays: config/manager,config/agent,config/components/dns-mcp
     secrets: inherit

@@ -28,6 +28,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/dns"
+	"go.miloapis.com/dns-operator/internal/dns/claims"
 )
 
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
@@ -104,7 +105,11 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	} else {
 		if controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
-			err := r.DNSHandler.Client.DeleteRecordSet(ctx, zone, rs)
+			holders, err := r.remainingHolders(ctx, &zone, &rs)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			err = r.DNSHandler.Client.DeleteRecordSet(ctx, zone, rs, holders)
 
 			if err != nil {
 				logger.Error(err, "failed to delete recordset from downstream controller", "namespace", rs.Namespace, "name", rs.Name)
@@ -183,8 +188,31 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	statuses, err := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
+	holders, err := r.remainingHolders(ctx, &zone, &rs)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	statuses, err := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs, holders)
 	return ctrl.Result{}, r.updateStatus(ctx, &rs, err, statuses)
+}
+
+// remainingHolders returns who holds each owner name that another record set of
+// rs's type claims in rs's zone, so that a name rs stops claiming is handed to
+// its holder rather than deleted. It reads the manager's cache, which holds
+// every claim; PowerDNS does not know who asks for a name.
+func (r *DNSRecordSetReconciler) remainingHolders(
+	ctx context.Context,
+	zone *dnsv1alpha1.DNSZone,
+	rs *dnsv1alpha1.DNSRecordSet,
+) (map[string]*dnsv1alpha1.DNSRecordSet, error) {
+	var list dnsv1alpha1.DNSRecordSetList
+	if err := r.List(ctx, &list,
+		client.InNamespace(rs.Namespace),
+		client.MatchingFields{RecordSetZoneIndex: rs.Spec.DNSZoneRef.Name},
+	); err != nil {
+		return nil, fmt.Errorf("list the record sets of zone %q: %w", rs.Spec.DNSZoneRef.Name, err)
+	}
+	return claims.Holders(list.Items, rs, zone.Spec.DomainName), nil
 }
 
 // recordSetProgrammedAtGeneration reports whether the record set's current spec
@@ -275,6 +303,16 @@ func (r *DNSRecordSetReconciler) setAcceptedCondition(
 	return r.Status().Patch(ctx, rs, client.MergeFrom(base))
 }
 
+// RecordSetZoneIndex names the field index on DNSRecordSets by the DNSZone they
+// reference. The manager registers it with IndexRecordSetZone; the reconcilers
+// list a zone's record sets through it.
+const RecordSetZoneIndex = "spec.DNSZoneRef.Name"
+
+// IndexRecordSetZone is the index function registered under RecordSetZoneIndex.
+func IndexRecordSetZone(obj client.Object) []string {
+	return []string{obj.(*dnsv1alpha1.DNSRecordSet).Spec.DNSZoneRef.Name}
+}
+
 // SetupWithManager wires watches:
 //   - Reconciles DNSRecordSet
 //   - Requeues DNSRecordSets when their DNSZone (same ns, same spec.zoneName) changes
@@ -306,7 +344,7 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				var rrs dnsv1alpha1.DNSRecordSetList
 				if err := mgr.GetClient().List(ctx, &rrs,
 					client.InNamespace(zone.Namespace),
-					client.MatchingFields{"spec.DNSZoneRef.Name": zone.Name},
+					client.MatchingFields{RecordSetZoneIndex: zone.Name},
 				); err != nil {
 					ctrl.LoggerFrom(ctx).Error(err, "failed to list recordsets for zone", "zone", zone.Name, "namespace", zone.Namespace)
 					return nil

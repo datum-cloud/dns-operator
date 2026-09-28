@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -24,26 +25,40 @@ type recordSetDeleteCall struct {
 	ZoneName   string
 	DomainName string
 	RecordSet  string
+	Holders    map[string]string
 }
 
 type recordSetDNSClientSpy struct {
 	*dnsfake.FakeDNSClient
-	EnsureRecordSetCalls int
-	DeleteRecordSetCalls []recordSetDeleteCall
+	EnsureRecordSetCalls   int
+	EnsureRecordSetHolders []map[string]string
+	DeleteRecordSetCalls   []recordSetDeleteCall
 }
 
-func (s *recordSetDNSClientSpy) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+func (s *recordSetDNSClientSpy) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	s.EnsureRecordSetCalls++
+	s.EnsureRecordSetHolders = append(s.EnsureRecordSetHolders, holderNames(holders))
 	return nil, nil
 }
 
-func (s *recordSetDNSClientSpy) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+func (s *recordSetDNSClientSpy) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) error {
 	s.DeleteRecordSetCalls = append(s.DeleteRecordSetCalls, recordSetDeleteCall{
 		ZoneName:   zone.Name,
 		DomainName: zone.Spec.DomainName,
 		RecordSet:  recordSet.Name,
+		Holders:    holderNames(holders),
 	})
 	return nil
+}
+
+// holderNames reduces the holders a reconcile passed to the backend to the
+// names of the record sets that hold each owner name.
+func holderNames(holders map[string]*dnsv1alpha1.DNSRecordSet) map[string]string {
+	out := make(map[string]string, len(holders))
+	for name, holder := range holders {
+		out[name] = holder.Name
+	}
+	return out
 }
 
 func newDownstreamRecordSetTestScheme(t *testing.T) *runtime.Scheme {
@@ -65,6 +80,7 @@ func newDownstreamRecordSetReconciler(t *testing.T, objs ...client.Object) (*DNS
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&dnsv1alpha1.DNSRecordSet{}).
+		WithIndex(&dnsv1alpha1.DNSRecordSet{}, RecordSetZoneIndex, IndexRecordSetZone).
 		Build()
 
 	spy := &recordSetDNSClientSpy{FakeDNSClient: dnsfake.NewFakeDNSClient()}
@@ -245,6 +261,98 @@ func TestDNSRecordSetReconcile_DeleteFlowCallsDeleteAndRemovesFinalizer(t *testi
 		}
 	} else if !apierrors.IsNotFound(err) {
 		t.Fatalf("get recordset after delete reconcile: %v", err)
+	}
+}
+
+// Another record set can claim a name the deleted one held. The backend hands
+// such a name to its holder instead of deleting it, so the reconcile has to say
+// who holds what once this record set is gone: the first claimant among the
+// live record sets of its type in its zone.
+func TestDNSRecordSetReconcile_DeletePassesTheRemainingHolders(t *testing.T) {
+	t.Parallel()
+
+	created := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	now := metav1.NewTime(created.Add(24 * time.Hour))
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "zone-a", Namespace: "default", UID: types.UID("zone-uid")},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "downstream-class"},
+	}
+	claimant := func(name string, age time.Duration, rrType dnsv1alpha1.RRType, zoneRef string) *dnsv1alpha1.DNSRecordSet {
+		return &dnsv1alpha1.DNSRecordSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", CreationTimestamp: metav1.NewTime(created.Add(age))},
+			Spec: dnsv1alpha1.DNSRecordSetSpec{
+				DNSZoneRef: corev1.LocalObjectReference{Name: zoneRef},
+				RecordType: rrType,
+				Records:    []dnsv1alpha1.RecordEntry{{Name: "www"}},
+			},
+		}
+	}
+	deleted := claimant("record-a", 0, dnsv1alpha1.RRTypeA, "zone-a")
+	deleted.DeletionTimestamp = &now
+	deleted.Finalizers = []string{downstreamRSFinalizer}
+	leaving := claimant("leaving", -time.Hour, dnsv1alpha1.RRTypeA, "zone-a")
+	leaving.DeletionTimestamp = &now
+	leaving.Finalizers = []string{downstreamRSFinalizer}
+
+	r, spy, _ := newDownstreamRecordSetReconciler(t, zone, deleted, leaving,
+		claimant("newer", 2*time.Hour, dnsv1alpha1.RRTypeA, "zone-a"),
+		claimant("holder", time.Hour, dnsv1alpha1.RRTypeA, "zone-a"),
+		claimant("txt", -time.Hour, dnsv1alpha1.RRTypeTXT, "zone-a"),
+		claimant("elsewhere", -time.Hour, dnsv1alpha1.RRTypeA, "zone-b"),
+	)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "record-a"}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if len(spy.DeleteRecordSetCalls) != 1 {
+		t.Fatalf("expected DeleteRecordSet to be called once, got %d", len(spy.DeleteRecordSetCalls))
+	}
+	want := map[string]string{"www.example.com.": "holder"}
+	if got := spy.DeleteRecordSetCalls[0].Holders; !reflect.DeepEqual(got, want) {
+		t.Fatalf("holders = %v, want %v", got, want)
+	}
+}
+
+// The prune in EnsureRecordSet removes names a record set wrote and no longer
+// lists, so programming needs the same holders a delete does.
+func TestDNSRecordSetReconcile_EnsurePassesTheRemainingHolders(t *testing.T) {
+	t.Parallel()
+
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "zone-a", Namespace: "default", UID: types.UID("zone-uid")},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "downstream-class"},
+	}
+	aSet := func(name string, owners ...string) *dnsv1alpha1.DNSRecordSet {
+		records := make([]dnsv1alpha1.RecordEntry, 0, len(owners))
+		for _, owner := range owners {
+			records = append(records, dnsv1alpha1.RecordEntry{Name: owner, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}})
+		}
+		return &dnsv1alpha1.DNSRecordSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: dnsv1alpha1.DNSRecordSetSpec{
+				DNSZoneRef: corev1.LocalObjectReference{Name: "zone-a"},
+				RecordType: dnsv1alpha1.RRTypeA,
+				Records:    records,
+			},
+		}
+	}
+
+	r, spy, _ := newDownstreamRecordSetReconciler(t, zone, aSet("record-a", "api"), aSet("holder", "www"))
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "record-a"}}
+	// Finalizer, owner reference, Accepted, then the programming reconcile.
+	for i := 0; i < 4; i++ {
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("reconcile %d: %v", i+1, err)
+		}
+	}
+
+	if len(spy.EnsureRecordSetHolders) != 1 {
+		t.Fatalf("expected EnsureRecordSet to run once, got %d", len(spy.EnsureRecordSetHolders))
+	}
+	want := map[string]string{"www.example.com.": "holder"}
+	if got := spy.EnsureRecordSetHolders[0]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("holders = %v, want %v", got, want)
 	}
 }
 

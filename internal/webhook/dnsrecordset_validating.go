@@ -16,6 +16,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/dns/claims"
 	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 )
 
@@ -56,15 +57,15 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 		return nil
 	}
 
-	claims := newOwnerClaims(rs, zone.Spec.DomainName)
+	requested := newOwnerClaims(rs, zone.Spec.DomainName)
 	if oldRS != nil &&
 		oldRS.Spec.RecordType == rs.Spec.RecordType &&
 		oldRS.Spec.DNSZoneRef.Name == rs.Spec.DNSZoneRef.Name {
 		for _, rec := range oldRS.Spec.Records {
-			delete(claims, qualifiedOwnerKey(rec.Name, zone.Spec.DomainName))
+			delete(requested, qualifiedOwnerKey(rec.Name, zone.Spec.DomainName))
 		}
 	}
-	if len(claims) == 0 {
+	if len(requested) == 0 {
 		return nil
 	}
 
@@ -76,23 +77,9 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 	}
 
 	holders := map[string]*dnsv1alpha1.DNSRecordSet{}
-	for i := range list.Items {
-		other := &list.Items[i]
-		if other.Name == rs.Name || !other.DeletionTimestamp.IsZero() {
-			continue
-		}
-		if other.Spec.DNSZoneRef.Name != rs.Spec.DNSZoneRef.Name ||
-			other.Spec.RecordType != rs.Spec.RecordType {
-			continue
-		}
-		for _, rec := range other.Spec.Records {
-			k := qualifiedOwnerKey(rec.Name, zone.Spec.DomainName)
-			if _, wanted := claims[k]; !wanted {
-				continue
-			}
-			if held, ok := holders[k]; !ok || firstClaimant(held, other) == other {
-				holders[k] = other
-			}
+	for name, holder := range claims.Holders(list.Items, rs, zone.Spec.DomainName) {
+		if _, wanted := requested[name]; wanted {
+			holders[name] = holder
 		}
 	}
 	if len(holders) == 0 {
@@ -104,12 +91,12 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 		contested = append(contested, k)
 	}
 	sort.Slice(contested, func(i, j int) bool {
-		return claims[contested[i]].recordIndex < claims[contested[j]].recordIndex
+		return requested[contested[i]].recordIndex < requested[contested[j]].recordIndex
 	})
 
 	var errs field.ErrorList
 	for _, k := range contested {
-		claim := claims[k]
+		claim := requested[k]
 		errs = append(errs, field.Invalid(
 			field.NewPath("spec", "records").Index(claim.recordIndex).Child("name"),
 			claim.ownerName,
@@ -130,33 +117,20 @@ type ownerClaim struct {
 }
 
 func newOwnerClaims(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) map[string]ownerClaim {
-	claims := make(map[string]ownerClaim, len(rs.Spec.Records))
+	requested := make(map[string]ownerClaim, len(rs.Spec.Records))
 	for i, rec := range rs.Spec.Records {
 		if rec.Name == "" {
 			continue
 		}
 		k := qualifiedOwnerKey(rec.Name, zoneDomainName)
-		if _, ok := claims[k]; ok {
+		if _, ok := requested[k]; ok {
 			continue
 		}
-		claims[k] = ownerClaim{recordIndex: i, ownerName: rec.Name}
+		requested[k] = ownerClaim{recordIndex: i, ownerName: rec.Name}
 	}
-	return claims
+	return requested
 }
 
 func qualifiedOwnerKey(ownerName, zoneDomainName string) string {
 	return pdnsclient.QualifyOwner(ownerName, zoneDomainName)
-}
-
-func firstClaimant(a, b *dnsv1alpha1.DNSRecordSet) *dnsv1alpha1.DNSRecordSet {
-	if a.CreationTimestamp.Equal(&b.CreationTimestamp) {
-		if a.Name <= b.Name {
-			return a
-		}
-		return b
-	}
-	if a.CreationTimestamp.Before(&b.CreationTimestamp) {
-		return a
-	}
-	return b
 }

@@ -534,7 +534,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 			},
 		},
 	}
-	if _, err := client.EnsureRecordSet(ctx, zone, sibling); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, sibling, nil); err != nil {
 		t.Fatalf("EnsureRecordSet(TXT): %v", err)
 	}
 
@@ -546,7 +546,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	}
 
 	// The operator stamps three ownership comments on every RRset it writes.
-	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "control", "fixed")); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "control", "fixed"), nil); err != nil {
 		t.Fatalf("EnsureRecordSet: %v", err)
 	}
 	for _, owner := range []string{"control", "fixed"} {
@@ -627,7 +627,7 @@ func TestPDNS_LMDB_AMixedCaseNameSurvivesTheNextReconcile(t *testing.T) {
 	// already worked.
 	recordSet := aRecordSet(1, "WWW", "lower")
 	for call := 1; call <= 2; call++ {
-		if _, err := client.EnsureRecordSet(ctx, zone, recordSet); err != nil {
+		if _, err := client.EnsureRecordSet(ctx, zone, recordSet, nil); err != nil {
 			t.Fatalf("EnsureRecordSet, call %d: %v", call, err)
 		}
 		for _, owner := range []string{"www", "lower"} {
@@ -637,7 +637,7 @@ func TestPDNS_LMDB_AMixedCaseNameSurvivesTheNextReconcile(t *testing.T) {
 		}
 	}
 
-	if err := client.DeleteRecordSet(ctx, zone, recordSet); err != nil {
+	if err := client.DeleteRecordSet(ctx, zone, recordSet, nil); err != nil {
 		t.Fatalf("DeleteRecordSet: %v", err)
 	}
 	if got := zoneCommentTotal(ctx, t, client, zoneName); got != 0 {
@@ -718,7 +718,7 @@ func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
 		t.Fatalf("CreateZone: %v", err)
 	}
-	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "kept")); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "kept"), nil); err != nil {
 		t.Fatalf("EnsureRecordSet: %v", err)
 	}
 
@@ -784,7 +784,7 @@ func TestPDNS_LMDB_ARecordSetLeavesTheCommentCountWhereItFoundIt(t *testing.T) {
 	before := zoneCommentTotal(ctx, t, client, zoneName)
 
 	recordSet := aRecordSet(1, "www", "api", "mail")
-	if _, err := client.EnsureRecordSet(ctx, zone, recordSet); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, recordSet, nil); err != nil {
 		t.Fatalf("EnsureRecordSet: %v", err)
 	}
 
@@ -796,7 +796,7 @@ func TestPDNS_LMDB_ARecordSetLeavesTheCommentCountWhereItFoundIt(t *testing.T) {
 			"so this test cannot tell a clean delete from a write that never happened", during, before)
 	}
 
-	if err := client.DeleteRecordSet(ctx, zone, recordSet); err != nil {
+	if err := client.DeleteRecordSet(ctx, zone, recordSet, nil); err != nil {
 		t.Fatalf("DeleteRecordSet: %v", err)
 	}
 
@@ -827,7 +827,7 @@ func TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments(t *testing.T) {
 		if err := client.CreateZone(ctx, zoneName, nameservers); err != nil {
 			t.Fatalf("CreateZone: %v", err)
 		}
-		if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www", "shell")); err != nil {
+		if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www", "shell"), nil); err != nil {
 			t.Fatalf("EnsureRecordSet: %v", err)
 		}
 		// A bare DELETE leaves a shell: no records and all three comments, which
@@ -907,7 +907,7 @@ func TestPDNS_LMDB_AZoneDeleteThatFailsKeepsTheRecords(t *testing.T) {
 	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
 		t.Fatalf("CreateZone: %v", err)
 	}
-	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www")); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www"), nil); err != nil {
 		t.Fatalf("EnsureRecordSet: %v", err)
 	}
 

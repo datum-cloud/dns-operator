@@ -79,11 +79,11 @@ func (f *FakeDNSClient) DeleteZone(_ context.Context, z dnsv1alpha1.DNSZone) err
 	return f.DeleteZoneErr
 }
 
-func (c *FakeDNSClient) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+func (c *FakeDNSClient) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	return nil, nil
 }
 
-func (c *FakeDNSClient) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+func (c *FakeDNSClient) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) error {
 	return nil
 }
 

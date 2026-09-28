@@ -590,7 +590,7 @@ func TestEnsureRecordSet_ReplacesWhenUIDChanges(t *testing.T) {
 			}},
 		},
 	}
-	if _, err := c.EnsureRecordSet(context.Background(), dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"}}, rs); err != nil {
+	if _, err := c.EnsureRecordSet(context.Background(), dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"}}, rs, nil); err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
 	if len(captured.RRSets) == 0 {
@@ -949,7 +949,7 @@ func TestEnsureRecordSet_ReadsZoneOnceAndPatchesOnce(t *testing.T) {
 		owners = append(owners, fmt.Sprintf("host%02d", i))
 	}
 
-	statuses, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...))
+	statuses, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...), nil)
 	if err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
@@ -994,7 +994,7 @@ func TestEnsureRecordSet_ChunksLargePatches(t *testing.T) {
 		owners = append(owners, fmt.Sprintf("host%04d", i))
 	}
 
-	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...)); err != nil {
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, owners...), nil); err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
 
@@ -1043,7 +1043,7 @@ func TestEnsureRecordSet_DeletesSurplusOwnersWithoutCommentSearch(t *testing.T) 
 		RRSets: []zoneRRset{owned("www.example.com."), owned("gone.example.com."), foreign, unowned},
 	})
 
-	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www")); err != nil {
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www"), nil); err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
 
@@ -1150,10 +1150,10 @@ func TestApplyRRSetPatch_ClearsCommentsBehindEveryDelete(t *testing.T) {
 			return c.DeleteRRSet(context.Background(), "example.com", "A", "gone")
 		},
 		"DeleteRecordSet": func(c *Client) error {
-			return c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "gone"))
+			return c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "gone"), nil)
 		},
 		"EnsureRecordSet": func(c *Client) error {
-			_, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www"))
+			_, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(1, "www"), nil)
 			return err
 		},
 		"ApplyRecordSetAuthoritative": func(c *Client) error {
@@ -1232,7 +1232,7 @@ func TestEnsureRecordSet_PreservesCommentTimestamps(t *testing.T) {
 	})
 
 	// Generation 2: the generation comment changes, the other two do not.
-	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2, "www")); err != nil {
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2, "www"), nil); err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
 
@@ -1278,7 +1278,7 @@ func TestEnsureRecordSet_SkipsRRSetAlreadyAtThisGeneration(t *testing.T) {
 				}},
 			})
 
-			if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(3, owner)); err != nil {
+			if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(3, owner), nil); err != nil {
 				t.Fatalf("EnsureRecordSet error: %v", err)
 			}
 			if len(stub.patches) != 0 {
@@ -1315,7 +1315,7 @@ func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
 				},
 			})
 
-			if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, owner, "absent")); err != nil {
+			if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, owner, "absent"), nil); err != nil {
 				t.Fatalf("DeleteRecordSet error: %v", err)
 			}
 
@@ -1404,7 +1404,7 @@ func TestEnsureRecordSet_KeepsEachClearWithItsDeleteInOneRequest(t *testing.T) {
 
 	// The record set now declares none of the names it owns, so every one of
 	// them is surplus.
-	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2)); err != nil {
+	if _, err := c.EnsureRecordSet(context.Background(), testZone, aRecordSet(2), nil); err != nil {
 		t.Fatalf("EnsureRecordSet error: %v", err)
 	}
 

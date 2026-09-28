@@ -257,7 +257,7 @@ func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZon
 // a zone — so a read or a write per owner name turns a 5,000 record object into
 // thousands of sequential round trips, which is what stalled every other zone
 // behind it.
-func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	zoneName := zone.Spec.DomainName
 	recordType := string(recordSet.Spec.RecordType)
 	ownerRef := recordSetOwnerRef(recordSet)
@@ -309,26 +309,16 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			continue
 		}
 
-		replaces = append(replaces, buildReplaceRRSet(
-			zoneName,
-			recordType,
-			owner,
-			ownerRRSet.TTL,
-			ownerRRSet.Records,
-			ownerRef,
-			recordSet.Generation,
-			string(recordSet.UID),
-			current.Comments,
-		))
+		replaces = append(replaces, ownerReplace(zoneName, recordSet, owner, ownerRRSet, current.Comments))
 		statusList = append(statusList, recordSetCreatedStatus(owner))
 		replacedStatus = append(replacedStatus, len(statusList)-1)
 	}
 
-	// Deletion phase. The zone read already says which owner names of this type
+	// Release phase. The zone read already says which owner names of this type
 	// this record set owns, so the surplus ones are a local diff — no global
 	// comment search, which is unscoped and therefore couples every zone in the
 	// database to this reconcile.
-	deletes := make([]rrset, 0)
+	releases := make([]rrset, 0)
 	for key, current := range existing {
 		if key.typ != recordType {
 			continue
@@ -342,10 +332,16 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		if rrsetOwnerRef(current) != ownerRef {
 			continue
 		}
-		c.logger.Info("Deleting RecordSet from PowerDNS", "owner", key.name, "recordType", key.typ, "recordSet", recordSet.Name)
-		deletes = append(deletes, newDeleteRRSet(key.name, key.typ))
+		change, needed := c.release(zoneName, recordSet, current, holders)
+		if !needed {
+			continue
+		}
+		if change.ChangeType == changeTypeDelete {
+			c.logger.Info("Deleting RecordSet from PowerDNS", "owner", key.name, "recordType", key.typ, "recordSet", recordSet.Name)
+		}
+		releases = append(releases, change)
 	}
-	sortRRSets(deletes)
+	sortRRSets(releases)
 
 	for _, chunk := range chunkRRSets(replaces) {
 		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
@@ -356,13 +352,66 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 	}
 
-	for _, chunk := range chunkRRSets(deletes) {
+	for _, chunk := range chunkRRSets(releases) {
 		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
-			c.logger.Error(err, "failed to delete recordsets from PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
+			c.logger.Error(err, "failed to release owner names in PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
 		}
 	}
 
 	return statusList, nil
+}
+
+// release returns the change that takes the owner name of current away from
+// from, a record set that no longer claims it, and whether any change is needed.
+//
+// A name another record set still claims is not deleted but handed to its
+// holder, as docs/architecture/record-ownership.md ("When ownership moves")
+// states. Deleting it would leave the holder reporting Programmed=True for a
+// name that no longer resolves, because a programmed record set does not read
+// PowerDNS again until its spec changes. The hand-over needs no change when the
+// holder wrote the RRset last, and becomes a delete when the holder's records
+// for the name build nothing, as the per-name reconciler did.
+func (c *Client) release(zoneName string, from dnsv1alpha1.DNSRecordSet, current zoneRRset, holders map[string]*dnsv1alpha1.DNSRecordSet) (rrset, bool) {
+	recordType := string(from.Spec.RecordType)
+	if holder, claimed := holders[current.Name]; claimed {
+		if c.rrsetMatchesObject(current, *holder) {
+			return rrset{}, false
+		}
+		if owner, built, ok := holderRecords(zoneName, *holder, current.Name); ok {
+			c.logger.Info("Handing owner name to the DNSRecordSet that still claims it",
+				"owner", current.Name, "recordType", recordType, "from", from.Name, "to", holder.Name)
+			return ownerReplace(zoneName, *holder, owner, built, current.Comments), true
+		}
+	}
+	return newDeleteRRSet(current.Name, recordType), true
+}
+
+// holderRecords builds holder's records for the RRset named qualified, and the
+// spelling of the owner name holder uses for it. ok is false when they build
+// no record.
+func holderRecords(zoneName string, holder dnsv1alpha1.DNSRecordSet, qualified string) (string, OwnerRRSet, bool) {
+	var owner string
+	var entries []dnsv1alpha1.RecordEntry
+	for _, rec := range holder.Spec.Records {
+		if QualifyOwner(rec.Name, zoneName) != qualified {
+			continue
+		}
+		if owner == "" {
+			owner = rec.Name
+		}
+		entries = append(entries, rec)
+	}
+	built, ok := BuildOwnerRRSet(zoneName, holder.Spec.RecordType, owner, entries)
+	return owner, built, ok && len(built.Records) > 0
+}
+
+// ownerReplace builds the REPLACE that writes rs's records for one owner name,
+// with rs's ownership notes. EnsureRecordSet writes a record set's own names
+// with it and release hands a name to its holder with it, so a name handed over
+// is exactly what the holder's own reconcile writes.
+func ownerReplace(zoneName string, rs dnsv1alpha1.DNSRecordSet, owner string, built OwnerRRSet, existing []zoneRRsetComment) rrset {
+	return buildReplaceRRSet(zoneName, string(rs.Spec.RecordType), owner, built.TTL, built.Records,
+		recordSetOwnerRef(rs), rs.Generation, string(rs.UID), existing)
 }
 
 // rrsetMatchesObject reports whether the RRset already in PowerDNS was written
@@ -488,7 +537,7 @@ func (c *Client) getPDNSZoneRRSets(ctx context.Context, zoneName string) (map[rr
 	return out, nil
 }
 
-func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) error {
+func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet, holders map[string]*dnsv1alpha1.DNSRecordSet) error {
 	zoneName := zone.Spec.DomainName
 	recordType := string(recordSet.Spec.RecordType)
 	ownerRef := recordSetOwnerRef(recordSet)
@@ -521,13 +570,16 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 	}
 
-	deletes := make([]rrset, 0, len(targets))
+	changes := make([]rrset, 0, len(targets))
 	for name := range targets {
-		deletes = append(deletes, newDeleteRRSet(name, recordType))
+		current := existing[rrsetKey{name: name, typ: recordType}]
+		if change, needed := c.release(zoneName, recordSet, current, holders); needed {
+			changes = append(changes, change)
+		}
 	}
-	sortRRSets(deletes)
+	sortRRSets(changes)
 
-	for _, chunk := range chunkRRSets(deletes) {
+	for _, chunk := range chunkRRSets(changes) {
 		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
 			c.logger.Error(err, "Failed to delete record set from PowerDNS", "zone", zoneName, "recordType", recordType)
 			return err

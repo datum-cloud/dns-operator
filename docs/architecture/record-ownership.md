@@ -43,17 +43,25 @@ not written.
 
 ## When ownership moves
 
-Ownership changes only when the holder stops claiming the name. That happens
-when the holder is deleted, or when its spec is edited so the name is no longer
-listed.
+A record set stops claiming a name when it is deleted, or when its spec is
+edited so the name is no longer listed.
 
-On the next reconcile of that key, the remaining claimants are re-elected by the
-same two rules, and the new holder's records are written over whatever the
-previous holder left. There is no handover signal and no grace period, so a
-brief window exists where the name still resolves to the old holder's data.
+Before the agent removes that name from the backend, it elects a holder from the
+remaining claimants by the same two rules, from its own cache of record sets.
+Every spelling of the name counts as the same claim, because the agent compares
+names qualified to the zone and lower-cased. If a claimant remains, the name is
+not deleted: the holder's records, with the holder's ownership notes, are written
+in its place, in the same backend write that removes the names nobody else
+claims. So the name never stops resolving, and from that write on it answers
+with the holder's records.
 
-If no claimant remains, the backend record set for that name is deleted, subject
-to the aliasing guard described below.
+If no claimant remains, or the holder's records for the name build no record,
+the backend record set for that name is deleted.
+
+**The election does not yet run on write.** While two claimants both stand, the
+running reconciler writes both, the later write replaces the earlier one, and
+both report `Programmed=True`. The rules above decide who takes a name over when
+a claimant stops claiming it.
 
 ## What a losing record reports
 

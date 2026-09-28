@@ -73,7 +73,7 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			var rrs dnsv1alpha1.DNSRecordSetList
 			if err := r.List(ctx, &rrs,
 				client.InNamespace(zone.Namespace),
-				client.MatchingFields{"spec.DNSZoneRef.Name": zone.Name},
+				client.MatchingFields{RecordSetZoneIndex: zone.Name},
 			); err != nil {
 				ctrl.LoggerFrom(ctx).Error(err, "failed to list recordsets for zone", "zone", zone.Name, "namespace", zone.Namespace)
 				return ctrl.Result{}, err

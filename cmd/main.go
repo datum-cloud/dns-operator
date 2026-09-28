@@ -248,11 +248,7 @@ func main() {
 
 		// Add indexer for RecordSets
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(),
-			&dnsv1alpha1.DNSRecordSet{}, "spec.DNSZoneRef.Name",
-			func(obj client.Object) []string {
-				rs := obj.(*dnsv1alpha1.DNSRecordSet)
-				return []string{rs.Spec.DNSZoneRef.Name}
-			},
+			&dnsv1alpha1.DNSRecordSet{}, controller.RecordSetZoneIndex, controller.IndexRecordSetZone,
 		); err != nil {
 			ctrl.LoggerFrom(context.Background()).Error(err, "failed to index DNSRecordSet by spec.DNSZoneRef.Name")
 			os.Exit(1)

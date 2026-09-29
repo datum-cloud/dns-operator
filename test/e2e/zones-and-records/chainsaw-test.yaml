@@ -306,6 +306,32 @@ spec:
   - name: Delete A record and verify PDNS cleanup
     try:
     - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl get ns $NAMESPACE -o json
+        outputs:
+        - name: downstreamNamespaceName
+          value: (join('-', ['ns', json_parse($stdout).metadata.uid]))
+    - script:
+        cluster: upstream
+        skipCommandOutput: true
+        skipLogOutput: true
+        content: |
+          kubectl -n $NAMESPACE get dnsrecordset www-example-com -o json
+        outputs:
+        - name: anchorName
+          value: (join('-', ['anchor', json_parse($stdout).metadata.uid]))
+    - assert:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ($anchorName)
+            namespace: ($downstreamNamespaceName)
+    - script:
         cluster: downstream
         content: |
           set -eu
@@ -329,6 +355,14 @@ spec:
             echo "upstream DNSRecordSet still exists" >&2
             exit 1
           fi
+    - error:
+        cluster: downstream
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ($anchorName)
+            namespace: ($downstreamNamespaceName)
     - sleep:
         duration: 10s
     - script:

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -486,5 +488,88 @@ func TestDNSRecordSetReplicator_EnsureDownstreamRecordSet_CalledAfterAnnotationU
 	}
 	if updated.Annotations[AnnotationDisplayValue] != "192.0.2.10" {
 		t.Errorf("display-value = %q, want %q", updated.Annotations[AnnotationDisplayValue], "192.0.2.10")
+	}
+}
+
+// TestHandleDeletion_DeletesAnchorBeforeReleasingFinalizer replicates a record
+// set through the real mapped-namespace strategy, so a real anchor exists
+// downstream, then deletes the record set upstream. The first anchor delete
+// fails, and the finalizer must stay until a retry deletes the anchor.
+func TestHandleDeletion_DeletesAnchorBeforeReleasingFinalizer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	upstreamNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "upstream-ns-uid"}}
+	rs := &dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "www",
+			Namespace:  "default",
+			UID:        "upstream-rs-uid",
+			Finalizers: []string{rsFinalizer},
+		},
+		Spec: dnsv1alpha1.DNSRecordSetSpec{
+			DNSZoneRef: corev1.LocalObjectReference{Name: "zone-a"},
+			RecordType: dnsv1alpha1.RRTypeA,
+		},
+	}
+	upstreamClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(upstreamNamespace, rs).Build()
+
+	anchorDeleteFails := true
+	downstreamClient := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			if _, isAnchor := obj.(*corev1.ConfigMap); isAnchor && anchorDeleteFails {
+				return errors.New("injected anchor delete failure")
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	}).Build()
+
+	countAnchors := func() int {
+		t.Helper()
+		var anchors corev1.ConfigMapList
+		if err := downstreamClient.List(ctx, &anchors); err != nil {
+			t.Fatalf("list anchors: %v", err)
+		}
+		return len(anchors.Items)
+	}
+
+	strategy := downstreamclient.NewMappedNamespaceResourceStrategy("test", upstreamClient, downstreamClient)
+	r := &DNSRecordSetReplicator{DownstreamClient: downstreamClient}
+
+	if _, err := r.ensureDownstreamRecordSet(ctx, strategy, rs); err != nil {
+		t.Fatalf("ensureDownstreamRecordSet: %v", err)
+	}
+	if n := countAnchors(); n != 1 {
+		t.Fatalf("anchors after replication = %d, want 1", n)
+	}
+
+	if err := upstreamClient.Delete(ctx, rs); err != nil {
+		t.Fatalf("delete upstream: %v", err)
+	}
+	if err := upstreamClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("get deleting upstream: %v", err)
+	}
+
+	// The first call deletes the shadow, the second finds it gone.
+	if done, err := r.handleDeletion(ctx, upstreamClient, strategy, rs); done || err != nil {
+		t.Fatalf("first handleDeletion = (%v, %v), want (false, nil)", done, err)
+	}
+	if done, err := r.handleDeletion(ctx, upstreamClient, strategy, rs); done || err == nil {
+		t.Fatalf("handleDeletion with a failing anchor delete = (%v, %v), want (false, error)", done, err)
+	}
+	if err := upstreamClient.Get(ctx, client.ObjectKeyFromObject(rs), rs); err != nil {
+		t.Fatalf("upstream after a failed anchor delete: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(rs, rsFinalizer) {
+		t.Fatal("finalizer released while the anchor still exists")
+	}
+
+	anchorDeleteFails = false
+	if done, err := r.handleDeletion(ctx, upstreamClient, strategy, rs); !done || err != nil {
+		t.Fatalf("retried handleDeletion = (%v, %v), want (true, nil)", done, err)
+	}
+	if n := countAnchors(); n != 0 {
+		t.Fatalf("anchors after deletion = %d, want 0", n)
 	}
 }

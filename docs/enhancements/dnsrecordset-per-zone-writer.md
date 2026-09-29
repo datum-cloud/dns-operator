@@ -61,8 +61,9 @@ still has to decide what gets through, as a Gateway API controller does for conf
   first.
 - Replacing the ownership notes. Until a zone is fully declared, they are the only mark of which records
   the agent may delete.
-- The SOA serial, and the zone controller's writes of the SOA and NS records. Moving those into this
-  writer is a separate decision.
+- Who sets the SOA serial. A zone's SOA and NS records are record sets, which the pass writes like any
+  other; the zone controller writes them only when it creates the zone. The serial the SOA carries is a
+  separate change ([#101](https://github.com/datum-cloud/dns-operator/issues/101)).
 
 ## Background
 

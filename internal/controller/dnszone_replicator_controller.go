@@ -261,15 +261,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	if !verified {
 		base := upstream.DeepCopy()
-		msg := "Waiting for domain ownership verification before provisioning DNS"
-		if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
-			Type:               CondAccepted,
-			Status:             metav1.ConditionFalse,
-			Reason:             ReasonPendingDomainVerification,
-			Message:            msg,
-			ObservedGeneration: upstream.Generation,
-			LastTransitionTime: metav1.NewTime(time.Now()),
-		}) {
+		if markPendingDomainVerification(&upstream, zoneClass) {
 			if perr := upstreamCl.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); perr != nil {
 				return ctrl.Result{}, perr
 			}
@@ -645,7 +637,9 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 			if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Namespace: md.Namespace, Name: md.Name}, &shadow); err == nil {
 				currentNS := dnsutils.NormalizeStringSlice(upstream.Status.Nameservers)
 				desiredNS := dnsutils.NormalizeStringSlice(shadow.Status.Nameservers)
-				if !equality.Semantic.DeepEqual(currentNS, desiredNS) {
+				// A shadow that hasn't reported yet must not blank the class
+				// nameservers published while the zone waited on verification.
+				if len(desiredNS) > 0 && !equality.Semantic.DeepEqual(currentNS, desiredNS) {
 					upstream.Status.Nameservers = desiredNS
 					changed = true
 				}
@@ -852,6 +846,30 @@ func (r *DNSZoneReplicator) isDomainVerified(ctx context.Context, c client.Clien
 		}
 	}
 	return false, nil
+}
+
+// markPendingDomainVerification records on upstream that the zone is waiting
+// for its Domain to be verified, and reports whether the status changed.
+//
+// It also publishes the nameservers the zone will be served from, without
+// serving it. Pointing the domain at them is one way to prove ownership, and
+// the Domain controller compares against these to verify it. Leaving them
+// empty until the zone is provisioned would deadlock that check.
+func markPendingDomainVerification(upstream *dnsv1alpha1.DNSZone, zoneClass dnsv1alpha1.DNSZoneClass) bool {
+	changed := apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
+		Type:               CondAccepted,
+		Status:             metav1.ConditionFalse,
+		Reason:             ReasonPendingDomainVerification,
+		Message:            "Waiting for domain ownership verification before provisioning DNS",
+		ObservedGeneration: upstream.Generation,
+		LastTransitionTime: metav1.NewTime(time.Now()),
+	})
+	ns := dnsutils.ClassNameservers(zoneClass)
+	if !equality.Semantic.DeepEqual(dnsutils.NormalizeStringSlice(upstream.Status.Nameservers), ns) {
+		upstream.Status.Nameservers = ns
+		changed = true
+	}
+	return changed
 }
 
 // ---- Watches / mapping helpers --------------------------------------------

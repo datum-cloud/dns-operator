@@ -112,6 +112,9 @@ a reconcile that queued its own status writes would run in a loop, the churn beh
 5. Remove the finalizer of each record set that is being deleted, after the write without its names has
    succeeded.
 
+Steps 1, 4 and 5 write to many record sets in a large zone. The pass sends those writes in parallel, at
+most 16 at once, so it does not wait on the API server once per record set.
+
 **The call to PowerDNS** replaces `EnsureRecordSet` and `DeleteRecordSet`.
 
 - It reads the zone once.
@@ -168,7 +171,11 @@ first, with their owners.
   and twice its largest burst of new ones, each programmed within the 60-second target of [#59](https://github.com/datum-cloud/dns-operator/issues/59). It then
   runs on staging's largest zone. On 2026-09-29 the largest production zone, which holds gateway
   addresses, had 2,399 record sets, its largest burst in 30 days was 100 new ones in five minutes, and
-  staging's largest zone had 1,556.
+  staging's largest zone had 1,556. A local test of the prototype on 2026-09-29 met the target: with
+  2,500 record sets in one zone, the last of 200 new ones was programmed within 2 seconds, and within
+  about 21 seconds with 25 ms added to each API write. The same test is why the pass writes in
+  parallel: one at a time, 2,500 new record sets took 115 seconds with 10 ms added to each write, and 8
+  seconds with 16 at once.
 - **Names claimed twice at rollout.** Step 4 brings `NotOwner`, and with it `DNSRecordRejected`, back. A
   pair left in place pages on-call, and its name moves to the older claimant.
 - **Leftovers.** The first pass in each zone deletes records that carry an ownership note but that no

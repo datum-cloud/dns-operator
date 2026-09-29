@@ -16,7 +16,7 @@ var namePattern = regexp.MustCompile(`^(@|[A-Za-z0-9*._-]+)$`)
 // Use it for display and for genuinely zone-less contexts. **Using it to gate
 // behaviour is a bug** — reach for IsApexIn instead.
 //
-// The reason is that it is not the whole answer. pdns.QualifyOwner resolves
+// The reason is that it is not the whole answer. ownername.Qualify resolves
 // "@", "" and an absolute name equal to the zone to the same RRset, and the API
 // pattern on RecordEntry.Name permits all three, so a record stored as
 // "example.com." is at the apex and this function says it is not. Four separate
@@ -34,7 +34,7 @@ func IsApex(name string) bool { return name == "@" || name == "" }
 // This is the test to use anywhere the answer decides what happens to a record
 // — a platform-managed guard, a prune exclusion, a rewrite, a warning. Both
 // sides go through FQDN, so the trailing-dot and case rules cannot drift from
-// the ones pdns.QualifyOwner applies, which is the only definition that
+// the ones ownername.Qualify applies, which is the only definition that
 // ultimately matters.
 //
 // A relative name that spells out the zone is deliberately NOT the apex:
@@ -46,7 +46,7 @@ func IsApexIn(name, zone string) bool {
 	return FQDN(name, zone) == FQDN("@", zone)
 }
 
-// FQDN returns the absolute name pdns.QualifyOwner will key the RRset on,
+// FQDN returns the absolute name ownername.Qualify will key the RRset on,
 // lowercased. It mirrors that function exactly: a trailing dot means the name
 // is already absolute, anything else is suffixed with the zone.
 func FQDN(name, zone string) string {
@@ -64,7 +64,7 @@ func FQDN(name, zone string) string {
 // NormalizeName canonicalises a user-supplied owner name to the zone-relative
 // form the CLI teaches: "@" for the apex, a bare label otherwise, lowercased.
 //
-// It rejects the trap that pdns.QualifyOwner sets: a relative name that already
+// It rejects the trap that ownername.Qualify sets: a relative name that already
 // spells out the zone ("www.example.com" in example.com) is suffixed with the
 // zone again by the backend, producing "www.example.com.example.com." An
 // explicit trailing dot is honoured as absolute; an absolute name inside the

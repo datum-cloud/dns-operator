@@ -17,6 +17,7 @@ import (
 	"github.com/go-logr/logr"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
 	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -300,7 +301,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			continue
 		}
 
-		qualified := QualifyOwner(owner, zoneName)
+		qualified := ownername.Qualify(owner, zoneName)
 		desired[qualified] = struct{}{}
 
 		current, found := existing[rrsetKey{name: qualified, typ: recordType}]
@@ -505,7 +506,7 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 
 	targets := make(map[string]struct{}, len(recordSet.Spec.Records))
 	for i := range recordSet.Spec.Records {
-		qualified := QualifyOwner(recordSet.Spec.Records[i].Name, zoneName)
+		qualified := ownername.Qualify(recordSet.Spec.Records[i].Name, zoneName)
 		if _, found := existing[rrsetKey{name: qualified, typ: recordType}]; found {
 			targets[qualified] = struct{}{}
 		}
@@ -580,7 +581,7 @@ func BuildOwnerRRSet(
 		},
 	}
 	rrsets := buildRRSets(zone, rs)
-	target := QualifyOwner(ownerName, zone)
+	target := ownername.Qualify(ownerName, zone)
 	for _, rr := range rrsets {
 		if rr.Name != target {
 			continue
@@ -908,7 +909,7 @@ func buildReplaceRRSet(
 	}
 
 	return rrset{
-		Name:       QualifyOwner(ownerName, zone),
+		Name:       ownername.Qualify(ownerName, zone),
 		Type:       recordType,
 		TTL:        ttl,
 		ChangeType: changeTypeReplace,
@@ -942,7 +943,7 @@ func stampComments(desired, existing []zoneRRsetComment, now int) []zoneRRsetCom
 
 // DeleteRRSet removes the referenced (type, owner) RRset from PDNS.
 func (c *Client) DeleteRRSet(ctx context.Context, zone, recordType, ownerName string) error {
-	return c.applyRRSetPatch(ctx, zone, []rrset{newDeleteRRSet(QualifyOwner(ownerName, zone), recordType)})
+	return c.applyRRSetPatch(ctx, zone, []rrset{newDeleteRRSet(ownername.Qualify(ownerName, zone), recordType)})
 }
 
 func (c *Client) applyRRSetPatch(ctx context.Context, zone string, patch []rrset) error {
@@ -1008,7 +1009,7 @@ func buildRRSets(zone string, rs dnsv1alpha1.DNSRecordSet) []rrset {
 		if rec.TTL != nil {
 			ttl = int(*rec.TTL)
 		}
-		name := QualifyOwner(rec.Name, zone)
+		name := ownername.Qualify(rec.Name, zone)
 		r := getOrInit(name, ttl)
 
 		switch rs.Spec.RecordType {
@@ -1334,25 +1335,6 @@ func makeSimpleRRSet(name, typ string, ttl int, values []string) rrset {
 		ChangeType: "REPLACE",
 		Records:    recs,
 	}
-}
-
-// QualifyOwner returns the absolute RRset name PowerDNS keys an owner on within
-// zone, in the lowercase PowerDNS stores it in. It accepts every spelling the API
-// allows: "@" or the empty string for the apex, a relative label such as "api",
-// or an already-absolute name ending in a dot. Several spellings therefore
-// collapse to one RRset — "api", "API" and "api.example.com." all qualify to
-// "api.example.com." in zone example.com — so callers comparing two owner names
-// for RRset identity must compare their qualified forms rather than the raw
-// values.
-func QualifyOwner(owner, zone string) string {
-	owner, zone = strings.ToLower(owner), strings.ToLower(zone)
-	if owner == "@" || owner == "" {
-		return zone + "."
-	}
-	if owner[len(owner)-1] == '.' {
-		return owner
-	}
-	return owner + "." + zone + "."
 }
 
 func qualifyIfNeeded(target string) string {

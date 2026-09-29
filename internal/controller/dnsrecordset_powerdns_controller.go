@@ -27,6 +27,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	operatorconfig "go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/dns"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
 	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 )
 
@@ -151,7 +152,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		// to a single PowerDNS RRset, so rewriting an owner name enqueues both
 		// the old and the new spelling; the request holding the retired
 		// spelling must not delete what the live one just wrote.
-		rrsetName := pdnsclient.QualifyOwner(req.RecordSetName, zone.Spec.DomainName)
+		rrsetName := ownername.Qualify(req.RecordSetName, zone.Spec.DomainName)
 		if aliasedOwnerExists(&rsList, req.RecordSetType, zone.Spec.DomainName, rrsetName, req.RecordSetName) {
 			logger.Info("owner name aliases a live RRset; skipping delete", "rrsetName", rrsetName)
 		} else {
@@ -208,7 +209,7 @@ func aliasedOwnerExists(
 			if rec.Name == "" || rec.Name == excludeOwnerName {
 				continue
 			}
-			if pdnsclient.QualifyOwner(rec.Name, zoneDomain) == rrsetName {
+			if ownername.Qualify(rec.Name, zoneDomain) == rrsetName {
 				return true
 			}
 		}

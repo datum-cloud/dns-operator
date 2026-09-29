@@ -57,7 +57,7 @@ func ValidateInZone(t dnsv1alpha1.RRType, e dnsv1alpha1.RecordEntry, zone string
 // validateName checks the owner name, and — when the zone is known — checks it
 // the way the backend will read it rather than the way it is spelled.
 //
-// Two of the three checks below are wrong without the zone. pdns.QualifyOwner
+// Two of the three checks below are wrong without the zone. ownername.Qualify
 // resolves "@", "" and an absolute name equal to the zone all to the same RRset
 // name, so an apex test that compares the literal string against "@" both
 // admits a CNAME at "example.com." (bypassing the structural guard that keeps a
@@ -462,7 +462,7 @@ func Warnings(t dnsv1alpha1.RRType, entries ...dnsv1alpha1.RecordEntry) []string
 }
 
 // WarningsInZone is Warnings with the zone known, which it needs to group
-// entries the way the backend does. pdns.QualifyOwner collapses "www" and
+// entries the way the backend does. ownername.Qualify collapses "www" and
 // "www.example.com." onto one RRset; grouping by the raw name instead would
 // miss a TTL disagreement between those two spellings entirely and let one of
 // the TTLs vanish without a word.

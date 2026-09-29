@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
 )
 
 // Condition types and reasons the operator publishes. They are duplicated here
@@ -261,35 +262,21 @@ func classifyProgrammed(c *metav1.Condition) (word, detail string) {
 	}
 }
 
-// qualifyOwner reduces an owner name to the form the DNS backend keys an RRset
-// by, so two spellings of one name compare equal.
-//
-// It mirrors the operator's own QualifyOwner (internal/dns/pdns/client.go),
-// which also folds case: DNS names are case-insensitive, and the backend treats
-// "WWW" and "www" as one name even though a byte comparison does not. This one
-// also trims whitespace and a trailing dot on the zone.
-// With no zone, only the parts that do not need one are normalised.
+// qualifyOwner is ownername.Qualify for names that did not pass admission: the
+// CLI and the MCP server read them from users, so a zone may be missing or carry
+// a trailing dot, and either may carry whitespace. Without a zone a relative
+// name cannot be resolved, so the name is only trimmed and lower-cased, and an
+// empty name reads as "@".
 func qualifyOwner(owner, zone string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	zone = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(zone), "."))
-
-	if owner == "@" || owner == "" {
-		if zone == "" {
-			return "@"
-		}
-		return zone + "."
+	owner = strings.TrimSpace(owner)
+	zone = strings.TrimSuffix(strings.TrimSpace(zone), ".")
+	if zone != "" {
+		return ownername.Qualify(owner, zone)
 	}
-	if strings.HasSuffix(owner, ".") {
-		if zone == "" {
-			// Cannot tell whether this is the apex; leave it as written.
-			return owner
-		}
-		return owner
+	if owner == "" {
+		return "@"
 	}
-	if zone == "" {
-		return owner
-	}
-	return owner + "." + zone + "."
+	return strings.ToLower(owner)
 }
 
 func firstNonEmpty(values ...string) string {

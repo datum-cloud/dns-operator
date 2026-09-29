@@ -99,7 +99,7 @@ The record surface's load-bearing behaviours.
 
 This is the group worth reading closely. Every case here is a mistake the API server accepts and the DNS backend then mishandles, which is why the CLI has to catch it.
 
-**4.1 — the zone-suffix trap.** `pdns.QualifyOwner` appends the zone to any name without a trailing dot, so `www.example.com` in zone `example.com` becomes `www.example.com.example.com.` The step asserts exit 2, the error naming the real problem, a `Fix:` offering *both* remedies (the bare label and the absolute spelling), and — separately — that no record was created.
+**4.1 — the zone-suffix trap.** `ownername.Qualify` appends the zone to any name without a trailing dot, so `www.example.com` in zone `example.com` becomes `www.example.com.example.com.` The step asserts exit 2, the error naming the real problem, a `Fix:` offering *both* remedies (the bare label and the absolute spelling), and — separately — that no record was created.
 
 **4.2 — a target without its trailing dot.** `qualifyIfNeeded` absolutizes a target by appending a dot and nothing else, so a relative `lb` becomes the root-relative `lb.`, never `lb.<zone>.` There is no spelling of a zone-relative target that behaves the way a user expects, which is why the rule is "always absolute" rather than "we will guess".
 

@@ -26,6 +26,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
 )
 
 func writePDNSAuthWithSQLite(t *testing.T, dir, apiKey string) {
@@ -287,7 +288,7 @@ func TestPDNS_EndToEnd_AllTypes(t *testing.T) {
 
 	// helper for asserts with normalization
 	get := func(typ, owner string) []string {
-		return index[key{typ, QualifyOwner(owner, zone)}]
+		return index[key{typ, ownername.Qualify(owner, zone)}]
 	}
 	stripq := func(s string) string {
 		if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
@@ -416,7 +417,7 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 			sort.Strings(index[k])
 		}
 		get := func(typ, owner string) []string {
-			return index[[2]string{typ, QualifyOwner(owner, zone)}]
+			return index[[2]string{typ, ownername.Qualify(owner, zone)}]
 		}
 		return index, get
 	}
@@ -451,8 +452,8 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 
 	// Capture NS/SOA count before we mutate A records, to verify we don't touch other types.
 	indexBefore, _ := buildIndex(t)
-	nsBefore := len(indexBefore[[2]string{"NS", QualifyOwner("@", zone)}])
-	soaBefore := len(indexBefore[[2]string{"SOA", QualifyOwner("@", zone)}])
+	nsBefore := len(indexBefore[[2]string{"NS", ownername.Qualify("@", zone)}])
+	soaBefore := len(indexBefore[[2]string{"SOA", ownername.Qualify("@", zone)}])
 
 	// Updated: drop "www", change @ and api.
 	updated := dnsv1alpha1.DNSRecordSet{
@@ -484,10 +485,10 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	}
 
 	// Verify we did not touch NS/SOA rrsets (ApplyRecordSetAuthoritative is per-type).
-	if got := len(indexAfter[[2]string{"NS", QualifyOwner("@", zone)}]); got != nsBefore {
+	if got := len(indexAfter[[2]string{"NS", ownername.Qualify("@", zone)}]); got != nsBefore {
 		t.Fatalf("NS rrset count changed: before=%d after=%d", nsBefore, got)
 	}
-	if got := len(indexAfter[[2]string{"SOA", QualifyOwner("@", zone)}]); got != soaBefore {
+	if got := len(indexAfter[[2]string{"SOA", ownername.Qualify("@", zone)}]); got != soaBefore {
 		t.Fatalf("SOA rrset count changed: before=%d after=%d", soaBefore, got)
 	}
 }
@@ -541,7 +542,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	// No comments at all: it must delete it cleanly rather than fail on
 	// having nothing to remove.
 	if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
-		`{"rrsets":[{"name":"`+QualifyOwner("bare", zoneName)+`","type":"A","ttl":300,"changetype":"REPLACE","records":[{"content":"8.8.8.8","disabled":false}]}]}`); err != nil {
+		`{"rrsets":[{"name":"`+ownername.Qualify("bare", zoneName)+`","type":"A","ttl":300,"changetype":"REPLACE","records":[{"content":"8.8.8.8","disabled":false}]}]}`); err != nil {
 		t.Fatalf("write the uncommented RRset: %v", err)
 	}
 
@@ -558,7 +559,7 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	// The control: the DELETE on its own, as the API reference describes it.
 	if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
 		fmt.Sprintf(`{"rrsets":[{"name":%q,"type":"A","changetype":"DELETE","comments":[]}]}`,
-			QualifyOwner("control", zoneName))); err != nil {
+			ownername.Qualify("control", zoneName))); err != nil {
 		t.Fatalf("the control DELETE changed nothing, so it proves nothing: %v", err)
 	}
 	if records, comments := counts(t, "control"); records != 0 || comments != 3 {
@@ -655,7 +656,7 @@ func rrsetCounts(ctx context.Context, t *testing.T, client *Client, zoneName, ow
 		t.Fatalf("GetZoneRRSets: %v", err)
 	}
 	for _, set := range sets {
-		if set.Type == recordType && set.Name == QualifyOwner(owner, zoneName) {
+		if set.Type == recordType && set.Name == ownername.Qualify(owner, zoneName) {
 			return len(set.Records), len(set.Comments), true
 		}
 	}
@@ -735,9 +736,9 @@ func TestPDNS_LMDB_AFailedPatchAppliesNothing(t *testing.T) {
 	// the record it refuses. Sorted the other way the patch would abort first
 	// and the test would pass having proved nothing.
 	err := client.applyRRSetPatch(ctx, zoneName, []rrset{
-		newDeleteRRSet(QualifyOwner("kept", zoneName), "A"),
+		newDeleteRRSet(ownername.Qualify("kept", zoneName), "A"),
 		{
-			Name:       QualifyOwner("zz", zoneName),
+			Name:       ownername.Qualify("zz", zoneName),
 			Type:       "A",
 			TTL:        300,
 			ChangeType: changeTypeReplace,
@@ -834,7 +835,7 @@ func TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments(t *testing.T) {
 		// is what a zone delete meets in practice.
 		if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
 			fmt.Sprintf(`{"rrsets":[{"name":%q,"type":"A","changetype":"DELETE"}]}`,
-				QualifyOwner("shell", zoneName))); err != nil {
+				ownername.Qualify("shell", zoneName))); err != nil {
 			t.Fatalf("leave a shell: %v", err)
 		}
 		if got := zoneCommentTotal(ctx, t, client, zoneName); got != 6 {

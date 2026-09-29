@@ -695,10 +695,10 @@ func TestNormalizeName(t *testing.T) {
 	}
 }
 
-// TestNormalizeNameMatchesQualifyOwner is the point of the whole exercise: the
+// TestNormalizeNameMatchesOwnernameQualify is the point of the whole exercise: the
 // normalized name, put through the backend's qualification rule, must land on
 // the RRset the user meant.
-func TestNormalizeNameMatchesQualifyOwner(t *testing.T) {
+func TestNormalizeNameMatchesOwnernameQualify(t *testing.T) {
 	const zone = "example.com"
 	cases := map[string]string{
 		"@":                "example.com.",
@@ -721,11 +721,11 @@ func TestNormalizeNameMatchesQualifyOwner(t *testing.T) {
 }
 
 // TestFQDNReproducesTheTrap documents the behaviour NormalizeName defends
-// against: pdns.QualifyOwner appends the zone to anything without a trailing
+// against: ownername.Qualify appends the zone to anything without a trailing
 // dot, so a name that already spells out the zone is doubled.
 func TestFQDNReproducesTheTrap(t *testing.T) {
 	if got := FQDN("www.example.com", "example.com"); got != "www.example.com.example.com." {
-		t.Fatalf("FQDN should mirror QualifyOwner, got %q", got)
+		t.Fatalf("FQDN should mirror ownername.Qualify, got %q", got)
 	}
 	if _, err := NormalizeName("www.example.com", "example.com"); err == nil {
 		t.Fatal("NormalizeName must reject the name that produces that")

@@ -857,7 +857,7 @@ func gatewayOwned(set *dnsv1alpha1.DNSRecordSet) (bool, string) {
 //
 // The apex test goes through rdata.FQDN rather than rdata.IsApex, because the
 // backend keys an RRset on the qualified name: "@", "" and "example.com." are
-// one owner to pdns.QualifyOwner, and the CRD's name pattern admits all three.
+// one owner to ownername.Qualify, and the CRD's name pattern admits all three.
 // Testing the literal string would let a platform record stored under any
 // spelling but "@" walk straight past this guard — and the input most likely to
 // carry another spelling is `--discover`, whose records come from the old
@@ -896,7 +896,7 @@ func indexOfEntry(
 
 // ownerEqual compares two owner names the way the backend will.
 //
-// pdns.QualifyOwner keys an RRset on the qualified name, so "www" and
+// ownername.Qualify keys an RRset on the qualified name, so "www" and
 // "www.example.com." are one owner and a literal comparison sees two. Getting
 // this wrong does not merely miss a match: the file's record is appended beside
 // the stored one, and ValidateEntriesInZone — which does group by FQDN —

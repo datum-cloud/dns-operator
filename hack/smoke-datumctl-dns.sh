@@ -720,7 +720,7 @@ group "4. Semantic landmines  [MUTATES / negative]"
 # ===========================================================================
 
 step "4.1 [MUTATES: attempted] a name that already spells out the zone is rejected"
-# pdns.QualifyOwner appends the zone to anything without a trailing dot, so
+# ownername.Qualify appends the zone to anything without a trailing dot, so
 # "www.<domain>" would become "www.<domain>.<domain>." — out of zone.
 cap dns record create "$DOMAIN" "www.${DOMAIN}" A 203.0.113.40
 assert_rc 2 "the zone-suffixed name exits 2, client-side"

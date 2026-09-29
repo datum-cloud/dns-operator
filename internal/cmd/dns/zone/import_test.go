@@ -913,7 +913,7 @@ func TestImportDryRunSkipsPlatformRecordsToo(t *testing.T) {
 
 // --- owner-name identity ------------------------------------------------------
 
-// The backend keys an RRset on the QUALIFIED owner name: pdns.QualifyOwner
+// The backend keys an RRset on the QUALIFIED owner name: ownername.Qualify
 // treats "@", "" and "example.com." as one owner, and "www" and
 // "www.example.com." as one owner. The CRD's name pattern admits every one of
 // those spellings, so anything in import.go that compares owner names literally

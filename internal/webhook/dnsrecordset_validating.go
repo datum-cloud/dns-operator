@@ -16,7 +16,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
 )
 
 // +kubebuilder:webhook:path=/validate-dns-networking-miloapis-com-v1alpha1-dnsrecordset,mutating=false,failurePolicy=ignore,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=create;update,versions=v1alpha1,name=vdnsrecordset.kb.io,admissionReviewVersions=v1
@@ -61,7 +61,7 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 		oldRS.Spec.RecordType == rs.Spec.RecordType &&
 		oldRS.Spec.DNSZoneRef.Name == rs.Spec.DNSZoneRef.Name {
 		for _, rec := range oldRS.Spec.Records {
-			delete(claims, qualifiedOwnerKey(rec.Name, zone.Spec.DomainName))
+			delete(claims, ownername.Qualify(rec.Name, zone.Spec.DomainName))
 		}
 	}
 	if len(claims) == 0 {
@@ -86,7 +86,7 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 			continue
 		}
 		for _, rec := range other.Spec.Records {
-			k := qualifiedOwnerKey(rec.Name, zone.Spec.DomainName)
+			k := ownername.Qualify(rec.Name, zone.Spec.DomainName)
 			if _, wanted := claims[k]; !wanted {
 				continue
 			}
@@ -135,17 +135,13 @@ func newOwnerClaims(rs *dnsv1alpha1.DNSRecordSet, zoneDomainName string) map[str
 		if rec.Name == "" {
 			continue
 		}
-		k := qualifiedOwnerKey(rec.Name, zoneDomainName)
+		k := ownername.Qualify(rec.Name, zoneDomainName)
 		if _, ok := claims[k]; ok {
 			continue
 		}
 		claims[k] = ownerClaim{recordIndex: i, ownerName: rec.Name}
 	}
 	return claims
-}
-
-func qualifiedOwnerKey(ownerName, zoneDomainName string) string {
-	return pdnsclient.QualifyOwner(ownerName, zoneDomainName)
 }
 
 func firstClaimant(a, b *dnsv1alpha1.DNSRecordSet) *dnsv1alpha1.DNSRecordSet {

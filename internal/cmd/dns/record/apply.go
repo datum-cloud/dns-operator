@@ -717,7 +717,7 @@ func indexOfEntry(
 
 // sameOwnerName compares two owner names the way the backend will.
 //
-// pdns.QualifyOwner keys an RRset on the qualified name, so "www" and
+// ownername.Qualify keys an RRset on the qualified name, so "www" and
 // "www.example.com." are one owner, as are "@", "" and "example.com.". The CRD
 // name pattern admits every one of those spellings, and comparing the literal
 // strings sees two owners where the backend sees one: the diff then shows an

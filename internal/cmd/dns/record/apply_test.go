@@ -478,7 +478,7 @@ func TestApplyWarnsOnConflictingTTLs(t *testing.T) {
 
 // --- owner-name identity ------------------------------------------------------
 
-// pdns.QualifyOwner keys an RRset on the QUALIFIED owner name, so "www" and
+// ownername.Qualify keys an RRset on the QUALIFIED owner name, so "www" and
 // "www.example.com." are one owner and "@", "" and "example.com." are one
 // owner. The CRD's name pattern admits all of them. Comparing the literal
 // strings sees two owners where the backend sees one, and the diff then lies:

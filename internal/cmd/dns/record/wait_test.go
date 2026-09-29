@@ -98,7 +98,7 @@ func TestNoWaitReturnsImmediately(t *testing.T) {
 }
 
 // spelledTwice is one logical owner name written two ways in one bucket.
-// pdns.QualifyOwner collapses them onto a single RRset, but the controller keys
+// ownername.Qualify collapses them onto a single RRset, but the controller keys
 // status.recordSets[] off spec.records[].Name verbatim, so the set carries two
 // status entries for what is really one record.
 func spelledTwice() *dnsv1alpha1.DNSRecordSet {

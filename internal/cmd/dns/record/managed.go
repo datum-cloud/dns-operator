@@ -97,7 +97,7 @@ func classify(rs *dnsv1alpha1.DNSRecordSet, entry dnsv1alpha1.RecordEntry, zoneD
 // The literal spelling of the owner name. rdata.IsApex tests the string, so an
 // apex NS entry stored as "example.com." rather than "@" was not recognised and
 // its delegation was pruned away. util.IsPlatformShape qualifies both sides the
-// same way pdns.QualifyOwner does.
+// same way ownername.Qualify does.
 func isPlatformShape(t dnsv1alpha1.RRType, ownerName, zoneDomain string) bool {
 	return util.IsPlatformShape(t, ownerName, zoneDomain)
 }

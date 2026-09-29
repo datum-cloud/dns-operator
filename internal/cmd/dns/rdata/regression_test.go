@@ -778,7 +778,7 @@ func TestIsApexIn(t *testing.T) {
 		why  string
 	}{
 		{"@", zone, true, "the canonical spelling"},
-		{"", zone, true, "the API and QualifyOwner both read empty as the apex"},
+		{"", zone, true, "the API and ownername.Qualify both read empty as the apex"},
 		{"example.com.", zone, true, "absolute and equal to the zone — the spelling that defeated four guards"},
 		{"EXAMPLE.COM.", zone, true, "DNS names are case-insensitive"},
 		{"  example.com.  ", zone, true, "surrounding whitespace is not part of the name"},
@@ -803,10 +803,10 @@ func TestIsApexIn(t *testing.T) {
 	}
 }
 
-// TestIsApexInAgreesWithQualifyOwner: the helper's whole value is that it
+// TestIsApexInAgreesWithOwnernameQualify: the helper's whole value is that it
 // answers the question the backend will ask, so it must agree with the
 // qualification rule rather than with any spelling convention.
-func TestIsApexInAgreesWithQualifyOwner(t *testing.T) {
+func TestIsApexInAgreesWithOwnernameQualify(t *testing.T) {
 	const zone = "example.com"
 	for _, name := range []string{"@", "", "example.com.", "EXAMPLE.COM.", "www", "www.example.com.", "example.com", "*"} {
 		wantApex := FQDN(name, zone) == zone+"."

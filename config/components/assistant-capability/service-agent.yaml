@@ -1,0 +1,21 @@
+# The agent a customer's assistant talks to when they ask about this service.
+#
+# Published means customers can get it. The content it offers lives in
+# service-agent-configuration.yaml, so this object rarely changes.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgent
+metadata:
+  name: dns-diagnostics-agent
+  labels:
+    app.kubernetes.io/name: dns-diagnostics-agent
+    app.kubernetes.io/part-of: dns.networking.miloapis.com
+spec:
+  # The catalog entry in ../service-catalog/services_v1alpha1_service_dns.yaml.
+  serviceRef:
+    name: dns-networking-miloapis-com
+  phase: Published
+  displayName: DNS diagnostics
+  description: |
+    Answers questions about a project's DNS zones and records and diagnoses why one is
+    not resolving: reads zones and record sets, checks delegation, and helps plan a new
+    record.

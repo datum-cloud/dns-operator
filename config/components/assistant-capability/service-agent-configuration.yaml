@@ -1,0 +1,102 @@
+# What this service's agent offers a customer: docs to read, tools to call, and
+# guides to follow.
+#
+# New versions ship as new objects rather than edits to this one, so it is always
+# clear which content a customer actually saw. The newest Published one wins.
+#
+# The catalog copies this into every entitled project, where the assistant reads
+# it. Nothing here entitles anyone on its own.
+#
+# The MCP endpoint points straight at this service's in-cluster address, which is
+# fine in staging. Production needs it changed to the AI gateway: going direct
+# there means the call is not billed, does not carry the customer's identity, and
+# will simply be refused.
+#
+# The tool list is the approved one. Anything not named is never offered to the
+# assistant, even if the server serves it. Only the name and description of each
+# guide reach the assistant; the guide itself is fetched when it is relevant.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceAgentConfiguration
+metadata:
+  name: dns-diagnostics-agent-v1
+  labels:
+    app.kubernetes.io/name: dns-diagnostics-agent
+    app.kubernetes.io/part-of: dns.networking.miloapis.com
+spec:
+  serviceAgentRef:
+    name: dns-diagnostics-agent
+  phase: Published
+  version: v1
+  reportingProject: datum-cloud
+  knowledge:
+    sources:
+    - type: LLMDocs
+      title: DNS resource model, conditions and provenance
+      url: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/llms-full.txt
+    concepts:
+    - gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSZone
+      summary: A customer's DNS zone for one domain. Accepted covers admission and domain verification; Programmed means the default SOA and NS records exist. A zone can be fully programmed and still not resolve if the registrar has not delegated to its nameservers.
+    - gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSRecordSet
+      summary: Records grouped by zone and record type, each with one or more owner names. Ownership is per zone, type and owner name, elected first-come, and per-name health lives in status.recordSets[], not the aggregate Programmed condition.
+    - gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSZoneClass
+      summary: Cluster-scoped. Names the controller that serves a zone and the nameserver policy it assigns from.
+    - gvk:
+        group: dns.networking.miloapis.com
+        kind: DNSZoneDiscovery
+      summary: A one-shot snapshot of the records a domain currently serves, used when importing an existing zone.
+  tools:
+    mcpServers:
+    - name: dns
+      endpoint: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/mcp
+      toolSelector:
+        include:
+        - dns_zones_list
+        - dns_zones_get
+        - dns_zone_diagnose
+        - dns_records_list
+        - dns_records_get
+        - dns_record_diagnose
+        - dns_delegation_check
+        - dns_zone_discovery_get
+        - dns_record_render
+      mutating: []
+  skills:
+  - name: zone-not-resolving
+    description: Triage a domain that is not resolving, in the order verification, admission, programming, then delegation
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/zone-not-resolving.md
+  - name: record-not-programmed
+    description: Read per-name record status rather than the aggregate, and branch on the reason it reports
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/record-not-programmed.md
+  - name: conflicting-record
+    description: Tell a genuine record collision apart from a stranded record holding a name, which needs an operator
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/conflicting-record.md
+  - name: record-not-owner
+    description: Find the older record set holding a name and decide which claim should survive
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/record-not-owner.md
+  - name: delegation-check
+    description: Compare assigned nameservers against what the registrar publishes, and read the four states correctly
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/delegation-check.md
+  - name: domain-verification
+    description: Handle a zone waiting on domain ownership verification, which completes on a different object
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/domain-verification.md
+  - name: managed-record-refused
+    description: Answer a request to edit a record another controller owns and will revert
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/managed-record-refused.md
+  - name: record-create
+    description: 'Assemble a record for confirmation: check the name, warn on CNAME traps, state the TTL, then render'
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/record-create.md
+  - name: zone-import
+    description: Snapshot what a domain serves today and walk the cutover, lowering TTLs first and disabling DNSSEC
+    source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/zone-import.md
+  authority:
+    reads:
+    - gvk:
+        group: dns.networking.miloapis.com
+        kind: '*'
+    maxTaskDurationSeconds: 60

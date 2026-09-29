@@ -239,14 +239,7 @@ func (c *Client) clearZoneComments(ctx context.Context, zoneName string) error {
 }
 
 func (c *Client) GetZoneNameservers(ctx context.Context, zone dnsv1alpha1.DNSZone, class dnsv1alpha1.DNSZoneClass) []string {
-	var desiredNS []string
-	if class.Spec.NameServerPolicy != nil &&
-		class.Spec.NameServerPolicy.Mode == dnsv1alpha1.NameServerPolicyModeStatic &&
-		class.Spec.NameServerPolicy.Static != nil {
-		desiredNS = append(desiredNS, class.Spec.NameServerPolicy.Static.Servers...)
-	}
-
-	return dnsutils.NormalizeStringSlice(desiredNS)
+	return dnsutils.ClassNameservers(class)
 }
 
 // EnsureRecordSet makes the RRsets a DNSRecordSet declares match PowerDNS, and

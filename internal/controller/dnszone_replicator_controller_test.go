@@ -646,3 +646,63 @@ func TestCleanupReleasesAZoneWithLegacyAccounting(t *testing.T) {
 		t.Fatalf("the accounting configmap survived teardown, so the domain stays claimed forever")
 	}
 }
+
+func TestMarkPendingDomainVerificationPublishesClassNameservers(t *testing.T) {
+	t.Parallel()
+
+	staticClass := dnsv1alpha1.DNSZoneClass{
+		Spec: dnsv1alpha1.DNSZoneClassSpec{
+			NameServerPolicy: &dnsv1alpha1.NameServerPolicy{
+				Mode:   dnsv1alpha1.NameServerPolicyModeStatic,
+				Static: &dnsv1alpha1.StaticNS{Servers: []string{"ns2.example.net", "ns1.example.net"}},
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		class       dnsv1alpha1.DNSZoneClass
+		existingNS  []string
+		wantNS      []string
+		wantChanged bool
+	}{
+		{
+			name:        "publishes the class nameservers on a new zone",
+			class:       staticClass,
+			wantNS:      []string{"ns1.example.net", "ns2.example.net"},
+			wantChanged: true,
+		},
+		{
+			name:        "class without static nameservers publishes none",
+			class:       dnsv1alpha1.DNSZoneClass{},
+			wantChanged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			zone := &dnsv1alpha1.DNSZone{Status: dnsv1alpha1.DNSZoneStatus{Nameservers: tt.existingNS}}
+
+			if changed := markPendingDomainVerification(zone, tt.class); changed != tt.wantChanged {
+				t.Fatalf("changed = %v, want %v", changed, tt.wantChanged)
+			}
+			if !reflect.DeepEqual(zone.Status.Nameservers, tt.wantNS) {
+				t.Fatalf("nameservers = %v, want %v", zone.Status.Nameservers, tt.wantNS)
+			}
+			cond := apimeta.FindStatusCondition(zone.Status.Conditions, CondAccepted)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != ReasonPendingDomainVerification {
+				t.Fatalf("Accepted condition = %+v, want False/%s", cond, ReasonPendingDomainVerification)
+			}
+		})
+	}
+
+	t.Run("a second pass changes nothing", func(t *testing.T) {
+		t.Parallel()
+		zone := &dnsv1alpha1.DNSZone{}
+		markPendingDomainVerification(zone, staticClass)
+		if markPendingDomainVerification(zone, staticClass) {
+			t.Fatal("expected no change on an already-marked zone")
+		}
+	})
+}

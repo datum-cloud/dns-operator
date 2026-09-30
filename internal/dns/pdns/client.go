@@ -351,6 +351,9 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			}
 			idx := replacedStatus[chunk.start+i]
 			owner := statusList[idx].Name
+			if IsTransient(err) && (len(transient) == 0 || transient[len(transient)-1] != err) {
+				transient = append(transient, err)
+			}
 			if refuses(err, patchIdentity(chunk.rrsets[i])) {
 				c.logger.Info("PowerDNS refused rrset because another record holds its name", "zone", zoneName, "owner", owner, "recordType", recordType)
 				statusList[idx] = recordSetRefusedStatus(owner, ownername.Qualify(owner, zoneName), recordType, existing)
@@ -358,9 +361,6 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			}
 			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "owner", owner)
 			statusList[idx] = recordSetErrorStatus(owner, err)
-			if IsTransient(err) && (len(transient) == 0 || transient[len(transient)-1] != err) {
-				transient = append(transient, err)
-			}
 		}
 	}
 

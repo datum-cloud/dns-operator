@@ -100,7 +100,11 @@ func FriendlyMessage(err error) string {
 		}
 	}
 	apiErr := apiErrs[0]
-	detail := strings.Join(apiErr.reasons(), "; ")
+	reasons := make([]string, 0)
+	for _, e := range apiErrs {
+		reasons = append(reasons, e.reasons()...)
+	}
+	detail := strings.Join(reasons, "; ")
 
 	switch {
 	case strings.Contains(detail, conflictPhrase):
@@ -144,11 +148,25 @@ func IsTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *pdnsAPIError
-	if !errors.As(err, &apiErr) {
-		return true
+	if apiErr, ok := err.(*pdnsAPIError); ok {
+		return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests
 	}
-	return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, inner := range wrapped.Unwrap() {
+			if IsTransient(inner) {
+				return true
+			}
+		}
+		return false
+	case interface{ Unwrap() error }:
+		return IsTransient(wrapped.Unwrap())
+	}
+	var apiErr *pdnsAPIError
+	if errors.As(err, &apiErr) {
+		return IsTransient(apiErr)
+	}
+	return true
 }
 
 var refusedRRSetPattern = regexp.MustCompile(`RRset (\S+) IN (\S+): Conflicts with pre-existing`)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -220,5 +221,54 @@ func TestRefusedRRSets(t *testing.T) {
 				t.Errorf("refusedRRSets() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPowerDNS51ResponseBodies(t *testing.T) {
+	t.Parallel()
+
+	refused := &pdnsAPIError{Status: 422, Body: `{"error": "RRset www.example.com. IN CNAME: Conflicts with pre-existing RRset"}`}
+	if !IsConflict(refused) {
+		t.Fatal("PowerDNS 5.1 conflict body is no longer recognised as a conflict")
+	}
+	if got := refusedRRSets(refused); !reflect.DeepEqual(got, []rrsetKey{{name: "www.example.com.", typ: "CNAME"}}) {
+		t.Fatalf("refusedRRSets() = %v", got)
+	}
+	if IsTransient(refused) {
+		t.Fatal("a conflict must not be treated as transient")
+	}
+
+	invalid := &pdnsAPIError{Status: 422, Body: `{"error": "Multiple errors found in RRset", "errors": ["RRset x.example.com. IN NS: Duplicate record in RRset x.example.com. IN NS with content \"ns1.example.net.\"", "RRset x.example.com. IN NS: Record x.example.com/NS 'ns1.example.net': Not in expected format (parsed as 'ns1.example.net.')"]}`}
+	if IsConflict(invalid) {
+		t.Fatal("a PowerDNS 5.1 multi-error validation body is not a conflict")
+	}
+	msg := FriendlyMessage(invalid)
+	if !strings.Contains(msg, "Duplicate record") || !strings.Contains(msg, "Not in expected format") {
+		t.Fatalf("expected every reason in the message, got %q", msg)
+	}
+}
+
+func TestJoinedRefusalAndTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	err := errors.Join(bareConflict, &pdnsAPIError{Status: 503})
+	if !refuses(err, rrsetKey{name: "www.example.com.", typ: "CNAME"}) {
+		t.Fatal("the refusal in a joined error must still name the refused rrset")
+	}
+	if !IsTransient(err) {
+		t.Fatal("the transient part of a joined error must keep it retryable")
+	}
+	if IsTransient(errors.Join(bareConflict, duplicateRecord)) {
+		t.Fatal("a joined error of permanent rejections is not transient")
+	}
+}
+
+func TestFriendlyMessage_IncludesEveryJoinedReason(t *testing.T) {
+	t.Parallel()
+
+	err := errors.Join(duplicateRecord, &pdnsAPIError{Status: 422, Body: `{"error": "Some other validation error"}`})
+	msg := FriendlyMessage(err)
+	if !strings.Contains(msg, "duplicate record") || !strings.Contains(msg, "Some other validation error") {
+		t.Fatalf("expected both reasons in the message, got %q", msg)
 	}
 }

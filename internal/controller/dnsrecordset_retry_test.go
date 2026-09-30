@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 )
 
 func retryTestZone() *dnsv1alpha1.DNSZone {
@@ -272,5 +274,97 @@ func TestRecordSetsWaitingOn_EnqueuesRecordSetsRefusedOnTheHoldersNames(t *testi
 				}
 			}
 		})
+	}
+}
+
+func TestDNSRecordSetReconcile_APartialPublishIsNotProgrammed(t *testing.T) {
+	t.Parallel()
+
+	rs := retryTestRecordSet("record-a", dnsv1alpha1.RRTypeCNAME, "api", "www")
+	r, spy, k8sClient := newDownstreamRecordSetReconciler(t, retryTestZone(), rs)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rs)}
+	reconcileToProgramming(t, r, req)
+
+	spy.EnsureRecordSetFunc = func(dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+		refused := ownerStatus("www", metav1.ConditionFalse, ReasonConflict, time.Now())
+		refused.Conditions[0].Message = "www.example.com cannot be published because the A record of DNSRecordSet web already holds the name."
+		return []dnsv1alpha1.RecordSetStatus{
+			ownerStatus("api", metav1.ConditionTrue, ReasonProgrammed, time.Now()),
+			refused,
+		}, nil
+	}
+
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil || res.RequeueAfter <= 0 {
+		t.Fatalf("expected a timed retry, got %+v, %v", res, err)
+	}
+	var current dnsv1alpha1.DNSRecordSet
+	if err := k8sClient.Get(context.Background(), req.NamespacedName, &current); err != nil {
+		t.Fatalf("get record set: %v", err)
+	}
+	programmed := apimeta.FindStatusCondition(current.Status.Conditions, CondProgrammed)
+	if programmed == nil || programmed.Status != metav1.ConditionFalse || programmed.Reason != ReasonConflict {
+		t.Fatalf("a record set with a refused name must not read Programmed, got %+v", programmed)
+	}
+	if !strings.Contains(programmed.Message, "www: ") || strings.Contains(programmed.Message, "api") {
+		t.Fatalf("expected the message to name only the refused name, got %q", programmed.Message)
+	}
+}
+
+func TestDNSRecordSetReconcile_APermanentRejectionWaitsInsteadOfErroring(t *testing.T) {
+	t.Parallel()
+
+	rs := retryTestRecordSet("record-a", dnsv1alpha1.RRTypeA, "www")
+	r, spy, k8sClient := newDownstreamRecordSetReconciler(t, retryTestZone(), rs)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rs)}
+	reconcileToProgramming(t, r, req)
+
+	spy.EnsureRecordSetFunc = func(dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+		return nil, pdnsclient.NewAPIError(404, `{"error": "Could not find domain"}`)
+	}
+
+	res, err := r.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("a permanent rejection must not be returned as an error, got %v", err)
+	}
+	if res.RequeueAfter < unprogrammedRetryBaseDelay || res.RequeueAfter > unprogrammedRetryMaxDelay {
+		t.Fatalf("expected a capped retry, got %+v", res)
+	}
+	var current dnsv1alpha1.DNSRecordSet
+	if err := k8sClient.Get(context.Background(), req.NamespacedName, &current); err != nil {
+		t.Fatalf("get record set: %v", err)
+	}
+	if programmed := apimeta.FindStatusCondition(current.Status.Conditions, CondProgrammed); programmed == nil || programmed.Reason != ReasonPDNSError {
+		t.Fatalf("expected Programmed=False with reason %q, got %+v", ReasonPDNSError, programmed)
+	}
+}
+
+func TestDNSRecordSetReconcile_ReturnsATransientPatchFailure(t *testing.T) {
+	t.Parallel()
+
+	rs := retryTestRecordSet("record-a", dnsv1alpha1.RRTypeA, "www")
+	r, spy, _ := newDownstreamRecordSetReconciler(t, retryTestZone(), rs)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rs)}
+	reconcileToProgramming(t, r, req)
+
+	unavailable := pdnsclient.NewAPIError(503, "")
+	spy.EnsureRecordSetFunc = func(dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+		return []dnsv1alpha1.RecordSetStatus{ownerStatus("www", metav1.ConditionFalse, ReasonPDNSError, time.Now())}, unavailable
+	}
+
+	if _, err := r.Reconcile(context.Background(), req); !errors.Is(err, unavailable) {
+		t.Fatalf("expected a transient PowerDNS failure to be returned for the rate limiter, got %v", err)
+	}
+}
+
+func TestRecordSetsWaitingOn_IgnoresADeletedZone(t *testing.T) {
+	t.Parallel()
+
+	refused := retryTestRecordSet("refused", dnsv1alpha1.RRTypeCNAME, "www")
+	refused.Status.RecordSets = []dnsv1alpha1.RecordSetStatus{ownerStatus("www", metav1.ConditionFalse, ReasonConflict, time.Now())}
+	r, _, _ := newDownstreamRecordSetReconciler(t, refused)
+
+	if reqs := r.recordSetsWaitingOn(context.Background(), retryTestRecordSet("holder", dnsv1alpha1.RRTypeA, "mail")); len(reqs) != 0 {
+		t.Fatalf("expected nothing to be queued for a zone that is gone, got %v", reqs)
 	}
 }

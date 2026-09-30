@@ -21,10 +21,11 @@ import (
 )
 
 type coexistencePDNS struct {
-	mu      sync.Mutex
-	rrsets  map[rrsetKey]zoneRRset
-	down    bool
-	patches int
+	mu        sync.Mutex
+	rrsets    map[rrsetKey]zoneRRset
+	down      bool
+	patchDown int
+	patches   int
 }
 
 func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Client) {
@@ -51,6 +52,11 @@ func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Cli
 			_ = json.NewEncoder(w).Encode(out)
 		case http.MethodPatch:
 			fake.patches++
+			if fake.patchDown != 0 {
+				w.WriteHeader(fake.patchDown)
+				_, _ = w.Write([]byte(`{"error": "Rejected"}`))
+				return
+			}
 			body, _ := io.ReadAll(r.Body)
 			var req patchZoneRequest
 			_ = json.Unmarshal(body, &req)
@@ -160,6 +166,9 @@ func TestEnsureRecordSet_PublishesTheRestWhenOneNameIsRefused(t *testing.T) {
 		}
 	}
 
+	if fake.has("www.example.com.", "CNAME") {
+		t.Fatal("a CNAME must never be published beside another type at the same name")
+	}
 	cond := programmedCondition(t, statuses, "www")
 	if cond.Status != metav1.ConditionFalse || cond.Reason != "Conflict" {
 		t.Fatalf("expected the refused name to be marked Conflict, got %+v", cond)
@@ -252,5 +261,50 @@ func TestKeepTransitionTimes(t *testing.T) {
 	}
 	if got[2].Conditions[0].LastTransitionTime.Equal(&earlier) {
 		t.Fatal("a new owner must take a new transition time")
+	}
+}
+
+func (f *coexistencePDNS) setPatchStatus(status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.patchDown = status
+}
+
+func TestEnsureRecordSet_ReturnsTransientPatchFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		status    int
+		wantError bool
+	}{
+		{name: "PowerDNS unavailable", status: http.StatusServiceUnavailable, wantError: true},
+		{name: "PowerDNS internal error", status: http.StatusInternalServerError, wantError: true},
+		{name: "record rejected as invalid", status: http.StatusUnprocessableEntity, wantError: false},
+		{name: "bad request", status: http.StatusBadRequest, wantError: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake, c := newCoexistencePDNS(t)
+			fake.setPatchStatus(tt.status)
+
+			statuses, err := c.EnsureRecordSet(context.Background(), testZone, cnameRecordSet("www"))
+			if (err != nil) != tt.wantError {
+				t.Fatalf("EnsureRecordSet error = %v, want error %v", err, tt.wantError)
+			}
+			if cond := programmedCondition(t, statuses, "www"); cond.Status != metav1.ConditionFalse || cond.Reason != "PDNSError" {
+				t.Fatalf("expected the failed name to be marked PDNSError, got %+v", cond)
+			}
+
+			fake.setPatchStatus(0)
+			statuses, err = c.EnsureRecordSet(context.Background(), testZone, cnameRecordSet("www"))
+			if err != nil {
+				t.Fatalf("EnsureRecordSet after recovery: %v", err)
+			}
+			if cond := programmedCondition(t, statuses, "www"); cond.Status != metav1.ConditionTrue {
+				t.Fatalf("expected the record to publish once PowerDNS accepts it, got %+v", cond)
+			}
+		})
 	}
 }

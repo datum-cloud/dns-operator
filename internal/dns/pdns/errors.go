@@ -90,6 +90,17 @@ func IsConflict(err error) bool {
 	return strings.Contains(body.Error, "Conflicts with pre-existing RRset")
 }
 
+func IsTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *pdnsAPIError
+	if !errors.As(err, &apiErr) {
+		return true
+	}
+	return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests
+}
+
 var refusedRRSetPattern = regexp.MustCompile(`RRset (\S+) IN (\S+): Conflicts with pre-existing`)
 
 func refusedRRSet(err error) (rrsetKey, bool) {

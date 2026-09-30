@@ -343,6 +343,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	}
 	sortRRSets(deletes)
 
+	transient := make([]error, 0)
 	for _, chunk := range chunkRRSets(replaces) {
 		for i, err := range c.applyIsolatingRefusals(ctx, zoneName, chunk.rrsets) {
 			if err == nil {
@@ -357,6 +358,9 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			}
 			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "owner", owner)
 			statusList[idx] = recordSetErrorStatus(owner, err)
+			if IsTransient(err) && (len(transient) == 0 || transient[len(transient)-1] != err) {
+				transient = append(transient, err)
+			}
 		}
 	}
 
@@ -366,7 +370,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 	}
 
-	return keepTransitionTimes(statusList, recordSet.Status.RecordSets), nil
+	return keepTransitionTimes(statusList, recordSet.Status.RecordSets), errors.Join(transient...)
 }
 
 func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets []rrset) []error {

@@ -18,7 +18,9 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
 	"go.miloapis.com/dns-operator/internal/dns/ownername"
+	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
 	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -342,11 +344,19 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	sortRRSets(deletes)
 
 	for _, chunk := range chunkRRSets(replaces) {
-		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
-			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
-			for _, idx := range replacedStatus[chunk.start:chunk.end] {
-				statusList[idx] = recordSetErrorStatus(statusList[idx].Name, err)
+		for i, err := range c.applyIsolatingRefusals(ctx, zoneName, chunk.rrsets) {
+			if err == nil {
+				continue
 			}
+			idx := replacedStatus[chunk.start+i]
+			owner := statusList[idx].Name
+			if _, refused := refusedRRSet(err); refused {
+				c.logger.Info("PowerDNS refused rrset because another record holds its name", "zone", zoneName, "owner", owner, "recordType", recordType)
+				statusList[idx] = recordSetRefusedStatus(owner, ownername.Qualify(owner, zoneName), recordType, existing)
+				continue
+			}
+			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "owner", owner)
+			statusList[idx] = recordSetErrorStatus(owner, err)
 		}
 	}
 
@@ -356,7 +366,87 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		}
 	}
 
-	return statusList, nil
+	return keepTransitionTimes(statusList, recordSet.Status.RecordSets), nil
+}
+
+func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets []rrset) []error {
+	errs := make([]error, len(rrsets))
+	pending := make([]int, len(rrsets))
+	for i := range pending {
+		pending[i] = i
+	}
+	for len(pending) > 0 {
+		batch := make([]rrset, 0, len(pending))
+		for _, i := range pending {
+			batch = append(batch, rrsets[i])
+		}
+		err := c.applyRRSetPatch(ctx, zone, batch)
+		if err == nil {
+			return errs
+		}
+		refused := -1
+		if key, ok := refusedRRSet(err); ok {
+			for n, i := range pending {
+				if patchIdentity(rrsets[i]) == key {
+					refused = n
+					break
+				}
+			}
+		}
+		if refused < 0 {
+			for _, i := range pending {
+				errs[i] = err
+			}
+			return errs
+		}
+		errs[pending[refused]] = err
+		pending = append(pending[:refused], pending[refused+1:]...)
+	}
+	return errs
+}
+
+func recordSetRefusedStatus(owner, qualified, recordType string, existing map[rrsetKey]zoneRRset) dnsv1alpha1.RecordSetStatus {
+	name := stripTrailingDot(qualified)
+	holders := make([]string, 0)
+	for key, rr := range existing {
+		if !strings.EqualFold(key.name, qualified) || strings.EqualFold(key.typ, recordType) {
+			continue
+		}
+		holder := key.typ + " record"
+		if ref := rrsetOwnerRef(rr); ref != "" {
+			holder = fmt.Sprintf("%s record of DNSRecordSet %s", key.typ, ref[strings.LastIndex(ref, ":")+1:])
+		}
+		holders = append(holders, holder)
+	}
+	sort.Strings(holders)
+	held := "another record"
+	if len(holders) > 0 {
+		held = "the " + strings.Join(holders, " and the ")
+	}
+	message := fmt.Sprintf("%s cannot be published because %s already holds the name. It will be published once that record is removed.", name, held)
+	return makeProgrammedStatus(owner, metav1.ConditionFalse, sharedutil.ReasonConflict, message)
+}
+
+func keepTransitionTimes(statuses, previous []dnsv1alpha1.RecordSetStatus) []dnsv1alpha1.RecordSetStatus {
+	before := make(map[string]metav1.Condition, len(previous))
+	for _, st := range previous {
+		if cond := apimeta.FindStatusCondition(st.Conditions, sharedutil.CondProgrammed); cond != nil {
+			before[st.Name] = *cond
+		}
+	}
+	for i := range statuses {
+		prev, ok := before[statuses[i].Name]
+		if !ok {
+			continue
+		}
+		for j := range statuses[i].Conditions {
+			cond := &statuses[i].Conditions[j]
+			if cond.Type == prev.Type && cond.Status == prev.Status {
+				cond.LastTransitionTime = prev.LastTransitionTime
+			}
+		}
+	}
+	return statuses
 }
 
 // rrsetMatchesObject reports whether the RRset already in PowerDNS was written

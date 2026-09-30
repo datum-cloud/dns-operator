@@ -68,11 +68,13 @@ retrying, and keeps failing, for as long as the cause stands.
 See [Record Ownership](./record-ownership.md) for who wins a contested name and
 when ownership moves.
 
-`Conflict` is polled rather than watched. The conflicting data can be written
-straight into the backend, which produces no Kubernetes event, so the operator
-re-checks on a long interval instead of hot-looping. A conflict can therefore
-clear without any change to a Kubernetes object, and it can take up to that
-interval to notice.
+`Conflict` is both watched and polled. When the record set holding the name
+changes or is deleted, the record sets refused on that name are retried at
+once. The conflicting data can also be written straight into the backend,
+which produces no Kubernetes event, so a refused record is retried on a
+backoff that starts at five seconds and doubles to at most five minutes. A
+conflict can therefore clear without any change to a Kubernetes object, and
+it can take up to five minutes to notice.
 
 ### Either
 

@@ -5,6 +5,8 @@ package pdns
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -86,4 +88,22 @@ func IsConflict(err error) bool {
 		_ = json.Unmarshal([]byte(apiErr.Body), &body)
 	}
 	return strings.Contains(body.Error, "Conflicts with pre-existing RRset")
+}
+
+var refusedRRSetPattern = regexp.MustCompile(`RRset (\S+) IN (\S+): Conflicts with pre-existing`)
+
+func refusedRRSet(err error) (rrsetKey, bool) {
+	var apiErr *pdnsAPIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
+		return rrsetKey{}, false
+	}
+	var body pdnsErrorBody
+	if apiErr.Body != "" {
+		_ = json.Unmarshal([]byte(apiErr.Body), &body)
+	}
+	m := refusedRRSetPattern.FindStringSubmatch(body.Error)
+	if m == nil {
+		return rrsetKey{}, false
+	}
+	return rrsetKey{name: strings.ToLower(m[1]), typ: strings.ToUpper(m[2])}, true
 }

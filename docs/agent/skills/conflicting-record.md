@@ -15,9 +15,9 @@ read its answer instead of assuming from the reason code alone.
 2. If actionability is user: something the customer controls really is
    at that name already, most often a CNAME or ALIAS that can't coexist
    with another record type at the same owner name. Tell them plainly
-   which record needs to move or go, and that the DNS backend only
-   re-checks conflicts roughly every ten minutes, so nothing changing in
-   the first few minutes after a fix is expected, not a sign the fix
+   which record needs to move or go. The record is retried as soon as
+   the record set holding the name changes, and otherwise within five
+   minutes, so a short wait after a fix is expected, not a sign the fix
    didn't work.
 
 3. If actionability is platform (the diagnosis carries a pattern marking
@@ -36,7 +36,7 @@ read its answer instead of assuming from the reason code alone.
   nothing on their side to remove, and searching their own records for
   something that isn't there wastes their time.
 - Do not treat a conflict that persists for a few minutes after a fix as
-  evidence the fix failed. The re-check interval is roughly ten minutes.
+  evidence the fix failed. The retry interval is up to five minutes.
 - Do not guess which of the two cases applies from the message text
   alone — always confirm with `dns_record_diagnose`, since the same
   message string covers both.

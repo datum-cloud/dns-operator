@@ -24,6 +24,7 @@ type coexistencePDNS struct {
 	mu        sync.Mutex
 	rrsets    map[rrsetKey]zoneRRset
 	down      bool
+	multi     bool
 	patchDown int
 	patches   int
 }
@@ -67,6 +68,10 @@ func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Cli
 				for key := range fake.rrsets {
 					if key.name == rr.Name && key.typ != rr.Type && (key.typ == "CNAME" || rr.Type == "CNAME") {
 						w.WriteHeader(http.StatusUnprocessableEntity)
+						if fake.multi {
+							_, _ = fmt.Fprintf(w, `{"error": "Multiple errors found in RRset", "errors": ["RRset %s IN %s: Conflicts with pre-existing RRset"]}`, rr.Name, rr.Type)
+							return
+						}
 						_, _ = fmt.Fprintf(w, `{"error": "RRset %s IN %s: Conflicts with pre-existing RRset"}`, rr.Name, rr.Type)
 						return
 					}
@@ -306,5 +311,23 @@ func TestEnsureRecordSet_ReturnsTransientPatchFailures(t *testing.T) {
 				t.Fatalf("expected the record to publish once PowerDNS accepts it, got %+v", cond)
 			}
 		})
+	}
+}
+
+func TestEnsureRecordSet_RecognisesAConflictInAMultiErrorResponse(t *testing.T) {
+	t.Parallel()
+
+	fake, c := newCoexistencePDNS(t, blockingARecord("www.example.com."))
+	fake.multi = true
+
+	statuses, err := c.EnsureRecordSet(context.Background(), testZone, cnameRecordSet("api", "www"))
+	if err != nil {
+		t.Fatalf("EnsureRecordSet error: %v", err)
+	}
+	if cond := programmedCondition(t, statuses, "api"); cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected api to be published beside the refused name, got %+v", cond)
+	}
+	if cond := programmedCondition(t, statuses, "www"); cond.Reason != "Conflict" {
+		t.Fatalf("expected a conflict in a multi-error response to be marked Conflict, got %+v", cond)
 	}
 }

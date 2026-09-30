@@ -49,7 +49,7 @@ func TestDNSZoneDiscoveryReplicator_Watch(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = env.Stop() })
 
-	scheme := newFullTestScheme(t)
+	scheme := newTestScheme(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -151,11 +151,10 @@ func TestDNSZoneDiscoveryReplicator_Watch(t *testing.T) {
 	})
 
 	t.Run("owner reference write requeues itself", func(t *testing.T) {
-		zone := testZone(func(z *dnsv1alpha1.DNSZone) {
-			z.Name = "owner-zone"
-			z.Generation = 0
-			z.Spec.DomainName = "discovery.invalid"
-		})
+		zone := &dnsv1alpha1.DNSZone{
+			ObjectMeta: metav1.ObjectMeta{Name: "owner-zone", Namespace: "default"},
+			Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "discovery.invalid", DNSZoneClassName: "pdns"},
+		}
 		if err := c.Create(ctx, zone); err != nil {
 			t.Fatalf("create zone: %v", err)
 		}

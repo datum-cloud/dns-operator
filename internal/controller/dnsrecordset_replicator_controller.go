@@ -44,7 +44,7 @@ const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
-	lg.Info("reconcile start")
+	lg.V(1).Info("reconcile start")
 
 	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -320,7 +320,11 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 	if cErr != nil {
 		return res, cErr
 	}
-	log.FromContext(ctx).Info("ensured downstream DNSRecordSet", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
+	ensuredLog := log.FromContext(ctx)
+	if res == controllerutil.OperationResultNone {
+		ensuredLog = ensuredLog.V(1)
+	}
+	ensuredLog.Info("ensured downstream DNSRecordSet", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
 	return res, nil
 }
 

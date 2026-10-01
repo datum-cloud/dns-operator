@@ -58,7 +58,7 @@ const dnsZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone"
 func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	lg := log.FromContext(ctx).WithValues("cluster", req.ClusterName, "namespace", req.Namespace, "name", req.Name)
 	ctx = log.IntoContext(ctx, lg)
-	lg.Info("reconcile start")
+	lg.V(1).Info("reconcile start")
 
 	upstreamCl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
@@ -380,7 +380,11 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 	if cErr != nil {
 		return res, cErr
 	}
-	log.FromContext(ctx).Info("ensured downstream DNSZone", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
+	ensuredLog := log.FromContext(ctx)
+	if res == controllerutil.OperationResultNone {
+		ensuredLog = ensuredLog.V(1)
+	}
+	ensuredLog.Info("ensured downstream DNSZone", "operation", res, "namespace", shadow.Namespace, "name", shadow.Name)
 	return res, nil
 }
 
@@ -482,7 +486,11 @@ func (r *DNSZoneReplicator) ensureZoneAccounting(ctx context.Context, upstream *
 	// Exists: check ownership
 	stored := cm.Data["owner"]
 	owned := sameZoneOwner(stored, owner)
-	log.FromContext(ctx).Info("zone accounting found (downstream)", "namespace", ns, "configmap", cm.Name, "owned", owned, "owner", stored)
+	foundLog := log.FromContext(ctx)
+	if owned {
+		foundLog = foundLog.V(1)
+	}
+	foundLog.Info("zone accounting found (downstream)", "namespace", ns, "configmap", cm.Name, "owned", owned, "owner", stored)
 	if owned && stored != owner {
 		r.adoptZoneOwner(ctx, &cm, owner)
 	}
@@ -550,7 +558,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		return err
 	}
 	if len(existingList.Items) > 0 {
-		log.FromContext(ctx).Info("SOA DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
+		log.FromContext(ctx).V(1).Info("SOA DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
 
@@ -598,7 +606,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		return err
 	}
 	if len(existingList.Items) > 0 {
-		log.FromContext(ctx).Info("NS DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
+		log.FromContext(ctx).V(1).Info("NS DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
 
@@ -767,7 +775,7 @@ func (r *DNSZoneReplicator) ensureDomain(ctx context.Context, c client.Client, u
 		return err
 	}
 	if len(existing.Items) > 0 {
-		log.FromContext(ctx).Info("Domain already exists for DNSZone; skipping create", "namespace", upstream.Namespace, "domainName", upstream.Spec.DomainName)
+		log.FromContext(ctx).V(1).Info("Domain already exists for DNSZone; skipping create", "namespace", upstream.Namespace, "domainName", upstream.Spec.DomainName)
 		return nil
 	}
 	newDomain := networkingv1alpha.Domain{}

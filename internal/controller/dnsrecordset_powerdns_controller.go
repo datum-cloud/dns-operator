@@ -72,24 +72,24 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		"recordType", req.RecordSetType,
 		"recordName", req.RecordSetName,
 	)
-	logger.Info("powerdns reconcile start")
+	logger.V(1).Info("powerdns reconcile start")
 
 	if req.RecordSetType == "" || req.RecordSetName == "" {
-		logger.Info("request missing type or name; skipping")
+		logger.V(1).Info("request missing type or name; skipping")
 		return reconcile.Result{}, nil
 	}
 
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("zone not found; skipping")
+			logger.V(1).Info("zone not found; skipping")
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
 	}
 
 	if !zone.DeletionTimestamp.IsZero() {
-		logger.Info("zone deleting; skipping")
+		logger.V(1).Info("zone deleting; skipping")
 		return reconcile.Result{}, nil
 	}
 
@@ -102,7 +102,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		return reconcile.Result{}, err
 	}
 	if zc.Spec.ControllerName != ControllerNamePowerDNS {
-		logger.Info("zone controller not powerdns; skipping")
+		logger.V(1).Info("zone controller not powerdns; skipping")
 		return reconcile.Result{}, nil
 	}
 
@@ -183,7 +183,7 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		return reconcile.Result{}, pdnsErr
 	}
 
-	logger.Info("powerdns reconcile complete")
+	logger.V(1).Info("powerdns reconcile complete")
 	return reconcile.Result{}, nil
 }
 

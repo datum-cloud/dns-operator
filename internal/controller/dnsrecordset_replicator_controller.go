@@ -91,7 +91,6 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			return ctrl.Result{}, err
 		}
 		if !done {
-			lg.Info("downstream DNSRecordSet still deleting; waiting for downstream update")
 			return ctrl.Result{}, nil
 		}
 		lg.Info("finalizer removed; allowing upstream DNSRecordSet to finalize")

@@ -73,7 +73,7 @@ const downstreamRSFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
-	logger.Info("dnsrecordset reconcile start")
+	logger.V(1).Info("dnsrecordset reconcile start")
 
 	var rs dnsv1alpha1.DNSRecordSet
 	if err := r.Get(ctx, req.NamespacedName, &rs); err != nil {
@@ -93,7 +93,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
-		logger.Info("Resource belongs to a different class. Not Reconciling")
+		logger.V(1).Info("Resource belongs to a different class. Not Reconciling")
 		return ctrl.Result{}, nil
 	}
 
@@ -186,7 +186,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// is the difference between a reconcile and a reconcile loop. Drift written
 	// outside the operator is still corrected on the manager's resync.
 	if recordSetProgrammedAtGeneration(&rs) {
-		logger.Info("RecordSet already programmed at this generation", "generation", rs.Generation)
+		logger.V(1).Info("RecordSet already programmed at this generation", "generation", rs.Generation)
 		return ctrl.Result{}, nil
 	}
 

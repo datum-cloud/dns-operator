@@ -7,6 +7,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,7 +38,7 @@ const downstreamZoneFinalizer = "dns.networking.miloapis.com/finalize-dnszone-do
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.22.1/pkg/reconcile
 func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
-	logger.Info("dnszone reconcile start")
+	logger.V(1).Info("dnszone reconcile start")
 
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
@@ -45,13 +46,17 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
-		logger.Info("Resource belongs to different class. Not Reconciling")
+		logger.V(1).Info("Resource belongs to different class. Not Reconciling")
 		return ctrl.Result{}, nil
 	}
 
 	var zc dnsv1alpha1.DNSZoneClass
 	if err := r.Get(ctx, client.ObjectKey{Name: zone.Spec.DNSZoneClassName}, &zc); err != nil {
-		logger.Info("Failed to get zone class for zone. Not Reconciling")
+		if apierrors.IsNotFound(err) {
+			logger.Info("Failed to get zone class for zone. Not Reconciling")
+		} else {
+			logger.Error(err, "Failed to get zone class for zone. Not Reconciling")
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 

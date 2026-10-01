@@ -244,8 +244,8 @@ func (r *DNSRecordSetReplicator) fetchUpstream(ctx context.Context, cl cluster.C
 	return upstream, nil
 }
 
-// handleDeletion deletes the downstream shadow object and removes the upstream finalizer
-// once the shadow is confirmed gone. It returns done=true only when the finalizer has been removed
+// handleDeletion deletes the downstream shadow object, then its anchor, and removes the upstream
+// finalizer once both are gone. It returns done=true only when the finalizer has been removed
 // (or when no finalizer is present). When the downstream still exists, it returns done=false, nil.
 func (r *DNSRecordSetReplicator) handleDeletion(
 	ctx context.Context,
@@ -268,6 +268,10 @@ func (r *DNSRecordSetReplicator) handleDeletion(
 	var shadow dnsv1alpha1.DNSRecordSet
 	getErr := r.DownstreamClient.Get(ctx, types.NamespacedName{Namespace: md.Namespace, Name: md.Name}, &shadow)
 	if apierrors.IsNotFound(getErr) {
+		// Nothing owns the anchor, so garbage collection never removes it.
+		if err := strategy.DeleteAnchorForObject(ctx, upstream); err != nil {
+			return false, err
+		}
 		base := upstream.DeepCopy()
 		controllerutil.RemoveFinalizer(upstream, rsFinalizer)
 		if err := upstreamClient.Patch(ctx, upstream, client.MergeFrom(base)); err != nil {

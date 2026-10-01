@@ -48,7 +48,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 
 	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
-		return ctrl.Result{}, err
+		return getClusterErrorResult(ctx, r.mgr, err)
 	}
 
 	upstream, err := r.fetchUpstream(ctx, upstreamCluster, req.NamespacedName)

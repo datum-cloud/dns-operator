@@ -124,9 +124,7 @@ func main() {
 		"The controller class type to use for this instance. Defaults to 'powerdns'",
 	)
 
-	opts := zap.Options{
-		Development: true,
-	}
+	opts := zap.Options{}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 

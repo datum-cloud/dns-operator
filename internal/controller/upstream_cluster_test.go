@@ -54,9 +54,7 @@ func (m *fakeClusterManager) GetProvider() multicluster.Provider {
 	return m.provider
 }
 
-func clusterNotFound(name string) error {
-	return fmt.Errorf("cluster %s: %w", name, multicluster.ErrClusterNotFound)
-}
+var errUnregisteredCluster = fmt.Errorf("cluster p1: %w", multicluster.ErrClusterNotFound)
 
 type getClusterCase struct {
 	name        string
@@ -70,23 +68,23 @@ func getClusterCases() []getClusterCase {
 		{
 			name:        "provider not synced and cluster not found requeues",
 			provider:    &fakeSyncingProvider{synced: false},
-			err:         clusterNotFound("p1"),
+			err:         errUnregisteredCluster,
 			wantRequeue: true,
 		},
 		{
 			name:     "provider synced and cluster not found returns the error",
 			provider: &fakeSyncingProvider{synced: true},
-			err:      clusterNotFound("p1"),
+			err:      errUnregisteredCluster,
 		},
 		{
 			name:     "provider without HasSynced returns the error",
 			provider: &fakeProvider{},
-			err:      clusterNotFound("p1"),
+			err:      errUnregisteredCluster,
 		},
 		{
 			name:     "no provider returns the error",
 			provider: nil,
-			err:      clusterNotFound("p1"),
+			err:      errUnregisteredCluster,
 		},
 		{
 			name:     "other error from an unsynced provider returns the error",

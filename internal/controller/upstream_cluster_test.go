@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"testing"
 
+	milomulticluster "go.miloapis.com/milo/pkg/multicluster-runtime/milo"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -15,6 +16,18 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 )
+
+var _ syncedProvider = (*milomulticluster.Provider)(nil)
+
+func TestMiloProviderMeetsContract(t *testing.T) {
+	p := &milomulticluster.Provider{}
+	if _, err := p.Get(context.Background(), "unregistered"); !errors.Is(err, multicluster.ErrClusterNotFound) {
+		t.Fatalf("expected ErrClusterNotFound, got %v", err)
+	}
+	if p.HasSynced() {
+		t.Fatal("expected a provider that has not started to report not synced")
+	}
+}
 
 type fakeProvider struct {
 	multicluster.Provider

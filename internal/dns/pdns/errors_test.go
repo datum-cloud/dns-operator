@@ -4,6 +4,7 @@ package pdns
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -120,6 +121,33 @@ func TestIsConflict(t *testing.T) {
 			t.Parallel()
 			if got := IsConflict(tt.err); got != tt.want {
 				t.Errorf("IsConflict() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTransient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"connection refused", errors.New("dial tcp: connection refused"), true},
+		{"server error", &pdnsAPIError{Status: 503}, true},
+		{"rate limited", &pdnsAPIError{Status: 429}, true},
+		{"wrapped server error", fmt.Errorf("patch: %w", &pdnsAPIError{Status: 500}), true},
+		{"invalid record", &pdnsAPIError{Status: 422, Body: `{"error": "Invalid character"}`}, false},
+		{"zone not found", &pdnsAPIError{Status: 404}, false},
+		{"bad request", &pdnsAPIError{Status: 400}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsTransient(tt.err); got != tt.want {
+				t.Errorf("IsTransient() = %v, want %v", got, tt.want)
 			}
 		})
 	}

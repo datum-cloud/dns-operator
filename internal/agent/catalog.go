@@ -197,8 +197,8 @@ var catalog = []ReasonInfo{
 		Actionability:  ActionabilityUser,
 		Explanation: "The DNS backend already has a record at this name that this record set cannot " +
 			"coexist with — most often a CNAME or ALIAS next to another record type at the same name.",
-		Remediation: "Remove or rename whichever record should not be there. Conflicts are re-checked " +
-			"only every 10 minutes, so nothing changing right away is expected.",
+		Remediation: "Remove or rename whichever record should not be there. The record is retried as soon as " +
+			"the record set holding the name changes, and otherwise within five minutes.",
 		Skill: SkillConflictingRecord,
 	},
 

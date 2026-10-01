@@ -29,11 +29,15 @@ type recordSetDeleteCall struct {
 type recordSetDNSClientSpy struct {
 	*dnsfake.FakeDNSClient
 	EnsureRecordSetCalls int
+	EnsureRecordSetFunc  func(recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error)
 	DeleteRecordSetCalls []recordSetDeleteCall
 }
 
 func (s *recordSetDNSClientSpy) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, recordSet dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
 	s.EnsureRecordSetCalls++
+	if s.EnsureRecordSetFunc != nil {
+		return s.EnsureRecordSetFunc(recordSet)
+	}
 	return nil, nil
 }
 
@@ -65,6 +69,7 @@ func newDownstreamRecordSetReconciler(t *testing.T, objs ...client.Object) (*DNS
 		WithScheme(scheme).
 		WithObjects(objs...).
 		WithStatusSubresource(&dnsv1alpha1.DNSRecordSet{}).
+		WithIndex(&dnsv1alpha1.DNSRecordSet{}, unprogrammedRecordSetZoneIndex, unprogrammedRecordSetZone).
 		Build()
 
 	spy := &recordSetDNSClientSpy{FakeDNSClient: dnsfake.NewFakeDNSClient()}

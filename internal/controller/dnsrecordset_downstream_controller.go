@@ -28,6 +28,8 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
 	"go.miloapis.com/dns-operator/internal/dns"
+	"go.miloapis.com/dns-operator/internal/dns/ownername"
+	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
 )
 
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
@@ -51,6 +53,11 @@ const (
 
 	defaultRecordSetRateLimiterBaseDelay = 1 * time.Second
 	defaultRecordSetRateLimiterMaxDelay  = 30 * time.Second
+
+	unprogrammedRetryBaseDelay = 5 * time.Second
+	unprogrammedRetryMaxDelay  = 5 * time.Minute
+
+	unprogrammedRecordSetZoneIndex = "status.unprogrammedRecordSetZone"
 )
 
 // downstreamRSFinalizer is the finalizer for the DNSRecordSetDownstream controller
@@ -183,8 +190,163 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	statuses, err := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
-	return ctrl.Result{}, r.updateStatus(ctx, &rs, err, statuses)
+	statuses, ensureErr := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
+	if statusErr := r.updateStatus(ctx, &rs, ensureErr, statuses); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	if pdnsclient.IsTransient(ensureErr) {
+		return ctrl.Result{}, ensureErr
+	}
+	if ensureErr != nil {
+		delay := retryDelaySince(programmedSince(&rs), time.Now())
+		logger.Info("PowerDNS rejected the record set, retrying later", "after", delay, "error", ensureErr.Error())
+		return ctrl.Result{RequeueAfter: delay}, nil
+	}
+	if delay, waiting := unprogrammedRetryDelay(statuses, time.Now()); waiting {
+		logger.Info("RecordSet has records not yet programmed, retrying later", "after", delay)
+		return ctrl.Result{RequeueAfter: delay}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+func unprogrammedRetryDelay(statuses []dnsv1alpha1.RecordSetStatus, now time.Time) (time.Duration, bool) {
+	waiting := false
+	latest := time.Time{}
+	for _, st := range statuses {
+		cond := apimeta.FindStatusCondition(st.Conditions, CondProgrammed)
+		if cond != nil && cond.Status == metav1.ConditionTrue {
+			continue
+		}
+		waiting = true
+		since := now
+		if cond != nil {
+			since = cond.LastTransitionTime.Time
+		}
+		if since.After(latest) {
+			latest = since
+		}
+	}
+	if !waiting {
+		return 0, false
+	}
+	return retryDelaySince(latest, now), true
+}
+
+func programmedSince(rs *dnsv1alpha1.DNSRecordSet) time.Time {
+	if cond := apimeta.FindStatusCondition(rs.Status.Conditions, CondProgrammed); cond != nil {
+		return cond.LastTransitionTime.Time
+	}
+	return time.Now()
+}
+
+func retryDelaySince(since, now time.Time) time.Duration {
+	delay := now.Sub(since)
+	if delay < unprogrammedRetryBaseDelay {
+		delay = unprogrammedRetryBaseDelay
+	}
+	if delay > unprogrammedRetryMaxDelay {
+		delay = unprogrammedRetryMaxDelay
+	}
+	return delay
+}
+
+func unprogrammedRecordSetZone(obj client.Object) []string {
+	rs, ok := obj.(*dnsv1alpha1.DNSRecordSet)
+	if !ok {
+		return nil
+	}
+	for _, st := range rs.Status.RecordSets {
+		cond := apimeta.FindStatusCondition(st.Conditions, CondProgrammed)
+		if cond == nil || cond.Status != metav1.ConditionTrue {
+			return []string{rs.Spec.DNSZoneRef.Name}
+		}
+	}
+	return nil
+}
+
+func (r *DNSRecordSetReconciler) recordSetsWaitingOn(ctx context.Context, holders ...client.Object) []ctrl.Request {
+	var holder *dnsv1alpha1.DNSRecordSet
+	held := make([]string, 0)
+	for _, obj := range holders {
+		rs, ok := obj.(*dnsv1alpha1.DNSRecordSet)
+		if !ok {
+			continue
+		}
+		holder = rs
+		for _, rec := range rs.Spec.Records {
+			held = append(held, rec.Name)
+		}
+		for _, st := range rs.Status.RecordSets {
+			held = append(held, st.Name)
+		}
+	}
+	if holder == nil || len(held) == 0 {
+		return nil
+	}
+
+	var waiting dnsv1alpha1.DNSRecordSetList
+	if err := r.List(ctx, &waiting,
+		client.InNamespace(holder.Namespace),
+		client.MatchingFields{unprogrammedRecordSetZoneIndex: holder.Spec.DNSZoneRef.Name},
+	); err != nil {
+		ctrl.LoggerFrom(ctx).Error(err, "failed to list record sets waiting on a name", "namespace", holder.Namespace, "zone", holder.Spec.DNSZoneRef.Name)
+		return nil
+	}
+	if len(waiting.Items) == 0 {
+		return nil
+	}
+
+	var zone dnsv1alpha1.DNSZone
+	zoneErr := r.Get(ctx, client.ObjectKey{Namespace: holder.Namespace, Name: holder.Spec.DNSZoneRef.Name}, &zone)
+	if apierrors.IsNotFound(zoneErr) {
+		return nil
+	}
+	matchAll := zoneErr != nil
+	names := make(map[string]struct{}, len(held))
+	for _, name := range held {
+		names[ownername.Qualify(name, zone.Spec.DomainName)] = struct{}{}
+	}
+
+	out := make([]ctrl.Request, 0, len(waiting.Items))
+	for i := range waiting.Items {
+		rs := &waiting.Items[i]
+		if rs.Name == holder.Name {
+			continue
+		}
+		if matchAll || waitsOnAny(rs, zone.Spec.DomainName, names) {
+			out = append(out, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rs)})
+		}
+	}
+	return out
+}
+
+func waitsOnAny(rs *dnsv1alpha1.DNSRecordSet, domain string, names map[string]struct{}) bool {
+	for _, st := range rs.Status.RecordSets {
+		cond := apimeta.FindStatusCondition(st.Conditions, CondProgrammed)
+		if cond != nil && cond.Status == metav1.ConditionTrue {
+			continue
+		}
+		if _, ok := names[ownername.Qualify(st.Name, domain)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *DNSRecordSetReconciler) enqueueRecordSetsWaitingOnHolder() handler.EventHandler {
+	enqueue := func(ctx context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request], holders ...client.Object) {
+		for _, req := range r.recordSetsWaitingOn(ctx, holders...) {
+			q.Add(req)
+		}
+	}
+	return handler.Funcs{
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, q, e.ObjectOld, e.ObjectNew)
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, q, e.Object)
+		},
+	}
 }
 
 // recordSetProgrammedAtGeneration reports whether the record set's current spec
@@ -199,10 +361,14 @@ func recordSetProgrammedAtGeneration(rs *dnsv1alpha1.DNSRecordSet) bool {
 func (r *DNSRecordSetReconciler) updateStatus(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet, err error, statuses []dnsv1alpha1.RecordSetStatus) error {
 	var condProgrammed metav1.Condition
 	if err != nil {
+		reason := ReasonPending
+		if !pdnsclient.IsTransient(err) {
+			reason = ReasonPDNSError
+		}
 		condProgrammed = metav1.Condition{
 			Type:               CondProgrammed,
 			Status:             metav1.ConditionFalse,
-			Reason:             ReasonPending,
+			Reason:             reason,
 			Message:            err.Error(),
 			ObservedGeneration: rs.Generation,
 			LastTransitionTime: metav1.Now(),
@@ -296,8 +462,15 @@ func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// index DNSRecordSet by spec.DNSZoneRef.Name for quick fan-out from a DNSZone event
 	rl := workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](baseDelay, maxDelay)
 
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&dnsv1alpha1.DNSRecordSet{}, unprogrammedRecordSetZoneIndex, unprogrammedRecordSetZone,
+	); err != nil {
+		return fmt.Errorf("indexing DNSRecordSets by the zone they wait on: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dnsv1alpha1.DNSRecordSet{}).
+		Watches(&dnsv1alpha1.DNSRecordSet{}, r.enqueueRecordSetsWaitingOnHolder()).
 		// When a DNSZone in this namespace becomes ready, enqueue its recordsets
 		Watches(
 			&dnsv1alpha1.DNSZone{},

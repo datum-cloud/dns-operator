@@ -303,6 +303,8 @@ go.datum.net/network-services-operator v0.9.0 h1:D+q4iXFlQTeZxPJBxPW7hDJW9sHLMAi
 go.datum.net/network-services-operator v0.9.0/go.mod h1:RvP9wWGKSlWlASp1pe/vgvaExm+BsD6hq9XJzElN6dY=
 go.miloapis.com/milo v0.31.0 h1:gBZ9NaplTCFhgWUZJ18N38JsFDCVtdKmypwJvffSdUU=
 go.miloapis.com/milo v0.31.0/go.mod h1:GKK3afjCwshfZfvhjNe1wp/H45z4m7x5oG/8xbSgU1M=
+go.miloapis.com/milo v0.35.0 h1:pXXqEm8fHeMOS/qBGw2501ftfI3e4nUA/zMZQqUvlmA=
+go.miloapis.com/milo v0.35.0/go.mod h1:zMzwGXexUlPlFaZ9/4U+2DDbzPj4xzs9I76Z901g2sE=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.62.0 h1:Hf9xI/XLML9ElpiHVDNwvqI0hIFlzV8dgIr35kV1kRU=

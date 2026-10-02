@@ -62,7 +62,7 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	upstreamCl, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
-		return ctrl.Result{}, err
+		return getClusterErrorResult(ctx, r.mgr, err)
 	}
 
 	// 1) Fetch upstream

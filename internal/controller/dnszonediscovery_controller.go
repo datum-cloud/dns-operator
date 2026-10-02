@@ -37,7 +37,7 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 
 	upstreamCluster, err := r.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
-		return ctrl.Result{}, err
+		return getClusterErrorResult(ctx, r.mgr, err)
 	}
 
 	var dzd dnsv1alpha1.DNSZoneDiscovery

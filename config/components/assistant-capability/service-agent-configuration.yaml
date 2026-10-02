@@ -68,7 +68,7 @@ spec:
       mutating: []
   skills:
   - name: zone-not-resolving
-    description: Triage a domain that is not resolving, in the order verification, admission, programming, then delegation
+    description: Triage a domain that is not resolving, in the order verification, admission, programming, then delegation, including a DS record left at the registrar
     source: http://dns-mcp.datum-dns-system.svc.cluster.local:8080/runbooks/zone-not-resolving.md
   - name: record-not-programmed
     description: Read per-name record status rather than the aggregate, and branch on the reason it reports

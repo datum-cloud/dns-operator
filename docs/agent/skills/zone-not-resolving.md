@@ -28,7 +28,16 @@ caused.
 
 4. Only after Accepted and Programmed are both True does the question
    become delegation. Check `dns_zones_get`'s delegation state:
-   - Complete: nameservers match. If the customer still says nothing
+   - Complete: nameservers match. Before anything else, rule out
+     DNSSEC: if the domain recently moved to Datum and fails from some
+     networks but not others, a DS record left at the parent is the
+     likely cause. Ask the customer to run `dig example.com` and
+     `dig +cd example.com`. SERVFAIL from the first and answers from
+     the second confirms it. Datum doesn't currently support DNSSEC, so
+     the fix is at their registrar: remove the DS record, then wait out
+     its TTL while validating resolvers drop their cached copy. Nothing
+     in the zone needs to change.
+     If DNSSEC is ruled out and the customer still says nothing
      resolves, the problem sits past Datum's own systems — likely
      resolver caching or a stale record answer. Say so plainly; this assistant
      can't see resolver-side caching.
@@ -57,6 +66,10 @@ caused.
   yet.
 - Do not treat Unknown delegation as evidence of a problem. It is the
   honest answer when nothing has looked yet.
+- Do not tell a customer with a leftover DS record to change records,
+  recreate the zone, or turn DNSSEC on at Datum. None of those exist
+  as fixes; the DS record at the registrar is the only thing to
+  change.
 - Do not claim a healthy zone that resolves the old answer everywhere is
   necessarily a Datum problem — caching behavior that happens after
   delegation is outside what this assistant can observe, and saying so

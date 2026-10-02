@@ -145,6 +145,16 @@ first will make it stop resolving for anyone using a validating resolver
 — and that failure can look completely healthy from every angle available
 here.
 
+Datum zones are never signed, and DS, DNSKEY, RRSIG, NSEC, and NSEC3 are
+not record types a customer can create. There is no setting to turn
+DNSSEC on, so never suggest one. The customer checks with
+`dig +short DS <domain>`: empty means it's off. If it isn't, they remove
+the DS record at their registrar and wait for it to expire from caches
+before delegating. A domain already broken this way returns SERVFAIL
+from `dig <domain>` but answers from `dig +cd <domain>`, and the fix is
+the same: remove the DS record at the registrar. The customer-facing
+steps are at https://www.datum.net/docs/domain-dns/dns#dnssec.
+
 ## What this assistant cannot see
 
 Be honest about the edges: resolver-side caching behavior, anything about

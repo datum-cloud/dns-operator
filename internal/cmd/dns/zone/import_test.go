@@ -403,13 +403,16 @@ func TestImportRefusesGatewayOwnedTypes(t *testing.T) {
 	c := newFakeClient(t, bulkZone(), owned)
 	h := newHarness(t, c)
 
-	path := zoneFile(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.10\n")
+	// The file names the record the Gateway actually holds. A different name in
+	// the same zone is not the controller's and imports normally — see
+	// TestImportPlacesUnheldNameBesideAGatewaySet.
+	path := zoneFile(t, "$ORIGIN example.com.\nedge 300 IN A 203.0.113.10\n")
 	err := h.run("zone", "import", importDomain, "--file", path)
 	assertExitCode(t, err, util.ExitError)
 
 	set := setEntries(t, c, importZoneObj+"-a")
-	if len(set.Spec.Records) != 1 {
-		t.Error("a Gateway-owned record set was modified")
+	if len(set.Spec.Records) != 1 || set.Spec.Records[0].A.Content != "203.0.113.1" {
+		t.Errorf("a Gateway-owned record set was modified: %+v", set.Spec.Records)
 	}
 	if !strings.Contains(h.out.String(), "AI Edge") {
 		t.Errorf("the refusal was not explained:\n%s", h.out.String())
@@ -1261,7 +1264,10 @@ func TestImportRefusesGatewayOwnedWithoutSourceKind(t *testing.T) {
 	c := newFakeClient(t, bulkZone(), owned)
 	h := newHarness(t, c)
 
-	path := zoneFile(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.10\n")
+	// The file names the record the Gateway actually holds. A different name in
+	// the same zone is not the controller's and imports normally — see
+	// TestImportPlacesUnheldNameBesideAGatewaySet.
+	path := zoneFile(t, "$ORIGIN example.com.\nedge 300 IN A 203.0.113.10\n")
 	err := h.run("zone", "import", importDomain, "--file", path)
 	assertExitCode(t, err, util.ExitError)
 
@@ -1276,4 +1282,99 @@ func TestImportRefusesGatewayOwnedWithoutSourceKind(t *testing.T) {
 	if !strings.Contains(h.out.String(), "public") {
 		t.Errorf("the owning Gateway was not named:\n%s", h.out.String())
 	}
+}
+
+// --- which record set import writes into -------------------------------------
+//
+// A type is not one object. A zone served by a Gateway has several sets of one
+// type, each holding different names, and the owner name is what the backend
+// collides on — so import has to place each record in the set that already
+// holds its name.
+
+// The record joins the set that holds it, not the one that merely sorts first.
+// Writing into the first left the real holder stale and gave the zone two
+// entries for one key, which is the shape reported back as Conflict.
+func TestImportWritesIntoTheSetHoldingTheName(t *testing.T) {
+	first := bulkSet(dnsv1alpha1.RRTypeA, aRecord("blog", "203.0.113.1", ttlOf(300)))
+	holder := bulkSet(dnsv1alpha1.RRTypeA, aRecord("www", "203.0.113.10", ttlOf(300)))
+	holder.Name = first.Name + "-extra"
+
+	c := newFakeClient(t, bulkZone(), first, holder)
+	h := newHarness(t, c)
+
+	path := zoneFile(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.99\n")
+	if err := h.run("zone", "import", importDomain, "--file", path, "--yes"); err != nil {
+		t.Fatalf("import: %v\n%s", err, h.out.String())
+	}
+
+	got := setEntries(t, c, holder.Name)
+	if !hasEntry(got, "www", "203.0.113.99") {
+		t.Errorf("the set holding www did not receive the record: %+v", got.Spec.Records)
+	}
+	if other := setEntries(t, c, first.Name); hasName(other, "www") {
+		t.Errorf("www was duplicated into the set that merely sorted first: %+v", other.Spec.Records)
+	}
+}
+
+// A Gateway owns the names inside its set, not the type. A name it does not
+// hold is imported beside it — previously the whole type was refused over a
+// record the controller had nothing to do with, so a zone served by AI Edge
+// could not be imported into at all.
+func TestImportPlacesUnheldNameBesideAGatewaySet(t *testing.T) {
+	owned := bulkSet(dnsv1alpha1.RRTypeA, aRecord("edge", "203.0.113.1", ttlOf(300)))
+	owned.Labels = map[string]string{
+		util.LabelSourceKind: util.ValueSourceKindGateway,
+		util.LabelSourceName: "public",
+	}
+	c := newFakeClient(t, bulkZone(), owned)
+	h := newHarness(t, c)
+
+	path := zoneFile(t, "$ORIGIN example.com.\nblog 300 IN A 203.0.113.99\n")
+	if err := h.run("zone", "import", importDomain, "--file", path, "--yes"); err != nil {
+		t.Fatalf("import was refused over a name the Gateway does not hold: %v\n%s", err, h.out.String())
+	}
+
+	if got := setEntries(t, c, owned.Name); !hasEntry(got, "edge", "203.0.113.1") || len(got.Spec.Records) != 1 {
+		t.Errorf("the Gateway's set was modified: %+v", got.Spec.Records)
+	}
+
+	// blog landed somewhere, under a name that did not collide with the
+	// Gateway's — which holds the conventional one.
+	var list dnsv1alpha1.DNSRecordSetList
+	if err := c.List(context.Background(), &list); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for i := range list.Items {
+		if list.Items[i].Name != owned.Name && hasName(&list.Items[i], "blog") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("blog was not imported into a set of its own; %d sets exist", len(list.Items))
+	}
+}
+
+func hasName(rs *dnsv1alpha1.DNSRecordSet, name string) bool {
+	if rs == nil {
+		return false
+	}
+	for _, e := range rs.Spec.Records {
+		if e.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasEntry(rs *dnsv1alpha1.DNSRecordSet, name, ip string) bool {
+	if rs == nil {
+		return false
+	}
+	for _, e := range rs.Spec.Records {
+		if e.Name == name && e.A != nil && e.A.Content == ip {
+			return true
+		}
+	}
+	return false
 }

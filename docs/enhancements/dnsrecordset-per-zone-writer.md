@@ -121,7 +121,9 @@ most 16 at once, so it does not wait on the API server once per record set.
 - It reads the zone once.
 - It writes a name only when PowerDNS does not already hold the holder's current records.
 - It deletes a name that the agent owns and that no record set claims. The agent owns a name when the
-  name carries its ownership note, or when a record set that is being deleted declares it.
+  name carries an ownership note from a record set of the zone's own project, or when such a record set
+  that is being deleted declares it. So a pass never deletes a record another project wrote, even if two
+  projects ever hold one domain.
 - A pass that would delete more than 30% of a zone holding at least 10 records deletes nothing. It sets a
   condition of its own on the `DNSZone` instead, which only this reconcile writes. These are octoDNS's
   defaults (`MAX_SAFE_DELETE_PCENT` and `MIN_EXISTING_RECORDS` in
@@ -162,8 +164,8 @@ production.
    backend interface ([#88](https://github.com/datum-cloud/dns-operator/issues/88)).
 
 Before step 4 reaches staging or production, a dry run of the pass counts, in that environment, the names
-claimed twice and the leftovers it would delete. Names claimed twice in production are removed by hand
-first, with their owners.
+claimed twice, the domains that more than one project holds, and the leftovers it would delete. Names
+claimed twice in production are removed by hand first, with their owners.
 
 ## Risks
 

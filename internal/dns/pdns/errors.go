@@ -12,7 +12,63 @@ import (
 
 // pdnsErrorBody is the JSON structure returned in PowerDNS API error responses.
 type pdnsErrorBody struct {
-	Error string `json:"error"`
+	Error  string   `json:"error"`
+	Errors []string `json:"errors"`
+}
+
+const conflictPhrase = "Conflicts with pre-existing"
+
+func apiErrorsIn(err error) []*pdnsAPIError {
+	if err == nil {
+		return nil
+	}
+	if apiErr, ok := err.(*pdnsAPIError); ok {
+		return []*pdnsAPIError{apiErr}
+	}
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		out := make([]*pdnsAPIError, 0)
+		for _, inner := range wrapped.Unwrap() {
+			out = append(out, apiErrorsIn(inner)...)
+		}
+		return out
+	case interface{ Unwrap() error }:
+		return apiErrorsIn(wrapped.Unwrap())
+	}
+	var apiErr *pdnsAPIError
+	if errors.As(err, &apiErr) {
+		return []*pdnsAPIError{apiErr}
+	}
+	return nil
+}
+
+func (e *pdnsAPIError) reasons() []string {
+	if e.Body == "" {
+		return nil
+	}
+	var body pdnsErrorBody
+	if json.Unmarshal([]byte(e.Body), &body) != nil {
+		return nil
+	}
+	if len(body.Errors) > 0 {
+		return body.Errors
+	}
+	if body.Error == "" {
+		return nil
+	}
+	return []string{body.Error}
+}
+
+func (e *pdnsAPIError) isConflict() bool {
+	if e.Status != http.StatusUnprocessableEntity {
+		return false
+	}
+	for _, reason := range e.reasons() {
+		if strings.Contains(reason, conflictPhrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewAPIError builds a PowerDNS API error carrying an HTTP status and the raw
@@ -34,20 +90,24 @@ func FriendlyMessage(err error) string {
 		return ""
 	}
 
-	var apiErr *pdnsAPIError
-	if !errors.As(err, &apiErr) {
+	apiErrs := apiErrorsIn(err)
+	if len(apiErrs) == 0 {
 		return "Failed to apply DNS record. It will be retried automatically."
 	}
-
-	// Extract the error field from the JSON body when present.
-	var body pdnsErrorBody
-	if apiErr.Body != "" {
-		_ = json.Unmarshal([]byte(apiErr.Body), &body)
+	for _, e := range apiErrs {
+		if e.isConflict() {
+			return "A conflicting record already exists for this name. Remove the existing record and try again."
+		}
 	}
-	detail := body.Error
+	apiErr := apiErrs[0]
+	reasons := make([]string, 0)
+	for _, e := range apiErrs {
+		reasons = append(reasons, e.reasons()...)
+	}
+	detail := strings.Join(reasons, "; ")
 
 	switch {
-	case strings.Contains(detail, "Conflicts with pre-existing RRset"):
+	case strings.Contains(detail, conflictPhrase):
 		return "A conflicting record already exists for this name. Remove the existing record and try again."
 	case strings.Contains(detail, "Invalid character"):
 		return "The record content contains an invalid character. TXT records containing semicolons or special characters must be properly quoted."
@@ -76,45 +136,61 @@ func FriendlyMessage(err error) string {
 // with a pre-existing RRset. This is distinct from a malformed payload: the
 // record is well-formed but conflicts with existing data at the same name.
 func IsConflict(err error) bool {
-	if err == nil {
-		return false
+	for _, apiErr := range apiErrorsIn(err) {
+		if apiErr.isConflict() {
+			return true
+		}
 	}
-	var apiErr *pdnsAPIError
-	if !errors.As(err, &apiErr) || apiErr.Status != 422 {
-		return false
-	}
-	var body pdnsErrorBody
-	if apiErr.Body != "" {
-		_ = json.Unmarshal([]byte(apiErr.Body), &body)
-	}
-	return strings.Contains(body.Error, "Conflicts with pre-existing RRset")
+	return false
 }
 
 func IsTransient(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *pdnsAPIError
-	if !errors.As(err, &apiErr) {
-		return true
+	if apiErr, ok := err.(*pdnsAPIError); ok {
+		return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests
 	}
-	return apiErr.Status >= http.StatusInternalServerError || apiErr.Status == http.StatusTooManyRequests
+	switch wrapped := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, inner := range wrapped.Unwrap() {
+			if IsTransient(inner) {
+				return true
+			}
+		}
+		return false
+	case interface{ Unwrap() error }:
+		return IsTransient(wrapped.Unwrap())
+	}
+	var apiErr *pdnsAPIError
+	if errors.As(err, &apiErr) {
+		return IsTransient(apiErr)
+	}
+	return true
 }
 
 var refusedRRSetPattern = regexp.MustCompile(`RRset (\S+) IN (\S+): Conflicts with pre-existing`)
 
-func refusedRRSet(err error) (rrsetKey, bool) {
-	var apiErr *pdnsAPIError
-	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusUnprocessableEntity {
-		return rrsetKey{}, false
+func refusedRRSets(err error) []rrsetKey {
+	out := make([]rrsetKey, 0)
+	for _, apiErr := range apiErrorsIn(err) {
+		if apiErr.Status != http.StatusUnprocessableEntity {
+			continue
+		}
+		for _, reason := range apiErr.reasons() {
+			if m := refusedRRSetPattern.FindStringSubmatch(reason); m != nil {
+				out = append(out, rrsetKey{name: strings.ToLower(m[1]), typ: strings.ToUpper(m[2])})
+			}
+		}
 	}
-	var body pdnsErrorBody
-	if apiErr.Body != "" {
-		_ = json.Unmarshal([]byte(apiErr.Body), &body)
+	return out
+}
+
+func refuses(err error, key rrsetKey) bool {
+	for _, refused := range refusedRRSets(err) {
+		if refused == key {
+			return true
+		}
 	}
-	m := refusedRRSetPattern.FindStringSubmatch(body.Error)
-	if m == nil {
-		return rrsetKey{}, false
-	}
-	return rrsetKey{name: strings.ToLower(m[1]), typ: strings.ToUpper(m[2])}, true
+	return false
 }

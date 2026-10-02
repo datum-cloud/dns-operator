@@ -368,3 +368,34 @@ func TestRecordSetsWaitingOn_IgnoresADeletedZone(t *testing.T) {
 		t.Fatalf("expected nothing to be queued for a zone that is gone, got %v", reqs)
 	}
 }
+
+func TestDNSRecordSetReconcile_ARefusalBesideATransientFailureIsRetried(t *testing.T) {
+	t.Parallel()
+
+	rs := retryTestRecordSet("record-a", dnsv1alpha1.RRTypeCNAME, "www")
+	r, spy, k8sClient := newDownstreamRecordSetReconciler(t, retryTestZone(), rs)
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rs)}
+	reconcileToProgramming(t, r, req)
+
+	joined := errors.Join(
+		pdnsclient.NewAPIError(422, `{"error": "RRset www.example.com. IN CNAME: Conflicts with pre-existing RRset"}`),
+		pdnsclient.NewAPIError(503, ""),
+	)
+	spy.EnsureRecordSetFunc = func(dnsv1alpha1.DNSRecordSet) ([]dnsv1alpha1.RecordSetStatus, error) {
+		return []dnsv1alpha1.RecordSetStatus{ownerStatus("www", metav1.ConditionFalse, ReasonConflict, time.Now())}, joined
+	}
+
+	if _, err := r.Reconcile(context.Background(), req); !errors.Is(err, joined) {
+		t.Fatalf("expected the transient part to be returned for the rate limiter, got %v", err)
+	}
+	var current dnsv1alpha1.DNSRecordSet
+	if err := k8sClient.Get(context.Background(), req.NamespacedName, &current); err != nil {
+		t.Fatalf("get record set: %v", err)
+	}
+	if programmed := apimeta.FindStatusCondition(current.Status.Conditions, CondProgrammed); programmed == nil || programmed.Status != metav1.ConditionFalse || programmed.Reason != ReasonPending {
+		t.Fatalf("expected Programmed=False pending a retry, got %+v", programmed)
+	}
+	if len(current.Status.RecordSets) != 1 || current.Status.RecordSets[0].Conditions[0].Reason != ReasonConflict {
+		t.Fatalf("expected the refused name to stay marked Conflict, got %+v", current.Status.RecordSets)
+	}
+}

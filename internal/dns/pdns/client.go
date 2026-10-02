@@ -351,16 +351,16 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			}
 			idx := replacedStatus[chunk.start+i]
 			owner := statusList[idx].Name
-			if _, refused := refusedRRSet(err); refused {
+			if IsTransient(err) && (len(transient) == 0 || transient[len(transient)-1] != err) {
+				transient = append(transient, err)
+			}
+			if refuses(err, patchIdentity(chunk.rrsets[i])) {
 				c.logger.Info("PowerDNS refused rrset because another record holds its name", "zone", zoneName, "owner", owner, "recordType", recordType)
 				statusList[idx] = recordSetRefusedStatus(owner, ownername.Qualify(owner, zoneName), recordType, existing)
 				continue
 			}
 			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "owner", owner)
 			statusList[idx] = recordSetErrorStatus(owner, err)
-			if IsTransient(err) && (len(transient) == 0 || transient[len(transient)-1] != err) {
-				transient = append(transient, err)
-			}
 		}
 	}
 
@@ -388,23 +388,25 @@ func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets
 		if err == nil {
 			return errs
 		}
-		refused := -1
-		if key, ok := refusedRRSet(err); ok {
-			for n, i := range pending {
-				if patchIdentity(rrsets[i]) == key {
-					refused = n
-					break
-				}
-			}
+		refused := make(map[rrsetKey]struct{})
+		for _, key := range refusedRRSets(err) {
+			refused[key] = struct{}{}
 		}
-		if refused < 0 {
+		kept := pending[:0]
+		for _, i := range pending {
+			if _, ok := refused[patchIdentity(rrsets[i])]; ok {
+				errs[i] = err
+				continue
+			}
+			kept = append(kept, i)
+		}
+		if len(kept) == len(pending) {
 			for _, i := range pending {
 				errs[i] = err
 			}
 			return errs
 		}
-		errs[pending[refused]] = err
-		pending = append(pending[:refused], pending[refused+1:]...)
+		pending = kept
 	}
 	return errs
 }

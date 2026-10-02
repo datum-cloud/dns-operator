@@ -50,7 +50,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, _, err := program.Eval(map[string]any{"audit": audit, "actor": "Alice"})
+		result, _, err := program.Eval(map[string]any{"audit": withDefaults(audit), "actor": "Alice"})
 		if err != nil {
 			t.Fatalf("evaluate %q: %v", expression, err)
 		}
@@ -65,6 +65,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 		system, subresource bool
 		code                int
 		omitStatus          bool
+		dryRun              bool
 	}
 	fixtures := make([]fixture, 0, 127)
 	fixtures = append(fixtures, []fixture{
@@ -119,6 +120,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 			)
 		}
 		fixtures = append(fixtures, fixture{name: verb + " without response status", verb: verb, omitStatus: true, request: spec("example.com")})
+		fixtures = append(fixtures, fixture{name: verb + " dry run", verb: verb, dryRun: true, request: spec("example.com"), response: spec("example.com")})
 	}
 	fixtures = append(fixtures, fixture{name: "accepted deletion", verb: "delete", code: 202, want: "Alice deleted a DNS zone"})
 	expressionRE := regexp.MustCompile(`\{\{\s*(.+?)\s*\}\}`)
@@ -144,6 +146,9 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 			if !fx.omitStatus {
 				audit["responseStatus"] = map[string]any{"code": code}
 			}
+			if fx.dryRun {
+				audit["requestURI"] = "/apis/dns.networking.miloapis.com/v1alpha1/namespaces/default/dnszones/example-zone?dryRun=All"
+			}
 			if fx.request != nil {
 				audit["requestObject"] = fx.request
 			}
@@ -151,7 +156,7 @@ func TestDNSZonePolicy_AuditFixtures(t *testing.T) {
 				audit["responseObject"] = fx.response
 			}
 			want := fx.want
-			if want == "" && !fx.system && !fx.subresource && !fx.omitStatus && code >= 200 && code < 300 {
+			if want == "" && !fx.system && !fx.subresource && !fx.omitStatus && !fx.dryRun && code >= 200 && code < 300 {
 				want = "Alice updated a DNS zone"
 			}
 			got := ""

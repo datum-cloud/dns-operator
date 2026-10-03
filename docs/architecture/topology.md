@@ -129,7 +129,8 @@ answers queries.
   record sets at admission, so downstream consumers render human-readable names
   without re-deriving them.
 - **Validating webhook** — refuses a write that newly claims an owner name
-  another record set already holds for the same record type in the same zone.
+  another record set already holds in the same zone, for the same record type
+  or where either record set is a CNAME.
   Ownership is first-come and only the first claimant is ever programmed, so a
   second claim would sit unpublished; the refusal names the owner name and the
   record set holding it. Only newly claimed names are checked, which leaves a

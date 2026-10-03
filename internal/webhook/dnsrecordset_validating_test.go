@@ -123,6 +123,49 @@ func TestDNSRecordSetValidator_ValidateCreate(t *testing.T) {
 			rs:     recordSet("newcomer", "my-zone", dnsv1alpha1.RRTypeA, base.Add(time.Hour), "www"),
 		},
 		{
+			name:        "CNAME at a name another type holds is refused",
+			stored:      []runtime.Object{zone, incumbent},
+			rs:          recordSet("newcomer", "my-zone", dnsv1alpha1.RRTypeCNAME, base.Add(time.Hour), "www"),
+			wantRefused: true,
+			wantIn:      []string{"www.example.com.", "incumbent", "record type TXT", "CNAME cannot share"},
+		},
+		{
+			name: "any type at a name a CNAME holds is refused",
+			stored: []runtime.Object{
+				zone,
+				recordSet("cname-owner", "my-zone", dnsv1alpha1.RRTypeCNAME, base, "www"),
+			},
+			rs:          txtRecordSet("newcomer", base.Add(time.Hour), "www"),
+			wantRefused: true,
+			wantIn:      []string{"www.example.com.", "cname-owner", "record type CNAME"},
+		},
+		{
+			name: "ALIAS at a name a CNAME holds is refused",
+			stored: []runtime.Object{
+				zone,
+				recordSet("cname-owner", "my-zone", dnsv1alpha1.RRTypeCNAME, base, "www"),
+			},
+			rs:          recordSet("newcomer", "my-zone", dnsv1alpha1.RRTypeALIAS, base.Add(time.Hour), "www"),
+			wantRefused: true,
+			wantIn:      []string{"cname-owner"},
+		},
+		{
+			name: "ALIAS beside a non-CNAME type is accepted",
+			stored: []runtime.Object{
+				zone,
+				recordSet("a-owner", "my-zone", dnsv1alpha1.RRTypeA, base, "@"),
+			},
+			rs: recordSet("newcomer", "my-zone", dnsv1alpha1.RRTypeALIAS, base.Add(time.Hour), "@"),
+		},
+		{
+			name: "CNAME at an unclaimed name beside other types is accepted",
+			stored: []runtime.Object{
+				zone,
+				incumbent,
+			},
+			rs: recordSet("newcomer", "my-zone", dnsv1alpha1.RRTypeCNAME, base.Add(time.Hour), "shop"),
+		},
+		{
 			name:   "same name in a different zone is accepted",
 			stored: []runtime.Object{zone, otherZone, incumbent},
 			rs:     recordSet("newcomer", "other-zone", dnsv1alpha1.RRTypeTXT, base.Add(time.Hour), "www"),
@@ -240,6 +283,23 @@ func TestDNSRecordSetValidator_ValidateUpdate(t *testing.T) {
 			newRS:       recordSet("mover", "my-zone", dnsv1alpha1.RRTypeA, base.Add(time.Hour), "www"),
 			wantRefused: true,
 			wantIn:      []string{"a-owner", "www.example.com."},
+		},
+		{
+			name:        "changing record type to CNAME onto a name another type holds is refused",
+			stored:      []runtime.Object{zone, recordSet("a-owner", "my-zone", dnsv1alpha1.RRTypeA, base, "www")},
+			oldRS:       txtRecordSet("mover", base.Add(time.Hour), "mail"),
+			newRS:       recordSet("mover", "my-zone", dnsv1alpha1.RRTypeCNAME, base.Add(time.Hour), "www"),
+			wantRefused: true,
+			wantIn:      []string{"a-owner", "record type A"},
+		},
+		{
+			name: "a CNAME set already beside another type stays editable",
+			stored: []runtime.Object{
+				zone,
+				incumbent,
+			},
+			oldRS: recordSet("conflicted", "my-zone", dnsv1alpha1.RRTypeCNAME, base.Add(time.Hour), "www"),
+			newRS: recordSet("conflicted", "my-zone", dnsv1alpha1.RRTypeCNAME, base.Add(time.Hour), "www", "shop"),
 		},
 	}
 

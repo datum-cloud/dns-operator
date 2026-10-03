@@ -304,6 +304,9 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			statusList = append(statusList, recordSetSuccessStatus(owner, recordSet.Status.RecordSets))
 			continue
 		}
+		if found && recordSet.Spec.RecordType == dnsv1alpha1.RRTypeSOA {
+			keepSOASerialRising(ownerRRSet.Records, current)
+		}
 
 		replaces = append(replaces, buildReplaceRRSet(
 			zoneName,
@@ -1501,4 +1504,42 @@ func getenvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// keepSOASerialRising raises the serial in each desired SOA record to the one
+// PowerDNS already holds when that is higher. PowerDNS bumps the serial it is
+// sent, so sending a lower one moves the zone's serial backwards.
+func keepSOASerialRising(desired []string, current zoneRRset) {
+	var held uint32
+	for _, rec := range current.Records {
+		if serial, ok := soaSerial(rec.Content); ok && serial > held {
+			held = serial
+		}
+	}
+	if held == 0 {
+		return
+	}
+	for i := range desired {
+		fields := strings.Fields(desired[i])
+		if len(fields) != 7 {
+			continue
+		}
+		if serial, ok := soaSerial(desired[i]); ok && serial >= held {
+			continue
+		}
+		fields[2] = strconv.FormatUint(uint64(held), 10)
+		desired[i] = strings.Join(fields, " ")
+	}
+}
+
+func soaSerial(content string) (uint32, bool) {
+	fields := strings.Fields(content)
+	if len(fields) != 7 {
+		return 0, false
+	}
+	serial, err := strconv.ParseUint(fields[2], 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(serial), true
 }

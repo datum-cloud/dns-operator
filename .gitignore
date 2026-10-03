@@ -48,3 +48,5 @@ go.work.sum
 
 # Local claude settings
 .claude/settings.local.json
+.claude/worktrees/
+.mcp.json

@@ -596,9 +596,16 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	targets := make(map[string]struct{}, len(recordSet.Spec.Records))
 	for i := range recordSet.Spec.Records {
 		qualified := ownername.Qualify(recordSet.Spec.Records[i].Name, zoneName)
-		if _, found := existing[rrsetKey{name: qualified, typ: recordType}]; found {
-			targets[qualified] = struct{}{}
+		current, found := existing[rrsetKey{name: qualified, typ: recordType}]
+		if !found {
+			continue
 		}
+		// Another record set rewrote this name after this one did, and still
+		// asks for it, so the name is no longer this record set's to delete.
+		if owner := rrsetOwnerRef(current); owner != "" && owner != ownerRef {
+			continue
+		}
+		targets[qualified] = struct{}{}
 	}
 
 	// Owner names this record set wrote that its spec no longer mentions.

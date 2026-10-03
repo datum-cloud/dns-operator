@@ -1330,6 +1330,47 @@ func TestDeleteRecordSet_DeletesSpecAndOwnedNamesInOnePatch(t *testing.T) {
 	}
 }
 
+// Two record sets of one type can list the same name. The later writer's
+// ownership comment says the name is now its own, so deleting the earlier
+// record set must leave that name in place (#188).
+func TestDeleteRecordSet_KeepsNameAnotherRecordSetRewrote(t *testing.T) {
+	t.Parallel()
+
+	stub, c := newPDNSStub(t, zoneResponse{
+		Name: exampleCom,
+		RRSets: []zoneRRset{
+			{
+				Name:     "www.example.com.",
+				Type:     "A",
+				Records:  []zoneRRsetRecord{{Content: "5.6.7.8"}},
+				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs2"}},
+			},
+			{
+				Name:     "mine.example.com.",
+				Type:     "A",
+				Records:  []zoneRRsetRecord{{Content: "1.2.3.4"}},
+				Comments: []zoneRRsetComment{{Account: ACCOUNT_OWNER, Content: "default:rs"}},
+			},
+		},
+	})
+
+	if err := c.DeleteRecordSet(context.Background(), testZone, aRecordSet(1, "www", "mine")); err != nil {
+		t.Fatalf("DeleteRecordSet error: %v", err)
+	}
+
+	var names []string
+	for _, patch := range stub.patches {
+		for _, rr := range patch.RRSets {
+			if rr.ChangeType == changeTypeDelete {
+				names = append(names, rr.Name)
+			}
+		}
+	}
+	if !reflect.DeepEqual(names, []string{"mine.example.com."}) {
+		t.Fatalf("deleted %v, want only the name this record set still owns", names)
+	}
+}
+
 // A patch that replaces and deletes one RRset says two things at once. PowerDNS
 // would refuse it for the duplicate REPLACE the clear adds, rejecting every
 // other change travelling with it, so it is refused here with the RRset named.

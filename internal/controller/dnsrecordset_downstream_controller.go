@@ -41,6 +41,11 @@ type DNSRecordSetReconciler struct {
 	// Config tunes the controller's concurrency and retry backoff. A zero value
 	// falls back to the same defaults the server config declares.
 	Config config.DNSRecordSetPowerDNSControllerConfig
+
+	// TargetResolver checks that ALIAS targets resolve. Nil skips the check.
+	TargetResolver TargetResolver
+
+	aliasChecks aliasTargetChecks
 }
 
 const (
@@ -130,6 +135,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				logger.Error(err, "failed to remove finalizer", "namespace", rs.Namespace, "name", rs.Name)
 				return ctrl.Result{}, err
 			}
+			r.aliasChecks.forget(req.NamespacedName)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -187,7 +193,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// outside the operator is still corrected on the manager's resync.
 	if recordSetProgrammedAtGeneration(&rs) {
 		logger.V(1).Info("RecordSet already programmed at this generation", "generation", rs.Generation)
-		return ctrl.Result{}, nil
+		return r.checkALIASTargets(ctx, &rs)
 	}
 
 	statuses, ensureErr := r.DNSHandler.Client.EnsureRecordSet(ctx, zone, rs)
@@ -206,7 +212,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		logger.Info("RecordSet has records not yet programmed, retrying later", "after", delay)
 		return ctrl.Result{RequeueAfter: delay}, nil
 	}
-	return ctrl.Result{}, nil
+	return r.checkALIASTargets(ctx, &rs)
 }
 
 func unprogrammedRetryDelay(statuses []dnsv1alpha1.RecordSetStatus, now time.Time) (time.Duration, bool) {

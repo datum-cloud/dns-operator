@@ -63,6 +63,7 @@ retrying, and keeps failing, for as long as the cause stands.
 | `NotOwner` | per-record `Programmed` | Another record set claimed this owner name first and holds it. | Whoever owns one of the two record sets removes their claim. |
 | `Conflict` | per-record `Programmed` | The backend refuses this record because it cannot coexist with data already at the name, such as a `CNAME` beside other types. | Remove the conflicting data, or move the record to another name. |
 | `DNSZoneInUse` | zone `Accepted` and `Programmed` | Another zone already claims this domain. | Release the other zone, or use a different domain. |
+| `TargetUnresolved` | ALIAS record set `TargetResolved` | An ALIAS target resolves to no A or AAAA address, so the name answers SERVFAIL. The record is still `Programmed`. | Whoever owns the target restores it, or the record set points at a live target. |
 
 `NotOwner` is the one most often mistaken for a transient state. It is not.
 See [Record Ownership](./record-ownership.md) for who wins a contested name and
@@ -81,6 +82,7 @@ it can take up to five minutes to notice.
 | Reason | Where | What it means |
 |---|---|---|
 | `PDNSError` | per-record `Programmed` | The PowerDNS backend rejected the change. |
+| `TargetLookupFailed` | ALIAS record set `TargetResolved` | The lookup of an ALIAS target failed, for example on a timeout, so the operator could not tell whether it resolves. Checked again every 5 minutes. |
 
 `PDNSError` covers both a record the backend will never accept, such as invalid
 record data or a name outside the zone, and a backend that was briefly
@@ -90,8 +92,18 @@ collapsing it to the reason.
 
 ### Success
 
-`Accepted`, `Programmed`, and `Discovered` appear as reasons on the conditions
-of the same name when the status is `True`.
+`Accepted`, `Programmed`, `Discovered`, and `TargetResolved` appear as reasons
+on the conditions of the same name when the status is `True`.
+
+`TargetResolved` appears only on ALIAS record sets. PowerDNS expands an ALIAS
+when a query arrives, so the write can succeed while the name fails. The
+operator looks up each ALIAS target every 5 minutes after the record set is
+programmed, and exports `dns_operator_alias_target_unresolved` for alerting.
+
+The lookup runs from the operator, through the system resolver or the server
+named by `--alias-target-resolver`. The edge servers expand ALIAS through their
+own recursor, so the two can disagree, for example on a target only an internal
+zone serves. Treat `TargetUnresolved` as the operator's view of the target.
 
 ## Reading an unfamiliar reason
 

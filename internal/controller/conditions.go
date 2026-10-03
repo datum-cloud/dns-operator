@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	CondAccepted   = "Accepted"
-	CondProgrammed = "Programmed"
-	CondDiscovered = "Discovered"
+	CondAccepted       = "Accepted"
+	CondProgrammed     = "Programmed"
+	CondDiscovered     = "Discovered"
+	CondTargetResolved = "TargetResolved"
 
 	ReasonAccepted                  = "Accepted"
 	ReasonPending                   = "Pending"
@@ -26,6 +27,9 @@ const (
 	ReasonPDNSError                 = "PDNSError"
 	ReasonConflict                  = "Conflict"
 	ReasonPendingDomainVerification = "PendingDomainVerification"
+	ReasonTargetResolved            = "TargetResolved"
+	ReasonTargetUnresolved          = "TargetUnresolved"
+	ReasonTargetLookupFailed        = "TargetLookupFailed"
 )
 
 const (

@@ -1425,3 +1425,70 @@ func TestEnsureRecordSet_KeepsEachClearWithItsDeleteInOneRequest(t *testing.T) {
 		t.Fatalf("expected %d names to travel in 2 requests, got %d", owned, len(stub.patches))
 	}
 }
+
+// PowerDNS bumps the SOA serial it is sent, so a rewrite that sends today's
+// default serial below the one the zone already holds moves the zone's serial
+// backwards (#101). A rewrite must send the higher of the two.
+func TestEnsureRecordSet_SOARewriteNeverLowersSerial(t *testing.T) {
+	t.Parallel()
+
+	today := time.Now().Format("20060102")
+	soaRecordSet := func(serial uint32) dnsv1alpha1.DNSRecordSet {
+		return dnsv1alpha1.DNSRecordSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "zone-soa", Namespace: "default", UID: types.UID("uid"), Generation: 2},
+			Spec: dnsv1alpha1.DNSRecordSetSpec{
+				RecordType: dnsv1alpha1.RRTypeSOA,
+				Records: []dnsv1alpha1.RecordEntry{{
+					Name: "@",
+					SOA:  &dnsv1alpha1.SOARecordSpec{MName: "ns1.example.net.", RName: "hostmaster.example.com.", Serial: serial},
+				}},
+			},
+		}
+	}
+	heldSOA := func(serial string) []zoneRRset {
+		return []zoneRRset{{
+			Name:    "example.com.",
+			Type:    "SOA",
+			TTL:     3600,
+			Records: []zoneRRsetRecord{{Content: "ns1.example.net. hostmaster.example.com. " + serial + " 10800 3600 604800 3600"}},
+			Comments: []zoneRRsetComment{
+				{Account: ACCOUNT_OWNER, Content: "default:zone-soa"},
+				{Account: ACCOUNT_OBSERVED_GENERATION, Content: "1"},
+				{Account: ACCOUNT_OBJECT_UID, Content: "uid"},
+			},
+		}}
+	}
+
+	cases := []struct {
+		name       string
+		held       []zoneRRset
+		specSerial uint32
+		want       string
+	}{
+		{"a held serial above today's default is kept", heldSOA("2099123137"), 0, "2099123137"},
+		{"a held serial below today's default gives way to it", heldSOA("2020010101"), 0, today + "01"},
+		{"an explicit serial above the held one is sent", heldSOA("2020010101"), 2030010101, "2030010101"},
+		{"an explicit serial below the held one is raised", heldSOA("2099123137"), 2030010101, "2099123137"},
+		{"a zone with no SOA gets today's default", nil, 0, today + "01"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stub, c := newPDNSStub(t, zoneResponse{Name: exampleCom, RRSets: tc.held})
+			if _, err := c.EnsureRecordSet(context.Background(), testZone, soaRecordSet(tc.specSerial)); err != nil {
+				t.Fatalf("EnsureRecordSet error: %v", err)
+			}
+			if len(stub.patches) != 1 || len(stub.patches[0].RRSets) != 1 {
+				t.Fatalf("expected one PATCH carrying the SOA, got %+v", stub.patches)
+			}
+			sent := stub.patches[0].RRSets[0].Records
+			if len(sent) != 1 {
+				t.Fatalf("expected one SOA record, got %+v", sent)
+			}
+			if got := strings.Fields(sent[0].Content)[2]; got != tc.want {
+				t.Fatalf("sent serial %s, want %s", got, tc.want)
+			}
+		})
+	}
+}

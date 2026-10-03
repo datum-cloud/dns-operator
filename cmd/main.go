@@ -74,6 +74,7 @@ func main() {
 	var leaderElectionRenewDeadline time.Duration
 	var leaderElectionRetryPeriod time.Duration
 	var probeAddr string
+	var aliasTargetResolver string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
@@ -86,6 +87,8 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&aliasTargetResolver, "alias-target-resolver", "",
+		"The DNS server (host:port) used to check that ALIAS targets resolve. Defaults to the system resolver.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -265,10 +268,11 @@ func main() {
 			os.Exit(1)
 		}
 		if err := (&controller.DNSRecordSetReconciler{
-			Client:     mgr.GetClient(),
-			Scheme:     mgr.GetScheme(),
-			DNSHandler: dnsHandler,
-			Config:     serverConfig.Controllers.DNSRecordSetPowerDNS,
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			DNSHandler:     dnsHandler,
+			Config:         serverConfig.Controllers.DNSRecordSetPowerDNS,
+			TargetResolver: controller.NewTargetResolver(aliasTargetResolver),
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DNSRecordSet")
 			os.Exit(1)

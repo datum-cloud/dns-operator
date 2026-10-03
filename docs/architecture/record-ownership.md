@@ -18,6 +18,12 @@ Two record sets that list the same name under different record types do not
 compete at all: an `A` record for `www` and a `TXT` record for `www` are
 separate keys, and both are programmed.
 
+A CNAME is the exception. PowerDNS refuses any other RRset at a name that holds
+a CNAME, and refuses a CNAME at a name that holds anything else, so a CNAME and
+any other type at one name do contend. The admission webhook refuses the later
+claim. ALIAS is not exclusive: PowerDNS 5.1 accepts it beside every type except
+CNAME.
+
 The zone half of the key is the `DNSZone` a record set references, within the
 namespace that zone lives in. Record sets in different namespaces, or pointing
 at different zones, never contend.

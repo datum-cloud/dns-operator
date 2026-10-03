@@ -3,9 +3,11 @@
 Cross-cluster admission registration for `DNSRecordSet`: a
 `MutatingWebhookConfiguration` for display annotations (`display-name` /
 `display-value`) and a `ValidatingWebhookConfiguration` that refuses a write
-newly claiming an owner name another record set already holds for the same
-record type in the same zone. The webhook **server** runs in the dns-operator
-manager; this bundle only registers admission with the control-plane apiserver.
+newly claiming an owner name another record set already holds in the same zone,
+either for the same record type or where either record set is a CNAME, since
+PowerDNS refuses any other record type beside a CNAME. The webhook **server**
+runs in the dns-operator manager; this bundle only registers admission with the
+control-plane apiserver.
 
 ## Why a separate path
 

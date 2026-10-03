@@ -82,7 +82,7 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 			continue
 		}
 		if other.Spec.DNSZoneRef.Name != rs.Spec.DNSZoneRef.Name ||
-			other.Spec.RecordType != rs.Spec.RecordType {
+			!typesShareName(other.Spec.RecordType, rs.Spec.RecordType) {
 			continue
 		}
 		for _, rec := range other.Spec.Records {
@@ -110,18 +110,30 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 	var errs field.ErrorList
 	for _, k := range contested {
 		claim := claims[k]
+		holder := holders[k]
+		reason := "a name is held by one DNSRecordSet only, so this record would never be published"
+		if holder.Spec.RecordType != rs.Spec.RecordType {
+			reason = "a CNAME cannot share its name with any other record type, so this record would never be published"
+		}
 		errs = append(errs, field.Invalid(
 			field.NewPath("spec", "records").Index(claim.recordIndex).Child("name"),
 			claim.ownerName,
 			fmt.Sprintf(
-				"owner name %q is already claimed by DNSRecordSet %q for record type %s in zone %q; "+
-					"a name is held by one DNSRecordSet only, so this record would never be published",
-				k, holders[k].Name, rs.Spec.RecordType, rs.Spec.DNSZoneRef.Name),
+				"owner name %q is already claimed by DNSRecordSet %q for record type %s in zone %q; %s",
+				k, holder.Name, holder.Spec.RecordType, rs.Spec.DNSZoneRef.Name, reason),
 		))
 	}
 
 	return apierrors.NewInvalid(
 		dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").GroupKind(), rs.Name, errs)
+}
+
+// typesShareName reports whether record sets of types a and b contend for one
+// owner name. Two sets of one type do, and so does a CNAME with any other type,
+// since PowerDNS refuses any RRset beside a CNAME. ALIAS is not exclusive in
+// PowerDNS 5.1, which accepts it beside every type except CNAME.
+func typesShareName(a, b dnsv1alpha1.RRType) bool {
+	return a == b || a == dnsv1alpha1.RRTypeCNAME || b == dnsv1alpha1.RRTypeCNAME
 }
 
 type ownerClaim struct {

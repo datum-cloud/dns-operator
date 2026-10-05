@@ -17,7 +17,9 @@ is missing.
      registrar. Delegation is not the problem — if the customer still
      reports an issue, look at resolver caching or a record that isn't
      programmed instead, and don't send them back to their registrar
-     for this.
+     for this. The one exception is DNSSEC: a DS record left at the
+     registrar breaks a fully delegated domain, and this check can't
+     see it. `zone-not-resolving` covers how to confirm it.
    - **Partial**: some but not all nameservers are set. Read the
      `nameservers` list and tell the customer exactly which ones are
      missing at their registrar — don't just say "some are missing,"

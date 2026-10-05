@@ -17,13 +17,19 @@ than starting from nothing.
    offer to have a fresh one taken rather than working from a stale
    one.
 
-3. Before recreating anything, ask whether the domain has DNSSEC
-   turned on at its current provider. If it does, it has to come off
-   there, and any DS records at the parent have to clear, before this
-   zone is ever delegated to Datum's nameservers. Getting this order
-   wrong takes the domain dark behind every validating resolver, and
-   the failure looks nothing like a DNS problem from the customer's
-   side — treat this as a hard gate, not a suggestion.
+3. Before recreating anything, find out whether the domain has
+   DNSSEC turned on. Don't rely on the customer remembering: ask them
+   to run `dig +short DS example.com`. Empty output means it's off.
+   Any output means the domain is signed, and DNSSEC has to come off
+   at the registrar (and at the current provider, if it manages
+   DNSSEC) before this zone is ever delegated to Datum's nameservers.
+   Then they wait until the same command returns nothing, plus one
+   more DS TTL (`dig DS example.com` shows it; a day for .com and
+   .net) so cached copies expire. Getting this order wrong takes the
+   domain dark behind every validating resolver, and the failure
+   looks nothing like a DNS problem from the customer's side — treat
+   this as a hard gate, not a suggestion. The full steps are at
+   https://www.datum.net/docs/domain-dns/dns#dnssec.
 
 4. Walk the discovered record sets with the customer and confirm each
    one before recreating it. For anything more than a couple of
@@ -45,6 +51,9 @@ than starting from nothing.
 - Do not recreate records before confirming DNSSEC is off. This is the
   single most damaging mistake in a zone cutover and it is silent
   until a resolver that validates hits it.
+- Do not try to carry DS, DNSKEY, RRSIG, NSEC, or NSEC3 records
+  across. Datum doesn't currently support DNSSEC, so there is nothing
+  to put them in, and the importers skip them on purpose.
 - Do not repoint nameservers before every record is recreated and
   verified. Once delegation completes, the old provider stops serving
   answers for this domain even if Datum's records aren't ready yet.

@@ -120,6 +120,11 @@ most 16 at once, so it does not wait on the API server once per record set.
 
 - It reads the zone once.
 - It writes a name only when PowerDNS does not already hold the holder's current records.
+- It compares records by meaning, not by text, because PowerDNS stores some values in another form. For
+  example, `2001:0DB8:0000:0000:0000:0000:0000:0001` comes back as `2001:db8::1`. The same happens to the
+  zone's name inside a `CNAME` or `MX` target, to `TLSA` hex, and to a `TXT` value that PowerDNS unescapes or
+  splits into 255-byte strings. A text comparison would rewrite each such name on every pass, and every
+  write raises the zone's SOA serial.
 - It deletes a name that the agent owns and that no record set claims. The agent owns a name when the
   name carries an ownership note from a record set of the zone's own project, or when such a record set
   that is being deleted declares it. So a pass never deletes a record another project wrote, even if two

@@ -219,6 +219,59 @@ func TestDNSRecordSetValidator_ValidateCreate(t *testing.T) {
 	}
 }
 
+func TestDNSRecordSetValidator_WildcardAlias(t *testing.T) {
+	t.Parallel()
+
+	scheme := validatorScheme(t)
+	zone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"},
+	}
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	rs := func(rrType dnsv1alpha1.RRType, owners ...string) *dnsv1alpha1.DNSRecordSet {
+		return recordSet("set", "my-zone", rrType, base, owners...)
+	}
+	const hint = "use a CNAME for"
+
+	tests := []struct {
+		name        string
+		oldRS       *dnsv1alpha1.DNSRecordSet
+		newRS       *dnsv1alpha1.DNSRecordSet
+		wantRefused bool
+		wantIn      []string
+	}{
+		{name: "ALIAS at bare wildcard is refused on create", newRS: rs(dnsv1alpha1.RRTypeALIAS, "*"), wantRefused: true, wantIn: []string{hint, `"*"`, "spec.records[0].name"}},
+		{name: "ALIAS at nested wildcard is refused on create", newRS: rs(dnsv1alpha1.RRTypeALIAS, "*.app"), wantRefused: true, wantIn: []string{hint, `"*.app"`}},
+		{name: "ALIAS at fqdn wildcard is refused on create", newRS: rs(dnsv1alpha1.RRTypeALIAS, "*.example.com."), wantRefused: true, wantIn: []string{hint}},
+		{name: "wildcard among valid names is refused with its index", newRS: rs(dnsv1alpha1.RRTypeALIAS, "www", "*.app"), wantRefused: true, wantIn: []string{"spec.records[1].name"}},
+		{name: "CNAME at wildcard is accepted", newRS: rs(dnsv1alpha1.RRTypeCNAME, "*.app")},
+		{name: "A at wildcard is accepted", newRS: rs(dnsv1alpha1.RRTypeA, "*")},
+		{name: "AAAA at wildcard is accepted", newRS: rs(dnsv1alpha1.RRTypeAAAA, "*.app")},
+		{name: "ALIAS at apex is accepted", newRS: rs(dnsv1alpha1.RRTypeALIAS, "@")},
+		{name: "ALIAS at exact name is accepted", newRS: rs(dnsv1alpha1.RRTypeALIAS, "www")},
+		{name: "ALIAS with a star inside a label is accepted", newRS: rs(dnsv1alpha1.RRTypeALIAS, "a*b")},
+		{name: "adding a wildcard ALIAS on update is refused", oldRS: rs(dnsv1alpha1.RRTypeALIAS, "www"), newRS: rs(dnsv1alpha1.RRTypeALIAS, "www", "*"), wantRefused: true, wantIn: []string{hint, "spec.records[1].name"}},
+		{name: "changing type to ALIAS at a wildcard is refused", oldRS: rs(dnsv1alpha1.RRTypeCNAME, "*.app"), newRS: rs(dnsv1alpha1.RRTypeALIAS, "*.app"), wantRefused: true, wantIn: []string{hint}},
+		{name: "a stored wildcard ALIAS stays editable", oldRS: rs(dnsv1alpha1.RRTypeALIAS, "*.app"), newRS: rs(dnsv1alpha1.RRTypeALIAS, "*.app", "www")},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := &DNSRecordSetValidator{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(zone).Build(),
+			}
+			var err error
+			if tc.oldRS == nil {
+				_, err = v.ValidateCreate(context.Background(), tc.newRS)
+			} else {
+				_, err = v.ValidateUpdate(context.Background(), tc.oldRS, tc.newRS)
+			}
+			assertRefusal(t, err, tc.wantRefused, tc.wantIn)
+		})
+	}
+}
+
 func TestDNSRecordSetValidator_ValidateUpdate(t *testing.T) {
 	t.Parallel()
 

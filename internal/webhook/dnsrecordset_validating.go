@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,15 +30,58 @@ type DNSRecordSetValidator struct {
 var _ admission.Validator[*dnsv1alpha1.DNSRecordSet] = &DNSRecordSetValidator{}
 
 func (v *DNSRecordSetValidator) ValidateCreate(ctx context.Context, rs *dnsv1alpha1.DNSRecordSet) (admission.Warnings, error) {
+	if err := refuseWildcardAlias(nil, rs); err != nil {
+		return nil, err
+	}
 	return nil, v.refuseClaimedOwnerNames(ctx, nil, rs)
 }
 
 func (v *DNSRecordSetValidator) ValidateUpdate(ctx context.Context, oldRS, newRS *dnsv1alpha1.DNSRecordSet) (admission.Warnings, error) {
+	if err := refuseWildcardAlias(oldRS, newRS); err != nil {
+		return nil, err
+	}
 	return nil, v.refuseClaimedOwnerNames(ctx, oldRS, newRS)
 }
 
 func (v *DNSRecordSetValidator) ValidateDelete(context.Context, *dnsv1alpha1.DNSRecordSet) (admission.Warnings, error) {
 	return nil, nil
+}
+
+func refuseWildcardAlias(oldRS, rs *dnsv1alpha1.DNSRecordSet) error {
+	if rs.Spec.RecordType != dnsv1alpha1.RRTypeALIAS {
+		return nil
+	}
+
+	stored := map[string]struct{}{}
+	if oldRS != nil && oldRS.Spec.RecordType == dnsv1alpha1.RRTypeALIAS {
+		for _, rec := range oldRS.Spec.Records {
+			stored[rec.Name] = struct{}{}
+		}
+	}
+
+	var errs field.ErrorList
+	for i, rec := range rs.Spec.Records {
+		if !isWildcardName(rec.Name) {
+			continue
+		}
+		if _, ok := stored[rec.Name]; ok {
+			continue
+		}
+		errs = append(errs, field.Invalid(
+			field.NewPath("spec", "records").Index(i).Child("name"),
+			rec.Name,
+			fmt.Sprintf("ALIAS records cannot be used at wildcard names; use a CNAME for %q", rec.Name),
+		))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(
+		dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").GroupKind(), rs.Name, errs)
+}
+
+func isWildcardName(name string) bool {
+	return name == "*" || strings.HasPrefix(name, "*.")
 }
 
 func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, oldRS, rs *dnsv1alpha1.DNSRecordSet) error {

@@ -73,6 +73,8 @@ CAA, NS, SOA, PTR, TLSA, HTTPS, SVCB. A few behaviors are easy to miss:
 
 - CNAME and ALIAS are single-valued. Extra values submitted alongside one
   are silently dropped, not rejected.
+- ALIAS cannot be used at a wildcard name (`*` or `*.app`): it would never
+  resolve, so the API rejects it. Use a CNAME at a wildcard instead.
 - TXT content is quoted and semicolons are escaped automatically.
 - SOA's serial number defaults to a date-stamped value if not set.
 - TTL defaults to 300 seconds when the customer doesn't set one. Nothing

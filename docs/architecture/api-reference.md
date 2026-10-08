@@ -44,6 +44,12 @@ spec:
 
 Namespaced. Models a single domain.
 
+`spec.visibility` accepts `Public` or `Private` and defaults to `Public`.
+Visibility is immutable. Create a new zone to change its serving boundary.
+Private zones and their records are excluded from public replication, serving,
+and discovery. This boundary prepares private zone support; it does not provision
+a private resolver or connect a zone to a VPC.
+
 | Field | Type | Description |
 |-------|------|-------------|
 | `spec.domainName` | string | Required FQDN (e.g. `example.com`). Immutable once set. |
@@ -62,6 +68,8 @@ metadata:
 spec:
   domainName: example.com
   dnsZoneClassName: powerdns
+  # Optional. Omitted visibility preserves public DNS behavior.
+  visibility: Public
 ```
 
 ## DNSRecordSet

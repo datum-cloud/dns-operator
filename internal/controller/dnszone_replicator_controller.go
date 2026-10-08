@@ -71,6 +71,11 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Private zones must not claim a public apex or enter public replication.
+	if upstream.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return ctrl.Result{}, nil
+	}
+
 	// Build a typed clientset from the upstream cluster REST config so we can
 	// create events.k8s.io/v1 Event objects directly. Event emission is
 	// best-effort: if clientset construction fails we log and continue.

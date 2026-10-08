@@ -617,6 +617,11 @@ These resources are internal to the DNS service project. Consumers and product
 publishers cannot write them. Examples show selected fields that explain
 coordination; they are not complete generated serving plans or transport payloads.
 
+The proposed `DNSResolverBinding` groups four concerns: source identity,
+regional placement, generated serving configuration, and access authorization.
+It binds a consumer DNS context to shared capacity; it does not describe a VPC
+or create a resolver deployment.
+
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSResolverBinding
@@ -624,35 +629,79 @@ metadata:
   name: application-central
   namespace: dns-platform
 spec:
-  # Preserve the authenticated source project identity in shared storage.
-  projectUID: 11111111-1111-4111-8111-111111111111
-  # Prototype wire name: this carries a DNS context UID, not a VPC lookup key.
-  vpcUID: 33333333-3333-4333-8333-333333333333
-  # Identify the shared regional serving assignment.
-  region: central
-  shard: shared-0
-  # Fence plan replacement separately from configuration changes.
-  bindingGeneration: 1
-  configurationRevision: 7
-  # Trusted node-tier and regional-tier destinations for this context.
-  consumerAddress: fd70:100::10
-  clusterAddress: fd70:200::10
-  port: 53
-  transports: [UDP, TCP]
-  # Use isolated caches in shared processes, with no private dnsdist packet cache.
-  resolverEngine: BIND9
-  resolverIsolation: View
-  deploymentModel: SharedShard
-  dnsdistPacketCache: Disabled
-  # Only explicitly associated private zones enter the context's plan.
-  zoneUIDs:
-    - 44444444-4444-4444-8444-444444444444
-    - 88888888-8888-4888-8888-888888888888
-  # Preserve the accepted access authorization through every serving tier.
-  authorizationIssuerEpoch: 3
-  authorizationRevision: 27
-  authorizationValidUntil: "2026-10-08T20:05:00Z"
+  source:
+    # Scope source references to the authenticated consumer project.
+    projectUID: 11111111-1111-4111-8111-111111111111
+    # Pin the DNS context lifetime; DNS does not dereference a VPC.
+    resolverContextRef:
+      name: application
+      uid: 33333333-3333-4333-8333-333333333333
+    # Retain the exact regional access authorization that produced this plan.
+    accessBindingRef:
+      name: application-central
+      uid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+  placement:
+    # Identify shared capacity; these fields do not select the source API.
+    region: central
+    shard: shared-0
+  configuration:
+    # Fence plan replacement. This is distinct from metadata.generation.
+    generation: 1
+    # Order configuration changes within this plan generation.
+    revision: 7
+    listeners:
+      # Node-tier service destination, reached through the private network path.
+      node:
+        address: fd70:100::10
+        port: 53
+        transports: [UDP, TCP]
+      # Regional-tier destination used by the context's node resolver view.
+      regional:
+        address: fd70:200::10
+        port: 53
+        transports: [UDP, TCP]
+    zoneRefs:
+      # Include only private zones explicitly associated with the source context.
+      - name: managed-application
+        uid: 44444444-4444-4444-8444-444444444444
+      - name: production
+        uid: 88888888-8888-4888-8888-888888888888
+  authorization:
+    # Copy the accepted access epoch, sequence, and deadline without renewal.
+    writerEpoch: 3
+    sequence: 27
+    validUntil: "2026-10-08T20:05:00Z"
 ```
+
+`source` references and `configuration.zoneRefs` identify objects in the consumer
+project selected by `source.projectUID`. They are provenance references, not
+lookups in the DNS service project's namespace. Admission pins their UIDs and
+restricts writes to DNS controllers. Source identity is immutable for a binding
+lifetime.
+
+`placement` selects shared regional capacity. `configuration.listeners.node`
+is the service-side destination, not the well-known address inside the consumer
+VPC. Each listener has its own address, port, and transports so the two serving
+tiers do not share ambiguous endpoint fields. The region and node listener must
+match the source access binding; DNS allocates the regional listener.
+
+`configuration.generation` replaces the prototype's `bindingGeneration`;
+`configuration.revision` replaces `configurationRevision`. Access renewals
+advance `authorization.sequence`. Configuration and authorization counters fence
+different state; agents check both. A configuration change cannot extend the
+access deadline. Serving acknowledgments
+must identify the binding UID, configuration generation and revision, and the
+exact authorization epoch, sequence, and deadline applied. Readiness requires
+current acknowledgments from all required members.
+
+Resolver engine, cache isolation, deployment model, and dnsdist cache policy
+belong to DNS-owned fleet configuration. Bindings cannot override those shared
+policies. The initial fleet uses BIND views, shared processes, and a disabled
+private dnsdist packet cache as described in the query path.
+
+This example proposes a reorganized contract. The local prototype still uses
+a flat specification; schema, controller, transport, and serving-agent changes
+must preserve its existing identity, version, and expiry fences.
 
 The publication resources divide coordination from immutable data:
 
@@ -738,10 +787,14 @@ older replay cannot restore it.
 #### Compatibility and API review
 
 The target integration uses `resolverContextRef` and never requires DNS to read
-networking resources. The prototype retains legacy `vpcRef` inputs and internal
-`vpcUID`/`vpcUIDs` wire names. Context-based execution treats the latter as opaque
-DNS context identities. Rename these internal fields and define migration rules
-before stabilizing the API; do not make the old VPC coupling a supported contract.
+networking resources. The prototype retains legacy `vpcRef` inputs and flat
+`DNSResolverBinding` fields. The binding example above proposes nested groups,
+UID-pinned DNS source references, explicit node and regional listeners, and fleet
+policy outside individual bindings. It requires coordinated schema, controller,
+transport, and agent migration. The manifest prototype still uses `vpcUIDs` for
+opaque DNS context identities; rename that field before stabilizing the API.
+Migration must retain accepted UIDs, configuration versions, authorization
+fences, and original deadlines.
 
 API review must settle namespace reservation policy, naming conflicts, grant
 issuance and revocation, field-level status ownership, deadline bounds, regional

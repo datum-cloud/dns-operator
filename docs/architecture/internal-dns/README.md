@@ -1,20 +1,109 @@
+---
+status: provisional
+stage: alpha
+latest-milestone: "TBD"
+---
+
 # Internal DNS architecture
 
-Status: Proposed. The API contracts and serving components require qualification
-before release. See [API design](api-design.md) for annotated YAML examples.
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Goals](#goals)
+  - [Non-Goals](#non-goals)
+- [Proposal](#proposal)
+  - [User stories](#user-stories)
+  - [Notes, constraints, and caveats](#notes-constraints-and-caveats)
+  - [Risks and mitigations](#risks-and-mitigations)
+- [Design Details](#design-details)
+  - [Control-plane boundaries](#control-plane-boundaries)
+  - [Contexts and regional access](#contexts-and-regional-access)
+  - [Query path and network identity](#query-path-and-network-identity)
+  - [Publication and service discovery](#publication-and-service-discovery)
+  - [API design](#api-design)
+  - [Integration boundaries](#integration-boundaries)
+- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
+  - [Feature Enablement and Rollback](#feature-enablement-and-rollback)
+  - [Rollout, Upgrade and Rollback Planning](#rollout-upgrade-and-rollback-planning)
+  - [Monitoring Requirements](#monitoring-requirements)
+  - [Dependencies](#dependencies)
+  - [Scalability](#scalability)
+  - [Troubleshooting](#troubleshooting)
+- [Implementation History](#implementation-history)
+- [Drawbacks](#drawbacks)
+- [Alternatives](#alternatives)
+- [Infrastructure Needed](#infrastructure-needed)
 
-Internal DNS lets resources resolve private names within a VPC. One DNS context
-selects the names visible to that network, including an automatically managed
-namespace and optional custom zones. Many contexts share the same serving fleet;
-adding a VPC does not create a resolver deployment.
+## Summary
+
+Internal DNS lets resources resolve private names within a VPC. Each network has
+a managed namespace and can use additional private zones. Product services
+publish names automatically, and shared regional fleets serve many VPCs with
+isolated DNS contexts.
 
 The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
 defines the consumer experience. The
 [Galactic design](https://github.com/datum-cloud/galactic/blob/main/docs/enhancements/networking/private-service-connect/README.md)
-defines private connectivity and network authorization. This document defines
-the DNS control plane, publication contracts, and query serving architecture.
+defines private connectivity. This enhancement defines the DNS architecture and
+[API design](api-design.md).
 
-## Control-plane boundaries
+## Motivation
+
+Compute instances, Connect services, and other resources need names that resolve
+within their network. Consumers should receive useful default names without
+choosing a zone for every resource. Shared infrastructure must isolate networks
+that use identical names and addresses, and stop returning endpoints that are no
+longer eligible.
+
+### Goals
+
+- Serve private zones through the VPC's inherited resolver configuration.
+- Allocate default names and support additional custom zones.
+- Isolate overlapping names, addresses, and resolver caches across DNS contexts.
+- Accept publications from distributed product control planes and withdraw
+  expired or ineligible endpoints.
+- Scale shared serving capacity across regions without deployments per VPC.
+
+### Non-Goals
+
+- Designing Galactic's private connectivity APIs or packet handling.
+- Having DNS controllers inspect networking or product resources.
+- Defining application health policies for product services.
+- Changing public DNS behavior or defining cross-project zone sharing.
+
+## Proposal
+
+Trusted VPC integration provisions a DNS context and regional resolver access.
+DNS allocates a managed namespace, accepts explicit custom zone associations,
+and compiles product publications into private serving state. Consumers use a
+stable resolver address in their VPC while the platform selects shared capacity.
+
+### User stories
+
+- A Compute user resolves an instance's default private hostname without
+  selecting a zone or resolver deployment.
+- A project adds `prod.internal` and uses names such as `api.prod.internal`.
+- Two VPCs use the same zone name and resolver address but receive isolated
+  answers. Removing an eligible endpoint withdraws its discovery address.
+
+### Notes, constraints, and caveats
+
+These contracts are proposed; API and serving qualification remain required.
+Regional publication is asynchronous. Resolver access and endpoint eligibility
+have separate deadlines. Client caches can retain an answer until its TTL
+expires. Example addresses, identities, and allocated suffixes are illustrative.
+
+### Risks and mitigations
+
+- Tenant leakage: authorize network identity before cache lookup, isolate
+  resolver views, and test overlapping zones and forged identities.
+- Stale endpoints or access: preserve original deadlines, fence writers and
+  replay, and enforce expiry locally at serving nodes.
+- Shared fleet failure: qualify configuration activation, readiness, capacity,
+  and regional failure handling before release.
+
+## Design Details
+
+### Control-plane boundaries
 
 The DNS service runs in its own VPC. Galactic exposes it through a private
 endpoint in each consumer VPC. The diagram shows which API owns each resource;
@@ -55,7 +144,7 @@ translates networking authorization into DNS access. Product publishers translat
 resource state into DNS records. These integrations keep networking and product
 lifecycles outside the DNS controller.
 
-## Contexts and regional access
+### Contexts and regional access
 
 A logical network has one DNS context across its locations. The context selects
 its managed namespace and associated zones. Separate contexts can use identical
@@ -80,7 +169,7 @@ its required serving members apply the current state. A failed region must not
 block updates to healthy regions. Regional access does not, by itself, promise
 that service discovery answers contain only endpoints from that region.
 
-## Query path and network identity
+### Query path and network identity
 
 Both VPCs can expose the same DNS address and contain the same client IP. Galactic
 authorizes the private path and translates its destination into a distinct
@@ -147,7 +236,7 @@ Replacing BIND requires positive and negative cache isolation tests against the
 selected Recursor version. Adding a context changes shared configuration and
 zone data, not the number of resolver processes.
 
-## Publication and service discovery
+### Publication and service discovery
 
 A registration reserves a name and record types. A grant authorizes a product
 publisher. A contribution supplies records and a time-limited eligibility
@@ -208,7 +297,14 @@ are disabled. Withdrawal budgets include publication delay, local expiry, and
 client cache TTL: removing a served record cannot erase an answer already cached
 by a client.
 
-## Integration and qualification
+### API design
+
+The [API design](api-design.md) provides YAML examples with field comments for
+contexts, regional access, private zones, associations, naming policies,
+registrations, grants, contributions, and DNS-owned publication state. It also
+defines writer ownership, validation, and prototype compatibility boundaries.
+
+### Integration boundaries
 
 Reuse project discovery, authenticated project clients, record types, condition
 patterns, certificates, release tooling, and PowerDNS/LMDB operating experience.
@@ -221,11 +317,100 @@ ownership and compilation, durable export, shared fleet configuration, and
 serving acknowledgments. Private snapshots need their own activation contract;
 public zone replication through LightningStream does not replace it.
 
-Before release, validate overlapping zones and addresses, positive and negative
-cache isolation, forged identities, UDP and TCP, access revocation, endpoint
-withdrawal, writer failover, replay, restart, project API and broker outages, and partial regional
-failure. Include Galactic's private path and guest resolver configuration in the
-end-to-end environment. Measure fleet capacity and configuration reload behavior
-at the expected context count and query rate. Resolve regional failover policy,
-broker placement, withdrawal budgets, and tombstone retention before promising
-service guarantees.
+## Production Readiness Review Questionnaire
+
+Production readiness review remains open. Resolve the following requirements
+before release.
+
+### Feature Enablement and Rollback
+
+Alpha needs separate activation controls for product publication and private
+serving. Flag names and deployment wiring require implementation review. Public
+visibility remains the default. Rollback must revoke consumer access before
+draining private serving capacity; workloads that depend on internal DNS lose
+resolution. Reenabling requires fresh authorizations and observations, with
+retained writer fences preventing stale replay.
+
+### Rollout, Upgrade and Rollback Planning
+
+Deploy shared capacity before granting access, then qualify a limited set of
+contexts and expand by region. Validate overlapping zones and addresses,
+positive and negative cache isolation, forged identities, UDP and TCP, access
+revocation, endpoint withdrawal, writer failover, replay, restart, API and broker
+outages, and partial regional failure. Include Galactic's private path and guest
+resolver configuration. Upgrade, rollback, and reenabling tests remain release
+requirements. Resolve withdrawal budgets and tombstone retention before rollout.
+
+### Monitoring Requirements
+
+Measure query latency and failures, publication lag, outbox backlog, expiry
+withdrawal delay, failed activations, and watchdog removal of serving members.
+Keep metric labels bounded; use resource status for context-level diagnosis.
+Consumers inspect access readiness and published names, then query from their
+VPC. Query availability, latency, and withdrawal SLOs require measured targets
+before release.
+
+### Dependencies
+
+- Project APIs and discovery support intent, renewal, and durable coordination.
+  An outage stops updates; installed state remains subject to its deadlines.
+- Galactic and Karmada provide authorized private paths and placed network and
+  workload intent. Network authorization expires independently of DNS state.
+- NATS JetStream carries committed updates. Outages delay publication; queries
+  continue from local state while original freshness deadlines still apply.
+- dnsdist, BIND, and PowerDNS Authoritative provide query serving. Versions and
+  configuration must pass the tenant isolation qualification described above.
+
+### Scalability
+
+API traffic includes project watches, eligibility and access renewals, compiler
+leases, snapshot writes, export progress, and serving acknowledgments. Bound
+snapshot chunks and retained history. Contexts add views, addresses, and zone
+data to shared processes. Measure API write rates, cache memory, configuration
+reload time, transport fanout, and query throughput at the expected context
+count. Supported limits and regional failover capacity remain open decisions.
+
+### Troubleshooting
+
+Trace project, context, and access UIDs through the accepted authorization,
+committed manifest epoch and revision, and serving acknowledgments. For REFUSED,
+inspect access expiry and the authorized network destination. For SERVFAIL,
+inspect missing private state and serving readiness. For NODATA, inspect product
+eligibility and contribution deadlines. During API or broker outages, inspect
+outbox lag and local expiry; replay must not renew stale state.
+
+## Implementation History
+
+- 2026-10-08: [DNS operator #229](https://github.com/datum-cloud/dns-operator/pull/229)
+  proposes the DNS architecture and annotated API contracts.
+- 2026-10-08: [DNS operator #230](https://github.com/datum-cloud/dns-operator/pull/230)
+  proposes the private-zone visibility boundary. The complete feature remains
+  under development.
+
+## Drawbacks
+
+Shared view configuration and experimental authoritative views add operational
+complexity. Deadline enforcement, distributed writer fencing, and durable
+publication introduce coordination state and ongoing API traffic. A fleet
+failure can affect many contexts, so capacity and activation need qualification.
+
+## Alternatives
+
+- **PowerDNS Recursor:** The original resolver choice. Replacing BIND remains an
+  option after qualifying positive and negative cache isolation for the selected
+  version.
+- **CoreDNS:** An alternative serving component that needs a tenant-aware query
+  and cache design, plus throughput and operational qualification.
+- **Resolvers per VPC:** Provide separate processes but conflict with the shared
+  fleet requirement and add workload overhead for every network.
+- **DNS reads product and networking APIs:** Avoids publisher integrations but
+  couples DNS to their lifecycles and health policies. Explicit publications and
+  opaque contexts keep those responsibilities with their owners.
+
+## Infrastructure Needed
+
+Provide a DNS service VPC, Galactic private connectivity, shared node and regional
+serving capacity, protected destination and source-marker allocation, durable
+project API storage, and secured NATS JetStream capacity. Reuse platform identity,
+certificates, and deployment tooling. Regional broker placement, capacity, and
+failover policy need review before production deployment.

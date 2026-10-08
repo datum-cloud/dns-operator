@@ -56,6 +56,17 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Resolve visibility before installing public finalizers or creating events.
+	var zone dnsv1alpha1.DNSZone
+	zoneErr := upstreamCluster.GetClient().Get(ctx,
+		types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone)
+	if zoneErr != nil && !apierrors.IsNotFound(zoneErr) {
+		return ctrl.Result{}, zoneErr
+	}
+	if zoneErr == nil && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return ctrl.Result{}, nil
+	}
+
 	// Build a typed clientset from the upstream cluster REST config so we can
 	// create events.k8s.io/v1 Event objects directly. Event emission is
 	// best-effort: if clientset construction fails we log and continue.
@@ -71,8 +82,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 
 	strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
 
-	// Ensure upstream finalizer (non-deletion path; replaces webhook defaulter)
-	if upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, rsFinalizer) {
+	// Claim the public deletion lifecycle only once zone visibility is known.
+	// A record can arrive before its private zone in a project control plane.
+	if zoneErr == nil && upstream.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(&upstream, rsFinalizer) {
 		base := upstream.DeepCopy()
 		controllerutil.AddFinalizer(&upstream, rsFinalizer)
 		if err := upstreamCluster.GetClient().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
@@ -101,10 +113,10 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	// Gate on referenced DNSZone early and update status when missing.
 	// We fetch the zone before emitting the spec-update event so we can include
 	// the domain name annotation.
-	var zone dnsv1alpha1.DNSZone
-	if err := upstreamCluster.GetClient().Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: upstream.Spec.DNSZoneRef.Name}, &zone); err != nil {
-		if apierrors.IsNotFound(err) {
+	if zoneErr != nil {
+		if apierrors.IsNotFound(zoneErr) {
 			zoneMsg := fmt.Sprintf("DNSZone %q not found", upstream.Spec.DNSZoneRef.Name)
+			base := upstream.DeepCopy()
 			if apimeta.SetStatusCondition(&upstream.Status.Conditions, metav1.Condition{
 				Type:               CondAccepted,
 				Status:             metav1.ConditionFalse,
@@ -113,7 +125,6 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 				ObservedGeneration: upstream.Generation,
 				LastTransitionTime: metav1.NewTime(time.Now()),
 			}) {
-				base := upstream.DeepCopy()
 				if err := upstreamCluster.GetClient().Status().Patch(ctx, &upstream, client.MergeFrom(base)); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -121,7 +132,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			lg.Info("referenced DNSZone not found; marked Accepted=False and exiting early", "dnsZone", upstream.Spec.DNSZoneRef.Name)
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, zoneErr
 	}
 
 	// If the zone is being deleted, do not program downstream recordset

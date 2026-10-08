@@ -22,7 +22,23 @@ type DNSZoneSpec struct {
 	// DNSZoneClassName references the DNSZoneClass used to provision this zone.
 	// +kubebuilder:validation:Required
 	DNSZoneClassName string `json:"dnsZoneClassName"`
+
+	// Visibility selects public publication or private resolver context serving.
+	// Existing zones default to Public. Changing visibility requires a new zone.
+	// +kubebuilder:default=Public
+	// +kubebuilder:validation:Enum=Public;Private
+	// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="visibility is immutable"
+	// +optional
+	Visibility DNSZoneVisibility `json:"visibility,omitempty"`
 }
+
+// DNSZoneVisibility identifies the serving boundary of a zone.
+type DNSZoneVisibility string
+
+const (
+	DNSZoneVisibilityPublic  DNSZoneVisibility = "Public"
+	DNSZoneVisibilityPrivate DNSZoneVisibility = "Private"
+)
 
 type DomainRefStatus struct {
 	Nameservers []networkingv1alpha.Nameserver `json:"nameservers,omitempty"`

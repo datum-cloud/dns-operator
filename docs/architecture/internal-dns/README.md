@@ -155,12 +155,10 @@ flowchart TB
   subgraph Shared[Shared DNS service fleet]
     DestA --> Dist[dnsdist: trusted destination to context]
     DestB --> Dist
-    Dist --> ViewA[Context A resolver view and cache]
-    Dist --> ViewB[Context B resolver view and cache]
-    ViewA -->|Context A source marker| Auth[Private authoritative fleet]
-    ViewB -->|Context B source marker| Auth
-    Auth --> ZoneA[Context A: api.prod.internal = 10.20.0.10]
-    Auth --> ZoneB[Context B: api.prod.internal = 10.20.0.20]
+    Dist --> ViewA[Context A BIND view and cache]
+    Dist --> ViewB[Context B BIND view and cache]
+    ViewA --> ZoneA[Private zone in view A: api.prod.internal = 10.20.0.10]
+    ViewB --> ZoneB[Private zone in view B: api.prod.internal = 10.20.0.20]
   end
 ```
 
@@ -174,20 +172,18 @@ Shared node and regional tiers use:
 1. **dnsdist** to select the context before lookup, with private packet caching
    disabled.
 2. **BIND views** to isolate positive and negative caches. Node views forward to
-   context-specific regional destinations; regional views resolve private zones
-   and recurse for other names.
-3. **PowerDNS Authoritative** to select private zone variants using service-owned
-   source markers, unique to each regional resolver replica and context.
+   context-specific regional destinations. Regional views host the context's
+   private authoritative zones and recurse for other names. Views share resolver
+   processes; each context has its own zone selection and cache.
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
 preserves the destination. [BIND PROXY access controls](https://bind9.readthedocs.io/en/v9.20.2/reference.html#namedconf-statement-allow-proxy)
 restrict trusted peers and listeners. A shared pool member must have current
 configuration and authorization for every assigned context.
 
-[PowerDNS views](https://doc.powerdns.com/authoritative/views.html) are experimental
-and require LMDB with zone caching. Private zones must have no variantless copy,
-and authoritative listeners must allow only approved resolver markers: unmatched
-clients bypass views, and ordinary zones are implicitly visible to views.
+[BIND views](https://bind9.readthedocs.io/en/v9.20.2/reference.html#view-block-grammar)
+select the private zones visible to each context. Keep caches separate and reject
+unmatched destinations before lookup.
 
 ### Publication and service discovery
 
@@ -221,6 +217,9 @@ advances the writer epoch; revisions increase within it. Agents reject older
 versions. The compiler stages immutable chunks and a manifest, then commits its
 active pointer. Kubernetes API storage retains this state and a durable outbox;
 exporters repair missing outboxes after crashes.
+
+Regional agents render committed snapshots as zone files, validate and activate
+them in the associated BIND views, then acknowledge serving.
 
 Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery is
 at least once. Every serving replica receives its complete assignment and
@@ -595,14 +594,16 @@ Their storage schemas can be reviewed with the implementation.
 #### Compatibility and API review
 
 Prototype schema, controller, transport, and agent migration must preserve UID,
-configuration, and authorization fences and original deadlines. Review naming
-conflicts, grant revocation, field ownership, freshness bounds, regional
-readiness, and snapshot limits before stabilizing the APIs.
+configuration, and authorization fences and original deadlines. The prototype's
+authoritative backend must be replaced with BIND zone materialization and
+revalidated for tenant isolation and expiry. Review naming conflicts, grant
+revocation, field ownership, freshness bounds, regional readiness, and snapshot
+limits before stabilizing the APIs.
 
 ### Integration boundaries
 
-Reuse project discovery, authenticated clients, record types, certificates,
-release tooling, and PowerDNS/LMDB experience from
+Reuse project discovery, authenticated clients, record types, certificates, and
+release tooling from
 [infra](https://github.com/datum-cloud/infra/tree/main/apps/dns-operator).
 Add private admission, compilation, export, and serving agents. Public
 LightningStream replication does not provide private snapshot activation.
@@ -656,9 +657,8 @@ boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
 
 ## Drawbacks
 
-Shared views and experimental authoritative views increase fleet complexity and
-failure scope. Leases, snapshots, and freshness renewals add coordination state
-and API traffic.
+Shared BIND views increase fleet complexity and failure scope. Leases, snapshots,
+and freshness renewals add coordination state and API traffic.
 
 ## Alternatives
 
@@ -668,5 +668,5 @@ isolation and capacity requirements.
 ## Infrastructure Needed
 
 A DNS service VPC, Galactic private connectivity, shared serving capacity,
-protected destination/source-marker allocation, durable project storage, and
+protected listener-address allocation, durable project storage, and
 secured NATS capacity. Review regional broker placement and failover policy.

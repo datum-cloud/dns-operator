@@ -161,6 +161,9 @@ See the [API Reference](./api-reference.md) for complete field documentation.
 
 ## Learn More
 
+- [Internal DNS proposal](./internal-dns/README.md) — Proposed private DNS
+  control plane, publication contracts, and shared serving architecture
+
 - [Record Ownership](./record-ownership.md) — Who owns a name in a zone, and
   when that changes
 - [Conditions and Reasons](./conditions.md) — What each status reason means, and

@@ -11,8 +11,6 @@ latest-milestone: "TBD"
   - [Goals](#goals)
   - [Non-Goals](#non-goals)
 - [Proposal](#proposal)
-  - [User stories](#user-stories)
-  - [Notes, constraints, and caveats](#notes-constraints-and-caveats)
   - [Risks and mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
   - [Control-plane boundaries](#control-plane-boundaries)
@@ -20,21 +18,8 @@ latest-milestone: "TBD"
   - [Query path and network identity](#query-path-and-network-identity)
   - [Publication and service discovery](#publication-and-service-discovery)
   - [API design](#api-design)
-    - [Ownership and validation](#ownership-and-validation)
-    - [Context and regional access](#context-and-regional-access)
-    - [Private zones and associations](#private-zones-and-associations)
-    - [Automatic naming and additional names](#automatic-naming-and-additional-names)
-    - [Product publication](#product-publication)
-    - [DNS service project contracts](#dns-service-project-contracts)
-    - [Compatibility and API review](#compatibility-and-api-review)
   - [Integration boundaries](#integration-boundaries)
 - [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
-  - [Feature Enablement and Rollback](#feature-enablement-and-rollback)
-  - [Rollout, Upgrade and Rollback Planning](#rollout-upgrade-and-rollback-planning)
-  - [Monitoring Requirements](#monitoring-requirements)
-  - [Dependencies](#dependencies)
-  - [Scalability](#scalability)
-  - [Troubleshooting](#troubleshooting)
 - [Implementation History](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
@@ -55,11 +40,9 @@ defines private connectivity. This enhancement defines the DNS architecture and
 
 ## Motivation
 
-Compute instances, Connect services, and other resources need names that resolve
-within their network. Consumers should receive useful default names without
-choosing a zone for every resource. Shared infrastructure must isolate networks
-that use identical names and addresses, and stop returning endpoints that are no
-longer eligible.
+Resources need private names without a zone choice on every resource. The
+platform must isolate overlapping names and addresses across networks and
+withdraw endpoints that are no longer eligible.
 
 ### Goals
 
@@ -83,21 +66,6 @@ Trusted VPC integration provisions a DNS context and regional resolver access.
 DNS allocates a managed namespace, accepts explicit custom zone associations,
 and compiles product publications into private serving state. Consumers use a
 stable resolver address in their VPC while the platform selects shared capacity.
-
-### User stories
-
-- A Compute user resolves an instance's default private hostname without
-  selecting a zone or resolver deployment.
-- A project adds `prod.internal` and uses names such as `api.prod.internal`.
-- Two VPCs use the same zone name and resolver address but receive isolated
-  answers. Removing an eligible endpoint withdraws its discovery address.
-
-### Notes, constraints, and caveats
-
-These contracts are proposed; API and serving qualification remain required.
-Regional publication is asynchronous. Resolver access and endpoint eligibility
-have separate deadlines. Client caches can retain an answer until its TTL
-expires. Example addresses, identities, and allocated suffixes are illustrative.
 
 ### Risks and mitigations
 
@@ -133,23 +101,17 @@ flowchart TB
   D -.->|DNS status| P
 ```
 
-- **Consumer project:** Owns private zones, records, associations, naming policies,
-  registrations, grants, and contributions. Trusted VPC integration writes
-  context and access specifications; DNS writes their status. Product services,
-  such as Compute and Connect, publish their records and eligibility.
-- **DNS service project:** Owns durable publication state, writer leases,
-  allocation claims, regional serving plans, and the service's network intent.
-- **Karmada:** Places network and workload intent at the edge. It is not the DNS
-  publication store. Guest resolver settings must travel as desired state in the
-  networking projection; source status is not a substitute for that contract.
-- **Edge:** Owns local network contexts, interfaces, private endpoints, route
-  policies, shared DNS workloads, and serving checkpoints.
+- **Consumer project:** Owns contexts, access bindings, zones, naming policy, and
+  publications. VPC integration writes access intent; product services publish
+  records and eligibility; DNS reports serving status.
+- **DNS service project:** Owns writer leases, snapshots, outboxes, fleet plans,
+  and the service's network intent.
+- **Karmada:** Places network and workload intent. Guest resolver settings travel
+  as desired state; DNS publications use their own delivery path.
+- **Edge:** Owns local networking, shared serving workloads, and checkpoints.
 
-DNS controllers use project discovery and authenticated project clients. They
-do not watch VPCs, network interfaces, or product resources. VPC integration
-translates networking authorization into DNS access. Product publishers translate
-resource state into DNS records. These integrations keep networking and product
-lifecycles outside the DNS controller.
+DNS uses authenticated project clients. VPC integration and product publishers
+translate their resources into DNS intent; DNS does not watch their APIs.
 
 ### Contexts and regional access
 
@@ -166,15 +128,10 @@ flowchart LR
   AE --> FE[East shared fleet]
 ```
 
-Both access bindings live in the consumer project's control plane. `region`
-selects a serving target; it does not select the API where the object lives.
-Each binding has its own UID, trusted destination, authorization deadline, and
-readiness. East access can expire while Central access remains available.
-
-Publication reaches regions asynchronously. A region reports readiness after
-its required serving members apply the current state. A failed region must not
-block updates to healthy regions. Regional access does not, by itself, promise
-that service discovery answers contain only endpoints from that region.
+Bindings live in the consumer project API; `region` selects serving capacity.
+Each has independent identity, authorization, and readiness. Publication is
+asynchronous, and a failed region must not block healthy regions. Regional access
+does not imply that discovery returns only region-local endpoints.
 
 ### Query path and network identity
 
@@ -207,41 +164,30 @@ flowchart TB
   end
 ```
 
-Client source addresses, ECS, and client-supplied PROXY headers are not tenant
-authority. Galactic checks the source VPC lifetime and route authorization before
-translating the destination. A consumer must not be able to select another
-context by addressing its service-side destination. Galactic handles the return
-path to the consumer's DNS endpoint.
+Galactic verifies the source VPC lifetime and route authorization before
+translating the destination. DNS trusts that path, not client addresses, ECS, or
+client-supplied PROXY headers. Consumers cannot select another context by
+addressing its service-side destination.
 
-The serving candidate uses shared node and regional tiers:
+Shared node and regional tiers use:
 
-1. **dnsdist** selects the context from the authorized destination. Its private
-   packet cache is disabled.
-2. **BIND resolver views** isolate positive and negative caches. Node views
-   forward to context-specific regional destinations; regional views resolve
-   private zones and provide recursive resolution for other names.
-3. **PowerDNS Authoritative** serves private zone variants selected by
-   service-owned source markers from the regional resolvers.
+1. **dnsdist** to select the context before lookup, with private packet caching
+   disabled.
+2. **BIND views** to isolate positive and negative caches. Node views forward to
+   context-specific regional destinations; regional views resolve private zones
+   and recurse for other names.
+3. **PowerDNS Authoritative** to select private zone variants using service-owned
+   source markers, unique to each regional resolver replica and context.
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
-preserves the destination when forwarding to a shared resolver listener.
-[BIND's PROXY access controls](https://bind9.readthedocs.io/en/v9.20.2/reference.html#namedconf-statement-allow-proxy)
-restrict that listener to approved service peers and listener addresses. Each
-regional resolver replica uses a distinct marker for each context. A shared pool member
-is eligible only when all its assigned contexts and authorizations are current.
+preserves the destination. [BIND PROXY access controls](https://bind9.readthedocs.io/en/v9.20.2/reference.html#namedconf-statement-allow-proxy)
+restrict trusted peers and listeners. A shared pool member must have current
+configuration and authorization for every assigned context.
 
 [PowerDNS views](https://doc.powerdns.com/authoritative/views.html) are experimental
-and require the LMDB backend and enabled zone cache. Unmatched clients bypass
-view selection, and ordinary variantless zones are implicitly visible to views.
-Therefore, private zones must have no variantless copy, and private authoritative
-listeners must admit only approved resolver markers.
-
-The original proposal called for PowerDNS Recursor at both resolver tiers. The
-prototype has not qualified Recursor's cache isolation for this contract. BIND
-views are the current candidate; PowerDNS Authoritative is a different component.
-Replacing BIND requires positive and negative cache isolation tests against the
-selected Recursor version. Adding a context changes shared configuration and
-zone data, not the number of resolver processes.
+and require LMDB with zone caching. Private zones must have no variantless copy,
+and authoritative listeners must allow only approved resolver markers: unmatched
+clients bypass views, and ordinary zones are implicitly visible to views.
 
 ### Publication and service discovery
 
@@ -270,39 +216,27 @@ sequenceDiagram
   DNS->>Store: Commit snapshot that withdraws the endpoint
 ```
 
-Each zone has one logical compiler owner. Compare-and-swap updates to durable
-ownership fence that writer. Takeover advances its epoch; revisions increase
-within an epoch. Serving agents reject older epochs and revisions. Controller
-leader election alone does not fence a writer after a partition.
+Each zone has one compiler owner, fenced by a compare-and-swap lease. Takeover
+advances the writer epoch; revisions increase within it. Agents reject older
+versions. The compiler stages immutable chunks and a manifest, then commits its
+active pointer. Kubernetes API storage retains this state and a durable outbox;
+exporters repair missing outboxes after crashes.
 
-Kubernetes API storage holds ownership, snapshots, and outboxes; this design
-does not require Postgres. Regional exporters use
-[NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) for at-least-once
-delivery. Every serving replica receives its complete assigned stream. The
-exporter records an outbox before sending and reconciles committed snapshots
-that lack an outbox after a crash. A broker acknowledgment confirms delivery to
-the broker, not application by a DNS serving member. Queries use local state and
-do not contact the broker or project APIs.
+Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery is
+at least once. Every serving replica receives its complete assignment and
+acknowledges applied state separately from broker receipt. Queries use local
+state without contacting project APIs or the broker.
 
-Products define eligibility for each record's purpose. An instance identity name
-can follow interface readiness; service discovery can follow application health.
-A stable service address can remain published while its backend membership
-changes. DNS does not infer these policies from product APIs. User-authored
-static records have no automatic endpoint health withdrawal.
+Products define eligibility for instance identity, application discovery, or
+stable service addresses. Serving agents enforce contribution freshness and
+access deadlines independently. Replay and restart cannot extend them; expired
+endpoints are withdrawn locally. Retained tombstones and writer fences prevent
+restoration, and watchdogs remove members that cannot enforce expiry.
 
-Contribution freshness and resolver access have separate deadlines. Replay,
-restart, or recompilation cannot extend either original deadline. Serving agents
-withdraw expired contributions locally; a watchdog removes a member that cannot
-enforce expiry. Deletions retain tombstones and writer fences for the supported
-replay window.
-
-A reserved name with no eligible addresses returns NODATA. An authorized context
-whose required private state is unavailable returns SERVFAIL; an unknown or
-expired access identity returns REFUSED. Missing private state must never fall
-back to public resolution. Dynamic TTLs are bounded, and stale private answers
-are disabled. Withdrawal budgets include publication delay, local expiry, and
-client cache TTL: removing a served record cannot erase an answer already cached
-by a client.
+A reserved name without eligible addresses returns NODATA. Missing required
+private state returns SERVFAIL; unknown or expired access returns REFUSED.
+Private names never fall back to public resolution. Disable stale private
+answers and bound dynamic TTLs; withdrawal budgets include client caching.
 
 ### API design
 
@@ -313,21 +247,10 @@ are not fields consumers submit when creating resources.
 
 #### Ownership and validation
 
-- Trusted VPC integration creates resolver contexts and regional access bindings.
-  DNS allocates managed namespaces and reports serving status.
-- Project users manage custom private zones, associations, static records, and
-  naming policy. Platform policy controls namespace reservations and grants.
-- Product publishers write contribution records and eligibility. They cannot
-  authorize resolver access, grant themselves publication rights, or write DNS
-  service project state.
-- DNS owns grant epochs, publication revisions, serving plans, and acknowledgments.
-  Admission must enforce field ownership, including fields sharing a status
-  subresource; RBAC on that subresource alone is insufficient.
-
-New references pin API-assigned UIDs. References that authorize publication also
-pin the policy generation. The authenticated project and source-cluster identity
-scope each reference; resource names and self-reported cluster IDs are not
-credentials. Cross-project references are outside this proposal.
+Admission pins reference UIDs and publication policy generations, authenticates
+project and source-cluster identity, and enforces field ownership, including
+shared status fields. Publishers cannot grant themselves rights or authorize
+resolver access. Consumer references stay within a project.
 
 #### Context and regional access
 
@@ -387,17 +310,12 @@ spec:
     validUntil: "2026-10-08T20:05:00Z"
 ```
 
-The context reports `Ready` when its namespace and assignment are available.
-An access binding reports `Accepted` after authorization validation and `Ready`
-after the required serving members apply current access and configuration.
-`status.observedSequence` identifies the authorization renewal DNS has observed;
-`status.bindingRef` identifies the DNS-owned serving plan.
-
-Context, region, query identity, port, transports, and authorization epoch are
-immutable for an access-binding lifetime. Renewals advance the sequence with a
-bounded deadline. Destinations must be unique within their routing scope. A
-second region gets another binding against the same context. Galactic owns the
-consumer-side address, private route, and network lease separately.
+Access reports `Accepted` after validation and `Ready` after required members
+apply current authorization and configuration. Context, region, query identity,
+port, transports, and authorization epoch are immutable per access lifetime.
+Renewals advance the sequence with a bounded deadline; destinations are unique
+within their routing scope. Galactic owns the consumer frontend and network
+lease separately.
 
 #### Private zones and associations
 
@@ -448,21 +366,15 @@ spec:
         content: 10.20.0.50
 ```
 
-A context can associate several zones, including its managed zone. Associating
-two different zones with the same apex to one context is rejected. Parent and
-child zones require deterministic longest-suffix selection. Two contexts can
-share one zone through explicit associations, or associate separate zones with
-the same apex for isolated answers. Admission must also reject conflicts
-between static records and reserved registration names.
+A context can use several zones. Reject duplicate apexes within a context and
+conflicts between static records and reserved names. Select parent and child
+zones by longest suffix. Separate contexts can explicitly share a zone or use
+independent zones with the same apex. Static records have no health lease.
 
 #### Automatic naming and additional names
 
-DNS owns the lifecycle of the managed namespace and its association. Publishers
-read its zone reference from context status. A DNS-owned `DNSManagedNamespace`
-can track allocation and cleanup; consumers should not need to create it.
-
-A naming policy adds names in custom zones. It supplements the managed name and
-does not require a zone choice on each Compute or Connect resource.
+DNS allocates the managed zone and exposes it in context status. A naming policy
+adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -595,21 +507,11 @@ status:
   publishedRevision: 12
 ```
 
-Status updates use the current resource version and preserve fields owned by
-other controllers. Changing contribution records requires an observation for
-the new generation. Admission verifies the authenticated principal, pinned
-references, accepted grant epoch, increasing sequence, permitted records, and
-bounded freshness interval.
-
-When an endpoint becomes ineligible, its publisher submits a higher-sequence
-observation with `eligible: false`. DNS withdraws its addresses through the same
-publication path. If the publisher disappears, the original deadline still
-expires locally. Recovery requires a fresh eligible observation; replaying the
-old one does not restore an endpoint. The product defines whether interface
-readiness, application health, or another condition determines eligibility.
-
-The prototype also defines `Persistent`, but its distinct lifetime semantics
-need API review. Use `DNSRecordSet` for static records in this proposal.
+Publishers preserve DNS-owned status fields and observe the current contribution
+generation. An ineligible endpoint gets a higher-sequence observation with
+`eligible: false`; recovery requires a fresh eligible observation. Publisher
+loss does not renew the original deadline. Admission checks the principal,
+grant epoch, sequence, record scope, and freshness bound.
 
 #### DNS service project contracts
 
@@ -673,148 +575,37 @@ spec:
     validUntil: "2026-10-08T20:05:00Z"
 ```
 
-`source` references and `configuration.zoneRefs` identify objects in the consumer
-project selected by `source.projectUID`. They are provenance references, not
-lookups in the DNS service project's namespace. Admission pins their UIDs and
-restricts writes to DNS controllers. Source identity is immutable for a binding
-lifetime.
+Source and zone references resolve in `source.projectUID`, not the DNS service
+namespace. Source identity is immutable. The region and node listener match the
+access binding; DNS allocates the regional listener.
 
-`placement` selects shared regional capacity. `configuration.listeners.node`
-is the service-side destination, not the well-known address inside the consumer
-VPC. Each listener has its own address, port, and transports so the two serving
-tiers do not share ambiguous endpoint fields. The region and node listener must
-match the source access binding; DNS allocates the regional listener.
+Configuration generation fences plan replacement; revision orders its updates.
+Authorization copies the accepted access epoch, sequence, and deadline. Serving
+acknowledgments identify the binding UID and both version sets; readiness
+requires current acknowledgments from all required members.
 
-`configuration.generation` replaces the prototype's `bindingGeneration`;
-`configuration.revision` replaces `configurationRevision`. Access renewals
-advance `authorization.sequence`. Configuration and authorization counters fence
-different state; agents check both. A configuration change cannot extend the
-access deadline. Serving acknowledgments
-must identify the binding UID, configuration generation and revision, and the
-exact authorization epoch, sequence, and deadline applied. Readiness requires
-current acknowledgments from all required members.
+Resolver engine, isolation, deployment model, and dnsdist cache policy belong to
+shared fleet configuration. The nested binding is proposed; the prototype is flat.
 
-Resolver engine, cache isolation, deployment model, and dnsdist cache policy
-belong to DNS-owned fleet configuration. Bindings cannot override those shared
-policies. The initial fleet uses BIND views, shared processes, and a disabled
-private dnsdist packet cache as described in the query path.
-
-This example proposes a reorganized contract. The local prototype still uses
-a flat specification; schema, controller, transport, and serving-agent changes
-must preserve its existing identity, version, and expiry fences.
-
-The publication resources divide coordination from immutable data:
-
-- `DNSPublicationOwnership` holds the zone's compiler lease, writer epoch,
-  revision allocator, and active manifest pointer. Updates use compare-and-swap.
-- `DNSPublicationChunk` holds a bounded part of a snapshot with its index, epoch,
-  revision, hash, and payload. Chunks are immutable.
-- `DNSPublicationManifest` identifies the complete snapshot, its chunks,
-  serving targets, and original contribution deadlines.
-- `DNSTransportOutbox` records a committed update's subject, identity, hash,
-  payload, and dependencies before sending. Ambiguous retries reuse the same
-  event identity. Transport acknowledgment is separate from serving acknowledgment.
-
-```yaml
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSPublicationOwnership
-metadata:
-  name: managed-zone-owner
-  namespace: dns-platform
-spec:
-  # One logical compiler owner per zone lifetime.
-  zoneUID: 44444444-4444-4444-8444-444444444444
-  # Identify the current controller lease holder.
-  holderIdentity: compiler-a
-  # Takeover increases the epoch; revisions increase within it.
-  writerEpoch: 2
-  nextRevision: 13
-  # A writer must hold a current lease to commit the active pointer.
-  leaseUntil: "2026-10-08T20:01:00Z"
-  # The committed snapshot is the activation authority.
-  activeManifestName: managed-zone-e2-r12
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSPublicationManifest
-metadata:
-  name: managed-zone-e2-r12
-  namespace: dns-platform
-spec:
-  # Retain the source zone lifetime and its private apex.
-  zoneRef:
-    name: managed-application
-    uid: 44444444-4444-4444-8444-444444444444
-  zoneApex: vpc-a7c9.project-p4e2.internal
-  # Select this zone's private authoritative variant.
-  variant: zone-44444444
-  # Prototype wire name: values are DNS context UIDs, not networking references.
-  vpcUIDs:
-    - 33333333-3333-4333-8333-333333333333
-  # Agents reject snapshots behind their accepted writer fence.
-  writerEpoch: 2
-  revision: 12
-  previousRevision: 11
-  # Deletion uses a fenced tombstone rather than silently dropping history.
-  tombstone: false
-  # Verify all chunks before activation; these hashes are illustrative.
-  chunks:
-    - name: managed-zone-e2-r12-c0
-      sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      size: 512
-  contentHash: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-  generatedAt: "2026-10-08T20:00:00Z"
-  contributionFences:
-    # Original observation deadlines survive recompilation and replay.
-    - uid: 77777777-7777-4777-8777-777777777777
-      grantUID: 66666666-6666-4666-8666-666666666666
-      epoch: 3
-      sequence: 18
-      validUntil: "2026-10-08T20:01:00Z"
-  # Each required replica receives the complete regional assignment.
-  servingTargets:
-    - region: central
-      shard: shared-0
-```
-
-The compiler stages immutable chunks and a manifest, then commits the active
-pointer under its current ownership lease. Exporters reconcile that pointer and
-repair a missing outbox after a crash. Agents verify identities, hashes, writer
-fences, and deadlines before applying a complete snapshot. Acknowledgments must
-identify the exact binding or zone lifetime, epoch, and revision applied.
-Serving agents retain fences for expired, withdrawn, and deleted state so an
-older replay cannot restore it.
+DNS-owned publication resources retain the compiler lease and active pointer
+(`DNSPublicationOwnership`), immutable snapshot data (`DNSPublicationManifest`
+and `DNSPublicationChunk`), and durable delivery intent (`DNSTransportOutbox`).
+Their storage schemas can be reviewed with the implementation.
 
 #### Compatibility and API review
 
-The target integration uses `resolverContextRef` and never requires DNS to read
-networking resources. The prototype retains legacy `vpcRef` inputs and flat
-`DNSResolverBinding` fields. The binding example above proposes nested groups,
-UID-pinned DNS source references, explicit node and regional listeners, and fleet
-policy outside individual bindings. It requires coordinated schema, controller,
-transport, and agent migration. The manifest prototype still uses `vpcUIDs` for
-opaque DNS context identities; rename that field before stabilizing the API.
-Migration must retain accepted UIDs, configuration versions, authorization
-fences, and original deadlines.
-
-API review must settle namespace reservation policy, naming conflicts, grant
-issuance and revocation, field-level status ownership, deadline bounds, regional
-readiness aggregation, snapshot size limits, and the complete internal serving
-plan schema. Private visibility and exclusion from public controllers form a
-separate implementation boundary in
-[DNS operator #230](https://github.com/datum-cloud/dns-operator/pull/230).
+Prototype schema, controller, transport, and agent migration must preserve UID,
+configuration, and authorization fences and original deadlines. Review naming
+conflicts, grant revocation, field ownership, freshness bounds, regional
+readiness, and snapshot limits before stabilizing the APIs.
 
 ### Integration boundaries
 
-Reuse project discovery, authenticated project clients, record types, condition
-patterns, certificates, release tooling, and PowerDNS/LMDB operating experience.
-The [infra configuration](https://github.com/datum-cloud/infra/tree/main/apps/dns-operator)
-provides these integration points; its public serving and replication paths do
-not establish private tenant isolation.
-
-New components include private API admission, context allocation, publication
-ownership and compilation, durable export, shared fleet configuration, and
-serving acknowledgments. Private snapshots need their own activation contract;
-public zone replication through LightningStream does not replace it.
+Reuse project discovery, authenticated clients, record types, certificates,
+release tooling, and PowerDNS/LMDB experience from
+[infra](https://github.com/datum-cloud/infra/tree/main/apps/dns-operator).
+Add private admission, compilation, export, and serving agents. Public
+LightningStream replication does not provide private snapshot activation.
 
 ## Production Readiness Review Questionnaire
 
@@ -823,93 +614,59 @@ before release.
 
 ### Feature Enablement and Rollback
 
-Alpha needs separate activation controls for product publication and private
-serving. Flag names and deployment wiring require implementation review. Public
-visibility remains the default. Rollback must revoke consumer access before
-draining private serving capacity; workloads that depend on internal DNS lose
-resolution. Reenabling requires fresh authorizations and observations, with
-retained writer fences preventing stale replay.
+Define separate alpha controls for publication and serving. Public visibility
+remains the default. Revoke access before draining private capacity; dependent
+workloads lose resolution. Reenabling requires fresh authorization and observations.
 
 ### Rollout, Upgrade and Rollback Planning
 
-Deploy shared capacity before granting access, then qualify a limited set of
-contexts and expand by region. Validate overlapping zones and addresses,
-positive and negative cache isolation, forged identities, UDP and TCP, access
-revocation, endpoint withdrawal, writer failover, replay, restart, API and broker
-outages, and partial regional failure. Include Galactic's private path and guest
-resolver configuration. Upgrade, rollback, and reenabling tests remain release
-requirements. Resolve withdrawal budgets and tombstone retention before rollout.
+Qualify tenant isolation, expiry, failover, replay, and upgrade/rollback over
+Galactic UDP and TCP paths, including guest resolver configuration. Expand by
+context and region after setting withdrawal budgets and tombstone retention.
 
 ### Monitoring Requirements
 
-Measure query latency and failures, publication lag, outbox backlog, expiry
-withdrawal delay, failed activations, and watchdog removal of serving members.
-Keep metric labels bounded; use resource status for context-level diagnosis.
-Consumers inspect access readiness and published names, then query from their
-VPC. Query availability, latency, and withdrawal SLOs require measured targets
-before release.
+Measure query latency/errors, publication lag, outbox backlog, expiry delay, and
+activation failures. Use bounded metric labels and per-context API status.
+Availability, latency, and withdrawal SLOs remain to be defined.
 
 ### Dependencies
 
-- Project APIs and discovery support intent, renewal, and durable coordination.
-  An outage stops updates; installed state remains subject to its deadlines.
-- Galactic and Karmada provide authorized private paths and placed network and
-  workload intent. Network authorization expires independently of DNS state.
-- NATS JetStream carries committed updates. Outages delay publication; queries
-  continue from local state while original freshness deadlines still apply.
-- dnsdist, BIND, and PowerDNS Authoritative provide query serving. Versions and
-  configuration must pass the tenant isolation qualification described above.
+Project APIs, Galactic/Karmada, NATS, and the DNS fleet support updates and
+connectivity. API or broker outages delay updates while installed state remains
+subject to its original deadlines; network authorization expires independently.
 
 ### Scalability
 
-API traffic includes project watches, eligibility and access renewals, compiler
-leases, snapshot writes, export progress, and serving acknowledgments. Bound
-snapshot chunks and retained history. Contexts add views, addresses, and zone
-data to shared processes. Measure API write rates, cache memory, configuration
-reload time, transport fanout, and query throughput at the expected context
-count. Supported limits and regional failover capacity remain open decisions.
+Measure context capacity, renewal/write rates, snapshot size, transport fanout,
+cache memory, reload time, and query throughput. Bound chunks and retained
+history; establish supported limits and regional failover capacity before release.
 
 ### Troubleshooting
 
-Trace project, context, and access UIDs through the accepted authorization,
-committed manifest epoch and revision, and serving acknowledgments. For REFUSED,
-inspect access expiry and the authorized network destination. For SERVFAIL,
-inspect missing private state and serving readiness. For NODATA, inspect product
-eligibility and contribution deadlines. During API or broker outages, inspect
-outbox lag and local expiry; replay must not renew stale state.
+Trace project/context/access UIDs through authorization, committed snapshots,
+and serving acknowledgments. Inspect expiry for REFUSED, private state for
+SERVFAIL, and product eligibility for NODATA.
 
 ## Implementation History
 
-- 2026-10-08: [DNS operator #229](https://github.com/datum-cloud/dns-operator/pull/229)
-  proposes the DNS architecture and annotated API contracts.
-- 2026-10-08: [DNS operator #230](https://github.com/datum-cloud/dns-operator/pull/230)
-  proposes the private-zone visibility boundary. The complete feature remains
-  under development.
+2026-10-08: Architecture proposal
+[#229](https://github.com/datum-cloud/dns-operator/pull/229) and initial private-zone
+boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
 
 ## Drawbacks
 
-Shared view configuration and experimental authoritative views add operational
-complexity. Deadline enforcement, distributed writer fencing, and durable
-publication introduce coordination state and ongoing API traffic. A fleet
-failure can affect many contexts, so capacity and activation need qualification.
+Shared views and experimental authoritative views increase fleet complexity and
+failure scope. Leases, snapshots, and freshness renewals add coordination state
+and API traffic.
 
 ## Alternatives
 
-- **PowerDNS Recursor:** The original resolver choice. Replacing BIND remains an
-  option after qualifying positive and negative cache isolation for the selected
-  version.
-- **CoreDNS:** An alternative serving component that needs a tenant-aware query
-  and cache design, plus throughput and operational qualification.
-- **Resolvers per VPC:** Provide separate processes but conflict with the shared
-  fleet requirement and add workload overhead for every network.
-- **DNS reads product and networking APIs:** Avoids publisher integrations but
-  couples DNS to their lifecycles and health policies. Explicit publications and
-  opaque contexts keep those responsibilities with their owners.
+PowerDNS Recursor and CoreDNS remain options if they meet the same tenant
+isolation and capacity requirements.
 
 ## Infrastructure Needed
 
-Provide a DNS service VPC, Galactic private connectivity, shared node and regional
-serving capacity, protected destination and source-marker allocation, durable
-project API storage, and secured NATS JetStream capacity. Reuse platform identity,
-certificates, and deployment tooling. Regional broker placement, capacity, and
-failover policy need review before production deployment.
+A DNS service VPC, Galactic private connectivity, shared serving capacity,
+protected destination/source-marker allocation, durable project storage, and
+secured NATS capacity. Review regional broker placement and failover policy.

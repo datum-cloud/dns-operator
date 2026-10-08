@@ -88,6 +88,9 @@ func (r *DNSRecordSetPowerDNSReconciler) Reconcile(
 		return reconcile.Result{}, err
 	}
 
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return reconcile.Result{}, nil
+	}
 	if !zone.DeletionTimestamp.IsZero() {
 		logger.V(1).Info("zone deleting; skipping")
 		return reconcile.Result{}, nil

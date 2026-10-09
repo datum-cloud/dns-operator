@@ -1,0 +1,75 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: dnspublicationownerships.dns.networking.miloapis.com
+spec:
+  group: dns.networking.miloapis.com
+  names:
+    kind: DNSPublicationOwnership
+    listKind: DNSPublicationOwnershipList
+    plural: dnspublicationownerships
+    singular: dnspublicationownership
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              DNSPublicationOwnership is a durable compare-and-swap record for a zone
+              compiler. A lease takeover increments WriterEpoch and fences delayed holders.
+            properties:
+              activeManifestName:
+                type: string
+              holderIdentity:
+                type: string
+              lastContentHash:
+                type: string
+              leaseUntil:
+                format: date-time
+                type: string
+              nextRevision:
+                format: int64
+                type: integer
+              writerEpoch:
+                format: int64
+                type: integer
+              zoneUID:
+                description: |-
+                  UID is a type that holds unique ID values, including UUIDs.  Because we
+                  don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                  intent and helps make sure that UIDs and names do not get conflated.
+                type: string
+            required:
+            - holderIdentity
+            - leaseUntil
+            - nextRevision
+            - writerEpoch
+            - zoneUID
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true

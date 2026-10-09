@@ -166,8 +166,11 @@ class Harness:
         return self.run("kubectl", "--kubeconfig", str(config), *args, check=check, stdin=stdin)
 
     def start(self, name: str, *args: str) -> None:
-        log = (self.logs / f"{name}.log").open("w")
-        self.processes[name] = subprocess.Popen(args, cwd=ROOT, env=os.environ, text=True, stdout=log, stderr=subprocess.STDOUT)
+        # A restarted standby must retain its previous process's evidence.
+        with (self.logs / f"{name}.log").open("a") as log:
+            log.write(json.dumps({"event": "harness-process-start", "name": name, "startedAt": datetime.now(timezone.utc).isoformat()}) + "\n")
+            log.flush()
+            self.processes[name] = subprocess.Popen(args, cwd=ROOT, env=os.environ, text=True, stdout=log, stderr=subprocess.STDOUT)
 
     def stop(self, name: str) -> None:
         process = self.processes.pop(name, None)

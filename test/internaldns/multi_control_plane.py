@@ -47,6 +47,18 @@ IMAGES = {
 }
 
 
+def live_owner_pair(zone: dict, shard: dict, identity: str, now: datetime, minimum_remaining: float) -> bool:
+    """Require one known process to hold both independently renewed leases."""
+    spec = zone.get("spec", {})
+    if spec.get("holderIdentity") != identity or not shard.get("holder", "").startswith(identity + "-"):
+        return False
+    try:
+        deadlines = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in (spec["leaseUntil"], shard["leaseUntil"])]
+    except (KeyError, TypeError, ValueError):
+        return False
+    return all((deadline - now).total_seconds() >= minimum_remaining for deadline in deadlines)
+
+
 class MultiControlPlaneHarness(single.Harness):
     def __init__(self, keep: bool, results: Path):
         super().__init__(keep, results)
@@ -550,6 +562,26 @@ class MultiControlPlaneHarness(single.Harness):
         items = json.loads(self.kubectl("-n", PLATFORM_NAMESPACE, "get", "dnspublicationownerships", "-o", "json").stdout)["items"]
         return next((item for item in items if item["spec"]["zoneUID"] == zone_uid), {})
 
+    def prepare_takeover(self, zone_uid: str, owner_a: str, standby_config: Path) -> tuple[dict, dict, list[dict[str, object]]]:
+        # Concurrent reconciliation may legitimately move independent leases.
+        # Let the chosen process renew both while the standby is stopped, then
+        # restart the survivor and freeze the known owner without a startup wait.
+        self.stop("control-b")
+
+        def fresh_owner():
+            zone = self.zone_owner(zone_uid)
+            _, shard = self.shard_state()
+            if live_owner_pair(zone, shard, owner_a, datetime.now(timezone.utc), 3):
+                return zone, shard
+            return None
+
+        self.wait("control A reacquires fresh zone and shard leases", fresh_owner, timeout=35)
+        old_envelopes = self.capture_old_envelopes(zone_uid)
+        before_zone, before_shard = self.wait("control A holds both fresh leases before SIGSTOP", fresh_owner, timeout=35)
+        self.start("control-b", *self.command("control-plane", standby_config))
+        self.processes["control-a"].send_signal(signal.SIGSTOP)
+        return before_zone, before_shard, old_envelopes
+
     @staticmethod
     def decode_payload(value: str) -> bytes:
         return base64.b64decode(value)
@@ -771,12 +803,7 @@ class MultiControlPlaneHarness(single.Harness):
         # Freeze the current owner. The second real process must acquire both
         # independent leases, use higher epochs, and program a new revision.
         b_zone_uid = source["project-b"]["zone"]["metadata"]["uid"]
-        old_envelopes = self.capture_old_envelopes(b_zone_uid)
-        before_zone = self.zone_owner(b_zone_uid)
-        _, before_shard = self.shard_state()
-        if before_zone["spec"]["holderIdentity"] != owner_a or not before_shard["holder"].startswith(owner_a + "-"):
-            raise AssertionError("control A did not retain both current leases before SIGSTOP")
-        self.processes["control-a"].send_signal(signal.SIGSTOP)
+        before_zone, before_shard, old_envelopes = self.prepare_takeover(b_zone_uid, owner_a, configs["control-b"])
         zone_after = self.wait(
             "survivor zone ownership takeover",
             lambda: (lambda value: value if value["spec"]["holderIdentity"] != owner_a else None)(self.zone_owner(b_zone_uid)),

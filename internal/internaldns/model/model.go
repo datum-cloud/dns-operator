@@ -394,10 +394,21 @@ func (p PublicationPlan) Validate() error {
 		}
 	}
 	seen := map[string]struct{}{}
+	ownerTypes := map[string]string{}
 	for _, rr := range p.RRSets {
 		owner := strings.ToLower(AbsoluteName(rr.Name))
 		rrType := strings.ToUpper(rr.Type)
 		key := owner + "\x00" + rrType
+		if err := ValidatePrivateRecordOwner(owner, apex, rrType); err != nil {
+			return err
+		}
+		if other := ownerTypes[owner]; other != "" && (other == "CNAME" || rrType == "CNAME") {
+			return fmt.Errorf("CNAME cannot coexist with other records at %s", owner)
+		}
+		ownerTypes[owner] = rrType
+		if rrType == "CNAME" && len(rr.Records) != 1 {
+			return fmt.Errorf("CNAME at %s must contain one target", owner)
+		}
 		if len(rr.Records) == 0 || rr.Type == "" {
 			return fmt.Errorf("RRset %q is incomplete", key)
 		}

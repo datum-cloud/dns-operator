@@ -32,6 +32,9 @@ func publicationMailbox(p publicationState, now time.Time) string {
 	return hash[:32] + "." + hash[32:] + ".publication.internal."
 }
 func renderZone(p publicationState, now time.Time) ([]byte, error) {
+	if err := p.Plan.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid publication: %w", err)
+	}
 	var out bytes.Buffer
 	apex := model.AbsoluteName(p.Plan.Apex)
 	fmt.Fprintf(&out, "$ORIGIN %s\n$TTL 5\n@ IN SOA ns1.internal-dns.invalid. %s %d 60 30 3600 5\n@ IN NS ns1.internal-dns.invalid.\n", apex, publicationMailbox(p, now), publicationSerial(p, now))
@@ -56,10 +59,10 @@ func renderZone(p publicationState, now time.Time) ([]byte, error) {
 	for _, owner := range p.Plan.Owners {
 		owner = model.AbsoluteName(owner)
 		if !ownerHasRecord[owner] {
-			if _, ok := dns.IsDomainName("_dns-ownership." + owner); !ok {
-				return nil, fmt.Errorf("owned name too long for NODATA sentinel: %s", owner)
-			}
-			fmt.Fprintf(&out, "_dns-ownership.%s 5 IN TXT \"owned\"\n", owner)
+			// A private-use RR at the exact owner reserves the name without growing
+			// it or introducing a child that can collide with a tenant CNAME.
+			// It disappears whenever eligible records exist, including CNAMEs.
+			fmt.Fprintf(&out, "%s 5 IN %s \\# 1 00\n", owner, model.OwnershipMarkerType)
 		}
 	}
 	return out.Bytes(), nil

@@ -287,3 +287,41 @@ func TestPublicationVerifierRejectsSuccessAfterDeadline(t *testing.T) {
 		t.Fatalf("late response proved readiness: %v", err)
 	}
 }
+
+func TestZeroZoneContextProvesRecursionOverUDPAndTCP(t *testing.T) {
+	tcp, err := net.Listen(networkTCP, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp, err := net.ListenPacket(networkUDP, tcp.Addr().String())
+	if err != nil {
+		_ = tcp.Close()
+		t.Fatal(err)
+	}
+	seen := make(chan string, 2)
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		if len(r.Question) != 1 || r.Question[0].Name != "." || r.Question[0].Qtype != dns.TypeSOA {
+			t.Errorf("unsafe recursion probe: %#v", r.Question)
+		}
+		reply := new(dns.Msg)
+		reply.SetReply(r)
+		reply.Answer = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 5}, Ns: "a.root-servers.net.", Mbox: "nstld.verisign-grs.com.", Serial: 1, Refresh: 60, Retry: 30, Expire: 3600, Minttl: 5}}
+		if err := w.WriteMsg(reply); err != nil {
+			t.Error(err)
+		}
+		seen <- w.RemoteAddr().Network()
+	})
+	tcpServer := &dns.Server{Listener: tcp, Handler: handler}
+	udpServer := &dns.Server{PacketConn: udp, Handler: handler}
+	go func() { _ = tcpServer.ActivateAndServe() }()
+	go func() { _ = udpServer.ActivateAndServe() }()
+	t.Cleanup(func() { _ = tcpServer.Shutdown(); _ = udpServer.Shutdown() })
+	address := tcp.Addr().(*net.TCPAddr)
+	binding := model.Binding{ConsumerAddress: "127.0.0.1", Port: uint16(address.Port)}
+	if err := (DNSVerifier{Config: DNSVerifierConfig{Timeout: time.Second}}).Verify(context.Background(), binding); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("probe count=%d", len(seen))
+	}
+}

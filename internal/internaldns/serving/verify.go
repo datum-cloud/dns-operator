@@ -44,7 +44,9 @@ func (v DNSVerifier) Verify(ctx context.Context, b model.Binding) error {
 		names = append(names, model.AbsoluteName(v.Config.PublicName))
 	}
 	if len(names) == 0 {
-		return errors.New("binding has no private or public probe name")
+		// A recursion-only context has no private SOA to prove. The root SOA
+		// exercises recursive resolution without choosing a product domain.
+		names = append(names, ".")
 	}
 	server := resolverProbeServer(v.Config, b)
 	return verifyResolverPath(ctx, server, names, timeout, exchangeResolverSOA)

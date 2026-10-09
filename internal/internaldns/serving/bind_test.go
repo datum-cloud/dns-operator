@@ -102,7 +102,7 @@ func TestBINDExpirySurvivesBrokerOutageAndRestart(t *testing.T) {
 	if err := a.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if data := currentZone(t, a); strings.Contains(data, "192.0.2.10") || !strings.Contains(data, "_dns-ownership.api.prod.internal.") {
+	if data := currentZone(t, a); strings.Contains(data, "192.0.2.10") || !strings.Contains(data, "api.prod.internal. 5 IN "+model.OwnershipMarkerType) {
 		t.Fatalf("expiry did not preserve NODATA ownership: %s", data)
 	}
 	local := a.state.Publications["zone-a"].LocalRevision

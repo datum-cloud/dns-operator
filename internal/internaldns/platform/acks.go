@@ -168,12 +168,12 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, bindingRow)
 			complete := s.bindingVerified(binding, e, snapshot, now)
 			if complete {
-				binding.Status.Phase = "Serving"
+				binding.Status.Phase = dnsValueServing
 				binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
 			} else {
 				binding.Status.Phase = dnsValuePending
 			}
-			condition(&binding.Status.Conditions, "Serving", complete, "MemberVerification", binding.Generation, now)
+			condition(&binding.Status.Conditions, dnsValueServing, complete, "MemberVerification", binding.Generation, now)
 			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
@@ -404,9 +404,9 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
 		complete := s.bindingVerified(b, envelope, snapshot, now)
-		condition(&b.Status.Conditions, "Serving", complete, "MemberVerification", b.Generation, now)
+		condition(&b.Status.Conditions, dnsValueServing, complete, "MemberVerification", b.Generation, now)
 		if complete {
-			b.Status.Phase = "Serving"
+			b.Status.Phase = dnsValueServing
 		} else {
 			b.Status.Phase = dnsValuePending
 		}

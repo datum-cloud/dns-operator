@@ -8,3 +8,5 @@ const dnsValueResolver = "resolver"
 const dnsValueCluster = "cluster"
 const dnsValueRegional = "regional"
 const dnsValueSuperseded = "Superseded"
+
+const dnsValueServing = "Serving"

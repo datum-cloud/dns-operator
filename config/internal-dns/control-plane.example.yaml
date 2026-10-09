@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: internal-dns-control-plane-config
+  namespace: internal-dns-system
+data:
+  config.json: |
+    {
+      "region": "us-central1",
+      "shard": "shared-0",
+      "platformNamespace": "internal-dns-system",
+      "platformKubeAPI": {"qps":50,"burst":100,"requestTimeoutSeconds":10},
+      "projects": [
+        {
+          "name": "example-project",
+          "projectUID": "00000000-0000-0000-0000-000000000001",
+          "sourceClusterUID": "00000000-0000-0000-0000-000000000010",
+          "namespace": "example-project",
+          "kubeAPI": {"qps":20,"burst":40,"requestTimeoutSeconds":10}
+        }
+      ],
+      "nodeBackends": [
+        {"memberID":"node-bind-0","address":"fd70:10::10","port":5300}
+      ],
+      "clusterBackends": [
+        {"memberID":"regional-bind-us-central1-0","address":"fd70:20::10","port":5300},
+        {"memberID":"regional-bind-us-central1-1","address":"fd70:20::11","port":5300}
+      ],
+      "members": [
+        {"memberID":"node-us-central1-0","replicaID":"node-us-central1-0","role":"node"},
+        {"memberID":"regional-front-us-central1-0","replicaID":"regional-front-us-central1-0","role":"resolver"},
+        {"memberID":"regional-bind-us-central1-0","replicaID":"regional-bind-us-central1-0","role":"regional"},
+        {"memberID":"regional-bind-us-central1-1","replicaID":"regional-bind-us-central1-1","role":"regional"}
+      ],
+      "consumerPrefix": "fd70:100::/48",
+      "clusterPrefix": "fd70:200::/48",
+      "managedDomainSuffix": "internal.example.net",
+      "privateZoneClassName": "private-bind",
+      "ownershipLeaseSeconds": 30,
+      "shards": [
+        {"region":"us-central1","shard":"shared-0","maxBindings":200,"maxSnapshotBytes":524288}
+      ],
+      "nats": {
+        "url": "tls://nats.internal-dns-system.svc:4222",
+        "name": "internal-dns-control-plane",
+        "username": "internal-dns-control-plane",
+        "passwordFile": "/var/run/internal-dns/nats/password",
+        "tls": {
+          "caFile": "/var/run/internal-dns/nats/ca.crt",
+          "certificateFile": "/var/run/internal-dns/nats/tls.crt",
+          "keyFile": "/var/run/internal-dns/nats/tls.key",
+          "serverName": "nats.internal-dns-system.svc"
+        }
+      },
+      "stream": {
+        "name": "DNS_PRIVATE",
+        "subjects": ["dns.private.serving.>","dns.private.records.>","dns.private.acks.>"],
+        "maxAge": 86400000000000,
+        "maxBytes": 10737418240,
+        "replicas": 3,
+        "snapshotsBucket": "DNS_PRIVATE_SNAPSHOTS"
+      },
+      "ensureStream": true,
+      "admission": {
+        "enabled": true,
+        "port": 9443,
+        "certDir": "/var/run/internal-dns/admission",
+        "platformSubjects": ["system:serviceaccount:internal-dns-system:internal-dns-control-plane"],
+        "integrationSubjects": ["system:serviceaccount:network-system:dns-vpc-integration"],
+        "maxContributionLeaseSeconds": 90,
+        "maxAccessLeaseSeconds": 300
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-dns-control-plane
+  namespace: internal-dns-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: internal-dns-control-plane}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: internal-dns-control-plane}
+    spec:
+      serviceAccountName: internal-dns-control-plane
+      containers:
+      - name: control-plane
+        image: example.invalid/dns-operator/internal-dns:VERSION
+        args: ["--role=control-plane","--config=/etc/internal-dns/config.json"]
+        ports:
+        - {name: admission, containerPort: 9443}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          capabilities: {drop: [ALL]}
+        volumeMounts:
+        - {name: config, mountPath: /etc/internal-dns, readOnly: true}
+        - {name: nats, mountPath: /var/run/internal-dns/nats, readOnly: true}
+        - {name: admission, mountPath: /var/run/internal-dns/admission, readOnly: true}
+      volumes:
+      - name: config
+        configMap: {name: internal-dns-control-plane-config}
+      - name: nats
+        secret: {secretName: internal-dns-control-plane-nats}
+      - name: admission
+        secret: {secretName: internal-dns-admission-tls}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-dns-admission
+  namespace: internal-dns-system
+spec:
+  selector: {app.kubernetes.io/name: internal-dns-control-plane}
+  ports:
+  - {name: https, port: 443, targetPort: admission}

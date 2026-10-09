@@ -1,0 +1,141 @@
+# This file demonstrates application-subject isolation. Password variables are
+# injected by the broker secret manager; use NKey/JWT credentials in a NATS
+# operator deployment. No product workload receives a NATS identity.
+server_name: internal-dns-1
+jetstream {
+  store_dir: "/var/lib/nats/jetstream"
+}
+tls {
+  cert_file: "/var/run/nats/tls/tls.crt"
+  key_file: "/var/run/nats/tls/tls.key"
+  ca_file: "/var/run/nats/tls/ca.crt"
+  verify: true
+  timeout: 2
+}
+authorization {
+  users: [
+    {
+      user: "internal-dns-control-plane"
+      password: $CONTROL_PLANE_PASSWORD
+      permissions: {
+        publish: { allow: [
+          "dns.private.serving.>", "dns.private.records.>",
+          "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$JS.API.>", "_INBOX.>"
+        ] }
+        subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
+      }
+    },
+    {
+      user: "node-us-central1-0"
+      password: $NODE_RESOLVER_0_PASSWORD
+      permissions: {
+        publish: { allow: [
+          "dns.private.acks.us-central1.shared-0.0195a8650ce9d5c927c91495",
+          "$JS.API.STREAM.INFO.DNS_PRIVATE",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.node-us-central1-0-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.node-us-central1-0-records",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.node-us-central1-0-acks",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-records.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.node-us-central1-0-acks.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.node-us-central1-0-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.node-us-central1-0-records",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.node-us-central1-0-acks",
+          "$JS.ACK.DNS_PRIVATE.node-us-central1-0-serving.>",
+          "$JS.ACK.DNS_PRIVATE.node-us-central1-0-records.>",
+          "$JS.ACK.DNS_PRIVATE.node-us-central1-0-acks.>",
+          "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
+          "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.INFO.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.MSG.NEXT.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.DELETE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "_INBOX.>"
+        ] }
+        subscribe: { allow: ["_INBOX.>"] }
+      }
+    },
+    {
+      user: "regional-front-us-central1-0"
+      password: $REGIONAL_FRONT_0_PASSWORD
+      permissions: {
+        publish: { allow: [
+          "dns.private.acks.us-central1.shared-0.92106c62061ed0349bc66280",
+          "$JS.API.STREAM.INFO.DNS_PRIVATE",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-front-us-central1-0-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-front-us-central1-0-records",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-front-us-central1-0-acks",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-records.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-front-us-central1-0-acks.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-front-us-central1-0-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-front-us-central1-0-records",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-front-us-central1-0-acks",
+          "$JS.ACK.DNS_PRIVATE.regional-front-us-central1-0-serving.>",
+          "$JS.ACK.DNS_PRIVATE.regional-front-us-central1-0-records.>",
+          "$JS.ACK.DNS_PRIVATE.regional-front-us-central1-0-acks.>",
+          "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
+          "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.INFO.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.MSG.NEXT.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.DELETE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "_INBOX.>"
+        ] }
+        subscribe: { allow: ["_INBOX.>"] }
+      }
+    },
+    {
+      user: "regional-bind-us-central1-0"
+      password: $REGIONAL_BIND_0_PASSWORD
+      permissions: {
+        publish: { allow: [
+          "dns.private.acks.us-central1.shared-0.b75afe155467f45fdab6d0a1",
+          "$JS.API.STREAM.INFO.DNS_PRIVATE",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-0-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-0-records",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-records.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-0-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-0-records",
+          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-0-serving.>",
+          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-0-records.>",
+          "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
+          "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.INFO.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.MSG.NEXT.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.DELETE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "_INBOX.>"
+        ] }
+        subscribe: { allow: ["_INBOX.>"] }
+      }
+    },
+    {
+      user: "regional-bind-us-central1-1"
+      password: $REGIONAL_BIND_1_PASSWORD
+      permissions: {
+        publish: { allow: [
+          "dns.private.acks.us-central1.shared-0.2600654ae9645c6e4439e8ac",
+          "$JS.API.STREAM.INFO.DNS_PRIVATE",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-1-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-1-records",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-records.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-1-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-1-records",
+          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-1-serving.>",
+          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-1-records.>",
+          "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
+          "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.INFO.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.MSG.NEXT.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "$JS.API.CONSUMER.DELETE.KV_DNS_PRIVATE_SNAPSHOTS.>",
+          "_INBOX.>"
+        ] }
+        subscribe: { allow: ["_INBOX.>"] }
+      }
+    }
+  ]
+}

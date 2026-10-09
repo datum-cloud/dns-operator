@@ -282,6 +282,15 @@ func TestStaticTTLPreservedAndConflictsRejected(t *testing.T) {
 	if wire.RRSets[0].TTL != 30 {
 		t.Fatalf("TTL=%d", wire.RRSets[0].TTL)
 	}
+	ttl = 0
+	result, err = Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Plan.RRsets[0].TTLSeconds != 0 {
+		t.Fatal("explicit zero TTL was discarded")
+	}
+	ttl = 30
 	stamp := metav1.NewTime(now)
 	in.StaticRecords[0].DeletionTimestamp = &stamp
 	result, err = Compile(in)

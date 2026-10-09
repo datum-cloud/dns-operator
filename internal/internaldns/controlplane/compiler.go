@@ -123,8 +123,8 @@ func Compile(in CompileInput) (CompileResult, error) {
 			if record.TTL != nil {
 				ttl = *record.TTL
 			}
-			if ttl < 1 || ttl > 2147483647 {
-				return result, fmt.Errorf("static TTL must be between 1 and 2147483647 seconds")
+			if ttl < 0 || ttl > 2147483647 {
+				return result, fmt.Errorf("static TTL must be between 0 and 2147483647 seconds")
 			}
 			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
 			if previous, ok := staticTTLs[key]; ok && previous != int32(ttl) {

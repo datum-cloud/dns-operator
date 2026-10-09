@@ -39,8 +39,8 @@ func WirePlan(plan PublicationPlan) (model.PublicationPlan, error) {
 	sort.Strings(out.Owners)
 	for _, set := range plan.RRsets {
 		ttl := set.TTLSeconds
-		if ttl <= 0 {
-			ttl = 300
+		if ttl < 0 {
+			return model.PublicationPlan{}, fmt.Errorf("negative RRset TTL")
 		}
 		rr := model.RRSet{Name: absoluteOwner(set.Name, plan.ZoneApex), Type: string(set.RecordType), TTL: uint32(ttl)}
 		for i, entry := range set.Records {

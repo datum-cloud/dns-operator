@@ -100,53 +100,16 @@ func Compile(in CompileInput) (CompileResult, error) {
 
 	claims := map[ownershipKey]types.UID{}
 	staticClaim := map[ownershipKey]types.UID{}
-	validStatic := map[types.UID]bool{}
-	staticTTLs := map[ownershipKey]int32{}
-	for i := range in.StaticRecords {
-		rs := &in.StaticRecords[i]
-		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() {
-			continue
-		}
-		valid := true
-		for _, record := range rs.Spec.Records {
-			if model.ValidatePrivateRecordOwner(zoneOwner(record.Name, result.Plan.ZoneApex), result.Plan.ZoneApex, string(rs.Spec.RecordType)) != nil {
-				valid = false
-				break
-			}
-		}
-		if !valid {
-			result.Reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
-			continue
-		}
-		for _, record := range rs.Spec.Records {
-			ttl := int64(300)
-			if record.TTL != nil {
-				ttl = *record.TTL
-			}
-			if ttl < 0 || ttl > 2147483647 {
-				return result, fmt.Errorf("static TTL must be between 0 and 2147483647 seconds")
-			}
-			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
-			if previous, ok := staticTTLs[key]; ok && previous != int32(ttl) {
-				return result, fmt.Errorf("conflicting static TTLs for %s %s", key.name, key.rrtype)
-			}
-			staticTTLs[key] = int32(ttl)
-		}
-		validStatic[rs.UID] = true
-		for _, record := range rs.Spec.Records {
-			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
-			if old, ok := claims[key]; ok && old != rs.UID {
-				return result, fmt.Errorf("static ownership conflict for %s %s", key.name, key.rrtype)
-			}
-			claims[key], staticClaim[key] = rs.UID, rs.UID
-		}
+	validStatic, staticTTLs, err := collectStaticClaims(in, result.Plan.ZoneApex, claims, staticClaim, result.Reasons)
+	if err != nil {
+		return result, err
 	}
 
 	regs := map[types.UID]*dnsv1alpha1.DNSRegistration{}
 	for i := range in.Registrations {
 		reg := &in.Registrations[i]
 		if !reg.DeletionTimestamp.IsZero() {
-			result.Reasons[reg.UID] = "Terminating"
+			result.Reasons[reg.UID] = dnsValueTerminating
 			continue
 		}
 		if reg.Spec.TTLSeconds < 1 || reg.Spec.TTLSeconds > dnsv1alpha1.DNSRegistrationMaxTTLSeconds {
@@ -213,7 +176,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 	for i := range in.Grants {
 		grant := &in.Grants[i]
 		if !grant.DeletionTimestamp.IsZero() {
-			result.Reasons[grant.UID] = "Terminating"
+			result.Reasons[grant.UID] = dnsValueTerminating
 			continue
 		}
 		reg := regs[grant.Spec.RegistrationRef.UID]
@@ -270,7 +233,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 		}
 		result.Sequences[c.UID] = c.Status.Sequence
 		if !c.DeletionTimestamp.IsZero() {
-			result.Reasons[c.UID] = "Terminating"
+			result.Reasons[c.UID] = dnsValueTerminating
 			continue
 		}
 		if !c.Status.Eligible {
@@ -581,4 +544,50 @@ func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
 		return fmt.Errorf("zone %s is not private", zone.Name)
 	}
 	return nil
+}
+
+func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32, error) {
+	validStatic := map[types.UID]bool{}
+	staticTTLs := map[ownershipKey]int32{}
+	for i := range in.StaticRecords {
+		rs := &in.StaticRecords[i]
+		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() {
+			continue
+		}
+		valid := true
+		for _, record := range rs.Spec.Records {
+			if model.ValidatePrivateRecordOwner(zoneOwner(record.Name, apex), apex, string(rs.Spec.RecordType)) != nil {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
+			continue
+		}
+		for _, record := range rs.Spec.Records {
+			ttl := int64(300)
+			if record.TTL != nil {
+				ttl = *record.TTL
+			}
+			if ttl < 0 || ttl > 2147483647 {
+				return nil, nil, fmt.Errorf("static TTL must be between 0 and 2147483647 seconds")
+			}
+			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
+			if previous, ok := staticTTLs[key]; ok && previous != int32(ttl) {
+				return nil, nil, fmt.Errorf("conflicting static TTLs for %s %s", key.name, key.rrtype)
+			}
+			staticTTLs[key] = int32(ttl)
+		}
+		validStatic[rs.UID] = true
+		for _, record := range rs.Spec.Records {
+			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
+			if old, ok := claims[key]; ok && old != rs.UID {
+				return nil, nil, fmt.Errorf("static ownership conflict for %s %s", key.name, key.rrtype)
+			}
+			claims[key], staticClaim[key] = rs.UID, rs.UID
+		}
+	}
+
+	return validStatic, staticTTLs, nil
 }

@@ -207,7 +207,7 @@ func (r *Reconciler) issueGrants(ctx context.Context, grants []dnsv1alpha1.DNSCo
 			g.Status.ObservedRegistrationGeneration = reg.Generation
 		}
 		status := metav1.ConditionFalse
-		reason, msg := "StaleRegistrationGeneration", "grant registration reference is stale"
+		reason, msg := dnsValueStaleRegistrationGeneration, "grant registration reference is stale"
 		if valid {
 			status = metav1.ConditionTrue
 			reason = "Active"
@@ -299,7 +299,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		stateHash = hash
 	}
 	if own.Spec.LastContentHash == stateHash {
-		if !own.Spec.LeaseUntil.Time.After(now.Add(r.Options.LeaseDuration / 2)) {
+		if !own.Spec.LeaseUntil.After(now.Add(r.Options.LeaseDuration / 2)) {
 			base := own.DeepCopy()
 			own.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
 			if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -326,7 +326,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		return false, time.Time{}, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
-	manifest, chunkNames, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
+	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
 	if err != nil {
 		return false, time.Time{}, err
 	}
@@ -337,7 +337,6 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, time.Time{}, err
 	}
-	_ = chunkNames
 	return false, nextExpiry(ownPlan, now), nil
 }
 
@@ -392,11 +391,10 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	return result, nil
 }
 
-func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, vpcUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, []string, error) {
+func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, vpcUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
 	vpcUIDs = append([]types.UID{}, vpcUIDs...)
 	refs := []dnsv1alpha1.DNSPublicationChunkReference{}
 	depsByRegion := map[string][]string{}
-	allOutboxes := []string{}
 	wireRefs := []model.ChunkRef{}
 	parts := chunk(payload, r.Options.ChunkSize)
 	for i, p := range parts {
@@ -404,7 +402,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 		sum := model.Hash(p)
 		obj := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: chunkName, Namespace: r.Options.PlatformNamespace}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: epoch, Revision: revision, Index: int32(i), SHA256: sum, Payload: p}}
 		if err := r.createImmutable(ctx, obj); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		refs = append(refs, dnsv1alpha1.DNSPublicationChunkReference{Name: chunkName, SHA256: sum, Size: int32(len(p))})
 		wireRefs = append(wireRefs, model.ChunkRef{Index: i, SHA256: sum, Size: len(p)})
@@ -414,16 +412,15 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 			eventID := token + ":" + chunkName
 			env, err := model.NewEnvelope(model.KindPublicationChunk, eventID, target.Region, target.Shard, string(z.UID), uint64(epoch), uint64(revision), now, wire)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			b, _ := json.Marshal(env)
 			outName := boundedName(chunkName + "-" + token + "-export")
 			out := r.outbox(outName, target.Region, target.Shard, model.RecordChunkSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, false, nil)
 			if err := r.createImmutable(ctx, out); err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			depsByRegion[token] = append(depsByRegion[token], out.Name)
-			allOutboxes = append(allOutboxes, out.Name)
 		}
 	}
 	apiFences := make([]dnsv1alpha1.DNSContributionFence, 0, len(fences))
@@ -440,27 +437,26 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	}
 	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: vpcUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
 	if err := r.createImmutable(ctx, m); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	wmanifest := model.PublicationManifest{ManifestUID: name, ZoneUID: string(z.UID), Apex: z.Spec.DomainName, WriterEpoch: uint64(epoch), Revision: uint64(revision), PreviousRevision: uint64(previous), Tombstone: tombstone, Chunks: wireRefs, ContentHash: hash, GeneratedAt: now}
 	if err := wmanifest.Validate(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	for _, target := range servingTargets {
 		token := regionToken(target)
 		eventID := token + ":" + name
 		env, err := model.NewEnvelope(model.KindPublicationManifest, eventID, target.Region, target.Shard, string(z.UID), uint64(epoch), uint64(revision), now, wmanifest)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		b, _ := json.Marshal(env)
 		out := r.outbox(model.PublicationActivationName(name, target.Region, target.Shard), target.Region, target.Shard, model.RecordManifestSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, true, depsByRegion[token])
 		if err := r.createImmutable(ctx, out); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		allOutboxes = append(allOutboxes, out.Name)
 	}
-	return m, allOutboxes, nil
+	return m, nil
 }
 
 func (r *Reconciler) outbox(name, region, shard, subject string, uid types.UID, epoch, revision int64, manifest string, payload []byte, activation bool, deps []string) *dnsv1alpha1.DNSTransportOutbox {
@@ -493,7 +489,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 		return nil, fmt.Errorf("ownership collision for %s", z.UID)
 	}
 	if o.Spec.HolderIdentity != r.Options.Identity {
-		if o.Spec.LeaseUntil.Time.After(now) {
+		if o.Spec.LeaseUntil.After(now) {
 			return nil, nil
 		}
 		base := o.DeepCopy()

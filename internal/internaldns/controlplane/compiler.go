@@ -84,12 +84,10 @@ type ownershipKey struct {
 // Compile builds a canonical plan and applies the same ownership and fencing
 // checks even when an admission webhook was unavailable.
 func Compile(in CompileInput) (CompileResult, error) {
-	if in.Zone == nil || in.Zone.UID == "" {
-		return CompileResult{}, fmt.Errorf("zone and API-assigned UID are required")
+	if err := validatePrivateZone(in.Zone); err != nil {
+		return CompileResult{}, err
 	}
-	if in.Zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
-		return CompileResult{}, fmt.Errorf("zone %s is not private", in.Zone.Name)
-	}
+
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -98,19 +96,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 	result.Plan.ZoneUID = in.Zone.UID
 	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
 
-	vpcs := map[types.UID]struct{}{}
-	for i := range in.Associations {
-		a := &in.Associations[i]
-		accepted := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
-		consumerUID := a.Status.ResolvedResolverContextRef.UID
-		if a.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && refMatches(a.Status.ResolvedDNSZoneRef, in.Zone.Name, in.Zone.UID, in.Zone.Generation) && consumerUID != "" {
-			vpcs[consumerUID] = struct{}{}
-		}
-	}
-	for uid := range vpcs {
-		result.Plan.ContextUIDs = append(result.Plan.ContextUIDs, uid)
-	}
-	sort.Slice(result.Plan.ContextUIDs, func(i, j int) bool { return result.Plan.ContextUIDs[i] < result.Plan.ContextUIDs[j] })
+	result.Plan.ContextUIDs = associatedContextUIDs(in.Zone, in.Associations)
 
 	claims := map[ownershipKey]types.UID{}
 	staticClaim := map[ownershipKey]types.UID{}
@@ -128,7 +114,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			}
 		}
 		if !valid {
-			result.Reasons[rs.UID] = "UnsupportedPrivateRecord"
+			result.Reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 			continue
 		}
 		validStatic[rs.UID] = true
@@ -160,7 +146,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			}
 		}
 		if !valid {
-			result.Reasons[reg.UID] = "UnsupportedPrivateRecord"
+			result.Reasons[reg.UID] = dnsValueUnsupportedPrivateRecord
 			continue
 		}
 
@@ -205,7 +191,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 		grant := &in.Grants[i]
 		reg := regs[grant.Spec.RegistrationRef.UID]
 		if reg == nil || grant.Spec.RegistrationRef.Name != reg.Name || grant.Spec.RegistrationRef.Generation != reg.Generation {
-			result.Reasons[grant.UID] = "StaleRegistrationGeneration"
+			result.Reasons[grant.UID] = dnsValueStaleRegistrationGeneration
 			continue
 		}
 		if grant.Status.ActiveWriterEpoch <= 0 || grant.Status.ObservedGrantGeneration != grant.Generation || grant.Status.ObservedRegistrationGeneration != reg.Generation {
@@ -241,14 +227,14 @@ func Compile(in CompileInput) (CompileResult, error) {
 		c := &in.Contributions[i]
 		reg := regs[c.Spec.RegistrationRef.UID]
 		grant := grants[c.Spec.GrantRef.UID]
-		reason := validateContribution(c, reg, grant, previousSeq[c.UID], now)
+		reason := validateContribution(c, reg, grant, previousSeq[c.UID])
 		if reason != "" {
 			result.Reasons[c.UID] = reason
 			continue
 		}
 		until := time.Time{}
 		if c.Status.ValidUntil != nil {
-			until = c.Status.ValidUntil.Time.UTC()
+			until = c.Status.ValidUntil.UTC()
 		}
 		currentFence := ContributionFence{UID: c.UID, GrantUID: grant.UID, Epoch: c.Status.WriterEpoch, Sequence: c.Status.Sequence, ValidUntil: until}
 		previousFence := previousSeq[c.UID]
@@ -260,7 +246,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			result.Reasons[c.UID] = "Ineligible"
 			continue
 		}
-		if c.Status.ValidUntil == nil || !c.Status.ValidUntil.Time.After(now) {
+		if c.Status.ValidUntil == nil || !c.Status.ValidUntil.After(now) {
 			result.Reasons[c.UID] = "Expired"
 			continue
 		}
@@ -346,9 +332,9 @@ func Compile(in CompileInput) (CompileResult, error) {
 	return result, nil
 }
 
-func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, grant *dnsv1alpha1.DNSContributionGrant, previous ContributionFence, now time.Time) string {
+func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, grant *dnsv1alpha1.DNSContributionGrant, previous ContributionFence) string {
 	if reg == nil || c.Spec.RegistrationRef.Name != reg.Name || c.Spec.RegistrationRef.Generation != reg.Generation {
-		return "StaleRegistrationGeneration"
+		return dnsValueStaleRegistrationGeneration
 	}
 	if grant == nil || c.Spec.GrantRef.Name != grant.Name {
 		return "GrantNotActive"
@@ -374,7 +360,7 @@ func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1
 		}
 		if previous.Epoch == c.Status.WriterEpoch {
 			if c.Status.Sequence < previous.Sequence {
-				return "NonIncreasingSequence"
+				return dnsValueNonIncreasingSequence
 			}
 			if c.Status.Sequence == previous.Sequence && !c.Status.ValidUntil.Time.Equal(previous.ValidUntil) {
 				return "FenceDeadlineMismatch"
@@ -532,4 +518,36 @@ func sortAggregate(records []dnsv1alpha1.RecordEntry, uids []types.UID) {
 		records[i] = pairs[i].record
 		uids[i] = pairs[i].uid
 	}
+}
+
+func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1.DNSZoneAssociation) []types.UID {
+	vpcs := map[types.UID]struct{}{}
+	for i := range associations {
+		a := &associations[i]
+		accepted := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
+		consumerUID := a.Status.ResolvedResolverContextRef.UID
+		if a.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && refMatches(a.Status.ResolvedDNSZoneRef, zone.Name, zone.UID, zone.Generation) && consumerUID != "" {
+			vpcs[consumerUID] = struct{}{}
+		}
+	}
+	if len(vpcs) == 0 {
+		return nil
+	}
+	contexts := make([]types.UID, 0, len(vpcs))
+	for uid := range vpcs {
+		contexts = append(contexts, uid)
+	}
+	sort.Slice(contexts, func(i, j int) bool { return contexts[i] < contexts[j] })
+
+	return contexts
+}
+
+func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
+	if zone == nil || zone.UID == "" {
+		return fmt.Errorf("zone and API-assigned UID are required")
+	}
+	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return fmt.Errorf("zone %s is not private", zone.Name)
+	}
+	return nil
 }

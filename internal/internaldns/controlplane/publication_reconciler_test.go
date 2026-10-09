@@ -262,7 +262,7 @@ func TestEmptyPublicationUsesJSONArraysForRequiredSlices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "internal-dns-system", ChunkSize: 1024}}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "orphan", UID: "zone-orphan"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "orphan.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	manifest, _, err := r.persistPublication(ctx, zone, "empty", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, time.Now().UTC())
+	manifest, err := r.persistPublication(ctx, zone, "empty", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}

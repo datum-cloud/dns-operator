@@ -16,11 +16,3 @@ func refMatches(ref dnsv1alpha1.DNSObjectReference, name string, uid types.UID, 
 func canonicalName(s string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
 }
-
-func shortUID(uid types.UID) string {
-	s := strings.ReplaceAll(string(uid), "-", "")
-	if len(s) > 12 {
-		return s[:12]
-	}
-	return s
-}

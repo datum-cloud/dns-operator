@@ -36,7 +36,7 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	var out []ResolvedName
 	for i := range managed.Items {
 		m := &managed.Items[i]
-		accepted := apimeta.FindStatusCondition(m.Status.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted)
 		if m.Spec.ProjectUID == projectUID && m.Spec.VPCRef.UID == vpcUID && accepted != nil && accepted.Status == metav1.ConditionTrue {
 			prefix := classPrefix(class)
 			out = append(out, ResolvedName{DNSZoneRef: m.Status.DNSZoneRef, Name: label + "." + prefix, Canonical: true})
@@ -58,7 +58,7 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	})
 	for i := range policies.Items {
 		p := &policies.Items[i]
-		accepted := apimeta.FindStatusCondition(p.Status.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(p.Status.Conditions, dnsValueAccepted)
 		if p.Status.ResolvedVPCRef.UID != vpcUID || accepted == nil || accepted.Status != metav1.ConditionTrue {
 			continue
 		}

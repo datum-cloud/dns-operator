@@ -38,34 +38,24 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		}
 	})
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := corev1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, dnsv1alpha1.AddToScheme(scheme))
+	requireAccessTestSuccess(t, corev1.AddToScheme(scheme))
 	cl, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	for _, ns := range []string{"project", "platform"} {
-		if err := cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
-			t.Fatal(err)
-		}
+		requireAccessTestSuccess(t, cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}))
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "opaque-consumer"}}
 	readyContext := func(c *dnsv1alpha1.DNSResolverContext) {
 		t.Helper()
-		if err := cl.Create(ctx, c); err != nil {
-			t.Fatal(err)
-		}
+		requireAccessTestSuccess(t, cl.Create(ctx, c))
 		c.Status.AccessWriterEpoch = 1
 		apimeta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: c.Generation, Reason: "Accepted", LastTransitionTime: metav1.NewTime(now)})
-		if err := cl.Status().Update(ctx, c); err != nil {
-			t.Fatal(err)
-		}
+		requireAccessTestSuccess(t, cl.Status().Update(ctx, c))
 	}
 	readyContext(resolverContext)
 	deadline := metav1.NewTime(now.Add(time.Minute + 22357123*time.Nanosecond))
@@ -79,28 +69,18 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	// Submit unstructured JSON, as kubectl does, so the API initially stores a
 	// fractional deadline independently of the typed client encoder.
 	rawAccess := &unstructured.Unstructured{}
-	if err := json.Unmarshal(raw, &rawAccess.Object); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, json.Unmarshal(raw, &rawAccess.Object))
 	rawAccess.Object["spec"].(map[string]interface{})["authorization"].(map[string]interface{})["validUntil"] = deadline.UTC().Format(time.RFC3339Nano)
-	if err := cl.Create(ctx, rawAccess); err != nil {
-		t.Fatal(err)
-	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Create(ctx, rawAccess))
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	r := &Reconciler{Client: cl, Scheme: scheme, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", MaxAccessLease: 5 * time.Minute, AddressAllocator: &platform.Allocator{Client: cl, Namespace: "platform"}}}
 	reconcile := func(at time.Time) {
 		t.Helper()
-		if err := r.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, at); err != nil {
-			t.Fatal(err)
-		}
+		requireAccessTestSuccess(t, r.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, at))
 	}
 	reconcile(now)
 	var bindings dnsv1alpha1.DNSResolverBindingList
-	if err := cl.List(ctx, &bindings, client.InNamespace("platform")); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.List(ctx, &bindings, client.InNamespace("platform")))
 	if len(bindings.Items) != 1 {
 		t.Fatalf("got %d bindings", len(bindings.Items))
 	}
@@ -111,18 +91,14 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	bindingKey := client.ObjectKeyFromObject(&binding)
 	readBinding := func() {
 		t.Helper()
-		if err := cl.Get(ctx, bindingKey, &binding); err != nil {
-			t.Fatal(err)
-		}
+		requireAccessTestSuccess(t, cl.Get(ctx, bindingKey, &binding))
 	}
 	reconcile(now)
 	readBinding()
 	if binding.Spec.Tombstone || !binding.Spec.Authorization.ValidUntil.Equal(&deadline) {
 		t.Fatal("unchanged fractional authorization was withdrawn on second reconcile")
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	if accepted := apimeta.FindStatusCondition(access.Status.Conditions, "Accepted"); accepted == nil || accepted.Status != metav1.ConditionTrue {
 		t.Fatal("fractional source authorization lost Accepted status")
 	}
@@ -163,9 +139,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	if !binding.Spec.Tombstone || binding.Spec.Configuration.Revision != 2 || binding.Spec.Authorization.Sequence != 2 || !binding.Spec.Authorization.ValidUntil.Equal(&deadline) {
 		t.Fatalf("withdrawal consumed source authority: %#v", binding.Spec)
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	staleExpiredAccess := *access.DeepCopy()
 	// A direct same-fence replay cannot reopen the retired configuration.
 	replay := binding.DeepCopy()
@@ -181,18 +155,12 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	}
 	// Even if the source API has no admission webhook, the controller compares
 	// against its retained authorization fence and rejects a deadline replay.
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	baseAccess := access.DeepCopy()
 	renewedDeadline := metav1.NewTime(expiredAt.Add(time.Minute + 987654321*time.Nanosecond))
 	access.Spec.Authorization.ValidUntil = renewedDeadline
-	if err := cl.Patch(ctx, access, client.MergeFromWithOptions(baseAccess, client.MergeFromWithOptimisticLock{})); err != nil {
-		t.Fatal(err)
-	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Patch(ctx, access, client.MergeFromWithOptions(baseAccess, client.MergeFromWithOptimisticLock{})))
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	if !access.Spec.Authorization.ValidUntil.Equal(&renewedDeadline) {
 		t.Fatal("typed merge patch lost source deadline precision")
 	}
@@ -202,13 +170,9 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		t.Fatal("same source fence reopened withdrawn access")
 	}
 	// Ordinary next-sequence renewal is independent of private DNS counters.
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	access.Spec.Authorization.Sequence = 3
-	if err := cl.Update(ctx, access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Update(ctx, access))
 	reconcile(expiredAt)
 	readBinding()
 	if binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 3 || binding.Spec.Configuration.Revision != 3 || !binding.Spec.Authorization.ValidUntil.Equal(&access.Spec.Authorization.ValidUntil) {
@@ -218,17 +182,13 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	// platform binding is visible. Cleanup must freshly read sequence 3 instead
 	// of converting an unchanged stale rejection status into revocation.
 	staleController := &Reconciler{Client: &accessListSnapshotClient{Client: cl, accesses: []dnsv1alpha1.DNSResolverAccessBinding{staleExpiredAccess}}, Scheme: scheme, Options: r.Options}
-	if err := staleController.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, expiredAt); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, staleController.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, expiredAt))
 	readBinding()
 	if binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 3 || binding.Spec.Configuration.Revision != 3 {
 		t.Fatalf("stale source List withdrew renewed binding: %#v", binding.Spec)
 	}
 	staleController.Client = &accessListSnapshotClient{Client: cl}
-	if err := staleController.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, expiredAt); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, staleController.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, expiredAt))
 	readBinding()
 	if binding.Spec.Tombstone || binding.Spec.Configuration.Revision != 3 {
 		t.Fatal("omitted source List withdrew renewed binding")
@@ -236,9 +196,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	// Deleting the context revokes access before its source deadline. Recreating
 	// the same name cannot satisfy the old UID-pinned integration reference.
 	oldContextUID := resolverContext.UID
-	if err := cl.Delete(ctx, resolverContext); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Delete(ctx, resolverContext))
 	reconcile(expiredAt)
 	readBinding()
 	if !binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 3 || !binding.Spec.Authorization.ValidUntil.Equal(&access.Spec.Authorization.ValidUntil) {
@@ -256,40 +214,26 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	}
 	// A new access UID cannot reuse a quarantined destination. A fresh protected
 	// destination creates a separate binding and leaves the retired one closed.
-	if err := cl.Delete(ctx, access); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Delete(ctx, access))
 	freshAccess := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: access.Spec}
 	freshAccess.Spec.ContextRef = dnsv1alpha1.DNSObjectReference{Name: freshContext.Name, UID: freshContext.UID}
 	freshAccess.Spec.Authorization.Sequence = 1
-	if err := cl.Create(ctx, freshAccess); err != nil {
-		t.Fatal(err)
-	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Create(ctx, freshAccess))
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess))
 	if !freshAccess.Spec.Authorization.ValidUntil.Equal(&renewedDeadline) {
 		t.Fatal("typed create lost source deadline precision")
 	}
 	reconcile(expiredAt)
-	if err := cl.List(ctx, &bindings, client.InNamespace("platform")); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.List(ctx, &bindings, client.InNamespace("platform")))
 	if len(bindings.Items) != 1 {
 		t.Fatal("new access lifetime reused a protected destination")
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess))
 	freshAccess.Spec.QueryIdentity.Value = "fd70:100::11"
 	freshAccess.Spec.Authorization.Sequence = 2
-	if err := cl.Update(ctx, freshAccess); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Update(ctx, freshAccess))
 	reconcile(expiredAt)
-	if err := cl.List(ctx, &bindings, client.InNamespace("platform")); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.List(ctx, &bindings, client.InNamespace("platform")))
 	if len(bindings.Items) != 2 {
 		t.Fatalf("fresh protected identity created %d bindings", len(bindings.Items))
 	}
@@ -308,14 +252,10 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	if freshBinding.UID == "" {
 		t.Fatal("fresh access binding missing")
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess))
 	freshAccess.Spec.Authorization.Sequence = 3
 	freshAccess.Spec.Authorization.ValidUntil = metav1.NewTime(expiredAt.Add(-time.Second))
-	if err := cl.Update(ctx, freshAccess); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Update(ctx, freshAccess))
 	raceClient := &bindingPatchRaceClient{Client: cl, beforeWithdrawal: func(ctx context.Context) error {
 		if err := cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess); err != nil {
 			return err
@@ -336,10 +276,15 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	if err := raceController.reconcileContextBindings(ctx, "project", nil, nil, expiredAt); !apierrors.IsConflict(err) {
 		t.Fatalf("concurrent platform renewal did not fence withdrawal: %v", err)
 	}
-	if err := cl.Get(ctx, client.ObjectKeyFromObject(&freshBinding), &freshBinding); err != nil {
-		t.Fatal(err)
-	}
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(&freshBinding), &freshBinding))
 	if freshBinding.Spec.Tombstone || freshBinding.Spec.Authorization.Sequence != 4 || !freshBinding.Spec.Authorization.ValidUntil.Equal(&renewedDeadline) {
 		t.Fatal("destructive cleanup overwrote concurrent platform renewal")
+	}
+}
+
+func requireAccessTestSuccess(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

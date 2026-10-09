@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -69,13 +68,13 @@ func (r *Reconciler) reconcileNamingPolicies(ctx context.Context, items []dnsv1a
 
 		p.Status.ResolvedAdditionalNames = resolved
 		status := metav1.ConditionTrue
-		reason, msg := "Accepted", "naming policy is authorized"
+		reason, msg := dnsValueAccepted, "naming policy is authorized"
 		if !valid {
 			status = metav1.ConditionFalse
 			reason = "InvalidPolicy"
 			msg = "all rules require an associated private zone and unique class/prefix"
 		}
-		if setCondition(&p.Status.Conditions, "Accepted", status, reason, msg, p.Generation, now) {
+		if setCondition(&p.Status.Conditions, dnsValueAccepted, status, reason, msg, p.Generation, now) {
 			if err := r.Status().Patch(ctx, p, client.MergeFrom(base)); err != nil {
 				return err
 			}
@@ -93,7 +92,7 @@ func zUID(z *dnsv1alpha1.DNSZone) types.UID {
 
 func associatedWithContext(assocs []dnsv1alpha1.DNSZoneAssociation, zoneUID, contextUID types.UID) bool {
 	for _, a := range assocs {
-		c := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
+		c := apimeta.FindStatusCondition(a.Status.Conditions, dnsValueAccepted)
 		if c != nil && c.Status == metav1.ConditionTrue && a.Status.ResolvedDNSZoneRef.UID == zoneUID && a.Status.ResolvedResolverContextRef.UID == contextUID {
 			return true
 		}
@@ -110,15 +109,13 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 	for i := range list.Items {
 		m := &list.Items[i]
 		if m.Spec.ProjectUID != r.Options.ProjectUID || m.Spec.VPCRef.UID == "" {
-			if err := r.patchCondition(ctx, m, "Accepted", metav1.ConditionFalse, "InvalidIdentity", "project and pinned VPC UID are required", now); err != nil {
+			if err := r.patchCondition(ctx, m, dnsValueAccepted, metav1.ConditionFalse, "InvalidIdentity", "project and pinned VPC UID are required", now); err != nil {
 				return err
 			}
 			continue
 		}
 		consumerToken := model.OpaqueToken(string(m.Spec.VPCRef.UID))
-		lifetimeToken := consumerToken
-
-		lifetimeToken = model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
+		lifetimeToken := model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
 
 		suffix := canonicalName(consumerToken + "." + m.Spec.DomainSuffix)
 		zoneName := "managed-" + lifetimeToken[:12]
@@ -157,18 +154,18 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 			return err
 		}
 		base := m.DeepCopy()
-		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, dnsValueAccepted)
 		ready := accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
 		if ready {
 			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}
 			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{Name: assoc.Name, UID: assoc.UID}
 			m.Status.CanonicalSuffix = suffix
-			setCondition(&m.Status.Conditions, "Accepted", metav1.ConditionTrue, "Ready", "managed namespace is allocated", m.Generation, now)
+			setCondition(&m.Status.Conditions, dnsValueAccepted, metav1.ConditionTrue, "Ready", "managed namespace is allocated", m.Generation, now)
 		} else {
 			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{}
 			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{}
 			m.Status.CanonicalSuffix = ""
-			setCondition(&m.Status.Conditions, "Accepted", metav1.ConditionFalse, "PendingAssociation", "managed namespace association is not accepted", m.Generation, now)
+			setCondition(&m.Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "PendingAssociation", "managed namespace association is not accepted", m.Generation, now)
 		}
 		if err := r.Status().Patch(ctx, m, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
@@ -223,11 +220,11 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 			c.Status.ManagedNamespace.DNSZoneRef = m.Status.DNSZoneRef
 			c.Status.ManagedNamespace.Suffix = m.Status.CanonicalSuffix
-			if condition := apimeta.FindStatusCondition(m.Status.Conditions, "Accepted"); condition != nil && condition.Status == metav1.ConditionTrue && m.Status.DNSZoneRef.UID != "" {
+			if condition := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted); condition != nil && condition.Status == metav1.ConditionTrue && m.Status.DNSZoneRef.UID != "" {
 				ready = true
 			}
 		}
-		status, reason, msg := metav1.ConditionTrue, "Accepted", "resolver context is active"
+		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "resolver context is active"
 		if !valid {
 			status, reason, msg = metav1.ConditionFalse, "InvalidIdentity", "consumerID is required and context must be live"
 			if duplicate {
@@ -258,7 +255,7 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		a := &items[i]
 		z := zones[a.Spec.DNSZoneRef.Name]
 		status := metav1.ConditionTrue
-		reason, msg := "Accepted", "association accepted"
+		reason, msg := dnsValueAccepted, "association accepted"
 		vpcUID, vpcErr := types.UID(""), error(nil)
 
 		var resolverContext dnsv1alpha1.DNSResolverContext
@@ -290,7 +287,7 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		if z != nil {
 			a.Status.ResolvedDNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID, Generation: z.Generation}
 		}
-		if setCondition(&a.Status.Conditions, "Accepted", status, reason, msg, a.Generation, now) {
+		if setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now) {
 			if err := r.Status().Patch(ctx, a, client.MergeFrom(base)); err != nil {
 				return err
 			}
@@ -330,7 +327,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	zonesByContext := map[types.UID][]types.UID{}
 	for _, a := range assocs {
 		z := zones[a.Spec.DNSZoneRef.Name]
-		accepted := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
+		accepted := apimeta.FindStatusCondition(a.Status.Conditions, dnsValueAccepted)
 		if z != nil && accepted != nil && accepted.Status == metav1.ConditionTrue {
 			zonesByContext[a.Status.ResolvedResolverContextRef.UID] = append(zonesByContext[a.Status.ResolvedResolverContextRef.UID], z.UID)
 		}
@@ -343,12 +340,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		base := a.DeepCopy()
 		spec := a.Spec
 		contextObject := contextByUID[spec.ContextRef.UID]
-		contextReady := false
-		if contextObject != nil {
-			if c := apimeta.FindStatusCondition(contextObject.Status.Conditions, "Ready"); c != nil && c.Status == metav1.ConditionTrue {
-				contextReady = c.ObservedGeneration == contextObject.Generation
-			}
-		}
+		contextReady := resolverContextReady(contextObject)
 		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady && contextObject.Status.AccessWriterEpoch > 0 && spec.Authorization.WriterEpoch == contextObject.Status.AccessWriterEpoch && spec.Authorization.Sequence >= a.Status.ObservedSequence && spec.Authorization.ValidUntil.After(now) && !spec.Authorization.ValidUntil.After(now.Add(r.Options.MaxAccessLease))
 		bindingName := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
 		if prior := bindingsByName[bindingName]; prior != nil {
@@ -373,11 +365,11 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				destinations[key] = a.UID
 			}
 		}
-		status, reason, msg := metav1.ConditionTrue, "Accepted", "access binding is current"
+		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
 		if !valid {
 			status, reason, msg = metav1.ConditionFalse, "InvalidOrStaleAccess", "context lifetime, epoch, sequence, destination, and bounded deadline must be current"
 		}
-		setCondition(&a.Status.Conditions, "Accepted", status, reason, msg, a.Generation, now)
+		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
 		if !valid {
 			a.Status.BindingRef = nil
 			setCondition(&a.Status.Conditions, "Ready", metav1.ConditionFalse, "AccessRejected", "access binding is not accepted", a.Generation, now)
@@ -635,25 +627,6 @@ func setCondition(cs *[]metav1.Condition, t string, status metav1.ConditionStatu
 	return apimeta.SetStatusCondition(cs, metav1.Condition{Type: t, Status: status, Reason: reason, Message: msg, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
 }
 
-func boolCondition(v bool) metav1.ConditionStatus {
-	if v {
-		return metav1.ConditionTrue
-	}
-	return metav1.ConditionFalse
-}
-
-func regionToken(r ServingRegion) string {
-	return model.SafeToken(r.Region) + "-" + model.SafeToken(r.Shard)
-}
-
-func boundedName(s string) string {
-	if len(s) <= 63 {
-		return strings.Trim(s, "-")
-	}
-	sum := sha256.Sum256([]byte(s))
-	return strings.Trim(s[:50], "-") + fmt.Sprintf("-%x", sum[:6])
-}
-
 // BindingAddressCandidates supplies stable IPv6 candidates to a durable global
 // allocator. Callers must collision-check, persist, and quarantine leases.
 func BindingAddressCandidates(uid types.UID) (string, string) {
@@ -661,18 +634,6 @@ func BindingAddressCandidates(uid types.UID) (string, string) {
 	a := binary.BigEndian.Uint64(sum[:8])
 	b := binary.BigEndian.Uint64(sum[8:16])
 	return netip.AddrFrom16([16]byte{0xfd, 0x53, byte(a >> 56), byte(a >> 48), byte(a >> 40), byte(a >> 32), byte(a >> 24), byte(a >> 16), byte(a >> 8), byte(a), byte(b >> 40), byte(b >> 32), byte(b >> 24), byte(b >> 16), byte(b >> 8), byte(b)}).String(), netip.AddrFrom16([16]byte{0xfd, 0x54, byte(a >> 56), byte(a >> 48), byte(a >> 40), byte(a >> 32), byte(a >> 24), byte(a >> 16), byte(a >> 8), byte(a), byte(b >> 40), byte(b >> 32), byte(b >> 24), byte(b >> 16), byte(b >> 8), byte(b)}).String()
-}
-
-func uidSlicesEqual(a, b []types.UID) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func bindingEqual(a, b dnsv1alpha1.DNSResolverBindingSpec) bool {
@@ -708,4 +669,12 @@ func zoneUIDsEqual(refs []dnsv1alpha1.DNSObjectReference, uids []types.UID) bool
 		}
 	}
 	return true
+}
+
+func resolverContextReady(contextObject *dnsv1alpha1.DNSResolverContext) bool {
+	if contextObject == nil {
+		return false
+	}
+	ready := apimeta.FindStatusCondition(contextObject.Status.Conditions, "Ready")
+	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == contextObject.Generation
 }

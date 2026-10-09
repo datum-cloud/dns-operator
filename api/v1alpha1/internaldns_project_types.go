@@ -21,6 +21,7 @@ type DNSObjectReference struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name) && self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0)",message="exactly one UID-pinned vpcRef or resolverContextRef is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.vpcRef) || ((self.vpcRef.name.size() == 0 && !has(self.vpcRef.uid) && (!has(self.vpcRef.generation) || self.vpcRef.generation == 0)) || (self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0))",message="a nonempty vpcRef must pin name and UID"
 // +kubebuilder:validation:XValidation:rule="!has(self.resolverContextRef) || ((self.resolverContextRef.name.size() == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation) || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0))",message="a nonempty resolverContextRef must pin name and UID"
+// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
 type DNSZoneAssociationSpec struct {
 	DNSZoneRef         DNSObjectReference `json:"dnsZoneRef"`
 	VPCRef             DNSObjectReference `json:"vpcRef,omitempty"`
@@ -173,13 +174,19 @@ const (
 	DNSPublicationPolicyPersistent            DNSPublicationPolicy = "Persistent"
 )
 
+const DNSRegistrationMaxTTLSeconds int32 = 30
+
+// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
 type DNSRegistrationSpec struct {
-	DNSZoneRef          DNSObjectReference   `json:"dnsZoneRef"`
-	Name                string               `json:"name"`
-	RecordTypes         []RRType             `json:"recordTypes"`
-	PublicationPolicy   DNSPublicationPolicy `json:"publicationPolicy"`
-	TTLSeconds          int32                `json:"ttlSeconds"`
-	ReservedDescendants []string             `json:"reservedDescendants,omitempty"`
+	DNSZoneRef        DNSObjectReference   `json:"dnsZoneRef"`
+	Name              string               `json:"name"`
+	RecordTypes       []RRType             `json:"recordTypes"`
+	PublicationPolicy DNSPublicationPolicy `json:"publicationPolicy"`
+	// TTLSeconds bounds cached dynamic answers to at most 30 seconds after withdrawal.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=30
+	TTLSeconds          int32    `json:"ttlSeconds"`
+	ReservedDescendants []string `json:"reservedDescendants,omitempty"`
 }
 
 type DNSRegistrationStatus struct {
@@ -286,6 +293,7 @@ type DNSRecordContributionList struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name) && self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0)",message="exactly one UID-pinned vpcRef or resolverContextRef is required"
 // +kubebuilder:validation:XValidation:rule="!has(self.vpcRef) || ((self.vpcRef.name.size() == 0 && !has(self.vpcRef.uid) && (!has(self.vpcRef.generation) || self.vpcRef.generation == 0)) || (self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0))",message="a nonempty vpcRef must pin name and UID"
 // +kubebuilder:validation:XValidation:rule="!has(self.resolverContextRef) || ((self.resolverContextRef.name.size() == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation) || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0))",message="a nonempty resolverContextRef must pin name and UID"
+// +kubebuilder:validation:XValidation:rule="!has(self.dnsZoneRef) || self.dnsZoneRef.name.size() == 0 || (has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0)",message="a selected dnsZoneRef must pin the zone UID"
 type DNSNamingPolicySpec struct {
 	VPCRef             DNSObjectReference      `json:"vpcRef,omitempty"`
 	ResolverContextRef DNSObjectReference      `json:"resolverContextRef,omitempty"`
@@ -307,6 +315,7 @@ const (
 	DNSRegistrationClassServiceExport    DNSRegistrationClass = "ServiceExport"
 )
 
+// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
 type DNSAdditionalNameRule struct {
 	RegistrationClass DNSRegistrationClass `json:"registrationClass"`
 	DNSZoneRef        DNSObjectReference   `json:"dnsZoneRef"`

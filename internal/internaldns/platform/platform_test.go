@@ -439,3 +439,19 @@ func zoneReferences(uids []types.UID) []dnsv1alpha1.DNSObjectReference {
 	}
 	return refs
 }
+
+func TestZeroTargetTombstoneNeedsNoReplicaACK(t *testing.T) {
+	sink := &AckSink{}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{}
+	if sink.publicationVerified(manifest, time.Now()) {
+		t.Fatal("active zero-target publication must not be declared served")
+	}
+	manifest.Spec.Tombstone = true
+	if !sink.publicationVerified(manifest, time.Now()) {
+		t.Fatal("zero-target tombstone must complete")
+	}
+	manifest.Spec.ServingTargets = []dnsv1alpha1.DNSPublicationTarget{{Region: "retired-region", Shard: "retired-shard"}}
+	if sink.publicationVerified(manifest, time.Now()) {
+		t.Fatal("prior-target withdrawal must await its ACKs")
+	}
+}

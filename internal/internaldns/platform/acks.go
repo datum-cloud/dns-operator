@@ -468,7 +468,7 @@ func jsonEqualStatus(a, b interface{}) bool {
 
 func (s *AckSink) publicationVerified(m *dnsv1alpha1.DNSPublicationManifest, now time.Time) bool {
 	if len(m.Spec.ServingTargets) == 0 {
-		return false
+		return m.Spec.Tombstone
 	}
 	scoped := *s
 	scoped.PublicationRegions = map[string][]model.Member{}

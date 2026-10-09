@@ -165,12 +165,6 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("deleting a contribution withdraws its answer and preserves registration ownership", nil)
-	if err := s.observe(a, pa, true, 90*time.Second); err != nil {
-		return err
-	}
-	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
-		return err
-	}
 	if err := s.offlineExpiry(a, b, pa, pb); err != nil {
 		return err
 	}
@@ -318,16 +312,18 @@ func (s *suite) scaleBroker(replicas int32) error {
 func (s *suite) offlineExpiry(a, b *project, pa, pb *publication) (resultErr error) {
 	// Keep the healthy tenant's original record and access lease long enough to
 	// cover the outage. Only the expired tenant receives the short access lease.
+	// Finish access readiness before starting the record leases: serving ACKs
+	// follow the production 30-second interval and can consume that setup time.
+	if err := s.renewAccess(b, 5*time.Minute); err != nil {
+		return err
+	}
 	if err := s.observe(a, pa, true, 90*time.Second); err != nil {
 		return err
 	}
 	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
 		return err
 	}
-	if err := s.renewAccess(b, 5*time.Minute); err != nil {
-		return err
-	}
-	expiring, err := s.publish(a, objectRef(&a.zone), "expires", "expires", "10.42.0.15", "", 30*time.Second)
+	expiring, err := s.publish(a, objectRef(&a.zone), "expires", "expires", "10.42.0.15", "", 45*time.Second)
 	if err != nil {
 		return err
 	}
@@ -378,6 +374,13 @@ func (s *suite) offlineExpiry(a, b *project, pa, pb *publication) (resultErr err
 	if !a.access.Spec.Authorization.ValidUntil.After(time.Now().Add(10 * time.Second)) {
 		return fmt.Errorf("access expired before the outage; no offline authorization proof")
 	}
+	if !a.access.Spec.Authorization.ValidUntil.After(expiring.contribution.Status.ValidUntil.Add(5 * time.Second)) {
+		return fmt.Errorf("record and access deadlines overlap; no independent expiry proof")
+	}
+	if pb.contribution.Status.ValidUntil == nil ||
+		!pb.contribution.Status.ValidUntil.After(a.access.Spec.Authorization.ValidUntil.Add(15*time.Second)) {
+		return fmt.Errorf("healthy record lease cannot cover access expiry; no outage positive control")
+	}
 	if err := s.expect(a, "expires.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.15"); err != nil {
 		return err
 	}
@@ -394,6 +397,20 @@ func (s *suite) offlineExpiry(a, b *project, pa, pb *publication) (resultErr err
 		return err
 	}
 	s.pass("local record expiry preserves the original deadline during a broker and controller outage", expiring.contribution.Status.ValidUntil)
+	if remaining := time.Until(a.access.Spec.Authorization.ValidUntil.Add(-3 * time.Second)); remaining > 0 {
+		time.Sleep(remaining)
+	}
+	answer, err := s.query(a, "expires.prod.internal", "A", false)
+	if err != nil {
+		return err
+	}
+	if answer.Error != "" || answer.Rcode != dns.RcodeSuccess || len(answer.Answers) != 0 ||
+		!a.access.Spec.Authorization.ValidUntil.After(time.Now()) {
+		return fmt.Errorf("access was not usable just before its original deadline: %+v", answer)
+	}
+	s.pass("unexpired access remains usable after record expiry", map[string]any{
+		"validUntil": a.access.Spec.Authorization.ValidUntil, "answer": answer,
+	})
 	if remaining := time.Until(a.access.Spec.Authorization.ValidUntil.Add(3 * time.Second)); remaining > 0 {
 		time.Sleep(remaining)
 	}

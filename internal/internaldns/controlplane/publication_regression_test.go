@@ -81,4 +81,8 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 	if !r.tombstoneAcknowledged(ctx, owner) {
 		t.Fatal("committed untargeted tombstone did not complete")
 	}
+	owner.Spec.WriterEpoch++
+	if !r.tombstoneAcknowledged(ctx, owner) {
+		t.Fatal("takeover lost the committed zero-target withdrawal")
+	}
 }

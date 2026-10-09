@@ -602,7 +602,7 @@ func (r *Reconciler) tombstoneAcknowledged(ctx context.Context, o *dnsv1alpha1.D
 		return false
 	}
 	c := apimeta.FindStatusCondition(manifest.Status.Conditions, "Published")
-	if !manifest.Spec.Tombstone || manifest.Spec.ZoneRef.UID != o.Spec.ZoneUID || manifest.Spec.WriterEpoch != o.Spec.WriterEpoch {
+	if !manifest.Spec.Tombstone || manifest.Spec.ZoneRef.UID != o.Spec.ZoneUID || manifest.Spec.WriterEpoch > o.Spec.WriterEpoch {
 		return false
 	}
 	// Zero targets are safe only after this manifest became the ownership commit

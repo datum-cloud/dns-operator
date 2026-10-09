@@ -24,6 +24,8 @@ import (
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+const subresourceStatus = "status"
+
 const Path = "/validate-internal-dns"
 
 // Handler uses an uncached project client for grant and registration lookups.
@@ -63,7 +65,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	platform := contains(h.PlatformSubjects, req.UserInfo.Username)
 	integration := contains(h.IntegrationSubjects, req.UserInfo.Username)
 	if req.Resource.Resource == "dnsresolvercontexts" || req.Resource.Resource == "dnsresolveraccessbindings" {
-		if req.SubResource == "status" {
+		if req.SubResource == subresourceStatus {
 			if !platform {
 				return kubeadmission.Denied("resolver context status is DNS platform-owned")
 			}
@@ -103,7 +105,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		}
 		return kubeadmission.Allowed("platform writer")
 	}
-	if req.SubResource == "status" && req.Resource.Resource != "dnsrecordcontributions" && !platform {
+	if req.SubResource == subresourceStatus && req.Resource.Resource != "dnsrecordcontributions" && !platform {
 		return kubeadmission.Denied("DNS publication and writer authority status is platform-owned")
 	}
 	if platform {
@@ -306,7 +308,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 			return fmt.Errorf("contribution authority references are immutable; create a new contribution for a new policy lifetime")
 		}
 	}
-	if req.SubResource == "status" {
+	if req.SubResource == subresourceStatus {
 		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {
 			return fmt.Errorf("DNS publication status fields are platform-owned")
 		}

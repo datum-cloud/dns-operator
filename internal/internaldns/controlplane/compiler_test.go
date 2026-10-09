@@ -262,3 +262,48 @@ func TestCompileRejectsPrivateAuthorityOverridesWithoutBlockingHealthyRecords(t 
 		})
 	}
 }
+
+func TestStaticTTLPreservedAndConflictsRejected(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	in := fixture(now)
+	in.Registrations = nil
+	in.Grants = nil
+	in.Contributions = nil
+	ttl := int64(30)
+	in.StaticRecords = []dnsv1alpha1.DNSRecordSet{{ObjectMeta: metav1.ObjectMeta{Name: "static", UID: "static"}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: in.Zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "api", TTL: &ttl, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}}
+	result, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := WirePlan(result.Plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.RRSets[0].TTL != 30 {
+		t.Fatalf("TTL=%d", wire.RRSets[0].TTL)
+	}
+	stamp := metav1.NewTime(now)
+	in.StaticRecords[0].DeletionTimestamp = &stamp
+	result, err = Compile(in)
+	if err != nil || len(result.Plan.RRsets) != 0 {
+		t.Fatalf("terminating static records retained: %#v %v", result, err)
+	}
+	in.StaticRecords[0].DeletionTimestamp = nil
+	otherTTL := int64(31)
+	in.StaticRecords[0].Spec.Records = append(in.StaticRecords[0].Spec.Records, dnsv1alpha1.RecordEntry{Name: "api", TTL: &otherTTL, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.2"}})
+	if _, err := Compile(in); err == nil {
+		t.Fatal("conflicting per-RRset TTL accepted")
+	}
+}
+
+func TestCompileRejectsUnboundedDynamicTTL(t *testing.T) {
+	in := fixture(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
+	in.Registrations[0].Spec.TTLSeconds = 2147483647
+	result, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted[in.Registrations[0].UID] || len(result.Plan.RRsets) != 0 {
+		t.Fatal("unbounded TTL published")
+	}
+}

@@ -191,12 +191,14 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 func (r *Reconciler) issueGrants(ctx context.Context, grants []dnsv1alpha1.DNSContributionGrant, regs []dnsv1alpha1.DNSRegistration, now time.Time) (bool, error) {
 	byUID := map[types.UID]*dnsv1alpha1.DNSRegistration{}
 	for i := range regs {
-		byUID[regs[i].UID] = &regs[i]
+		if regs[i].DeletionTimestamp.IsZero() {
+			byUID[regs[i].UID] = &regs[i]
+		}
 	}
 	for i := range grants {
 		g := &grants[i]
 		reg := byUID[g.Spec.RegistrationRef.UID]
-		valid := reg != nil && g.Spec.RegistrationRef.Name == reg.Name && g.Spec.RegistrationRef.Generation == reg.Generation
+		valid := g.DeletionTimestamp.IsZero() && reg != nil && g.Spec.RegistrationRef.Name == reg.Name && g.Spec.RegistrationRef.Generation == reg.Generation
 		base := g.DeepCopy()
 		if valid && (g.Status.ActiveWriterEpoch == 0 || g.Status.ObservedGrantGeneration != g.Generation || g.Status.ObservedRegistrationGeneration != reg.Generation) {
 			g.Status.ActiveWriterEpoch++
@@ -227,12 +229,15 @@ func (r *Reconciler) issueGrants(ctx context.Context, grants []dnsv1alpha1.DNSCo
 func (r *Reconciler) bindContributionEpochs(ctx context.Context, cs []dnsv1alpha1.DNSRecordContribution, gs []dnsv1alpha1.DNSContributionGrant, now time.Time) (bool, error) {
 	byUID := map[types.UID]*dnsv1alpha1.DNSContributionGrant{}
 	for i := range gs {
-		byUID[gs[i].UID] = &gs[i]
+		active := apimeta.FindStatusCondition(gs[i].Status.Conditions, "Active")
+		if gs[i].DeletionTimestamp.IsZero() && active != nil && active.Status == metav1.ConditionTrue {
+			byUID[gs[i].UID] = &gs[i]
+		}
 	}
 	for i := range cs {
 		c := &cs[i]
 		g := byUID[c.Spec.GrantRef.UID]
-		if g == nil || g.Status.ActiveWriterEpoch == 0 {
+		if !c.DeletionTimestamp.IsZero() || g == nil || g.Status.ActiveWriterEpoch == 0 {
 			continue
 		}
 		if c.Status.WriterEpoch == 0 {
@@ -597,7 +602,12 @@ func (r *Reconciler) tombstoneAcknowledged(ctx context.Context, o *dnsv1alpha1.D
 		return false
 	}
 	c := apimeta.FindStatusCondition(manifest.Status.Conditions, "Published")
-	return manifest.Spec.Tombstone && c != nil && c.Status == metav1.ConditionTrue
+	if !manifest.Spec.Tombstone || manifest.Spec.ZoneRef.UID != o.Spec.ZoneUID || manifest.Spec.WriterEpoch != o.Spec.WriterEpoch {
+		return false
+	}
+	// Zero targets are safe only after this manifest became the ownership commit
+	// pointer. publicationTargets retains prior targets for every withdrawal.
+	return len(manifest.Spec.ServingTargets) == 0 || (c != nil && c.Status == metav1.ConditionTrue)
 }
 
 func (r *Reconciler) createImmutable(ctx context.Context, desired client.Object) error {

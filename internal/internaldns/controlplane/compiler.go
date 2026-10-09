@@ -101,9 +101,10 @@ func Compile(in CompileInput) (CompileResult, error) {
 	claims := map[ownershipKey]types.UID{}
 	staticClaim := map[ownershipKey]types.UID{}
 	validStatic := map[types.UID]bool{}
+	staticTTLs := map[ownershipKey]int32{}
 	for i := range in.StaticRecords {
 		rs := &in.StaticRecords[i]
-		if rs.Spec.DNSZoneRef.Name != in.Zone.Name {
+		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() {
 			continue
 		}
 		valid := true
@@ -116,6 +117,20 @@ func Compile(in CompileInput) (CompileResult, error) {
 		if !valid {
 			result.Reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 			continue
+		}
+		for _, record := range rs.Spec.Records {
+			ttl := int64(300)
+			if record.TTL != nil {
+				ttl = *record.TTL
+			}
+			if ttl < 1 || ttl > 2147483647 {
+				return result, fmt.Errorf("static TTL must be between 1 and 2147483647 seconds")
+			}
+			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
+			if previous, ok := staticTTLs[key]; ok && previous != int32(ttl) {
+				return result, fmt.Errorf("conflicting static TTLs for %s %s", key.name, key.rrtype)
+			}
+			staticTTLs[key] = int32(ttl)
 		}
 		validStatic[rs.UID] = true
 		for _, record := range rs.Spec.Records {
@@ -130,6 +145,14 @@ func Compile(in CompileInput) (CompileResult, error) {
 	regs := map[types.UID]*dnsv1alpha1.DNSRegistration{}
 	for i := range in.Registrations {
 		reg := &in.Registrations[i]
+		if !reg.DeletionTimestamp.IsZero() {
+			result.Reasons[reg.UID] = "Terminating"
+			continue
+		}
+		if reg.Spec.TTLSeconds < 1 || reg.Spec.TTLSeconds > dnsv1alpha1.DNSRegistrationMaxTTLSeconds {
+			result.Reasons[reg.UID] = "InvalidTTL"
+			continue
+		}
 		if !refMatches(reg.Spec.DNSZoneRef, in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
 			continue
 		}
@@ -189,6 +212,10 @@ func Compile(in CompileInput) (CompileResult, error) {
 	grants := map[types.UID]*dnsv1alpha1.DNSContributionGrant{}
 	for i := range in.Grants {
 		grant := &in.Grants[i]
+		if !grant.DeletionTimestamp.IsZero() {
+			result.Reasons[grant.UID] = "Terminating"
+			continue
+		}
 		reg := regs[grant.Spec.RegistrationRef.UID]
 		if reg == nil || grant.Spec.RegistrationRef.Name != reg.Name || grant.Spec.RegistrationRef.Generation != reg.Generation {
 			result.Reasons[grant.UID] = dnsValueStaleRegistrationGeneration
@@ -242,6 +269,10 @@ func Compile(in CompileInput) (CompileResult, error) {
 			publicationFences[c.UID] = currentFence
 		}
 		result.Sequences[c.UID] = c.Status.Sequence
+		if !c.DeletionTimestamp.IsZero() {
+			result.Reasons[c.UID] = "Terminating"
+			continue
+		}
 		if !c.Status.Eligible {
 			result.Reasons[c.UID] = "Ineligible"
 			continue
@@ -308,7 +339,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
 			a := aggregates[key]
 			if a == nil {
-				a = &aggregate{}
+				a = &aggregate{ttl: staticTTLs[key]}
 				aggregates[key] = a
 			}
 			record.Name = key.name

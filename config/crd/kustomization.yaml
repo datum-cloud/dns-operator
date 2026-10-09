@@ -6,18 +6,6 @@ resources:
 - bases/dns.networking.miloapis.com_dnszones.yaml
 - bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 - bases/dns.networking.miloapis.com_dnszonediscoveries.yaml
-# +kubebuilder:scaffold:crdkustomizeresource
-
-patches:
-# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
-# patches here are for enabling the conversion webhook for each CRD
-# +kubebuilder:scaffold:crdkustomizewebhookpatch
-
-# [WEBHOOK] To enable webhook, uncomment the following section
-# the following config is for teaching kustomize how to do kustomization for CRDs.
-#configurations:
-#- kustomizeconfig.yaml
-
 - bases/dns.networking.miloapis.com_dnscontributiongrants.yaml
 
 - bases/dns.networking.miloapis.com_dnsmanagednamespaces.yaml
@@ -43,3 +31,14 @@ patches:
 - bases/dns.networking.miloapis.com_dnsresolverbindings.yaml
 
 - bases/dns.networking.miloapis.com_dnstransportoutboxes.yaml
+# +kubebuilder:scaffold:crdkustomizeresource
+
+# [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
+# patches here are for enabling the conversion webhook for each CRD
+#patches:
+# +kubebuilder:scaffold:crdkustomizewebhookpatch
+
+# [WEBHOOK] To enable webhook, uncomment the following section
+# the following config is for teaching kustomize how to do kustomization for CRDs.
+#configurations:
+#- kustomizeconfig.yaml

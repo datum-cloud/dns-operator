@@ -15,7 +15,7 @@ jobs:
     # Three test-infra kind clusters (upstream + control + edge), each with
     # Flux/cert-manager/Kyverno/Envoy Gateway, plus RustFS and a Lightningstream
     # sync interval the federation/full-chain suites poll for - give it headroom.
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       # The Taskfile pulls in the shared datum-cloud/test-infra Taskfile as a
       # remote include; go-task gates that behind this experiment flag, and
@@ -60,12 +60,20 @@ jobs:
           make chainsaw
           echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
 
+      - name: Bring up private DNS on the shared Kubernetes foundation
+        run: |
+          go test ./test/internaldns/kubernetes/...
+          task --yes env:internal-dns:up
+
       - name: Bring up the full DNS environment
         # Creates the upstream (replicator) + control (downstream agent +
         # PowerDNS + Lightningstream + RustFS) + edge clusters and wires the
         # whole production chain together. No sample data (env:stack-up, not
         # env:up) so the suites own all zones on the shared control PowerDNS.
         run: task --yes env:stack-up
+
+      - name: Qualify private DNS publication and serving
+        run: task --yes env:internal-dns:qualify
 
       - name: Run Chainsaw tests
         # Runs every suite under test/e2e against the environment: the
@@ -101,6 +109,18 @@ jobs:
           done
           echo "=== RustFS logs (control) ==="
           kubectl --context kind-dns-control -n rustfs-system logs -l app.kubernetes.io/instance=rustfs --tail=100 || true
+
+      - name: Collect private DNS deployment evidence
+        if: always()
+        run: test/internaldns/kubernetes/collect.sh
+
+      - name: Retain private DNS qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: internal-dns-kubernetes
+          path: test/internaldns/results/kubernetes*
+          if-no-files-found: warn
 
       - name: Tear down the environment
         if: always()

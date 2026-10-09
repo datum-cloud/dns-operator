@@ -234,7 +234,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "local server = newServer({address=%q, name=%q, pool=%q, useProxyProtocol=true, checkName=\".\", checkType=\"SOA\", mustResolve=false})\n", net.JoinHostPort(b.Address, strconv.Itoa(int(b.Port))), "b_"+model.OpaqueToken(b.MemberID), c.PoolName)
 		if cluster {
 			for _, binding := range bindings {
-				if active[binding.BindingUID] && (eligible == nil || eligible[binding.BindingUID][b.MemberID]) {
+				if !binding.ConfigurationPending && active[binding.BindingUID] && (eligible == nil || eligible[binding.BindingUID][b.MemberID]) {
 					fmt.Fprintf(&out, "server:addPool(%q)\n", binding.ViewName())
 				}
 			}
@@ -246,7 +246,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		if cluster {
 			addr = b.ClusterAddress
 		}
-		fmt.Fprintf(&out, "  [%q] = {context=%q, validUntil=%d, ready=%t},\n", addr, b.ViewName(), b.Authorization.ValidUntil.Unix(), active[b.BindingUID])
+		fmt.Fprintf(&out, "  [%q] = {context=%q, validUntil=%d, ready=%t},\n", addr, b.ViewName(), b.Authorization.ValidUntil.Unix(), !b.ConfigurationPending && active[b.BindingUID])
 	}
 	fmt.Fprint(&out, "}\n\nfunction classifyVPC(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil or os.time() >= binding.validUntil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"vpc-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
 	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyVPC))\n")
@@ -337,6 +337,10 @@ func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publication
 }
 
 func renderViewStart(out *bytes.Buffer, b model.Binding, dest, defaultCache string, maxNegativeCacheTTL uint32) {
+	if b.ConfigurationPending {
+		fmt.Fprintf(out, "view %q {\n  match-clients { any; };\n  match-destinations { %s; };\n  recursion no;\n  allow-query { none; };\n  allow-recursion { none; };\n  allow-query-cache { none; };\n", b.ViewName(), dest)
+		return
+	}
 	cache := defaultCache
 	if cache == "" {
 		cache = "16M"

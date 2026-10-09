@@ -150,15 +150,19 @@ func (p *Planner) Step(ctx context.Context) error {
 			view.Transports = append(view.Transports, model.Transport(t))
 		}
 		complete := true
+		bindingDependencies := map[string]bool{}
 		for _, zoneRef := range b.Configuration.ZoneRefs {
 			uid := zoneRef.UID
 			o, ok := byZone[string(uid)]
 			if !ok || o.Spec.ActiveManifestName == "" {
 				complete = false
-				break
+				continue
 			}
 			var m dnsv1alpha1.DNSPublicationManifest
-			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: o.Spec.ActiveManifestName}, &m); err != nil {
+			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: o.Spec.ActiveManifestName}, &m); apierrors.IsNotFound(err) {
+				complete = false
+				continue
+			} else if err != nil {
 				return err
 			}
 			targeted := false
@@ -170,7 +174,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			}
 			if m.Spec.ZoneRef.UID != uid || m.Spec.Tombstone || !targeted {
 				complete = false
-				break
+				continue
 			}
 			attachment := model.ZoneAttachment{ZoneUID: string(uid), Apex: m.Spec.ZoneApex, RequiredPublicationEpoch: uint64(m.Spec.WriterEpoch), RequiredPublicationRevision: uint64(m.Spec.Revision)}
 			// Record updates do not change a view's minimum activation dependency.
@@ -184,10 +188,18 @@ func (p *Planner) Step(ctx context.Context) error {
 			}
 			activationName := model.PublicationActivationName(m.Name, c.Region, c.Shard)
 			view.Zones = append(view.Zones, attachment)
-			dependencies[activationName] = true
+			bindingDependencies[activationName] = true
 		}
 		if !complete {
-			continue
+			// Missing configuration is not a withdrawal of source authorization.
+			// Retain the identity but expose no partial or removed zone set. The
+			// pending snapshot can publish without waiting on this tenant's outbox.
+			view.ConfigurationPending = true
+			view.Zones = nil
+		} else {
+			for name := range bindingDependencies {
+				dependencies[name] = true
+			}
 		}
 		sort.Slice(view.Zones, func(i, j int) bool { return view.Zones[i].ZoneUID < view.Zones[j].ZoneUID })
 		snapshot.Bindings = append(snapshot.Bindings, view)

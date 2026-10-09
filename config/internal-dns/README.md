@@ -15,9 +15,9 @@ The fixed fleet has three roles:
   exact version over UDP and TCP, and publish a leased ACK.
 
 Contexts, access bindings, and zones add destinations, views, and zone files to
-these processes. They never create workloads per VPC or zone. The legacy
-`cluster` and `both` render roles remain development fallbacks and should not be
-used for the multi-member production layout.
+these processes. They never create workloads per VPC or zone. Use `node`,
+`regional-dnsdist`, and `regional-bind` roles for the multi-member production
+layout. The `cluster` and `both` roles are limited to development.
 
 Each member needs a distinct member ID, NATS identity and durable consumers,
 checkpoint PVC, configuration PVC, and independent watchdog lease. Treat that
@@ -77,10 +77,15 @@ Regional publication proof connects directly to that member's BIND listener,
 supplies the exact context destination in a protected PROXYv2 header over both
 UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
-network. There are no PowerDNS views, network variants, or per-context source
-markers.
+network.
 
 ## Transactions, health, and expiry
+
+An attached zone that has no active publication gates its context until the
+configuration is complete. Pending contexts deny queries, recursion, and cache
+answers while retaining the original access authorization. Configuration
+completion can restore service without renewing authorization; an actual access
+withdrawal still requires a newer source authorization to reactivate.
 
 The agent writes a complete candidate set into its stage directory. Regional
 zone files are siblings of `cluster-bind.conf`; validation rewrites file
@@ -114,6 +119,11 @@ filesystem whose fsync latency can consume the watchdog budget. Replication is
 provided by the durable publication stream and independent regional members;
 each member still has its own crash-safe checkpoint volume.
 
+The transaction stage and active configuration must share one filesystem:
+installation uses atomic rename. The examples put the stage at
+`/etc/internal-dns/stage` on the configuration PVC and keep checkpoints on the
+separate state PVC.
+
 The regional BIND reload helper must reload existing primary zones, for
 example with `rndc reload`. `rndc reconfig` only guarantees configuration and
 new-zone loading, so it is insufficient when an existing private apex moves to
@@ -138,3 +148,9 @@ configurations plus one Deployment template. Instantiate the template for each
 member and create a second regional BIND member with distinct addresses and
 storage. `control-plane.example.yaml` lists both regional members in
 `clusterBackends` and `members`.
+
+The supported internal envelope version is `v1alpha3` and the serving checkpoint
+format is 4. Unsupported versions fail closed. Deploy matching controller and
+fleet versions with fresh internal DNS transport state and checkpoints. Preserve
+any existing state for recovery. The deployment requires a coordinated rollout;
+it does not support mixed versions or automatic state conversion.

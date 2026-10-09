@@ -12,6 +12,8 @@ bin/
 vendor/
 dist/
 dev/
+!dev/
+dev/*
 .go-version
 config/**/charts
 
@@ -48,3 +50,6 @@ go.work.sum
 
 # Local claude settings
 .claude/settings.local.json
+
+/.internal-dns-e2e/
+/test/internaldns/results/

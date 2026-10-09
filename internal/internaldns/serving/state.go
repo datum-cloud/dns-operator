@@ -17,8 +17,7 @@ import (
 const legacyObservationGrantUID = "legacy-checkpoint"
 
 // contributionFence persists the complete immutable observation identity.
-// LegacyRevision only exists to decode checkpoints written before Sequence
-// and the original deadline were persisted.
+// The optional revision field supplies the sequence when the decoded fence omits it.
 type contributionFence struct {
 	GrantUID       string    `json:"grantUID,omitempty"`
 	Epoch          uint64    `json:"epoch"`
@@ -33,7 +32,7 @@ type replicaAck struct {
 	ValidUntil time.Time `json:"validUntil"`
 }
 
-const checkpointFormatVersion = 3
+const checkpointFormatVersion = 4
 
 type checkpoint struct {
 	FormatVersion      int                                          `json:"formatVersion"`

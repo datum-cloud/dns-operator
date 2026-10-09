@@ -15,9 +15,9 @@ The fixed fleet has three roles:
   exact version over UDP and TCP, and publish a leased ACK.
 
 Contexts, access bindings, and zones add destinations, views, and zone files to
-these processes. They never create workloads per VPC or zone. The legacy
-`cluster` and `both` render roles remain development fallbacks and should not be
-used for the multi-member production layout.
+these processes. They never create workloads per VPC or zone. Use `node`,
+`regional-dnsdist`, and `regional-bind` roles for the multi-member production
+layout. The `cluster` and `both` roles are limited to development.
 
 Each member needs a distinct member ID, NATS identity and durable consumers,
 checkpoint PVC, configuration PVC, and independent watchdog lease. Treat that
@@ -77,8 +77,7 @@ Regional publication proof connects directly to that member's BIND listener,
 supplies the exact context destination in a protected PROXYv2 header over both
 UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
-network. There are no PowerDNS views, network variants, or per-context source
-markers.
+network.
 
 ## Transactions, health, and expiry
 
@@ -150,9 +149,8 @@ member and create a second regional BIND member with distinct addresses and
 storage. `control-plane.example.yaml` lists both regional members in
 `clusterBackends` and `members`.
 
-The internal envelope version is `v1alpha3` and the serving checkpoint format
-is 4. Older envelopes and checkpoints fail closed. Replace the controller and
-fleet together against fresh internal DNS transport state and checkpoints
-before testing this unreleased format; preserve old state for recovery.
-In-place stream/checkpoint migration and a mixed-version rolling upgrade are
-not supported.
+The supported internal envelope version is `v1alpha3` and the serving checkpoint
+format is 4. Unsupported versions fail closed. Deploy matching controller and
+fleet versions with fresh internal DNS transport state and checkpoints. Preserve
+any existing state for recovery. The deployment requires a coordinated rollout;
+it does not support mixed versions or automatic state conversion.

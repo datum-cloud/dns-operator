@@ -3,8 +3,7 @@
 Run private DNS on the repository's shared Kubernetes test environment. Task
 reuses the pinned `datum-cloud/test-infra` bootstrap, cluster names, add-ons, and
 cleanup. The environment also supports the existing public DNS regression chain.
-The qualification uses Go clients and Kubernetes workloads; it has no Compose
-or Python dependency.
+The qualification uses Go clients and Kubernetes workloads.
 
 ## Run locally
 
@@ -98,9 +97,9 @@ task --yes env:internal-dns:package
 
 ## Remaining production boundaries
 
-This deployment replaces the earlier Compose protocol lab. It validates live
-Kubernetes APIs, admission, credentials, durable transport, serving pods, and DNS
-responses. It does not deploy Milo project discovery, Karmada, Galactic private
+The deployment validates live Kubernetes APIs, admission, credentials, durable
+transport, serving pods, and DNS responses. It does not deploy Milo project
+discovery, Karmada, Galactic private
 service networking, or the actual Compute service. The independent project APIs
 and service-side IPv6 routes are explicit fixtures. Exact route/NAT exemptions
 preserve serving pod peers without widening their ACLs. The probe does not share a
@@ -112,6 +111,5 @@ into the separate DNS service VPC. Kind cannot establish physical fabric,
 microVM attachment, host-loss durability, regional independence, or production
 capacity.
 
-This suite starts with internal wire version `v1alpha3` and fresh format 4
-checkpoints. It does not qualify an in-place state migration or mixed-version
-rolling upgrade.
+The suite requires internal wire version `v1alpha3`, fresh format 4 checkpoints,
+and matching controller and fleet versions.

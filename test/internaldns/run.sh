@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compatibility entry point for the shared Kubernetes qualification.
+# Task entry point for the shared Kubernetes qualification.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"

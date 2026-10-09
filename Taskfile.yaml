@@ -11,8 +11,8 @@
 version: '3'
 
 vars:
-  # Shared bootstrap with dynamic NodePorts; keep every qualification on the
-  # same immutable foundation rather than downloading a moving branch.
+  # Shared bootstrap with dynamic NodePorts and an immutable revision for
+  # consistent qualification across environments.
   TEST_INFRA_REPO_REF: '7622c925d5bcf2fa5bc01823775973cf6daf51ca'
   # Upstream (control-plane) cluster runs the replicator; it pushes DNSZone/
   # DNSRecordSet resources to the control cluster, which plays the "downstream"
@@ -171,18 +171,8 @@ tasks:
   # internal: brings up a test-infra-managed kind cluster (kind cluster +
   # Flux + cert-manager + Kyverno + Envoy Gateway) for CLUSTER_NAME.
   #
-  # NOTE: this deliberately calls the individual test-infra sub-tasks
-  # (ensure-repo/ensure-tools/create-kind/install-components) instead of the
-  # composite `test-infra:cluster-up`/`up` task. As of test-infra's
-  # fix/remove-hardcoded-nodeports branch (and go-task 3.49/3.50),
-  # `cluster-up`'s trailing informational `echo "... # ..."` lines panic
-  # go-task's command parser ("reached EOF without closing quote") because
-  # go-task strips ` #...` as a shell comment even inside double quotes on
-  # single-line (non `|` block) cmd entries - a go-task parsing quirk, not
-  # a shell issue. Calling the sub-tasks directly gets the same cluster
-  # setup while skipping the broken trailing echoes. If that upstream
-  # Taskfile is fixed (or go-task fixes the quoting bug), this can go back
-  # to a single `task: test-infra:cluster-up` call.
+  # Invoke bootstrap sub-tasks directly to pass cluster variables explicitly
+  # and avoid the composite task's informational command parsing errors.
   env:test-infra-cluster-up:
     internal: true
     cmds:

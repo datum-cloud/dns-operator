@@ -3,8 +3,8 @@
 ## Proposal
 
 Build deployment qualification on the existing `datum-cloud/test-infra`
-environment. The qualification replaces the Compose lab with Task lifecycle, Kubernetes
-workloads, and Go clients for assertions and fault injection. CI also runs the
+environment. Use the Task lifecycle, Kubernetes workloads, and Go clients for
+assertions and fault injection. CI also runs the
 existing public DNS Chainsaw suites on the same foundation.
 
 The acceptance path starts with a product publishing a record in a project

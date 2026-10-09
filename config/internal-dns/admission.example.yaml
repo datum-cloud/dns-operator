@@ -19,7 +19,7 @@ webhooks:
       port: 443
   rules:
   # Product declarations and the private-visibility guard for DNSZone. The
-  # legacy DNSRecordSet API is intentionally outside this webhook.
+  # DNSRecordSet API is outside this webhook's scope.
   - apiGroups: [dns.networking.miloapis.com]
     apiVersions: [v1alpha1]
     operations: [CREATE, UPDATE, DELETE]

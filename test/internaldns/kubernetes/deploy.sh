@@ -56,7 +56,7 @@ for controller in control-a control-b; do
 done
 
 # The source API servers reach a real TLS admission Service over the isolated
-# Kind network. The broker and workers never use the development Python proxy.
+# Kind network.
 ca_bundle=$("${platform[@]}" -n internal-dns-system get secret internal-dns-admission-tls -o jsonpath='{.data.ca\.crt}')
 for project in project-a project-b; do
   sed -e "s|\${CA_BUNDLE}|$ca_bundle|g" \

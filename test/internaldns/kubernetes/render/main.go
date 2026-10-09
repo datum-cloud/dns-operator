@@ -276,8 +276,8 @@ func sourceObjects(project string) []object {
 			rb["subjects"] = []object{{"kind": "ServiceAccount", "name": account.name, "namespace": account.namespace}}
 			items = append(items, rb)
 		}
-		// Only the same service account and this fixed project parent can be
-		// impersonated. This replaces Milo's trusted parent metadata in Kind.
+		// Project identity in Kind is scoped to impersonation of the same
+		// service account and this fixed project parent.
 		r := obj("rbac.authorization.k8s.io/v1", "ClusterRole", account.name+"-parent", "")
 		r["rules"] = []object{{"apiGroups": []string{"authentication.k8s.io"}, "resources": []string{"userextras/iam.miloapis.com/parent-name"}, "resourceNames": []string{project}, "verbs": []string{"impersonate"}}}
 		rb := obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", account.name+"-parent", "")

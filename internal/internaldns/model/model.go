@@ -402,11 +402,11 @@ func (p PublicationPlan) Validate() error {
 		if err := ValidatePrivateRecordOwner(owner, apex, rrType); err != nil {
 			return err
 		}
-		if other := ownerTypes[owner]; other != "" && (other == "CNAME" || rrType == "CNAME") {
+		if other := ownerTypes[owner]; other != "" && (other == recordTypeCNAME || rrType == recordTypeCNAME) {
 			return fmt.Errorf("CNAME cannot coexist with other records at %s", owner)
 		}
 		ownerTypes[owner] = rrType
-		if rrType == "CNAME" && len(rr.Records) != 1 {
+		if rrType == recordTypeCNAME && len(rr.Records) != 1 {
 			return fmt.Errorf("CNAME at %s must contain one target", owner)
 		}
 		if len(rr.Records) == 0 || rr.Type == "" {

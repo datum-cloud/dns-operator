@@ -1,11 +1,12 @@
 package serving
 
 import (
-	"github.com/miekg/dns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
 func parseRenderedZone(t *testing.T, zone []byte) []dns.RR {

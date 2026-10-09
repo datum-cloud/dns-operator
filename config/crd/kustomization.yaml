@@ -33,3 +33,13 @@ patches:
 - bases/dns.networking.miloapis.com_dnsresolvercontexts.yaml
 
 - bases/dns.networking.miloapis.com_dnszoneassociations.yaml
+
+- bases/dns.networking.miloapis.com_dnspublicationchunks.yaml
+
+- bases/dns.networking.miloapis.com_dnspublicationmanifests.yaml
+
+- bases/dns.networking.miloapis.com_dnspublicationownerships.yaml
+
+- bases/dns.networking.miloapis.com_dnsresolverbindings.yaml
+
+- bases/dns.networking.miloapis.com_dnstransportoutboxes.yaml

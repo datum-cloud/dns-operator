@@ -41,7 +41,8 @@ deadline are carried into the internal `DNSResolverBinding`.
 
 The control plane allocates a managed namespace when the context requests one.
 Compute discovers the context status and publishes through
-`DNSRegistration`, `DNSContributionGrant`, and `DNSRecordContribution`; it does
+`DNSRegistration` and `DNSRecordContribution` under a separately issued
+`DNSContributionGrant`; it does
 not choose a zone for the managed-name path and receives no NATS credentials.
 
 ## Serving identity and BIND views
@@ -53,6 +54,18 @@ PROXYv2 header. Node BIND selects a context view and forwards to its regional
 destination. Regional dnsdist selects the same context and load-balances the
 healthy BIND members. Every regional BIND member directly hosts the context's
 private primary zones.
+
+An owned name without eligible answers carries service-only `TYPE65280`
+metadata at that exact name. This private-use record preserves NODATA without
+adding a child name or conflicting with a recovered CNAME. Tenant declarations
+cannot use that type. Dynamic registrations require TTLs from 1 to 30 seconds;
+client caches can retain withdrawn answers for at most that TTL. Static records
+retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
+static RRset must use the same TTL.
+
+A context without private zones proves recursion with the root SOA over UDP and
+TCP. `verifier.publicName` can override this probe. BIND members need a writable
+`/tmp` runtime volume even when the image root filesystem is read-only.
 
 Private packet caching stays disabled in dnsdist. Each BIND view has its own
 positive and negative cache. `max-ncache-ttl` defaults to five seconds and is

@@ -37,11 +37,26 @@ rules:
   resources: [dnsregistrations, dnsrecordcontributions]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
-  resources: [dnscontributiongrants]
+  resources: [dnscontributiongrants, dnsresolvercontexts]
   verbs: [get, list, watch]
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnsrecordcontributions/status]
   verbs: [get, update, patch]
+---
+# Bind only to a trusted issuer that applies the product's registration policy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-grant-issuer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsregistrations]
+  # Admission authorizes grant issuance against the exact registration's update permission.
+  verbs: [get, update]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnscontributiongrants]
+  verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -51,6 +66,7 @@ rules:
 - apiGroups: [dns.networking.miloapis.com]
   resources:
   - dnszones
+  - dnsrecordsets
   - dnszoneassociations
   - dnsregistrations
   - dnscontributiongrants
@@ -59,6 +75,10 @@ rules:
   - dnsresolvercontexts
   - dnsresolveraccessbindings
   verbs: [get, list, watch]
+# Managed namespace creation and the private-zone publication finalizer.
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnszones, dnszoneassociations]
+  verbs: [create, patch]
 - apiGroups: [dns.networking.miloapis.com]
   resources:
   - dnsresolverbindings
@@ -75,6 +95,9 @@ rules:
   - dnstransportoutboxes/status
   - dnspublicationownerships/status
   - dnsmanagednamespaces/status
+  - dnszones/status
+  - dnszoneassociations/status
+  - dnsnamingpolicies/status
   - dnsregistrations/status
   - dnscontributiongrants/status
   - dnsrecordcontributions/status

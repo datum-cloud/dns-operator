@@ -15,6 +15,11 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
+const (
+	networkTCP = "tcp"
+	networkUDP = "udp"
+)
+
 type DNSVerifierConfig struct {
 	Timeout           time.Duration `json:"timeout,omitempty"`
 	PublicName        string        `json:"publicName,omitempty"`
@@ -63,7 +68,7 @@ func exchangeResolverSOA(ctx context.Context, network, server, name string, time
 
 func verifyResolverPath(ctx context.Context, server string, names []string, timeout time.Duration, exchange resolverExchange) error {
 	deadline := time.Now().Add(timeout)
-	for _, network := range []string{"udp", "tcp"} {
+	for _, network := range []string{networkUDP, networkTCP} {
 		for _, name := range names {
 			var last error
 			for {
@@ -146,7 +151,7 @@ func verifyPublicationViews(ctx context.Context, server, apex string, views []Pu
 	defer cancel()
 	deadline, _ := probeCtx.Deadline()
 	for _, view := range views {
-		for _, network := range []string{"udp", "tcp"} {
+		for _, network := range []string{networkUDP, networkTCP} {
 			var last error
 			for {
 				if err := publicationDeadlineError(probeCtx, deadline); err != nil {
@@ -234,7 +239,7 @@ func exchangePublication(ctx context.Context, network, server, name string, view
 	// only because the direct peer is in BIND's protected proxy ACL.
 	header := []byte{13, 10, 13, 10, 0, 13, 10, 81, 85, 73, 84, 10, 0x21, 0, 0, 0}
 	proto := byte(2)
-	if network == "tcp" {
+	if network == networkTCP {
 		proto = 1
 	}
 	if destination.Is4() {
@@ -253,14 +258,14 @@ func exchangePublication(ctx context.Context, network, server, name string, view
 	}
 	header = binary.BigEndian.AppendUint16(header, 53000)
 	header = binary.BigEndian.AppendUint16(header, view.DestinationPort)
-	if network == "tcp" {
+	if network == networkTCP {
 		header = binary.BigEndian.AppendUint16(header, uint16(len(wire)))
 	}
 	if _, err := conn.Write(append(header, wire...)); err != nil {
 		return nil, err
 	}
 	var reply []byte
-	if network == "tcp" {
+	if network == networkTCP {
 		size := make([]byte, 2)
 		if _, err := io.ReadFull(conn, size); err != nil {
 			return nil, err

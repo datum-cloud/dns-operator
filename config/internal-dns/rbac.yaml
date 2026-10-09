@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-dns-control-plane
+  namespace: internal-dns-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-dns-fleet
+  namespace: internal-dns-system
+automountServiceAccountToken: false
+---
+# Bind this Role only to the separately deployed VPC integration principal.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-vpc-integration
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts, dnsresolveraccessbindings]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status, dnsmanagednamespaces, dnsmanagednamespaces/status]
+  verbs: [get, list, watch]
+---
+# Project products write declarations and their own freshness observations.
+# Platform artifacts and every other status subresource are deliberately absent.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-product-writer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsregistrations, dnsrecordcontributions]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnscontributiongrants, dnsresolvercontexts, dnsmanagednamespaces, dnsnamingpolicies]
+  verbs: [get, list, watch]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsrecordcontributions/status]
+  verbs: [get, update, patch]
+---
+# Bind only to a trusted issuer that applies the product's registration policy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-grant-issuer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsregistrations]
+  # Admission authorizes grant issuance against the exact registration's update permission.
+  verbs: [get, update]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnscontributiongrants]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: internal-dns-control-plane
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnszones
+  - dnsrecordsets
+  - dnszoneassociations
+  - dnsregistrations
+  - dnscontributiongrants
+  - dnsrecordcontributions
+  - dnsnamingpolicies
+  - dnsresolvercontexts
+  - dnsresolveraccessbindings
+  verbs: [get, list, watch]
+# Managed namespace creation and the private-zone publication finalizer.
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnszones, dnszoneassociations]
+  verbs: [create, patch]
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnsresolverbindings
+  - dnspublicationmanifests
+  - dnspublicationchunks
+  - dnstransportoutboxes
+  - dnspublicationownerships
+  - dnsmanagednamespaces
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnsresolverbindings/status
+  - dnspublicationmanifests/status
+  - dnstransportoutboxes/status
+  - dnspublicationownerships/status
+  - dnsmanagednamespaces/status
+  - dnszones/status
+  - dnszoneassociations/status
+  - dnsnamingpolicies/status
+  - dnsregistrations/status
+  - dnscontributiongrants/status
+  - dnsrecordcontributions/status
+  - dnsresolvercontexts/status
+  - dnsresolveraccessbindings/status
+  verbs: [get, update, patch]
+- apiGroups: [authorization.k8s.io]
+  resources: [subjectaccessreviews]
+  verbs: [create]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch]
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: internal-dns-control-plane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: internal-dns-control-plane
+subjects:
+- kind: ServiceAccount
+  name: internal-dns-control-plane
+  namespace: internal-dns-system

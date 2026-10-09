@@ -2,6 +2,8 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: internal-dns-e2e
+  labels:
+    internal-dns.datum.net/qualification: "true"
 webhooks:
   - name: internal-dns.dns.networking.miloapis.com
     admissionReviewVersions: [v1]

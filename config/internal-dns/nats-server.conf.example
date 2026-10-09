@@ -20,7 +20,10 @@ authorization {
       permissions: {
         publish: { allow: [
           "dns.private.serving.>", "dns.private.records.>",
-          "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$JS.API.>", "_INBOX.>"
+          "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$JS.API.>",
+          # Match the control-plane ACK durable for this region and shard.
+          "$JS.ACK.DNS_PRIVATE.control-plane-us-central1-shared-0-acks.>",
+          "_INBOX.>"
         ] }
         subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
       }

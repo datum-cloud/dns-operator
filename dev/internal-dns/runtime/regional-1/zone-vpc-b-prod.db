@@ -1,7 +1,0 @@
-$TTL 2
-@ IN SOA ns.prod.internal. hostmaster.prod.internal. 1 30 30 30 2
-@ IN NS ns.prod.internal.
-ns IN A 192.0.2.53
-common IN A 10.0.1.20
-only-b IN A 10.0.1.20
-type-split IN A 10.0.1.20

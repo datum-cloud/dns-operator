@@ -33,7 +33,7 @@ type replicaAck struct {
 	ValidUntil time.Time `json:"validUntil"`
 }
 
-const checkpointFormatVersion = 3
+const checkpointFormatVersion = 4
 
 type checkpoint struct {
 	FormatVersion      int                                          `json:"formatVersion"`

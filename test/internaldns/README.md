@@ -1,161 +1,117 @@
 # Internal DNS end-to-end qualification
 
-The [production-oriented qualification proposal](production-parity.md) defines
-the path from these protocol tests to a Kubernetes deployment and real Galactic
-VPC queries. The suites below currently bypass the consumer network path and
-do not qualify Milo discovery, Karmada, broker quorum, or the Compute build.
+Run private DNS on the repository's shared Kubernetes test environment. Task
+reuses the pinned `datum-cloud/test-infra` bootstrap, cluster names, add-ons, and
+cleanup. The environment also supports the existing public DNS regression chain.
+The qualification uses Go clients and Kubernetes workloads; it has no Compose
+or Python dependency.
 
-The runtime package has a separate CI gate that uses the shipped Dockerfile and
-deployment examples. Run it locally on the suite-owned Docker runtime:
+## Run locally
+
+Install Docker, Kind, kubectl, Go, and Task. On macOS, select the suite-owned
+Colima runtime before starting the environment:
 
 ```sh
+colima --profile internal-dns-e2e start --activate=false --cpu 6 --memory 16 --disk 60
 source test/internaldns/colima-env.sh
+export TASK_X_REMOTE_TASKFILES=1
+task --yes env:internal-dns:up
+task --yes env:internal-dns:qualify
+```
+
+`env:internal-dns:up` resets only the owned private DNS fixtures, then rebuilds
+and deploys them on the existing clusters. Run it again before repeating the
+qualification. It retains the shared bootstrap and public DNS workloads.
+
+Start private DNS first on fresh clusters to select the shared dual-stack Kind
+configuration. If an existing public-only environment uses IPv4, the preflight
+stops before resetting private fixtures. When ready to replace that environment,
+run `env:down`, then start `env:internal-dns:up` before `env:stack-up`.
+
+To validate public DNS alongside private DNS, use the same lifecycle as CI:
+
+```sh
+task --yes env:internal-dns:up
+task --yes env:stack-up
+task --yes env:internal-dns:qualify
+task --yes env:chainsaw
+test/internaldns/kubernetes/collect.sh
+task --yes env:down
+```
+
+`env:down` removes the three shared test clusters. Qualification results and
+sanitized deployment logs remain under `test/internaldns/results/kubernetes*`.
+Generated kubeconfigs and Secrets stay in `.internal-dns-e2e/kubernetes/` and
+are excluded from collected evidence. The qualifier restores controllers and
+broker replicas after fault injection, including a failed scenario.
+
+## Deployed path
+
+```mermaid
+flowchart LR
+  A[Project A API / scoped publisher] --> C[Two DNS controller Deployments]
+  B[Project B API / scoped publisher] --> C
+  C --> J[Three TLS JetStream replicas / PVCs]
+  J --> N[Shared node dnsdist / BIND]
+  J --> R[Shared regional dnsdist / two BIND members]
+  P[Separate consumer probe] -->|Service destination fixture| N --> R
+```
+
+The `dns-upstream` and `dns-edge` clusters provide independent project APIs.
+The `dns-control` cluster hosts the DNS service API, admission Service, broker,
+controllers, and fixed serving fleet. All three use the shared Flux,
+cert-manager, Kyverno, and Envoy bootstrap. Private and public DNS use separate
+namespaces on this foundation.
+
+The manifest renderer reads the shipped runtime configuration and RBAC. Each
+controller uses scoped project worker credentials; product, grant issuer, and
+VPC integration credentials are separate. The simulated Compute publisher
+creates registrations and contributions through the project API. It discovers
+managed names from `DNSResolverContext.status.managedNamespace`.
+
+The fleet contains one node member, one regional frontend, and two regional
+BIND members, each with independent persistent state. Agents validate and
+activate configuration, prove UDP/TCP publication, and renew watchdog leases.
+The broker uses three persistent replicas, client and route TLS, and scoped
+subject permissions. cert-manager issues broker, client, and admission
+certificates. ACK timing matches the shipped 30-second interval and 90-second
+lease; the fixture shortens the ownership lease to 10 seconds and pod
+termination grace to 2 seconds for fault tests.
+
+## Qualification scenarios
+
+The Go qualifier covers overlapping tenant names over UDP and TCP, A/AAAA and
+negative-cache isolation, multiple zones, managed name discovery, scoped
+publication and admission denial, record updates and deletion, health
+withdrawal and recovery, fixed fleet size, regional publication proof,
+controller takeover, local record/access expiry while controllers and the
+broker are stopped, and publication after broker/controller restoration using
+the retained broker PVCs. Each assertion records its result; skipped scenarios do
+not count as passes.
+
+The separate package gate checks the shipped runtime image, all CRD schemas,
+deployment rendering, configuration, and Kubernetes/NATS permissions:
+
+```sh
 task --yes env:internal-dns:package
 ```
 
-Evidence is retained under `test/internaldns/results/package/`. This verifies
-image packaging, rendering of every CRD and deployment example, CRD schema
-installation in an RBAC-enabled test API, and configuration and permission
-contracts. It does not deploy the example workloads.
+## Remaining production boundaries
 
-The current qualification exercises the BIND-only private DNS path:
+This deployment replaces the earlier Compose protocol lab. It validates live
+Kubernetes APIs, admission, credentials, durable transport, serving pods, and DNS
+responses. It does not deploy Milo project discovery, Karmada, Galactic private
+service networking, or the actual Compute service. The independent project APIs
+and service-side IPv6 routes are explicit fixtures. Exact route/NAT exemptions
+preserve serving pod peers without widening their ACLs. The probe does not share a
+trusted serving network namespace or receive a Kubernetes credential.
 
-```text
-scoped Compute service account -> project Kubernetes DNS APIs
-  -> publication compiler -> durable outbox -> NATS JetStream
-  -> two independent regional BIND publication agents
-  -> shared regional dnsdist -> shared node BIND/dnsdist -> UDP/TCP client
-```
+The [production qualification proposal](production-parity.md) covers the next
+stage: queries from attached consumer VPCs through authorized private endpoints
+into the separate DNS service VPC. Kind cannot establish physical fabric,
+microVM attachment, host-loss durability, regional independence, or production
+capacity.
 
-The simulated Compute publisher cannot write platform artifacts or access NATS.
-It creates a `DNSRegistration`, uses a registration-pinned
-`DNSContributionGrant`, and writes a generation-matched
-`DNSRecordContribution` observation. For a managed name it first discovers the
-zone and suffix from `DNSResolverContext.status.managedNamespace`; the Compute
-resource never chooses a zone.
-
-The fleet is fixed at one node member, one regional dnsdist frontend, and two
-regional BIND members. Each BIND member stores its own zone files, validates
-them with `named-checkconf -z`, activates isolated context views, and proves the
-installed SOA version directly over UDP and TCP. Adding a second context must
-leave every serving container identity unchanged.
-
-## Isolated runtime
-
-Every runner requires the suite-owned Colima profile and refuses the default
-Docker context. The wrappers export only this socket:
-
-```sh
-make controller-gen
-colima --profile internal-dns-e2e start --activate=false
-test/internaldns/run.sh --results test/internaldns/results/bind-e2e-latest.json
-```
-
-The socket is `unix://$HOME/.colima/internal-dns-e2e/docker.sock`. Override only
-with `INTERNAL_DNS_DOCKER_SOCKET` for the same isolated profile. The runner
-creates its own Kind cluster(s), Compose project, kubeconfigs, immutable source
-snapshot, runtime configuration, checkpoints, logs, and evidence. Normal
-cleanup removes only suite-owned resources. `--keep` or
-`INTERNAL_DNS_KEEP=1` retains the environment for diagnosis.
-
-Each run places active BIND configuration, generated zones, checkpoints, and
-watchdog leases in a unique VM-local `/tmp/datum-internal-dns-run-*` directory.
-This keeps fsync and the five-second fail-closed budget representative of local
-serving storage instead of macOS file sharing. Sanitized copies are returned in
-the result artifact before that VM-local directory is removed. Evidence capture
-stops the control planes, watchdogs, and agents before archiving the checkpoint
-and runtime directories. The host extracts the archive without container file
-ownership, so snapshot capture also works with macOS file sharing.
-
-The fixture uses a five-second ACK interval and a twenty-second ACK lease so a
-single-node Kind API server can project member status without an artificial
-write backlog. Member-failure checks still wait beyond the full twenty-second
-lease before accepting degraded availability. This suite qualifies ACK
-freshness, expiry, and failover semantics; it is not an ACK-throughput or
-Kubernetes API capacity benchmark. Production examples use a thirty-second
-interval and ninety-second lease.
-
-Prerequisites are Python 3.10+, Docker Compose, Colima, Kind, kubectl, Go,
-OpenSSL, and an ARM64 Docker runtime. There is no suite-wide timeout flag; every phase has an
-explicit bounded wait. `--results PATH` selects a new evidence file.
-
-## Qualification evidence
-
-The assembled stack at `1c27e1664e70` passed all 37 full-path checks and all 37
-multi-control-plane checks. Those runs qualify the protocol lab at that commit;
-they do not qualify the proposed production deployment. Result JSON and sanitized artifacts are
-written under `test/internaldns/results/` and remain untracked.
-
-## Full DNS suite
-
-`run.sh` covers:
-
-- overlapping names and addresses in two contexts through the same fixed
-  processes over UDP and TCP;
-- NXDOMAIN and NODATA cache isolation, plus two private zones in one context;
-- managed namespace discovery and scoped Compute publication without a zone
-  argument, with a separately authenticated grant issuer;
-- record update and delete, stale registration generation rejection, retired
-  grant epoch rejection, health withdrawal, and health recovery;
-- original record expiry enforced locally during a NATS outage;
-- restart/replay without deadline or writer-fence regression;
-- access expiry failing closed while the control plane and broker are absent;
-- current publication parity on both regional BIND members; and
-- continued queries through the surviving member after either regional member
-  and its ACK lease are removed, while readiness reports degraded membership.
-
-The focused serving component check uses static BIND zone files and is separate
-from the API publication proof:
-
-```sh
-source test/internaldns/colima-env.sh
-dev/internal-dns/qualify_proxyv2.py \
-  --results test/internaldns/results/bind-proxyv2-latest.json
-```
-
-It checks both tiers' PROXYv2 destination selection, overlapping answers,
-negative-cache isolation, multiple zones, unknown destination rejection, and
-failover with each regional BIND member stopped.
-
-## Multi-control-plane suite
-
-```sh
-test/internaldns/run-multi-control-plane.sh \
-  --results test/internaldns/results/bind-multi-control-plane-latest.json
-```
-
-This suite creates one platform Kind API and two independent source Kind APIs.
-Two real control-plane processes watch both source projects and share one
-JetStream and serving fleet. Both projects use the same namespace, resolver
-context name, zone name, and logical record name while retaining distinct
-project, source-cluster, context, zone, registration, grant, and contribution
-UIDs.
-
-It additionally checks scoped publisher denial, complete shared-shard snapshots,
-one project's update/delete isolation, zone and shard takeover by the surviving
-control plane at higher epochs, exact stale-envelope replay rejection, and one
-source API blackhole. During that blackhole the unavailable project's original
-record and access deadlines expire locally while the healthy project continues
-publishing and serving through the same controllers, broker, and fleet. Recovery
-cannot resurrect the expired record; a new producer observation is required.
-
-The development admission proxy preserves request bytes and verifies both
-backend certificates, but it does not qualify a production load balancer. One
-local broker represents one region; the suite does not claim regional broker HA
-or a NATS supercluster.
-
-The current serving checkpoint format is version 3. Agents fail closed on
-version 2 checkpoints and on checkpoints missing retained binding authority
-history. These runs start fresh format 3 agents; they do not qualify an in-place
-checkpoint upgrade, long-term checkpoint retention, backup/restore, or NATS
-stream migration. The fixture ACK cadence qualifies freshness and failure
-semantics under this workload, not fleet-scale ACK or Kubernetes API capacity.
-
-
-The publisher fixture creates registrations and contributions with its product
-credential. The harness uses a separate, scoped issuer credential to authorize
-the fixed Compute principal before publication. Product credentials cannot
-create grants, modify grant status, or impersonate the issuer. The control-plane
-processes still use administrator source clients in this distributed lab; the
-packaged worker permissions are checked separately with the Kubernetes RBAC
-authorizer in `TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries`.
+This suite starts with internal wire version `v1alpha3` and fresh format 4
+checkpoints. It does not qualify an in-place state migration or mixed-version
+rolling upgrade.

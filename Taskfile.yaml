@@ -11,9 +11,9 @@
 version: '3'
 
 vars:
-  # Bump to the merged tag once datum-cloud/test-infra#35 lands (it removes
-  # the hardcoded NodePorts that block running two clusters concurrently).
-  TEST_INFRA_REPO_REF: 'fix/remove-hardcoded-nodeports'
+  # Shared bootstrap with dynamic NodePorts; keep every qualification on the
+  # same immutable foundation rather than downloading a moving branch.
+  TEST_INFRA_REPO_REF: '7622c925d5bcf2fa5bc01823775973cf6daf51ca'
   # Upstream (control-plane) cluster runs the replicator; it pushes DNSZone/
   # DNSRecordSet resources to the control cluster, which plays the "downstream"
   # agent role for the replicator and the "control" (Lightningstream source)
@@ -56,6 +56,31 @@ includes:
       REPO_REF: "{{.TEST_INFRA_REPO_REF}}"
 
 tasks:
+  env:internal-dns:up:
+    desc: "Deploy private DNS pods on the shared upstream/control/edge environment"
+    cmds:
+      - task: test-infra:ensure-repo
+      - task: test-infra:ensure-tools
+      - test/internaldns/kubernetes/prepare-kind.sh
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.CONTROL_CLUSTER_NAME}}"
+          KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
+          KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
+          KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+      - test/internaldns/kubernetes/deploy.sh
+
+  env:internal-dns:qualify:
+    desc: "Qualify private DNS through scoped product APIs and Kubernetes serving pods"
+    cmds:
+      - go run ./test/internaldns/kubernetes/qualify --environment .internal-dns-e2e/kubernetes/environment.json --results test/internaldns/results/kubernetes.json
+
   env:internal-dns:package:
     desc: "Build and qualify the internal DNS runtime image and deployment contracts"
     cmds:
@@ -70,6 +95,8 @@ tasks:
       - echo "  task env:stack-up    Bring up the full chain with no sample data (used by CI)"
       - echo "  task env:chainsaw    Run the full Chainsaw e2e suite against the environment"
       - echo "  task env:down        Tear down all clusters"
+      - echo "  task env:internal-dns:up       Deploy private DNS on the shared clusters"
+      - echo "  task env:internal-dns:qualify  Validate private DNS publication and isolation"
       - echo "  task env:dns-check   Query control + edge PowerDNS for the sample record"
       - echo ""
       - echo "Individual pieces:"
@@ -168,6 +195,7 @@ tasks:
       - task: test-infra:create-kind
         vars:
           CLUSTER_NAME: "{{.CLUSTER_NAME}}"
+          KIND_CFG: '{{.KIND_CFG | default ".test-infra/cluster/kind-config.yaml"}}'
       - task: test-infra:install-components
         vars:
           CLUSTER_NAME: "{{.CLUSTER_NAME}}"

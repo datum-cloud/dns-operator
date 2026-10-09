@@ -1,5 +1,0 @@
-$TTL 2
-@ IN SOA ns.apps.internal. hostmaster.apps.internal. 1 30 30 30 2
-@ IN NS ns.apps.internal.
-ns IN A 192.0.2.53
-tool IN A 10.0.2.10

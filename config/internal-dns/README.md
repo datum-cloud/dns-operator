@@ -82,6 +82,12 @@ markers.
 
 ## Transactions, health, and expiry
 
+An attached zone that has no active publication gates its context until the
+configuration is complete. Pending contexts deny queries, recursion, and cache
+answers while retaining the original access authorization. Configuration
+completion can restore service without renewing authorization; an actual access
+withdrawal still requires a newer source authorization to reactivate.
+
 The agent writes a complete candidate set into its stage directory. Regional
 zone files are siblings of `cluster-bind.conf`; validation rewrites file
 references to the staged paths and runs `named-checkconf -z`. Installation is
@@ -114,6 +120,11 @@ filesystem whose fsync latency can consume the watchdog budget. Replication is
 provided by the durable publication stream and independent regional members;
 each member still has its own crash-safe checkpoint volume.
 
+The transaction stage and active configuration must share one filesystem:
+installation uses atomic rename. The examples put the stage at
+`/etc/internal-dns/stage` on the configuration PVC and keep checkpoints on the
+separate state PVC.
+
 The regional BIND reload helper must reload existing primary zones, for
 example with `rndc reload`. `rndc reconfig` only guarantees configuration and
 new-zone loading, so it is insufficient when an existing private apex moves to
@@ -138,3 +149,10 @@ configurations plus one Deployment template. Instantiate the template for each
 member and create a second regional BIND member with distinct addresses and
 storage. `control-plane.example.yaml` lists both regional members in
 `clusterBackends` and `members`.
+
+The internal envelope version is `v1alpha3` and the serving checkpoint format
+is 4. Older envelopes and checkpoints fail closed. Replace the controller and
+fleet together against fresh internal DNS transport state and checkpoints
+before testing this unreleased format; preserve old state for recovery.
+In-place stream/checkpoint migration and a mixed-version rolling upgrade are
+not supported.

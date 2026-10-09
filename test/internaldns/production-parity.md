@@ -2,10 +2,10 @@
 
 ## Proposal
 
-Build the deployment qualification on the existing `datum-cloud/test-infra`
-environment. Use Task for lifecycle, Kubernetes overlays for workloads, and
-Chainsaw plus Go clients for assertions and fault injection. Keep the current
-Compose suites as protocol and controller regression tests during migration.
+Build deployment qualification on the existing `datum-cloud/test-infra`
+environment. The qualification replaces the Compose lab with Task lifecycle, Kubernetes
+workloads, and Go clients for assertions and fault injection. CI also runs the
+existing public DNS Chainsaw suites on the same foundation.
 
 The acceptance path starts with a product publishing a record in a project
 control plane and ends with a workload querying the well-known resolver address
@@ -21,19 +21,21 @@ cluster health or that the proposed private DNS fleet is deployed.
 
 - [DNS control-plane configuration](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/control-plane/base)
   discovers Milo projects and uses project credentials, certificate trust, and
-  an admission service. The current internal DNS lab substitutes independent
-  Kind APIs, a development admission proxy, and administrator worker clients.
+  an admission service. The Kubernetes qualification substitutes independent
+  Kind APIs, but uses a TLS admission Service and scoped worker credentials.
 - [Karmada](https://github.com/datum-cloud/infra/blob/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/infrastructure/karmada/host/base/karmada-helm-release.yaml)
   provides a separate federation API. The current lab has no federation or
   edge API and creates DNS access intent directly.
 - [Galactic edge configuration](https://github.com/datum-cloud/infra/blob/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/channels/edge/components/galactic/galactic-system.yaml)
-  selects the networking deployment independently. The lab uses Compose routes
+  selects the networking deployment independently. The lab uses synthetic routes
   and direct context addresses; it bypasses VPC attachment, private service
   authorization, service route programming, and workload resolver settings.
 - [NATS infrastructure](https://github.com/datum-cloud/infra/blob/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/infrastructure/databases/nats/base/nats-hr.yaml)
   declares three broker replicas, persistent JetStream storage, and client and
-  route TLS. The lab has one broker. Its outage test proves local expiry, not
-  broker quorum, storage recovery, or regional transport.
+  route TLS. The Kubernetes lab uses that three-replica storage and TLS pattern.
+  Its full broker outage test proves local expiry and replica restart using
+  retained PVCs. Quorum loss, disk/host-loss recovery, and regional transport
+  still need dedicated scenarios.
 - [Public edge DNS](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/downstream/edge)
   uses PowerDNS authoritative servers and Lightningstream. Its loopback
   recursor supports ALIAS expansion. Reuse that public regression environment;
@@ -42,10 +44,9 @@ cluster health or that the proposed private DNS fleet is deployed.
 
 The existing [Task environment](../../Taskfile.yaml) already deploys public DNS
 across upstream, control, and edge clusters with shared test-infra tooling.
-The [CI workflow](../../.github/workflows/e2e.yml) exercises that public chain.
-Neither currently runs the internal DNS Compose qualification.
-The shared Task include currently uses a branch reference; pin its exact commit
-before treating a deployment run as reproducible evidence.
+The [CI workflow](../../.github/workflows/e2e.yml) exercises both private DNS
+qualification and that public chain. The shared Task include is pinned to
+`datum-cloud/test-infra@7622c925d5bcf2fa5bc01823775973cf6daf51ca`.
 
 ## Target topology
 
@@ -53,8 +54,8 @@ Use three local Kubernetes clusters: management and two edge clusters. Host
 the Milo core and Karmada APIs in the management cluster. Exercise two consumer
 project APIs and the DNS service's managed project through Milo's project
 control-plane routing and distinct credentials; namespaces alone cannot prove
-those boundaries. Retain the current independent-source Kind clusters as an
-optional API-partition stress test, rather than the required deployment topology.
+those boundaries. The current independent-source Kind APIs are a distributed
+control-plane fixture, rather than the final deployment topology.
 
 ```mermaid
 flowchart LR
@@ -105,7 +106,7 @@ flowchart LR
   JS --> N1 & N2 & R
 ```
 
-The two edge clusters initially model independent failure domains in one region.
+The two edge clusters model separate edge control planes on one host in one region.
 The DNS service runs in its own producer VPC. Both node and regional resolver
 tiers belong to that service VPC; node members run on shared edge capacity,
 not in consumer VPCs. Galactic `ServiceEndpoint` resources select the producer
@@ -125,7 +126,7 @@ intended for staging. Do not mount the Docker socket into those workloads.
 
 ## Qualification stages
 
-1. **Package gate (this PR).** Build the runtime image through
+1. **Package gate (implemented).** Build the runtime image through
    `config/internal-dns/Dockerfile`, smoke-test its executable as the image's
    non-root user, render all CRDs and deployment examples with the installer's
    pinned Kustomize, and validate their JSON
@@ -133,13 +134,15 @@ intended for staging. Do not mount the Docker socket into those workloads.
    permissions, and NATS subject permissions in CI.
    This gate checks packaging; the examples still require deployment overlays
    and serving images. It makes no live Kubernetes or consumer-path claim.
-2. **Kubernetes deployment.** Add pinned test-infra and infrastructure inputs,
-   concrete serving images and command helpers, and local overlays. Install
-   admission through a TLS Service, issue scoped worker and product credentials,
-   deploy two controllers, and run the existing publication/expiry/replay cases
-   against pods and persistent volumes. Use production ACK timing (30/90
-   seconds); any accelerated test must record its timing explicitly. Run the
-   public DNS regression chain in the same qualification job.
+2. **Kubernetes deployment (implemented).** Reuse pinned test-infra, serving
+   images and command helpers, TLS admission, scoped worker/product credentials,
+   two controllers, three TLS brokers, and persistent serving state. Run
+   publication, isolation, takeover, and expiry checks against real pods. ACK
+   timing is 30/90 seconds; ownership lease and termination grace are shortened
+   to 10 and 2 seconds. CI runs the public regression chain in the same job.
+   Publication resumes after broker/controller restoration using retained
+   broker PVCs. Member restart, stale-envelope replay, broker quorum, and API-partition fault
+   scenarios remain to be added to this deployment suite.
 3. **Consumer network path.** Add real Milo project discovery and the DNS
    service managed project, Karmada and edge resource propagation, Galactic
    VPCs, the separate producer DNS service VPC, its `ServiceEndpoint` listeners,

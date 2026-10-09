@@ -14,8 +14,6 @@ dist/
 dev/
 !dev/
 dev/*
-!dev/internal-dns/
-!dev/internal-dns/**
 .go-version
 config/**/charts
 
@@ -55,5 +53,3 @@ go.work.sum
 
 /.internal-dns-e2e/
 /test/internaldns/results/
-/test/internaldns/__pycache__/
-/dev/internal-dns/__pycache__/

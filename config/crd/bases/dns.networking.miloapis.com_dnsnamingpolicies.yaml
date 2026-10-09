@@ -73,6 +73,10 @@ spec:
                   - namePrefix
                   - registrationClass
                   type: object
+                  x-kubernetes-validations:
+                  - message: dnsZoneRef must pin the zone UID
+                    rule: has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() >
+                      0
                 type: array
               dnsZoneRef:
                 description: Legacy single-rule fields are retained during the v1alpha1
@@ -158,6 +162,9 @@ spec:
                 || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size()
                 > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
                 > 0))'
+            - message: a selected dnsZoneRef must pin the zone UID
+              rule: '!has(self.dnsZoneRef) || self.dnsZoneRef.name.size() == 0 ||
+                (has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0)'
           status:
             properties:
               conditions:

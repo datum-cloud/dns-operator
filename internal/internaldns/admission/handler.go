@@ -368,6 +368,9 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if err := decode(req, &a); err != nil {
 		return err
 	}
+	if _, err := currentPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
+		return err
+	}
 	if a.Spec.Managed {
 		return fmt.Errorf("managed associations are platform-owned")
 	}
@@ -395,11 +398,17 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 		return err
 	}
 	if p.Spec.DNSZoneRef.Name != "" {
+		if _, err := currentPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
+			return err
+		}
 		if err := authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnszones", p.Spec.DNSZoneRef.Name, "update"); err != nil {
 			return err
 		}
 	}
 	for _, rule := range p.Spec.AdditionalNames {
+		if _, err := currentPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {
+			return err
+		}
 		if err := authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnszones", rule.DNSZoneRef.Name, "update"); err != nil {
 			return err
 		}
@@ -506,12 +515,12 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 	if err := decode(req, &registration); err != nil {
 		return err
 	}
-	var zone dnsv1alpha1.DNSZone
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: registration.Spec.DNSZoneRef.Name}, &zone); err != nil {
-		return fmt.Errorf("private zone lookup: %w", err)
+	if registration.Spec.TTLSeconds < 1 || registration.Spec.TTLSeconds > dnsv1alpha1.DNSRegistrationMaxTTLSeconds {
+		return fmt.Errorf("dynamic TTL must be between 1 and %d seconds", dnsv1alpha1.DNSRegistrationMaxTTLSeconds)
 	}
-	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
-		return fmt.Errorf("internal registrations require a private zone")
+	zone, err := currentPrivateZone(ctx, cl, req.Namespace, registration.Spec.DNSZoneRef)
+	if err != nil {
+		return err
 	}
 	for _, rt := range registration.Spec.RecordTypes {
 		if err := model.ValidatePrivateRecordOwner(registration.Spec.Name, zone.Spec.DomainName, string(rt)); err != nil {
@@ -519,4 +528,22 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 		}
 	}
 	return nil
+}
+
+// Zone references cannot silently follow a replacement with the same name.
+func currentPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSObjectReference) (*dnsv1alpha1.DNSZone, error) {
+	if ref.Name == "" || ref.UID == "" {
+		return nil, fmt.Errorf("zone reference must pin name and UID")
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &zone); err != nil {
+		return nil, fmt.Errorf("private zone lookup: %w", err)
+	}
+	if zone.UID != ref.UID || !zone.DeletionTimestamp.IsZero() || (ref.Generation != 0 && ref.Generation != zone.Generation) {
+		return nil, fmt.Errorf("zone lifetime is not current")
+	}
+	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return nil, fmt.Errorf("internal references require a private zone")
+	}
+	return &zone, nil
 }

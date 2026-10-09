@@ -118,6 +118,8 @@ spec:
                 || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size()
                 > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
                 > 0))'
+            - message: dnsZoneRef must pin the zone UID
+              rule: has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0
           status:
             properties:
               bindingRef:

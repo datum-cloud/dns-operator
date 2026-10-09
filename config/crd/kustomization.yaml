@@ -17,3 +17,19 @@ patches:
 # the following config is for teaching kustomize how to do kustomization for CRDs.
 #configurations:
 #- kustomizeconfig.yaml
+
+- bases/dns.networking.miloapis.com_dnscontributiongrants.yaml
+
+- bases/dns.networking.miloapis.com_dnsmanagednamespaces.yaml
+
+- bases/dns.networking.miloapis.com_dnsnamingpolicies.yaml
+
+- bases/dns.networking.miloapis.com_dnsrecordcontributions.yaml
+
+- bases/dns.networking.miloapis.com_dnsregistrations.yaml
+
+- bases/dns.networking.miloapis.com_dnsresolveraccessbindings.yaml
+
+- bases/dns.networking.miloapis.com_dnsresolvercontexts.yaml
+
+- bases/dns.networking.miloapis.com_dnszoneassociations.yaml

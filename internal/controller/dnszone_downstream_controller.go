@@ -44,6 +44,9 @@ func (r *DNSZoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.Get(ctx, req.NamespacedName, &zone); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return ctrl.Result{}, nil
+	}
 
 	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
 		logger.V(1).Info("Resource belongs to different class. Not Reconciling")

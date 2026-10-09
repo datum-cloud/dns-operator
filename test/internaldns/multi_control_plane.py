@@ -578,6 +578,14 @@ class MultiControlPlaneHarness(single.Harness):
         self.wait("control A reacquires fresh zone and shard leases", fresh_owner, timeout=35)
         old_envelopes = self.capture_old_envelopes(zone_uid)
         before_zone, before_shard = self.wait("control A holds both fresh leases before SIGSTOP", fresh_owner, timeout=35)
+        self.owner_evidence["preparedTakeover"] = {
+            "capturedAt": datetime.now(timezone.utc).isoformat(),
+            "minimumLeaseRemainingSeconds": 3,
+            "identity": owner_a,
+            "zone": before_zone["spec"],
+            "shard": before_shard,
+            "standbyRestarted": "control-b",
+        }
         self.start("control-b", *self.command("control-plane", standby_config))
         self.processes["control-a"].send_signal(signal.SIGSTOP)
         return before_zone, before_shard, old_envelopes
@@ -828,6 +836,7 @@ class MultiControlPlaneHarness(single.Harness):
             shardEpochBefore=before_shard["epoch"], shardEpochAfter=shard_after["epoch"],
         )
         self.owner_evidence = {
+            **self.owner_evidence,
             "initial": {"identity": owner_a, "zone": before_zone["spec"], "shard": before_shard},
             "takeover": {"identity": owner_b, "zone": zone_after["spec"], "shard": shard_after},
         }

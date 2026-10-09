@@ -10,7 +10,7 @@ import (
 )
 
 func refMatches(ref dnsv1alpha1.DNSObjectReference, name string, uid types.UID, generation int64) bool {
-	return ref.Name == name && (ref.UID == "" || ref.UID == uid) && (ref.Generation == 0 || ref.Generation == generation)
+	return ref.Name == name && (ref.UID != "" && ref.UID == uid) && (ref.Generation == 0 || ref.Generation == generation)
 }
 
 func canonicalName(s string) string {

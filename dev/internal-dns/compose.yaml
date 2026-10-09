@@ -1,0 +1,115 @@
+name: datum-internal-dns
+
+x-bind-image: &bind-image internetsystemsconsortium/bind9@sha256:071465f88068854d0ceadd9b985fb1acae4071e80754e545cd811fde57541ad0
+x-dnsdist-image: &dnsdist-image powerdns/dnsdist-20@sha256:4ed9af56729c7021795dc478421237ab9cf6c7ceec8734677405e7617f06d52f
+
+services:
+  nats:
+    image: nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes: [nats-data:/data]
+    ports: ["127.0.0.1:14222:4222", "127.0.0.1:18222:8222"]
+    networks:
+      dns: {ipv4_address: 10.253.0.5}
+      control: {}
+
+  regional-0-bind:
+    image: *bind-image
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["named-checkconf -z /runtime/regional-0/cluster-bind.conf && exec named -g -c /runtime/regional-0/cluster-bind.conf -n 2"]
+    volumes:
+      - ${INTERNAL_DNS_RUNTIME:?set INTERNAL_DNS_RUNTIME}:/runtime:ro
+      - ./rndc.key:/etc/bind/rndc.key:ro
+    networks:
+      dns: {ipv4_address: 10.253.0.20}
+
+  regional-1-bind:
+    image: *bind-image
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["named-checkconf -z /runtime/regional-1/cluster-bind.conf && exec named -g -c /runtime/regional-1/cluster-bind.conf -n 2"]
+    volumes:
+      - ${INTERNAL_DNS_RUNTIME:?set INTERNAL_DNS_RUNTIME}:/runtime:ro
+      - ./rndc.key:/etc/bind/rndc.key:ro
+    networks:
+      dns: {ipv4_address: 10.253.0.21}
+
+  regional-dnsdist:
+    image: *dnsdist-image
+    user: "953:953"
+    entrypoint: ["/usr/local/bin/dnsdist"]
+    command: ["--supervised", "-C", "/runtime/regional-front/cluster-dnsdist.conf"]
+    volumes:
+      - ${INTERNAL_DNS_RUNTIME:?set INTERNAL_DNS_RUNTIME}:/runtime:ro
+    network_mode: service:regional-vips
+    depends_on: [regional-vips, regional-0-bind, regional-1-bind]
+
+  regional-vips:
+    image: alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    cap_add: [NET_ADMIN]
+    networks:
+      dns: {ipv4_address: 10.253.0.40}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        ip address replace 10.253.0.41/32 dev eth0
+        ip address replace 10.253.0.42/32 dev eth0
+        ip address replace 10.253.0.43/32 dev eth0
+        exec tail -f /dev/null
+
+  node-bind:
+    image: *bind-image
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["named-checkconf /runtime/node/node-bind.conf && exec named -g -c /runtime/node/node-bind.conf -n 2"]
+    volumes:
+      - ${INTERNAL_DNS_RUNTIME:?set INTERNAL_DNS_RUNTIME}:/runtime:ro
+      - ./rndc.key:/etc/bind/rndc.key:ro
+    networks:
+      dns: {ipv4_address: 10.253.0.30}
+
+  node-dnsdist:
+    image: *dnsdist-image
+    user: "953:953"
+    entrypoint: ["/usr/local/bin/dnsdist"]
+    command: ["--supervised", "-C", "/runtime/node/node-dnsdist.conf"]
+    volumes:
+      - ${INTERNAL_DNS_RUNTIME:?set INTERNAL_DNS_RUNTIME}:/runtime:ro
+    network_mode: service:node-vips
+    depends_on: [node-vips, node-bind]
+
+  node-vips:
+    image: alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    cap_add: [NET_ADMIN]
+    networks:
+      dns: {ipv4_address: 10.253.0.50}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        ip address replace 10.253.0.51/32 dev eth0
+        ip address replace 10.253.0.52/32 dev eth0
+        ip address replace 10.253.0.53/32 dev eth0
+        exec tail -f /dev/null
+
+  probe:
+    image: *bind-image
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "-c", "sleep infinity"]
+    networks:
+      dns: {ipv4_address: 10.253.0.60}
+
+networks:
+  dns:
+    internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - {subnet: 10.253.0.0/24}
+        - {subnet: fd00::/8}
+  control: {}
+
+volumes:
+  nats-data:

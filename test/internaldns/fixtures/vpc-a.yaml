@@ -1,0 +1,29 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSResolverContext
+metadata:
+  name: vpc-a
+  namespace: project-e2e
+spec:
+  consumerID: fixture/vpc-a
+  managedNamespace:
+    enabled: true
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: prod-a
+  namespace: project-e2e
+spec:
+  domainName: prod.internal
+  dnsZoneClassName: private-bind
+  visibility: Private
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: apps-a
+  namespace: project-e2e
+spec:
+  domainName: apps.internal
+  dnsZoneClassName: private-bind
+  visibility: Private

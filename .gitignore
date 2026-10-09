@@ -12,6 +12,10 @@ bin/
 vendor/
 dist/
 dev/
+!dev/
+dev/*
+!dev/internal-dns/
+!dev/internal-dns/**
 .go-version
 config/**/charts
 
@@ -48,3 +52,8 @@ go.work.sum
 
 # Local claude settings
 .claude/settings.local.json
+
+/.internal-dns-e2e/
+/test/internaldns/results/
+/test/internaldns/__pycache__/
+/dev/internal-dns/__pycache__/

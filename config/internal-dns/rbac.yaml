@@ -37,7 +37,7 @@ rules:
   resources: [dnsregistrations, dnsrecordcontributions]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
-  resources: [dnscontributiongrants, dnsresolvercontexts]
+  resources: [dnscontributiongrants, dnsresolvercontexts, dnsmanagednamespaces, dnsnamingpolicies]
   verbs: [get, list, watch]
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnsrecordcontributions/status]

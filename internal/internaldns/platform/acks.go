@@ -88,12 +88,12 @@ func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope)
 	}
 	switch a.Kind {
 	case model.KindPublicationManifest:
-		if member.Role != "regional" && member.Role != "cluster" {
+		if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
 			return fmt.Errorf("publication ack is not from a regional resolver")
 		}
 		return s.publication(ctx, a, row, now)
 	case model.KindServingSnapshot:
-		if member.Role != "node" && member.Role != "cluster" && member.Role != "resolver" && member.Role != "regional" {
+		if member.Role != "node" && member.Role != dnsValueCluster && member.Role != dnsValueResolver && member.Role != dnsValueRegional {
 			return fmt.Errorf("serving ack is not from a resolver member")
 		}
 		return s.serving(ctx, a, row, now)
@@ -171,7 +171,7 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 				binding.Status.Phase = "Serving"
 				binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
 			} else {
-				binding.Status.Phase = "Pending"
+				binding.Status.Phase = dnsValuePending
 			}
 			condition(&binding.Status.Conditions, "Serving", complete, "MemberVerification", binding.Generation, now)
 			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -189,7 +189,7 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 	}
 	results := make(chan error, len(projects))
 	for _, project := range projects {
-		project := project
+
 		go func() {
 			projectCtx := ctx
 			cancel := func() {}
@@ -307,7 +307,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time, role string, revision, epoch, authEpoch, authRevision int64) bool {
 	matches := func(member model.Member) bool {
 		for _, row := range rows {
-			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != "resolver" || row.AuthorizationIssuerEpoch == authEpoch && row.AuthorizationRevision == authRevision) && row.Phase == string(model.AckVerified) && row.ValidUntil != nil && row.ValidUntil.After(now) {
+			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != dnsValueResolver || row.AuthorizationIssuerEpoch == authEpoch && row.AuthorizationRevision == authRevision) && row.Phase == string(model.AckVerified) && row.ValidUntil != nil && row.ValidUntil.After(now) {
 				return true
 			}
 		}
@@ -326,7 +326,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 			required := 0
 			verified := 0
 			for _, member := range members {
-				if member.Role == "regional" || member.Role == "cluster" {
+				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
 					if matches(member) {
 						verified++
@@ -342,8 +342,8 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 	required := 0
 	for _, member := range s.Members {
 		match := member.Role == role
-		if role == "resolver" {
-			match = member.Role == "node" || member.Role == "cluster" || member.Role == "resolver" || member.Role == "regional"
+		if role == dnsValueResolver {
+			match = member.Role == "node" || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
 		}
 		if !match {
 			continue
@@ -408,7 +408,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		if complete {
 			b.Status.Phase = "Serving"
 		} else {
-			b.Status.Phase = "Pending"
+			b.Status.Phase = dnsValuePending
 		}
 		if !jsonEqualStatus(base.Status, b.Status) {
 			if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -451,7 +451,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	// partitioned project cannot delay status for healthy projects or manifests.
 	results := make(chan error, len(projections))
 	for _, p := range projections {
-		p := p
+
 		go func() { results <- s.projectPublication(ctx, p.manifest, p.complete, now) }()
 	}
 	for range projections {
@@ -547,5 +547,5 @@ func (s *AckSink) bindingVerified(b *dnsv1alpha1.DNSResolverBinding, envelope *m
 			rows = append(rows, row)
 		}
 	}
-	return s.verified(rows, now, "resolver", b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+	return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
 }

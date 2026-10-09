@@ -47,7 +47,7 @@ func (o *Outbox) Step(ctx context.Context) error {
 		opts = append(opts, client.MatchingLabels{"internal-dns.miloapis.com/region": model.SafeToken(o.Region)})
 	}
 	if o.PendingOnly {
-		opts = append(opts, client.MatchingFieldsSelector{Selector: fields.AndSelectors(fields.OneTermNotEqualSelector("status.state", "Acknowledged"), fields.OneTermNotEqualSelector("status.state", "Superseded"))})
+		opts = append(opts, client.MatchingFieldsSelector{Selector: fields.AndSelectors(fields.OneTermNotEqualSelector("status.state", dnsValueAcknowledged), fields.OneTermNotEqualSelector("status.state", dnsValueSuperseded))})
 	}
 	if err := o.Client.List(ctx, &list, opts...); err != nil {
 		return err
@@ -66,7 +66,7 @@ func (o *Outbox) Step(ctx context.Context) error {
 	var first error
 	for i := range list.Items {
 		out := &list.Items[i]
-		if out.Status.State == "Acknowledged" || out.Status.State == "Superseded" {
+		if out.Status.State == dnsValueAcknowledged || out.Status.State == dnsValueSuperseded {
 			continue
 		}
 		var env model.Envelope
@@ -114,17 +114,17 @@ func (o *Outbox) Step(ctx context.Context) error {
 			}
 			if older {
 				base := out.DeepCopy()
-				out.Status.State = "Superseded"
+				out.Status.State = dnsValueSuperseded
 				if err := o.Client.Status().Patch(ctx, out, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil && first == nil {
 					first = err
 				}
-				states[out.Name] = "Superseded"
+				states[out.Name] = dnsValueSuperseded
 			}
 			continue
 		}
 		ready := true
 		for _, dep := range out.Spec.DependsOn {
-			ok, depErr := o.dependencyReady(ctx, out, env, dep, states)
+			ok, depErr := o.dependencyReady(ctx, env, dep, states)
 			if depErr != nil && first == nil {
 				first = depErr
 			}
@@ -163,7 +163,7 @@ func (o *Outbox) Step(ctx context.Context) error {
 		base := current.DeepCopy()
 		current.Status.Attempts++
 		if err != nil {
-			current.Status.State = "Pending"
+			current.Status.State = dnsValuePending
 			current.Status.LastError = err.Error()
 			if first == nil {
 				first = err
@@ -174,11 +174,11 @@ func (o *Outbox) Step(ctx context.Context) error {
 				now = o.Now().UTC()
 			}
 			at := metav1.NewTime(now)
-			current.Status.State = "Acknowledged"
+			current.Status.State = dnsValueAcknowledged
 			current.Status.AcknowledgedAt = &at
 			current.Status.StreamSequence = ack.Sequence
 			current.Status.LastError = ""
-			states[out.Name] = "Acknowledged"
+			states[out.Name] = dnsValueAcknowledged
 		}
 		if patchErr := o.Client.Status().Patch(ctx, &current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); patchErr != nil {
 			if first == nil {
@@ -190,7 +190,7 @@ func (o *Outbox) Step(ctx context.Context) error {
 			var m dnsv1alpha1.DNSPublicationManifest
 			if getErr := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: out.Spec.ManifestRef.Name}, &m); getErr == nil {
 				base := m.DeepCopy()
-				m.Status.ExportState = "Acknowledged"
+				m.Status.ExportState = dnsValueAcknowledged
 				m.Status.StreamSequence = ack.Sequence
 				m.Status.ExportedAt = current.Status.AcknowledgedAt
 				if patchErr := o.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); patchErr != nil && first == nil {
@@ -252,8 +252,8 @@ func expectedSubject(env model.Envelope) string {
 // A serving snapshot pins a minimum publication fence, rather than a historical
 // activation event. A newer committed complete manifest may satisfy it. Chunk
 // dependencies within a manifest remain exact: revisions cannot be mixed.
-func (o *Outbox) dependencyReady(ctx context.Context, out *dnsv1alpha1.DNSTransportOutbox, env model.Envelope, name string, states map[string]string) (bool, error) {
-	if states[name] == "Acknowledged" {
+func (o *Outbox) dependencyReady(ctx context.Context, env model.Envelope, name string, states map[string]string) (bool, error) {
+	if states[name] == dnsValueAcknowledged {
 		return true, nil
 	}
 	var dep dnsv1alpha1.DNSTransportOutbox
@@ -262,7 +262,7 @@ func (o *Outbox) dependencyReady(ctx context.Context, out *dnsv1alpha1.DNSTransp
 	} else if err != nil {
 		return false, err
 	}
-	if dep.Status.State == "Acknowledged" {
+	if dep.Status.State == dnsValueAcknowledged {
 		states[name] = dep.Status.State
 		return true, nil
 	}
@@ -294,7 +294,7 @@ func (o *Outbox) dependencyReady(ctx context.Context, out *dnsv1alpha1.DNSTransp
 	} else if err != nil {
 		return false, err
 	}
-	return activation.Status.State == "Acknowledged", nil
+	return activation.Status.State == dnsValueAcknowledged, nil
 }
 
 // An abandoned staged event remains pending until a strictly newer committed

@@ -5,7 +5,6 @@ package platform
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -22,12 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
-
-type listFailureClient struct{ client.Client }
-
-func (listFailureClient) List(context.Context, client.ObjectList, ...client.ListOption) error {
-	return errors.New("source API unavailable")
-}
 
 type blockingListClient struct {
 	client.Client
@@ -352,12 +345,12 @@ func TestServingMinimumPublicationFenceSurvivesSupersededActivation(t *testing.T
 	newer := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: model.PublicationActivationName(current.Name, "east", "shared"), Namespace: ns}, Status: dnsv1alpha1.DNSTransportOutboxStatus{State: "Acknowledged"}}
 	o := Outbox{Client: testClient(t, old, current, own, dep, newer), Namespace: ns}
 	env := model.Envelope{Kind: model.KindServingSnapshot, Region: "east", Shard: "shared"}
-	ready, err := o.dependencyReady(context.Background(), nil, env, dep.Name, map[string]string{})
+	ready, err := o.dependencyReady(context.Background(), env, dep.Name, map[string]string{})
 	if err != nil || !ready {
 		t.Fatalf("newer committed publication did not satisfy the minimum fence: %v", err)
 	}
 	env.Kind = model.KindPublicationManifest
-	ready, err = o.dependencyReady(context.Background(), nil, env, dep.Name, map[string]string{})
+	ready, err = o.dependencyReady(context.Background(), env, dep.Name, map[string]string{})
 	if err != nil || ready {
 		t.Fatal("manifest allowed mixing chunk dependencies from other revisions")
 	}
@@ -370,7 +363,8 @@ func TestPublicationReadinessRequiresEveryRegionalMember(t *testing.T) {
 	row := func(member string) dnsv1alpha1.DNSApplyAcknowledgement {
 		return dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 1, Revision: 2, Phase: string(model.AckVerified), ValidUntil: &until}
 	}
-	rows := []dnsv1alpha1.DNSApplyAcknowledgement{row("east-a"), row("east-b")}
+	rows := make([]dnsv1alpha1.DNSApplyAcknowledgement, 0, 4)
+	rows = append(rows, row("east-a"), row("east-b"))
 	if s.verified(rows, now, "publication", 2, 1, 0, 0) {
 		t.Fatal("east replicas satisfied missing west region")
 	}

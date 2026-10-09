@@ -15,7 +15,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -123,7 +122,7 @@ func request(resource, username string, obj, old any) kubeadmission.Request {
 	return kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 		UID: types.UID("request-uid"), Namespace: "project", Operation: admissionv1.Update,
 		Resource: metav1.GroupVersionResource{Group: dnsv1alpha1.GroupVersion.Group, Version: "v1alpha1", Resource: resource},
-		Kind:     metav1.GroupVersionKind{Group: schema.GroupVersion(dnsv1alpha1.GroupVersion).Group, Version: "v1alpha1"},
+		Kind:     metav1.GroupVersionKind{Group: dnsv1alpha1.GroupVersion.Group, Version: "v1alpha1"},
 		UserInfo: authenticationv1.UserInfo{Username: username}, Object: runtime.RawExtension{Raw: raw}, OldObject: runtime.RawExtension{Raw: oldRaw},
 	}}
 }

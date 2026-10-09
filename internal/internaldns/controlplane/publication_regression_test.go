@@ -86,3 +86,47 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 		t.Fatal("takeover lost the committed zero-target withdrawal")
 	}
 }
+
+func TestTerminatingAuthorityDoesNotIssueOrBindWriterEpochs(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	for _, terminating := range []string{"registration", "grant"} {
+		t.Run(terminating, func(t *testing.T) {
+			in := fixture(now)
+			in.Grants[0].Status = dnsv1alpha1.DNSContributionGrantStatus{}
+			stamp := metav1.NewTime(now)
+			if terminating == "registration" {
+				in.Registrations[0].DeletionTimestamp = &stamp
+				in.Registrations[0].Finalizers = []string{"hold.test/finalizer"}
+			} else {
+				in.Grants[0].DeletionTimestamp = &stamp
+				in.Grants[0].Finalizers = []string{"hold.test/finalizer"}
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&dnsv1alpha1.DNSContributionGrant{}, &dnsv1alpha1.DNSRecordContribution{}).WithObjects(&in.Registrations[0], &in.Grants[0]).Build()
+			r := &Reconciler{Client: cl}
+			if _, err := r.issueGrants(context.Background(), in.Grants, in.Registrations, now); err != nil {
+				t.Fatal(err)
+			}
+			if in.Grants[0].Status.ActiveWriterEpoch != 0 {
+				t.Fatal("terminating authority received a new epoch")
+			}
+		})
+	}
+	in := fixture(now)
+	stamp := metav1.NewTime(now)
+	in.Contributions[0].DeletionTimestamp = &stamp
+	in.Contributions[0].Finalizers = []string{"hold.test/finalizer"}
+	in.Contributions[0].Status.WriterEpoch = 0
+	in.Grants[0].Status.Conditions = []metav1.Condition{{Type: "Active", Status: metav1.ConditionTrue}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&dnsv1alpha1.DNSRecordContribution{}).WithObjects(&in.Contributions[0]).Build()
+	r := &Reconciler{Client: cl}
+	if _, err := r.bindContributionEpochs(context.Background(), in.Contributions, in.Grants, now); err != nil {
+		t.Fatal(err)
+	}
+	if in.Contributions[0].Status.WriterEpoch != 0 {
+		t.Fatal("terminating contribution received an epoch")
+	}
+}

@@ -56,6 +56,11 @@ includes:
       REPO_REF: "{{.TEST_INFRA_REPO_REF}}"
 
 tasks:
+  env:internal-dns:package:
+    desc: "Build and qualify the internal DNS runtime image and deployment contracts"
+    cmds:
+      - test/internaldns/qualify-package.sh
+
   default:
     desc: "Show available commands"
     silent: true

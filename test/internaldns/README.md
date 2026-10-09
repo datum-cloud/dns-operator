@@ -1,5 +1,23 @@
 # Internal DNS end-to-end qualification
 
+The [production-oriented qualification proposal](production-parity.md) defines
+the path from these protocol tests to a Kubernetes deployment and real Galactic
+VPC queries. The suites below currently bypass the consumer network path and
+do not qualify Milo discovery, Karmada, broker quorum, or the Compute build.
+
+The runtime package has a separate CI gate that uses the shipped Dockerfile and
+deployment examples. Run it locally on the suite-owned Docker runtime:
+
+```sh
+source test/internaldns/colima-env.sh
+task --yes env:internal-dns:package
+```
+
+Evidence is retained under `test/internaldns/results/package/`. This verifies
+image packaging, rendering of every CRD and deployment example, CRD schema
+installation in an RBAC-enabled test API, and configuration and permission
+contracts. It does not deploy the example workloads.
+
 The current qualification exercises the BIND-only private DNS path:
 
 ```text
@@ -63,9 +81,9 @@ explicit bounded wait. `--results PATH` selects a new evidence file.
 
 ## Qualification evidence
 
-The prototype passed all 36 full-path checks and all 37 multi-control-plane
-checks before this PR stack was extracted. Re-run both suites on the assembled
-stack to qualify its exact commit. Result JSON and sanitized artifacts are
+The assembled stack at `1c27e1664e70` passed all 37 full-path checks and all 37
+multi-control-plane checks. Those runs qualify the protocol lab at that commit;
+they do not qualify the proposed production deployment. Result JSON and sanitized artifacts are
 written under `test/internaldns/results/` and remain untracked.
 
 ## Full DNS suite

@@ -79,24 +79,38 @@ flowchart LR
   K --> E1 & E2
   INT -->|Access intent| DA & DB
   subgraph E1[Edge A]
-    V1[VPC A workload / well-known resolver]
-    G1[Galactic private service route]
-    N1[Shared node dnsdist / BIND]
-    V1 --> G1 --> N1
+    V1[Consumer VPC A workload]
+    F1[Private endpoint / well-known resolver]
+    G1[Galactic ServiceRoutePolicy A]
+    V1 --> F1 --> G1
   end
   subgraph E2[Edge B]
-    V2[VPC B workload / same resolver address]
-    G2[Galactic private service route]
-    N2[Shared node dnsdist / BIND]
-    V2 --> G2 --> N2
+    V2[Consumer VPC B workload]
+    F2[Private endpoint / same resolver address]
+    G2[Galactic ServiceRoutePolicy B]
+    V2 --> F2 --> G2
   end
-  R[Shared regional dnsdist / two BIND members]
+  subgraph SV[Producer DNS service VPC]
+    EP1[ServiceEndpoint / node listener A]
+    EP2[ServiceEndpoint / node listener B]
+    N1[Edge A shared node dnsdist / BIND]
+    N2[Edge B shared node dnsdist / BIND]
+    R[Shared regional dnsdist / two BIND members]
+    EP1 --> N1 --> R
+    EP2 --> N2 --> R
+  end
+  G1 --> EP1
+  G2 --> EP2
   INT -->|Private service authorization| K
-  N1 & N2 --> R
   JS --> N1 & N2 & R
 ```
 
 The two edge clusters initially model independent failure domains in one region.
+The DNS service runs in its own producer VPC. Both node and regional resolver
+tiers belong to that service VPC; node members run on shared edge capacity,
+not in consumer VPCs. Galactic `ServiceEndpoint` resources select the producer
+listeners. Consumer `ServiceRoutePolicy` resources expose those listeners as
+private endpoints at the well-known resolver address in each consumer VPC.
 Galactic owns VPC authorization and destination translation. The DNS integration
 publishes short-lived access intent through the DNS APIs; DNS workers do not
 watch Galactic resources. Queries carry the authorized service destination to
@@ -128,8 +142,9 @@ intended for staging. Do not mount the Docker socket into those workloads.
    public DNS regression chain in the same qualification job.
 3. **Consumer network path.** Add real Milo project discovery and the DNS
    service managed project, Karmada and edge resource propagation, Galactic
-   VPCs, private service endpoints and route policies, and the trusted access
-   integration. Run Go publisher jobs with product credentials and query from
+   VPCs, the separate producer DNS service VPC, its `ServiceEndpoint` listeners,
+   consumer private endpoints through `ServiceRoutePolicy`, and the trusted
+   access integration. Run Go publisher jobs with product credentials and query from
    attached workloads without manually programming context routes. Also test
    an actual feature-flagged Compute build; a publisher fixture alone does not
    qualify the product integration.
@@ -148,7 +163,8 @@ or not exercised. Do not count a skipped integration as a passing check.
 Required deployment and consumer-path scenarios:
 
 - Overlapping zones, names, and endpoint addresses in two VPCs return distinct
-  answers over UDP and TCP, including positive and negative cache isolation.
+  answers through private endpoints into the same producer DNS service VPC over
+  UDP and TCP, including positive and negative cache isolation.
 - Unauthorized access, forged destinations and PROXYv2 headers, and an expired
   service route cannot return another VPC's records. Product credentials cannot
   issue grants or authorize network access.

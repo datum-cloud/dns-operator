@@ -16,6 +16,10 @@ if [[ -z ${KUBEBUILDER_ASSETS:-} ]]; then
   KUBEBUILDER_ASSETS=$(bin/setup-envtest use "$k8s_version" --bin-dir bin -p path)
   export KUBEBUILDER_ASSETS
 fi
+# go test runs from the package directory, not this script's repository root.
+# setup-envtest can return a relative path when --bin-dir is relative.
+KUBEBUILDER_ASSETS=$(cd "$KUBEBUILDER_ASSETS" && pwd)
+export KUBEBUILDER_ASSETS
 test -x "$KUBEBUILDER_ASSETS/kube-apiserver"
 test -x "$KUBEBUILDER_ASSETS/etcd"
 go test ./internal/internaldns/runtime \

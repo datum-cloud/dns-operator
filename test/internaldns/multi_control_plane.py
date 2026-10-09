@@ -118,6 +118,7 @@ class MultiControlPlaneHarness(single.Harness):
 
     def setup(self) -> None:
         single.require_suite_docker_host()
+        single.require_controller_gen()
         for command in ("docker", "kind", "kubectl", "go", "openssl"):
             if shutil.which(command) is None:
                 raise RuntimeError(f"missing prerequisite: {command}")
@@ -917,8 +918,8 @@ class MultiControlPlaneHarness(single.Harness):
                             "sourceAProbeError": str(error),
                             "sourceBProbe": {"status": "NOERROR", "answers": ["10.20.0.23"]},
                             "composeProcesses": self.compose("ps", "--all", "--format", "json", check=False).stdout,
-                            "nodeDNSDistConfig": (self.runtime / "node-dnsdist.conf").read_text(),
-                            "nodeBINDConfig": (self.runtime / "node-bind.conf").read_text(),
+                            "nodeDNSDistConfig": self.read_runtime("node/node-dnsdist.conf"),
+                            "nodeBINDConfig": self.read_runtime("node/node-bind.conf"),
                         }, indent=2) + "\n")
                     time.sleep(0.5)
                     continue
@@ -989,11 +990,7 @@ class MultiControlPlaneHarness(single.Harness):
         for container in list(self.paused_containers):
             self.run("docker", "unpause", container, check=False)
             self.paused_containers.discard(container)
-        for name in list(self.processes):
-            process = self.processes[name]
-            if process.poll() is None:
-                process.send_signal(signal.SIGCONT)
-            self.stop(name)
+        self.quiesce_workers()
         for container in sorted(self.containers):
             logs = self.run("docker", "logs", container, check=False)
             (self.logs / f"{container}.log").write_text(logs.stdout + logs.stderr)

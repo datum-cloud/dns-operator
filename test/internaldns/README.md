@@ -28,6 +28,7 @@ Every runner requires the suite-owned Colima profile and refuses the default
 Docker context. The wrappers export only this socket:
 
 ```sh
+make controller-gen
 colima --profile internal-dns-e2e start --activate=false
 test/internaldns/run.sh --results test/internaldns/results/bind-e2e-latest.json
 ```
@@ -43,7 +44,10 @@ Each run places active BIND configuration, generated zones, checkpoints, and
 watchdog leases in a unique VM-local `/tmp/datum-internal-dns-run-*` directory.
 This keeps fsync and the five-second fail-closed budget representative of local
 serving storage instead of macOS file sharing. Sanitized copies are returned in
-the result artifact before that VM-local directory is removed.
+the result artifact before that VM-local directory is removed. Evidence capture
+stops the control planes, watchdogs, and agents before archiving the checkpoint
+and runtime directories. The host extracts the archive without container file
+ownership, so snapshot capture also works with macOS file sharing.
 
 The fixture uses a five-second ACK interval and a twenty-second ACK lease so a
 single-node Kind API server can project member status without an artificial

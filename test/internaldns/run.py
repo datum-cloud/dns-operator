@@ -7,6 +7,7 @@ import argparse
 import base64
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import tarfile
 import time
 
 
@@ -42,6 +44,35 @@ def require_suite_docker_host() -> None:
             f"set DOCKER_HOST={expected} after starting "
             f"`colima --profile {profile} start --activate=false` (got {actual or '<unset>'})"
         )
+
+
+def require_controller_gen() -> str:
+    tool = ROOT / "bin/controller-gen"
+    if not tool.is_file() or not os.access(tool, os.X_OK):
+        raise RuntimeError("missing prerequisite: run `make controller-gen` in the DNS Operator repository")
+    return str(tool)
+
+
+def extract_evidence_snapshot(encoded: str, target: Path) -> None:
+    """Write snapshot bytes without importing container ownership or symlinks."""
+    target.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(encoded)), mode="r:gz") as archive:
+        for member in archive.getmembers():
+            relative = Path(member.name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise RuntimeError(f"unsafe evidence archive path: {member.name}")
+            destination = target / relative
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                contents = archive.extractfile(member)
+                if contents is None:
+                    raise RuntimeError(f"missing evidence contents: {member.name}")
+                with contents, destination.open("wb") as output:
+                    shutil.copyfileobj(contents, output)
+            else:
+                raise RuntimeError(f"unsupported evidence archive entry: {member.name}")
 
 
 class Harness:
@@ -91,21 +122,36 @@ class Harness:
             "find /runtime -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cp -a /seed/. /runtime/",
         )
 
+    def read_runtime(self, relative: str) -> str:
+        return self.run("docker", "run", "--rm", "-v", f"{self.runtime_mount}:/runtime:ro", ALPINE_IMAGE, "cat", f"/runtime/{relative}").stdout
+
+    def capture_tree(self, mount: str, target: Path) -> None:
+        # Workers have stopped before this snapshot. Stream one immutable archive
+        # to the host, rather than chown-ing files on the VM's macOS/SSHFS mount.
+        snapshot = self.run(
+            "docker", "run", "--rm", "-v", f"{mount}:/snapshot:ro",
+            ALPINE_IMAGE, "sh", "-ec", "set -o pipefail\ntar -czf - -C /snapshot . | base64",
+        ).stdout
+        extract_evidence_snapshot(snapshot, target)
+
     def capture_runtime(self, target: Path) -> None:
-        target.mkdir(parents=True, exist_ok=True)
-        self.run(
-            "docker", "run", "--rm",
-            "-v", f"{self.runtime_mount}:/runtime:ro", "-v", f"{target.resolve()}:/evidence",
-            ALPINE_IMAGE, "sh", "-ec", "cp -a /runtime/. /evidence/",
-        )
+        self.capture_tree(self.runtime_mount, target)
 
     def capture_state(self, target: Path) -> None:
-        target.mkdir(parents=True, exist_ok=True)
-        self.run(
-            "docker", "run", "--rm",
-            "-v", f"{self.state_mount}:/state:ro", "-v", f"{target.resolve()}:/evidence",
-            ALPINE_IMAGE, "sh", "-ec", "cp -a /state/. /evidence/",
-        )
+        self.capture_tree(self.state_mount, target)
+
+    def quiesce_workers(self) -> None:
+        # Resume paused native controllers before requesting a graceful stop.
+        for name in list(self.processes):
+            process = self.processes[name]
+            if process.poll() is None:
+                process.send_signal(signal.SIGCONT)
+            self.stop(name)
+        # Stop independent watchdogs first so they cannot gate a daemon while
+        # its agent finishes the final checkpoint transaction.
+        ordered = sorted(self.containers, key=lambda name: (not name.endswith("-watchdog"), name))
+        for container in ordered:
+            self.run("docker", "stop", "--time", "8", container)
 
     def cleanup_runtime_mount(self) -> None:
         names = [Path(self.runtime_mount).name, Path(self.state_mount).name]
@@ -211,6 +257,7 @@ class Harness:
 
     def setup(self) -> None:
         require_suite_docker_host()
+        require_controller_gen()
         for command in ("docker", "kind", "kubectl", "go", "openssl"):
             if shutil.which(command) is None:
                 raise RuntimeError(f"missing prerequisite: {command}")
@@ -873,6 +920,7 @@ class Harness:
         return value
 
     def freeze_evidence(self) -> Path:
+        self.quiesce_workers()
         artifact = self.results.with_name(self.results.stem + "-artifacts")
         if artifact.exists():
             shutil.rmtree(artifact)
@@ -895,8 +943,6 @@ class Harness:
         for container in sorted(self.containers):
             logs = self.run("docker", "logs", container, check=False)
             (self.logs / f"{container}.log").write_text(logs.stdout + logs.stderr)
-        for name in list(self.processes):
-            self.stop(name)
         for path in self.logs.glob("*.log"):
             shutil.copy2(path, artifact / "logs" / path.name)
         self.capture_runtime(artifact / "runtime")

@@ -54,6 +54,7 @@ class MultiControlPlaneHarness(single.Harness):
         self.kubeconfig = self.platform_kubeconfig
         self.source_kubeconfigs = {name: self.work / f"{name}-admin.kubeconfig" for name in PROJECTS}
         self.compute_kubeconfigs = {name: self.work / f"{name}-compute.kubeconfig" for name in PROJECTS}
+        self.issuer_kubeconfigs = {name: self.work / f"{name}-grant-issuer.kubeconfig" for name in PROJECTS}
         self.control_configs: dict[str, Path] = {}
         self.topology: dict[str, object] = {}
         self.owner_evidence: dict[str, object] = {}
@@ -84,13 +85,14 @@ class MultiControlPlaneHarness(single.Harness):
         project: str,
         *args: str,
         compute: bool = False,
+        issuer: bool = False,
         check: bool = True,
         stdin: str | None = None,
         timeout: float | None = 30,
     ) -> subprocess.CompletedProcess[str]:
-        config = self.compute_kubeconfigs[project] if compute else self.source_kubeconfigs[project]
+        config = self.issuer_kubeconfigs[project] if issuer else self.compute_kubeconfigs[project] if compute else self.source_kubeconfigs[project]
         command = ["kubectl", "--kubeconfig", str(config)]
-        if not compute:
+        if not compute and not issuer:
             # Multi-project admission deliberately rejects an authenticated
             # caller whose project parent is absent or ambiguous. Exercise the
             # same parent-scoped identity contract for fixture administration;
@@ -106,14 +108,13 @@ class MultiControlPlaneHarness(single.Harness):
         return self.run(*command, *args, check=check, stdin=stdin, timeout=timeout + 5 if timeout else None)
 
     def publisher(self, project: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return self.run(
-            str(HERE / "compute_publisher.py"),
-            "--kubeconfig", str(self.compute_kubeconfigs[project]),
-            "--namespace", PROJECT_NAMESPACE,
-            "--source-cluster-uid", PROJECTS[project]["sourceClusterUID"],
-            *args,
-            check=check,
-        )
+        command = (str(HERE / "compute_publisher.py"), "--kubeconfig", str(self.compute_kubeconfigs[project]), "--namespace", PROJECT_NAMESPACE, "--source-cluster-uid", PROJECTS[project]["sourceClusterUID"])
+        if args and args[0] in ("create", "create-managed"):
+            declaration = self.run(*command, "--declare-only", *args, check=check)
+            if declaration.returncode:
+                return declaration
+            self.issue_grant(self.issuer_kubeconfigs[project], json.loads(declaration.stdout), PROJECTS[project]["sourceClusterUID"])
+        return self.run(*command, *args, check=check)
 
     def setup(self) -> None:
         single.require_suite_docker_host()
@@ -203,8 +204,9 @@ class MultiControlPlaneHarness(single.Harness):
                 "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
                 "metadata": {"name": "compute-dns-publisher", "namespace": PROJECT_NAMESPACE},
                 "rules": [
-                    {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsmanagednamespaces", "dnsresolvercontexts"], "verbs": ["get", "list", "watch"]},
-                    {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsregistrations", "dnscontributiongrants", "dnsrecordcontributions"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+                    {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsresolvercontexts"], "verbs": ["get", "list", "watch"]},
+                    {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsregistrations", "dnsrecordcontributions"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+                    {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnscontributiongrants"], "verbs": ["get", "list", "watch"]},
                     {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsrecordcontributions/status"], "verbs": ["get", "update", "patch"]},
                 ],
             },
@@ -233,6 +235,19 @@ class MultiControlPlaneHarness(single.Harness):
                 "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "compute-dns-parent-impersonation"},
             },
         ]
+        items.extend([
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole", "metadata": {"name": "grant-issuer-parent-impersonation"}, "rules": [
+                {"apiGroups": [""], "resources": ["serviceaccounts"], "resourceNames": ["dns-grant-issuer"], "verbs": ["impersonate"]},
+                {"apiGroups": ["authentication.k8s.io"], "resources": ["userextras/iam.miloapis.com/parent-name"], "resourceNames": [parent], "verbs": ["impersonate"]},
+            ]},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding", "metadata": {"name": "grant-issuer-parent-impersonation"}, "subjects": [{"kind": "ServiceAccount", "name": "dns-grant-issuer", "namespace": "compute-system"}], "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "grant-issuer-parent-impersonation"}},
+            {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "dns-grant-issuer", "namespace": "compute-system"}},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": {"name": "dns-grant-issuer", "namespace": PROJECT_NAMESPACE}, "rules": [
+                {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnsregistrations"], "verbs": ["get", "update"]},
+                {"apiGroups": ["dns.networking.miloapis.com"], "resources": ["dnscontributiongrants"], "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"]},
+            ]},
+            {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": {"name": "dns-grant-issuer", "namespace": PROJECT_NAMESPACE}, "subjects": [{"kind": "ServiceAccount", "name": "dns-grant-issuer", "namespace": "compute-system"}], "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "dns-grant-issuer"}},
+        ])
         self.source_kubectl(project, "apply", "-f", "-", stdin=json.dumps({"apiVersion": "v1", "kind": "List", "items": items}))
         token = self.source_kubectl(project, "-n", "compute-system", "create", "token", "dns-publisher", "--duration=1h").stdout.strip()
         admin = json.loads(self.source_kubectl(project, "config", "view", "--raw", "-o", "json").stdout)
@@ -248,6 +263,11 @@ class MultiControlPlaneHarness(single.Harness):
             }}],
         }
         self.compute_kubeconfigs[project].write_text(json.dumps(config))
+        issuer_token = self.source_kubectl(project, "-n", "compute-system", "create", "token", "dns-grant-issuer", "--duration=1h").stdout.strip()
+        issuer = json.loads(json.dumps(config))
+        issuer["users"][0]["user"]["token"] = issuer_token
+        issuer["users"][0]["user"]["as"] = "system:serviceaccount:compute-system:dns-grant-issuer"
+        self.issuer_kubeconfigs[project].write_text(json.dumps(issuer))
 
     def write_configs(self) -> dict[str, Path]:
         paths = super().write_configs()
@@ -287,6 +307,13 @@ class MultiControlPlaneHarness(single.Harness):
             allowed = self.source_kubectl(project, "auth", "can-i", "create", "dnsrecordcontributions", compute=True).stdout.strip()
             secrets_result = self.source_kubectl(project, "auth", "can-i", "get", "secrets", compute=True, check=False)
             platform_result = self.source_kubectl(project, "auth", "can-i", "create", "dnspublicationmanifests", compute=True, check=False)
+            issuer_impersonation = self.source_kubectl(project, "auth", "can-i", "impersonate", "serviceaccounts/dns-grant-issuer", "-n", "compute-system", compute=True, check=False)
+            if issuer_impersonation.returncode != 1 or issuer_impersonation.stdout.strip() != "no":
+                raise AssertionError("product publisher can impersonate the grant issuer")
+            grant_result = self.source_kubectl(project, "auth", "can-i", "create", "dnscontributiongrants", compute=True, check=False)
+            discovery = self.source_kubectl(project, "auth", "can-i", "list", "dnsresolvercontexts", compute=True).stdout.strip()
+            if grant_result.returncode != 1 or grant_result.stdout.strip() != "no" or discovery != "yes":
+                raise AssertionError("product publisher must discover contexts but cannot issue grants")
             secrets = secrets_result.stdout.strip()
             platform = platform_result.stdout.strip()
             if allowed != "yes" or secrets_result.returncode != 1 or secrets != "no" or platform_result.returncode != 1 or platform != "no":
@@ -597,7 +624,7 @@ class MultiControlPlaneHarness(single.Harness):
                 "recordTypes": ["A"],
             },
         }
-        self.source_kubectl("project-b", "apply", "-f", "-", compute=True, stdin=json.dumps(wrong_grant))
+        self.source_kubectl("project-b", "apply", "-f", "-", issuer=True, stdin=json.dumps(wrong_grant))
 
         def issued():
             grant = json.loads(self.source_kubectl("project-b", "-n", PROJECT_NAMESPACE, "get", "dnscontributiongrant", "cross-project-wrong-principal", "-o", "json").stdout)

@@ -65,6 +65,7 @@ class Harness:
         self.source_hash = ""
         self.qualification_hash = ""
         self.processes: dict[str, subprocess.Popen[str]] = {}
+        self.issuer_kubeconfig = self.work / "grant-issuer.kubeconfig"
         self.containers: set[str] = set()
         for directory in (self.runtime, self.state, self.logs, self.certs):
             directory.mkdir(parents=True, exist_ok=True)
@@ -265,6 +266,10 @@ class Harness:
             "users": [{"name": "compute", "user": {"token": token}}],
         }
         self.compute_kubeconfig.write_text(json.dumps(config))
+        issuer_token = self.kubectl("-n", "compute-system", "create", "token", "dns-grant-issuer", "--duration=1h").stdout.strip()
+        issuer = json.loads(json.dumps(config))
+        issuer["users"][0]["user"] = {"token": issuer_token}
+        self.issuer_kubeconfig.write_text(json.dumps(issuer))
 
     def command(self, role: str, config: Path) -> tuple[str, ...]:
         return (str(self.binary), "--role", role, "--config", str(config), "--kubeconfig", str(self.kubeconfig))
@@ -426,6 +431,11 @@ class Harness:
         ca = base64.b64encode((self.certs / "tls.crt").read_bytes()).decode()
         template = (HERE / "fixtures/validating-webhook.yaml.tmpl").read_text().replace("${CA_BUNDLE}", ca)
         self.kubectl("apply", "-f", "-", stdin=template)
+        denied = self.kubectl("auth", "can-i", "create", "dnscontributiongrants", "-n", PROJECT_NS, compute=True, check=False)
+        discovery = self.kubectl("auth", "can-i", "list", "dnsresolvercontexts", "-n", PROJECT_NS, compute=True).stdout.strip()
+        if denied.returncode != 1 or denied.stdout.strip() != "no" or discovery != "yes":
+            raise AssertionError("product publisher must discover contexts but cannot issue grants")
+        self.pass_check("product discovery and separate grant issuance permissions are enforced")
 
     def create_access(self, context_name: str, address: str, *, lifetime: int = 300) -> dict:
         def issued():
@@ -552,7 +562,23 @@ class Harness:
         return self.wait("short access authorization installed by every serving role", applied, timeout=60)
 
     def publisher(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return self.run(str(HERE / "compute_publisher.py"), "--kubeconfig", str(self.compute_kubeconfig), *args, check=check)
+        command = (str(HERE / "compute_publisher.py"), "--kubeconfig", str(self.compute_kubeconfig))
+        if args and args[0] in ("create", "create-managed"):
+            declaration = self.run(*command, "--declare-only", *args, check=check)
+            if declaration.returncode:
+                return declaration
+            self.issue_grant(self.issuer_kubeconfig, json.loads(declaration.stdout), "internal-dns-e2e-cluster")
+        return self.run(*command, *args, check=check)
+
+    def issue_grant(self, kubeconfig: Path, declaration: dict, cluster_uid: str) -> None:
+        # This fixture issuer checks the API-assigned registration lifetime and
+        # authorizes only the fixed Compute principal, separately from publishing.
+        base = ("kubectl", "--kubeconfig", str(kubeconfig), "-n", PROJECT_NS)
+        registration = json.loads(self.run(*base, "get", "dnsregistration", declaration["registration"]["name"], "-o", "json").stdout)
+        if registration["metadata"]["uid"] != declaration["registration"]["uid"]:
+            raise AssertionError("registration lifetime changed before grant issuance")
+        grant = {"apiVersion": "dns.networking.miloapis.com/v1alpha1", "kind": "DNSContributionGrant", "metadata": {"name": declaration["grantName"]}, "spec": {"registrationRef": declaration["registration"], "producerID": "compute-e2e", "principal": {"clusterUID": cluster_uid, "subject": "system:serviceaccount:compute-system:dns-publisher"}, "recordTypes": registration["spec"]["recordTypes"]}}
+        self.run(*base, "apply", "-f", "-", stdin=json.dumps(grant))
 
     def publish(self, zone: str, prefix: str, record_name: str, address: str, lifetime: int = 90) -> dict:
         obj = json.loads(self.kubectl("-n", PROJECT_NS, "get", "dnszone", zone, "-o", "json").stdout)
@@ -786,7 +812,7 @@ class Harness:
 
         grant_name = b_common["grant"]["name"]
         old_epoch = b_common["grant"]["writerEpoch"]
-        self.kubectl("-n", PROJECT_NS, "patch", "dnscontributiongrant", grant_name, "--type=merge", "-p", '{"spec":{"nameScopes":["common"]}}', compute=True)
+        self.run("kubectl", "--kubeconfig", str(self.issuer_kubeconfig), "-n", PROJECT_NS, "patch", "dnscontributiongrant", grant_name, "--type=merge", "-p", '{"spec":{"nameScopes":["common"]}}')
         self.wait(
             "new grant epoch",
             lambda: (obj := json.loads(self.kubectl("-n", PROJECT_NS, "get", "dnscontributiongrant", grant_name, "-o", "json").stdout))["status"].get("activeWriterEpoch", 0) > old_epoch,

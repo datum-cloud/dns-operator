@@ -18,10 +18,11 @@ CLUSTER_UID = "internal-dns-e2e-cluster"
 
 class Publisher:
     def __init__(self, kubeconfig: str, namespace: str, source_cluster_uid: str = CLUSTER_UID,
-                 status_timeout: float = 30):
+                 status_timeout: float = 30, declare_only: bool = False):
         self.base = ["kubectl", "--kubeconfig", kubeconfig, "-n", namespace]
         self.source_cluster_uid = source_cluster_uid
         self.status_timeout = status_timeout
+        self.declare_only = declare_only
 
     def kubectl(self, *args: str, stdin: str | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
         process = subprocess.run([*self.base, *args], input=stdin, text=True, capture_output=True)
@@ -86,19 +87,12 @@ class Publisher:
             "uid": registration["metadata"]["uid"],
             "generation": registration["metadata"]["generation"],
         }
-        grant = self.apply(
-            {
-                "apiVersion": GROUP_VERSION,
-                "kind": "DNSContributionGrant",
-                "metadata": {"name": f"{prefix}-compute"},
-                "spec": {
-                    "registrationRef": reg_ref,
-                    "producerID": "compute-e2e",
-                    "principal": {"clusterUID": self.source_cluster_uid, "subject": SUBJECT},
-                    "recordTypes": record_types,
-                },
-            }
-        )
+        grant_name = f"{prefix}-compute"
+        if self.declare_only:
+            return {"registration": reg_ref, "grantName": grant_name}
+        # The trusted issuer runs separately with its own scoped credential.
+        # Product publishers can read grants but cannot create or renew authority.
+        grant = self.get("dnscontributiongrant", grant_name)
         writer_epoch = int(self.wait_status("dnscontributiongrant", grant["metadata"]["name"], ["status", "activeWriterEpoch"]))
         contribution = self.apply(
             {
@@ -195,6 +189,7 @@ def main() -> int:
     parser.add_argument("--namespace", default="project-e2e")
     parser.add_argument("--source-cluster-uid", default=CLUSTER_UID)
     parser.add_argument("--status-timeout", type=float, default=30)
+    parser.add_argument("--declare-only", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("create")
     create.add_argument("--zone", required=True)
@@ -229,7 +224,7 @@ def main() -> int:
     delete.add_argument("--name", required=True)
     args = parser.parse_args()
 
-    publisher = Publisher(args.kubeconfig, args.namespace, args.source_cluster_uid, args.status_timeout)
+    publisher = Publisher(args.kubeconfig, args.namespace, args.source_cluster_uid, args.status_timeout, args.declare_only)
     if args.command == "create":
         result = publisher.create(
             {"name": args.zone, "uid": args.zone_uid, "generation": args.zone_generation},

@@ -72,7 +72,7 @@ written under `test/internaldns/results/` and remain untracked.
   processes over UDP and TCP;
 - NXDOMAIN and NODATA cache isolation, plus two private zones in one context;
 - managed namespace discovery and scoped Compute publication without a zone
-  argument;
+  argument, with a separately authenticated grant issuer;
 - record update and delete, stale registration generation rejection, retired
   grant epoch rejection, health withdrawal, and health recovery;
 - original record expiry enforced locally during a NATS outage;
@@ -129,3 +129,11 @@ checkpoint upgrade, long-term checkpoint retention, backup/restore, or NATS
 stream migration. The fixture ACK cadence qualifies freshness and failure
 semantics under this workload, not fleet-scale ACK or Kubernetes API capacity.
 
+
+The publisher fixture creates registrations and contributions with its product
+credential. The harness uses a separate, scoped issuer credential to authorize
+the fixed Compute principal before publication. Product credentials cannot
+create grants, modify grant status, or impersonate the issuer. The control-plane
+processes still use administrator source clients in this distributed lab; the
+packaged worker permissions are checked separately with the Kubernetes RBAC
+authorizer in `TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries`.

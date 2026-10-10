@@ -114,10 +114,9 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 			}
 			continue
 		}
-		consumerToken := model.OpaqueToken(string(m.Spec.VPCRef.UID))
 		lifetimeToken := model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
 
-		suffix := canonicalName(consumerToken + "." + m.Spec.DomainSuffix)
+		suffix := canonicalName(m.Spec.DomainSuffix)
 		zoneName := "managed-" + lifetimeToken[:12]
 		zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: m.Spec.DNSZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 		if r.Scheme != nil {

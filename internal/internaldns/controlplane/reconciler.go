@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const defaultManagedDomainSuffix = "datum.internal"
+
 type ReconcilerOptions struct {
 	ProjectUID           types.UID
 	SourceClusterUID     string
@@ -50,6 +52,9 @@ type AddressAllocator interface {
 }
 
 func (o *ReconcilerOptions) defaults() {
+	if o.ManagedDomainSuffix == "" {
+		o.ManagedDomainSuffix = defaultManagedDomainSuffix
+	}
 	if o.PlatformNamespace == "" {
 		o.PlatformNamespace = "internal-dns-system"
 	}

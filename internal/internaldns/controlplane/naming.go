@@ -38,8 +38,7 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 		m := &managed.Items[i]
 		accepted := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted)
 		if m.Spec.ProjectUID == projectUID && m.Spec.VPCRef.UID == vpcUID && accepted != nil && accepted.Status == metav1.ConditionTrue {
-			prefix := classPrefix(class)
-			out = append(out, ResolvedName{DNSZoneRef: m.Status.DNSZoneRef, Name: label + "." + prefix, Canonical: true})
+			out = append(out, ResolvedName{DNSZoneRef: m.Status.DNSZoneRef, Name: label, Canonical: true})
 			break
 		}
 	}
@@ -71,14 +70,6 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	return out, nil
 }
 
-func classPrefix(class dnsv1alpha1.DNSRegistrationClass) string {
-	switch class {
-	case dnsv1alpha1.DNSRegistrationClassInstanceIdentity:
-		return "instances"
-	default:
-		return "services"
-	}
-}
 func dnsLabel(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	var b strings.Builder

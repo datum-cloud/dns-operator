@@ -114,10 +114,9 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 			}
 			continue
 		}
-		consumerToken := model.OpaqueToken(string(m.Spec.VPCRef.UID))
 		lifetimeToken := model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
 
-		suffix := canonicalName(consumerToken + "." + m.Spec.DomainSuffix)
+		suffix := canonicalName(m.Spec.DomainSuffix)
 		zoneName := "managed-" + lifetimeToken[:12]
 		zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: m.Spec.DNSZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 		if r.Scheme != nil {
@@ -155,7 +154,7 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 		}
 		base := m.DeepCopy()
 		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, dnsValueAccepted)
-		ready := accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
+		ready := zone.Spec.DomainName == suffix && metav1.IsControlledBy(zone, m) && accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
 		if ready {
 			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}
 			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{Name: assoc.Name, UID: assoc.UID}

@@ -154,7 +154,7 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 		}
 		base := m.DeepCopy()
 		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, dnsValueAccepted)
-		ready := accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
+		ready := zone.Spec.DomainName == suffix && metav1.IsControlledBy(zone, m) && accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
 		if ready {
 			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}
 			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{Name: assoc.Name, UID: assoc.UID}

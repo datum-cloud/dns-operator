@@ -82,4 +82,23 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	if contexts.Items[0].Status.ManagedNamespace.DNSZoneRef.UID == contexts.Items[1].Status.ManagedNamespace.DNSZoneRef.UID {
 		t.Fatal("contexts share a zone lifetime")
 	}
+	zone := &zones.Items[0]
+	zone.Spec.DomainName = "different.internal"
+	if err := c.Update(ctx, zone); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileManagedNamespaces(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.List(ctx, &contexts); err != nil {
+		t.Fatal(err)
+	}
+	for _, resolver := range contexts.Items {
+		if resolver.Status.ManagedNamespace.DNSZoneRef.UID == zone.UID {
+			t.Fatal("a mismatched zone domain remained allocated")
+		}
+	}
 }

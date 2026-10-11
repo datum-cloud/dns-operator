@@ -62,8 +62,9 @@ withdraw endpoints that are no longer eligible.
 
 ## Proposal
 
-Trusted VPC integration provisions a DNS context and regional resolver access.
-DNS allocates a managed namespace, accepts explicit custom zone associations,
+Network services selects the default VPC domain, `datum.internal`, and provisions
+a DNS context and regional resolver access. DNS allocates the requested managed
+namespace, accepts explicit custom zone associations,
 and compiles product publications into private serving state. Consumers use a
 stable resolver address in their VPC while the platform selects shared capacity.
 
@@ -253,8 +254,9 @@ resolver access. Consumer references stay within a project.
 
 #### Context and regional access
 
-VPC integration creates an opaque DNS scope. DNS does not dereference the
-`consumerID` or watch a networking resource.
+Network services creates an opaque DNS scope and requests its managed domain.
+DNS does not dereference the `consumerID` or watch a networking resource. Other
+trusted integrations can request a different domain through the same contract.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -267,13 +269,15 @@ spec:
   # Allocate a default private namespace without asking users to choose a zone.
   managedNamespace:
     enabled: true
+    # Consumer integration policy selects the apex; it is immutable in this context.
+    domainSuffix: datum.internal
 status:
   # DNS-owned output; publishers use this allocated zone and suffix.
   managedNamespace:
     dnsZoneRef:
       name: managed-application
       uid: 44444444-4444-4444-8444-444444444444
-    suffix: vpc-a7c9.project-p4e2.internal
+    suffix: datum.internal
   # DNS-owned fencing epoch for trusted access authorization.
   accessWriterEpoch: 3
   # Regional assignments do not move this object out of the project API.
@@ -372,7 +376,8 @@ independent zones with the same apex. Static records have no health lease.
 
 #### Automatic naming and additional names
 
-DNS allocates the managed zone and exposes it in context status. A naming policy
+DNS allocates the requested managed zone and exposes its zone reference and
+suffix in context status. Product publishers use these outputs. A naming policy
 adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml
@@ -422,7 +427,7 @@ spec:
     name: managed-application
     uid: 44444444-4444-4444-8444-444444444444
   # Reserve this relative owner name, rather than one particular IP address.
-  name: web-01.instances
+  name: web-01
   # Constrain which record types contributions can populate.
   recordTypes: [A, AAAA]
   # Publish only contributions with a current eligible observation.
@@ -433,7 +438,7 @@ spec:
   reservedDescendants: []
 status:
   # DNS-owned output for product status and consumer display.
-  canonicalFQDN: web-01.instances.vpc-a7c9.project-p4e2.internal
+  canonicalFQDN: web-01.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSContributionGrant
@@ -453,7 +458,7 @@ spec:
     subject: system:serviceaccount:compute-system:dns-publisher
   # Scope the writer to these types and owner names.
   recordTypes: [A, AAAA]
-  nameScopes: [web-01.instances]
+  nameScopes: [web-01]
 status:
   # DNS allocates the epoch; the producer cannot choose its own fencing token.
   activeWriterEpoch: 3
@@ -480,13 +485,13 @@ spec:
   recordSets:
     - recordType: A
       records:
-        - name: web-01.instances
+        - name: web-01
           ttl: 30
           a:
             content: 10.20.0.10
     - recordType: AAAA
       records:
-        - name: web-01.instances
+        - name: web-01
           ttl: 30
           aaaa:
             content: fd20::10

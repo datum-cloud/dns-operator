@@ -247,10 +247,11 @@ are not fields consumers submit when creating resources.
 
 #### Ownership and validation
 
-Admission pins reference UIDs and publication policy generations, authenticates
-project and source-cluster identity, and enforces field ownership, including
-shared status fields. Publishers cannot grant themselves rights or authorize
-resolver access. Consumer references stay within a project.
+Customers select zones and contexts by name within their project namespace. DNS
+resolves these references and retains their UIDs in controller-owned status.
+Internal publication and access contracts pin UIDs and policy generations.
+Admission authenticates writers and enforces field ownership. Publishers cannot
+grant themselves rights or authorize resolver access.
 
 #### Context and regional access
 
@@ -343,14 +344,12 @@ kind: DNSZoneAssociation
 metadata:
   name: production-application
 spec:
-  # Both objects belong to this project. Pin each object's lifetime.
+  # Select the zone by name within this project namespace.
   dnsZoneRef:
     name: production
-    uid: 88888888-8888-4888-8888-888888888888
   # DNS consumes a context reference, not a VPC reference.
   resolverContextRef:
     name: application
-    uid: 33333333-3333-4333-8333-333333333333
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordSet
@@ -368,6 +367,10 @@ spec:
       a:
         content: 10.20.0.50
 ```
+
+DNS pins each association's resolved zone and context lifetimes. A replacement
+with the same name does not inherit the association; recreate the association
+to attach it. Customers cannot change the resolved identities in status.
 
 A context can use several zones. Reject duplicate apexes within a context and
 conflicts between static records and reserved names. Select parent and child
@@ -389,23 +392,22 @@ spec:
   # Apply naming rules to this DNS scope.
   resolverContextRef:
     name: application
-    uid: 33333333-3333-4333-8333-333333333333
   additionalNames:
     # Add instance identity names, such as web-01.instances.prod.internal.
     - registrationClass: InstanceIdentity
       dnsZoneRef:
         name: production
-        uid: 88888888-8888-4888-8888-888888888888
       namePrefix: instances
     # Add discovery names, such as api.services.prod.internal.
     - registrationClass: ServiceDiscovery
       dnsZoneRef:
         name: production
-        uid: 88888888-8888-4888-8888-888888888888
       namePrefix: services
 ```
 
-Every target zone must be associated with the context. The proposed classes are
+Every target zone must be associated with the context. DNS retains the policy's
+resolved lifetimes; recreate the policy to use a replacement zone or context
+with the same name. The proposed classes are
 `InstanceIdentity`, `ServiceDiscovery`, `ServiceVIP`, and `ServiceExport`.
 Product integrations apply the appropriate rule when reserving names. DNS does
 not inspect the underlying product resource to determine its class.

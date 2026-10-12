@@ -8,7 +8,7 @@ package v1alpha1
 
 import (
 	"go.datum.net/network-services-operator/api/v1alpha"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -1417,6 +1417,13 @@ func (in *DNSResolverBindingConfiguration) DeepCopyInto(out *DNSResolverBindingC
 		in, out := &in.ZoneRefs, &out.ZoneRefs
 		*out = make([]DNSObjectReference, len(*in))
 		copy(*out, *in)
+	}
+	if in.ZoneApices != nil {
+		in, out := &in.ZoneApices, &out.ZoneApices
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
 	}
 }
 

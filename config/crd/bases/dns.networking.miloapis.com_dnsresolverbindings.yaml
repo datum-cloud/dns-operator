@@ -124,6 +124,13 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
+                  zoneApices:
+                    additionalProperties:
+                      type: string
+                    description: ZoneApices reserves each private namespace before
+                      publication is available.
+                    maxProperties: 256
+                    type: object
                   zoneRefs:
                     items:
                       description: |-

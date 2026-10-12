@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"time"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,13 +49,13 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, vpcUID types.UID) 
 // destination across every project sharing this platform control plane. Claims
 // are retained after revocation so a stale route cannot become valid for a new
 // context lifetime.
-func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, accessUID types.UID, region, address string, port int32) error {
+func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
-	if err != nil || parsed.IsUnspecified() || projectUID == "" || accessUID == "" || region == "" || port != 53 {
+	if err != nil || parsed.IsUnspecified() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
 		return fmt.Errorf("destination claim identity, region, IP, and DNS port are required")
 	}
 	address = parsed.String()
-	owner := string(projectUID) + "/" + string(accessUID)
+	owner := string(projectUID) + "/" + string(contextUID)
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
 	if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
 		var existing corev1.ConfigMap
@@ -62,6 +63,21 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, accessUID 
 			return err
 		}
 		if existing.Data["owner"] != owner || existing.Data["region"] != region || existing.Data["address"] != address || existing.Data["port"] != fmt.Sprint(port) {
+			var bindings dnsv1alpha1.DNSResolverBindingList
+			if err := a.Client.List(ctx, &bindings, client.InNamespace(a.Namespace)); err != nil {
+				return err
+			}
+			for _, binding := range bindings.Items {
+				b := binding.Spec
+				if b.Source.ProjectUID == projectUID && b.Source.ResolverContextRef.UID == contextUID &&
+					b.Source.AccessBindingRef.UID != "" && existing.Data["owner"] == string(projectUID)+"/"+string(b.Source.AccessBindingRef.UID) &&
+					b.Placement.Region == region && b.Configuration.Listeners.Node.Address == address && b.Configuration.Listeners.Node.Port == port &&
+					existing.Data["region"] == region && existing.Data["address"] == address && existing.Data["port"] == fmt.Sprint(port) {
+					base := existing.DeepCopy()
+					existing.Data["owner"] = owner
+					return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+				}
+			}
 			return fmt.Errorf("service destination is already reserved")
 		}
 		return nil

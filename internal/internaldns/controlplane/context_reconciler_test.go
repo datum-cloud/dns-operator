@@ -284,3 +284,15 @@ func TestStableOneShardPerRegionAssignment(t *testing.T) {
 		t.Fatalf("adding a shard moved live VPC: before=%s after=%s", central.Shard, after[0].Shard)
 	}
 }
+
+func TestAccessPlacementMatchesContextPublicationTargets(t *testing.T) {
+	r := &Reconciler{Options: ReconcilerOptions{ProjectUID: "project", ServingRegions: []ServingRegion{{Region: "east", Shard: "a"}, {Region: "east", Shard: "b"}, {Region: "west", Shard: "a"}}}}
+	for i := range 100 {
+		uid := types.UID(fmt.Sprintf("context-%d", i))
+		for _, target := range r.selectServingTargets(uid, nil) {
+			if shard := r.shardForContextRegion(uid, target.Region, nil); shard != target.Shard {
+				t.Fatalf("binding shard %s does not match publication target %s", shard, target.Shard)
+			}
+		}
+	}
+}

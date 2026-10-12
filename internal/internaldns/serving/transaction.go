@@ -44,6 +44,11 @@ type FileTransaction struct {
 	Config TransactionConfig
 	Runner Runner
 }
+
+type preservedTransactionError struct{ error }
+
+func (e preservedTransactionError) Unwrap() error { return e.error }
+
 type oldFile struct {
 	data    []byte
 	mode    os.FileMode
@@ -147,7 +152,7 @@ func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, for
 		commandChanges = nil
 	}
 	if err := t.commandsForChanges(ctx, t.Config.Validate, map[string]string{"{stageDir}": commandStage}, commandChanges); err != nil {
-		return fmt.Errorf("validate staged serving configuration: %w", err)
+		return preservedTransactionError{fmt.Errorf("validate staged serving configuration: %w", err)}
 	}
 	installed := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -176,6 +181,9 @@ func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, for
 	if err := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges); err != nil {
 		rollbackErr := restoreFiles(paths, old)
 		reloadErr := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges)
+		if rollbackErr == nil && reloadErr == nil {
+			return preservedTransactionError{fmt.Errorf("reload serving configuration: %w", err)}
+		}
 		return errors.Join(fmt.Errorf("reload serving configuration: %w", err), rollbackErr, reloadErr)
 	}
 	return nil

@@ -193,6 +193,8 @@ type Agent struct {
 	tx                    FileTransaction
 	publicationVerifier   PublicationVerifier
 	mu                    sync.Mutex
+	healthMu              sync.Mutex
+	healthEnabled         bool
 	state                 checkpoint
 	needsActivation       bool
 	lastServingAck        map[string]servingAckState
@@ -267,7 +269,11 @@ func (a *Agent) Start(ctx context.Context) error {
 	// still serves it, so force one validated apply before renewing the lease.
 	a.mu.Lock()
 	a.needsActivation = true
+	if err := a.restoreActive(ctx); err != nil {
+		a.report(err)
+	}
 	a.mu.Unlock()
+	go a.runActiveHealth(ctx)
 	for {
 		err := a.bootstrapAndStep(ctx)
 		if err == nil {
@@ -320,6 +326,7 @@ func (a *Agent) Start(ctx context.Context) error {
 }
 
 func (a *Agent) failClosed(ctx context.Context) error {
+	a.suspendActiveHealth()
 	a.needsActivation = true
 	// Invalidate independent watchdog readiness immediately, even if the daemon
 	// gate command itself fails. It must never inherit a prior healthy lease.
@@ -476,7 +483,7 @@ func (a *Agent) Handle(ctx context.Context, env model.Envelope) error {
 	case model.KindPublicationManifest:
 
 		if err := a.handleManifest(ctx, env); err != nil {
-			_ = a.failClosed(ctx)
+			a.gateRejectedUpdate(ctx, err)
 			return err
 		}
 		return a.finishEvent(ctx)
@@ -847,13 +854,13 @@ func (a *Agent) Step(ctx context.Context) error {
 	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {
-			_ = a.failClosed(ctx)
+			a.gateRejectedUpdate(ctx, err)
 			return err
 		}
 	}
 	if a.cfg.Mode == ModeCombined {
 		if err := a.retryPendingPublications(ctx); err != nil {
-			_ = a.failClosed(ctx)
+			a.gateRejectedUpdate(ctx, err)
 			return err
 		}
 		if a.needsActivation || len(a.installedPublications) == 0 {
@@ -893,7 +900,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	filtered := *a.state.Snapshot
 	filtered.Bindings = nil
 	for _, b := range a.state.Snapshot.Bindings {
-		eligible := !b.Tombstone && a.publicationsReady(b)
+		eligible := !b.Tombstone && !b.ConfigurationPending
 		if eligible {
 			active[b.BindingUID] = true
 		}
@@ -903,8 +910,17 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	}
 	renderConfig := a.cfg.Render
 	renderConfig.ReadyMembers = map[string]map[string]bool{}
+	renderConfig.ReadyZoneMembers = map[string]map[string]map[string]bool{}
 	for _, binding := range filtered.Bindings {
-		renderConfig.ReadyMembers[binding.BindingUID] = a.eligibleRegionalMembers(binding)
+		public := binding
+		public.Zones = nil
+		renderConfig.ReadyMembers[binding.BindingUID] = a.eligibleRegionalMembers(public)
+		renderConfig.ReadyZoneMembers[binding.BindingUID] = map[string]map[string]bool{}
+		for _, zone := range binding.Zones {
+			private := binding
+			private.Zones = []model.ZoneAttachment{zone}
+			renderConfig.ReadyZoneMembers[binding.BindingUID][zone.ZoneUID] = a.eligibleRegionalMembers(private)
+		}
 	}
 	rendered, err := renderPublications(renderConfig, filtered, active, a.state.Publications)
 	if err != nil {
@@ -912,6 +928,13 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	}
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
+		if !a.canRetainActive() {
+			a.suspendActiveHealth()
+			a.state.Active = nil
+			if err := a.store.Save(a.state); err != nil {
+				return err
+			}
+		}
 		var err error
 		if a.needsActivation {
 			err = a.tx.ApplyForce(ctx, rendered.Files)
@@ -919,7 +942,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			err = a.tx.Apply(ctx, rendered.Files)
 		}
 		if err != nil {
-			_ = a.failClosed(ctx)
+			a.gateRejectedUpdate(ctx, err)
 			return err
 		}
 		a.state.RenderedHash = hash
@@ -959,10 +982,14 @@ func (a *Agent) reconcile(ctx context.Context) error {
 				return err
 			}
 			a.state.RenderedHash = gatedHash
+			rendered = gated
 			if err := a.store.Save(a.state); err != nil {
 				return err
 			}
 		}
+	}
+	if err := a.approveConfiguration(rendered.Files); err != nil {
+		return err
 	}
 	// Local DNS proof renews the watchdog independently of broker acknowledgements.
 	if a.cfg.Mode == ModeResolver {
@@ -975,7 +1002,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			continue
 		}
 		p := model.AckVerified
-		if !active[b.BindingUID] {
+		if !active[b.BindingUID] || !a.publicationsReady(b) {
 			p = model.AckApplied
 		}
 		if err := a.emitServingAck(ctx, b, p); err != nil {
@@ -1002,6 +1029,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	eligible := make([]model.Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		if active[binding.BindingUID] {
+			binding.Zones = a.readyZones(binding)
 			eligible = append(eligible, binding)
 		}
 	}
@@ -1080,7 +1108,7 @@ func (a *Agent) publicationsReady(b model.Binding) bool {
 	if a.cfg.Mode == ModeCombined {
 		for _, z := range b.Zones {
 			p, ok := a.state.Publications[z.ZoneUID]
-			if !ok || !p.Verified || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
+			if z.Pending || !ok || !p.Verified || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
 				return false
 			}
 		}
@@ -1109,7 +1137,7 @@ func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 		ready := true
 		for _, z := range b.Zones {
 			p, ok := a.state.Publications[z.ZoneUID]
-			if !ok || !p.Verified || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
+			if z.Pending || !ok || !p.Verified || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
 				ready = false
 				break
 			}
@@ -1129,6 +1157,18 @@ func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 		}
 	}
 	return out
+}
+
+func (a *Agent) readyZones(b model.Binding) []model.ZoneAttachment {
+	var ready []model.ZoneAttachment
+	for _, zone := range b.Zones {
+		candidate := b
+		candidate.Zones = []model.ZoneAttachment{zone}
+		if len(a.eligibleRegionalMembers(candidate)) > 0 {
+			ready = append(ready, zone)
+		}
+	}
+	return ready
 }
 
 func (a *Agent) verifyPublication(ctx context.Context, p publicationState) error {
@@ -1162,7 +1202,7 @@ func (a *Agent) publicationViewsAt(p publicationState) []PublicationView {
 			continue
 		}
 		for _, z := range b.Zones {
-			if z.ZoneUID == p.Plan.ZoneUID && model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) >= 0 {
+			if !z.Pending && z.ZoneUID == p.Plan.ZoneUID && model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) >= 0 {
 				out = append(out, PublicationView{View: b.ViewName(), DestinationAddress: b.ClusterAddress, DestinationPort: b.Port, Serial: publicationSerial(p), FingerprintMailbox: publicationMailbox(p)})
 			}
 		}
@@ -1450,6 +1490,10 @@ func (a *Agent) renewWatchdogLease(ctx context.Context) error {
 	if a.cfg.WatchdogLeasePath == "" {
 		return nil
 	}
+	return a.writeWatchdogLease()
+}
+
+func (a *Agent) writeWatchdogLease() error {
 	lease := a.cfg.WatchdogLease
 	if lease <= 0 {
 		lease = 5 * time.Second

@@ -108,12 +108,11 @@ from persistent checkpoints before waiting for messaging connectivity. New
 nodes require a complete configuration before accepting queries. Replay cannot
 regress writer or configuration versions or restore a withdrawn lifetime.
 
-The local watchdog lease is at most five seconds. It is renewed only after a
-complete validated transaction and required DNS proofs.
-The gate must stop or firewall the local private listener without depending on
-Kubernetes or NATS. Validation, reload, readiness wait, and proof must fit
-inside the watchdog budget; reduce shard size or improve local operations when
-they do not.
+The local watchdog lease is at most five seconds. An independent health loop
+checks local DNS daemons over UDP and TCP and renews the lease for the activated
+configuration. Staging and validation can continue while that configuration
+serves. A rejected expansion retains the activated configuration; a withdrawal
+that cannot be applied gates serving. The gate runs without Kubernetes or NATS.
 
 Mount the transaction stage, active BIND configuration, zone files, checkpoint,
 and watchdog lease on low-latency storage local to the serving host. Do not put
@@ -163,8 +162,24 @@ contribution and eligibility observation use that publisher's current grant.
 Grants identify the authenticated subject within the project API context.
 Publication-result updates cannot change a publisher's
 observation. Resource permissions do not depend on webhook principal lists.
-The supported internal envelope version is `v1alpha4` and the serving checkpoint
-format is 5. Unsupported versions fail closed. Deploy matching controller and
-fleet versions with fresh internal DNS transport state and checkpoints. Preserve
-any existing state for recovery. The deployment requires a coordinated rollout;
-it does not support mixed versions or automatic state conversion.
+## Rollout and recovery
+
+The supported envelope version is `v1alpha4` and checkpoint format is 5. Keep
+transport state and persistent checkpoints across compatible upgrades. Deploy
+serving agents before controllers that emit per-zone pending state. Enable the
+controller change after every serving member supports that contract; a matching
+wire version alone does not establish feature compatibility.
+
+The checkpoint retains desired version fences and the activated configuration
+separately. Restart can restore the activated configuration during a rejected
+expansion or broker outage. Explicit withdrawal invalidates that fallback before
+installation. Unknown checkpoint or wire formats preserve files and reject
+activation. Format conversion requires a tested migration that retains lifetime,
+withdrawal, configuration, and publisher fences; never reset those fences to
+complete an upgrade.
+
+Snapshot budgets admit established bindings before new allocations. Overflow
+reports `CapacityAvailable=False` for the affected binding while healthy
+contexts and withdrawals continue. A pending zone fails only queries beneath
+its private apex; its names never fall through to public recursion. Bindings,
+publication targets, and context status use the same stable shard assignment.

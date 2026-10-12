@@ -22,8 +22,6 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.update
     - dns.networking.miloapis.com/dnszonediscoveries.patch
     - dns.networking.miloapis.com/dnszonediscoveries.delete
-
-
     - dns.networking.miloapis.com/dnszoneassociations.create
     - dns.networking.miloapis.com/dnszoneassociations.update
     - dns.networking.miloapis.com/dnszoneassociations.patch

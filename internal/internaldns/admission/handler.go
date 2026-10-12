@@ -22,6 +22,8 @@ import (
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+const contributionResource = "dnsrecordcontributions"
+
 const Path = "/validate-internal-dns"
 
 // Handler uses an uncached project client for grant and registration lookups.
@@ -48,11 +50,11 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Operation == admissionv1.Delete {
 		return kubeadmission.Allowed("API server authorization applies")
 	}
-	if req.SubResource == "status" && req.Resource.Resource != "dnsrecordcontributions" {
+	if req.SubResource == "status" && req.Resource.Resource != contributionResource {
 		return kubeadmission.Allowed("API server status authorization applies")
 	}
 	switch req.Resource.Resource {
-	case "dnsregistrations", "dnsrecordcontributions", "dnscontributiongrants", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
+	case "dnsregistrations", contributionResource, "dnscontributiongrants", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
 		// These resources require live references or bounded freshness checks.
 	default:
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
@@ -74,7 +76,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		err = h.resolverAccess(ctx, cl, req)
 	case "dnsregistrations":
 		err = h.registration(ctx, cl, req)
-	case "dnsrecordcontributions":
+	case contributionResource:
 		err = h.contribution(ctx, cl, clusterUID, req)
 	case "dnscontributiongrants":
 		err = h.grant(ctx, cl, req)

@@ -94,7 +94,7 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
-	if err := a.admin.Create(s.ctx, apps); err != nil {
+	if err := a.customer.Create(s.ctx, apps); err != nil {
 		return err
 	}
 	if err := s.associate(a, apps, "apps"); err != nil {

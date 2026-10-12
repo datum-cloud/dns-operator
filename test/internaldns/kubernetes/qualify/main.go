@@ -32,20 +32,20 @@ import (
 )
 
 type project struct {
-	Name                                string `json:"name"`
-	ProjectUID                          string `json:"projectUID"`
-	SourceClusterUID                    string `json:"sourceClusterUID"`
-	Namespace                           string `json:"namespace"`
-	AdminKubeconfig                     string `json:"adminKubeconfig"`
-	ProductKubeconfig                   string `json:"productKubeconfig"`
-	IssuerKubeconfig                    string `json:"issuerKubeconfig"`
-	IntegrationKubeconfig               string `json:"integrationKubeconfig"`
-	PublisherSubject                    string `json:"publisherSubject"`
-	ConsumerAddress                     string `json:"consumerAddress"`
-	admin, product, issuer, integration client.Client
-	resolverContext                     dnsv1.DNSResolverContext
-	zone                                dnsv1.DNSZone
-	access                              dnsv1.DNSResolverAccessBinding
+	Name                                   string `json:"name"`
+	ProjectUID                             string `json:"projectUID"`
+	SourceClusterUID                       string `json:"sourceClusterUID"`
+	Namespace                              string `json:"namespace"`
+	CustomerKubeconfig                     string `json:"customerKubeconfig"`
+	ProductKubeconfig                      string `json:"productKubeconfig"`
+	IssuerKubeconfig                       string `json:"issuerKubeconfig"`
+	IntegrationKubeconfig                  string `json:"integrationKubeconfig"`
+	PublisherSubject                       string `json:"publisherSubject"`
+	ConsumerAddress                        string `json:"consumerAddress"`
+	customer, product, issuer, integration client.Client
+	resolverContext                        dnsv1.DNSResolverContext
+	zone                                   dnsv1.DNSZone
+	access                                 dnsv1.DNSResolverAccessBinding
 }
 
 type environment struct {
@@ -260,7 +260,7 @@ func (s *suite) run(path string) error {
 			path   string
 			target *client.Client
 		}{
-			{p.AdminKubeconfig, &p.admin}, {p.ProductKubeconfig, &p.product},
+			{p.CustomerKubeconfig, &p.customer}, {p.ProductKubeconfig, &p.product},
 			{p.IssuerKubeconfig, &p.issuer}, {p.IntegrationKubeconfig, &p.integration},
 		} {
 			*pair.target, err = newClient(pair.path)
@@ -337,7 +337,7 @@ func (s *suite) prepare(p *project) error {
 	}
 	s.pass(p.Name+" product discovers its managed namespace through the context API", p.resolverContext.Status.ManagedNamespace)
 	p.zone = dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: p.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "prod.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
-	if err := p.admin.Create(s.ctx, &p.zone); err != nil {
+	if err := p.customer.Create(s.ctx, &p.zone); err != nil {
 		return err
 	}
 	if err := s.associate(p, &p.zone, "prod"); err != nil {
@@ -360,11 +360,11 @@ func (s *suite) prepare(p *project) error {
 
 func (s *suite) associate(p *project, zone *dnsv1.DNSZone, name string) error {
 	association := &dnsv1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace}, Spec: dnsv1.DNSZoneAssociationSpec{DNSZoneRef: objectRef(zone), ResolverContextRef: objectRef(&p.resolverContext)}}
-	if err := p.admin.Create(s.ctx, association); err != nil {
+	if err := p.customer.Create(s.ctx, association); err != nil {
 		return err
 	}
 	return s.wait("private zone association "+p.Name+"/"+name, 60*time.Second, func() (bool, error) {
-		err := p.admin.Get(s.ctx, client.ObjectKeyFromObject(association), association)
+		err := p.customer.Get(s.ctx, client.ObjectKeyFromObject(association), association)
 		return condition(association.Status.Conditions, "Accepted", association.Generation), err
 	})
 }

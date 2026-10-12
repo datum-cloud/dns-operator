@@ -262,7 +262,7 @@ func sourceObjects(project string) []object {
 	worker["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
 	worker["subjects"] = []object{{"kind": "ServiceAccount", "name": "internal-dns-control-plane", "namespace": ns}}
 	items = append(items, worker)
-	accounts := []struct{ name, namespace, role string }{{"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-grant-issuer", "compute-system", "internal-dns-grant-issuer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
+	accounts := []struct{ name, namespace, role string }{{"dns-customer", projectNS, "internal-dns-customer"}, {"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-grant-issuer", "compute-system", "internal-dns-grant-issuer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
 	for _, account := range accounts {
 		if account.role != "" {
 			items = append(items, obj("v1", "ServiceAccount", account.name, account.namespace))
@@ -380,10 +380,11 @@ func configure() {
 		admin := []string{a, b}[i]
 		internal := []string{ai, bi}[i]
 		sourceData[project+".json"] = string(tokenConfig(admin, internal, project, "internal-dns-control-plane", ns, "worker"))
+		tokenConfig(admin, "", project, "dns-customer", projectNS, "customer")
 		tokenConfig(admin, "", project, "dns-publisher", "compute-system", "product")
 		tokenConfig(admin, "", project, "dns-grant-issuer", "compute-system", "issuer")
 		tokenConfig(admin, "", project, "dns-vpc-integration", "network-system", "integration")
-		projectRows = append(projectRows, object{"name": project, "projectUID": project + "-uid", "sourceClusterUID": []string{"source-cluster-a-uid", "source-cluster-b-uid"}[i], "namespace": projectNS, "adminKubeconfig": admin, "productKubeconfig": filepath.Join(out, project+"-product.kubeconfig"), "issuerKubeconfig": filepath.Join(out, project+"-issuer.kubeconfig"), "integrationKubeconfig": filepath.Join(out, project+"-integration.kubeconfig"), "publisherSubject": "system:serviceaccount:compute-system:dns-publisher", "consumerAddress": []string{"fd53::a", "fd53::b"}[i]})
+		projectRows = append(projectRows, object{"name": project, "projectUID": project + "-uid", "sourceClusterUID": []string{"source-cluster-a-uid", "source-cluster-b-uid"}[i], "namespace": projectNS, "customerKubeconfig": filepath.Join(out, project+"-customer.kubeconfig"), "productKubeconfig": filepath.Join(out, project+"-product.kubeconfig"), "issuerKubeconfig": filepath.Join(out, project+"-issuer.kubeconfig"), "integrationKubeconfig": filepath.Join(out, project+"-integration.kubeconfig"), "publisherSubject": "system:serviceaccount:compute-system:dns-publisher", "consumerAddress": []string{"fd53::a", "fd53::b"}[i]})
 	}
 	sources["stringData"] = sourceData
 	items := make([]object, 0, 8)

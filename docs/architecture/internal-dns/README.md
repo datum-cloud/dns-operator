@@ -222,6 +222,12 @@ versions. The compiler stages immutable chunks and a manifest, then commits its
 active pointer. Kubernetes API storage retains this state and a durable outbox;
 exporters repair missing outboxes after crashes.
 
+Contexts, access bindings, and publications share one stable shard assignment
+per region. Capacity limits admit established contexts before new allocations.
+An allocation that exceeds capacity reports a condition without blocking other
+contexts or explicit withdrawals. Destination ownership follows the context
+lifetime, so recreating its access binding can retain the same destination.
+
 Regional agents render committed snapshots as zone files, validate and activate
 them in the associated BIND views, then acknowledge serving.
 
@@ -236,12 +242,16 @@ update or withdrawal. Control plane and messaging outages delay changes but do
 not expire applied DNS configuration. Agents can restore verified configuration
 from local checkpoints without contacting the control plane.
 
-Local DNS probes and backend health checks detect serving failures independently
-of update delivery. Retained tombstones and writer fences prevent replay from
+Agents retain desired version fences and an activated configuration separately.
+A rejected expansion retains that configuration; a rejected withdrawal gates
+serving. An independent watchdog probes local daemons while updates are staged
+and validated. DNS query probes and backend health checks isolate serving
+failures from update delivery. Retained tombstones and writer fences prevent replay from
 restoring withdrawn records or access. A new serving node requires a complete
 configuration before accepting queries.
 
-A reserved name without eligible addresses returns NODATA. Missing required
+A reserved name without eligible addresses returns NODATA. A pending private zone returns SERVFAIL only beneath its own apex; other zones
+and public recursion continue. Missing required
 private state returns SERVFAIL; unknown or withdrawn access returns REFUSED.
 Private names never fall back to public resolution. Disable stale private
 answers and bound dynamic TTLs; withdrawal budgets include client caching.
@@ -578,6 +588,10 @@ spec:
         address: fd70:200::10
         port: 53
         transports: [UDP, TCP]
+    # Reserve private apices even while their publication is pending.
+    zoneApices:
+      44444444-4444-4444-8444-444444444444: datum.internal
+      88888888-8888-4888-8888-888888888888: production.internal
     zoneRefs:
       # Include only private zones explicitly associated with the source context.
       - name: managed-application
@@ -597,7 +611,10 @@ access binding; DNS allocates the regional listener.
 Configuration generation fences plan replacement; revision orders its updates.
 Authorization copies the accepted access epoch and sequence. Serving
 acknowledgments identify the binding UID and both version sets; readiness
-requires current acknowledgments from all required members.
+requires current proof from available capacity in each serving tier.
+`FullyReplicated` reports whether every assigned member has applied the plan;
+`ObservationHealthy` reports current serving observations. Stale observations
+make serving status unknown without withdrawing applied access.
 
 Resolver engine, isolation, deployment model, and dnsdist cache policy belong to
 shared fleet configuration.
@@ -638,6 +655,10 @@ workloads lose resolution. Reenabling requires fresh authorization and observati
 Qualify tenant isolation, outage continuity, failover, replay, and upgrade/rollback over
 Galactic UDP and TCP paths, including guest resolver configuration. Expand by
 context and region after setting withdrawal budgets and tombstone retention.
+Compatible upgrades retain transport state and checkpoints. Roll out serving
+capabilities before enabling new controller output. Unsupported formats preserve
+state and reject activation; conversion must retain authority and withdrawal
+fences.
 
 ### Monitoring Requirements
 

@@ -1,0 +1,378 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: dnsresolverbindings.dns.networking.miloapis.com
+spec:
+  group: dns.networking.miloapis.com
+  names:
+    kind: DNSResolverBinding
+    listKind: DNSResolverBindingList
+    plural: dnsresolverbindings
+    singular: dnsresolverbinding
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DNSResolverBinding is the DNS-service projection of a consumer
+              context and access binding.
+            properties:
+              authorization:
+                properties:
+                  sequence:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  validUntil:
+                    format: date-time
+                    type: string
+                  writerEpoch:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - sequence
+                - validUntil
+                - writerEpoch
+                type: object
+              configuration:
+                properties:
+                  generation:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  listeners:
+                    properties:
+                      node:
+                        properties:
+                          address:
+                            minLength: 1
+                            type: string
+                          port:
+                            enum:
+                            - 53
+                            format: int32
+                            type: integer
+                          transports:
+                            items:
+                              enum:
+                              - UDP
+                              - TCP
+                              type: string
+                            maxItems: 2
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-type: set
+                        required:
+                        - address
+                        - port
+                        - transports
+                        type: object
+                      regional:
+                        properties:
+                          address:
+                            minLength: 1
+                            type: string
+                          port:
+                            enum:
+                            - 53
+                            format: int32
+                            type: integer
+                          transports:
+                            items:
+                              enum:
+                              - UDP
+                              - TCP
+                              type: string
+                            maxItems: 2
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-type: set
+                        required:
+                        - address
+                        - port
+                        - transports
+                        type: object
+                    required:
+                    - node
+                    - regional
+                    type: object
+                    x-kubernetes-validations:
+                    - message: listener identity is immutable for an access binding
+                      rule: oldSelf == self
+                  revision:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  zoneRefs:
+                    items:
+                      description: |-
+                        DNSObjectReference pins a namespaced object by API-assigned UID. Generation
+                        is used where a writer must also be fenced against policy changes.
+                      properties:
+                        generation:
+                          format: int64
+                          type: integer
+                        name:
+                          type: string
+                        uid:
+                          description: |-
+                            UID is a type that holds unique ID values, including UUIDs.  Because we
+                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                            intent and helps make sure that UIDs and names do not get conflated.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    maxItems: 256
+                    type: array
+                required:
+                - generation
+                - listeners
+                - revision
+                - zoneRefs
+                type: object
+                x-kubernetes-validations:
+                - message: zone references must pin name and UID
+                  rule: self.zoneRefs.all(z, z.name.size() > 0 && has(z.uid) && z.uid.size()
+                    > 0)
+              placement:
+                properties:
+                  region:
+                    type: string
+                  shard:
+                    type: string
+                required:
+                - region
+                - shard
+                type: object
+                x-kubernetes-validations:
+                - message: binding placement is immutable
+                  rule: oldSelf == self
+              source:
+                properties:
+                  accessBindingRef:
+                    description: |-
+                      DNSObjectReference pins a namespaced object by API-assigned UID. Generation
+                      is used where a writer must also be fenced against policy changes.
+                    properties:
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  projectUID:
+                    description: |-
+                      UID is a type that holds unique ID values, including UUIDs.  Because we
+                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                      intent and helps make sure that UIDs and names do not get conflated.
+                    type: string
+                  resolverContextRef:
+                    description: |-
+                      DNSObjectReference pins a namespaced object by API-assigned UID. Generation
+                      is used where a writer must also be fenced against policy changes.
+                    properties:
+                      generation:
+                        format: int64
+                        type: integer
+                      name:
+                        type: string
+                      uid:
+                        description: |-
+                          UID is a type that holds unique ID values, including UUIDs.  Because we
+                          don't ONLY use UUIDs, this is an alias to string.  Being a type captures
+                          intent and helps make sure that UIDs and names do not get conflated.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - accessBindingRef
+                - projectUID
+                - resolverContextRef
+                type: object
+                x-kubernetes-validations:
+                - message: binding source identity is immutable
+                  rule: oldSelf == self
+                - message: binding source requires project UID and UID-pinned context
+                    and access references
+                  rule: self.projectUID.size() > 0 && self.resolverContextRef.name.size()
+                    > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
+                    > 0 && self.accessBindingRef.name.size() > 0 && has(self.accessBindingRef.uid)
+                    && self.accessBindingRef.uid.size() > 0
+              tombstone:
+                type: boolean
+            required:
+            - authorization
+            - configuration
+            - placement
+            - source
+            type: object
+            x-kubernetes-validations:
+            - message: configuration fences must not decrease
+              rule: self.configuration.generation >= oldSelf.configuration.generation
+                && self.configuration.revision >= oldSelf.configuration.revision
+            - message: authorization fences must not decrease
+              rule: self.authorization.writerEpoch > oldSelf.authorization.writerEpoch
+                || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
+                && self.authorization.sequence >= oldSelf.authorization.sequence)
+            - message: changing an authorization deadline requires a new fence
+              rule: self.authorization.writerEpoch != oldSelf.authorization.writerEpoch
+                || self.authorization.sequence != oldSelf.authorization.sequence ||
+                self.authorization.validUntil == oldSelf.authorization.validUntil
+            - message: zone membership changes require a new cache generation and
+                configuration revision
+              rule: self.configuration.zoneRefs == oldSelf.configuration.zoneRefs
+                || (self.configuration.generation > oldSelf.configuration.generation
+                && self.configuration.revision > oldSelf.configuration.revision)
+            - message: changing withdrawal state requires a new configuration revision
+              rule: (has(self.tombstone) && self.tombstone) == (has(oldSelf.tombstone)
+                && oldSelf.tombstone) || self.configuration.revision > oldSelf.configuration.revision
+            - message: reactivating withdrawn access requires a new source authorization
+                fence
+              rule: '!has(oldSelf.tombstone) || !oldSelf.tombstone || (has(self.tombstone)
+                && self.tombstone) || self.authorization.writerEpoch > oldSelf.authorization.writerEpoch
+                || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
+                && self.authorization.sequence > oldSelf.authorization.sequence)'
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              memberAcknowledgements:
+                items:
+                  properties:
+                    authorizationIssuerEpoch:
+                      format: int64
+                      type: integer
+                    authorizationRevision:
+                      format: int64
+                      type: integer
+                    error:
+                      type: string
+                    memberID:
+                      type: string
+                    observedAt:
+                      format: date-time
+                      type: string
+                    observedUnixNano:
+                      format: int64
+                      type: integer
+                    phase:
+                      type: string
+                    revision:
+                      format: int64
+                      type: integer
+                    snapshotRevision:
+                      format: int64
+                      type: integer
+                    validUntil:
+                      format: date-time
+                      type: string
+                    writerEpoch:
+                      format: int64
+                      type: integer
+                  required:
+                  - memberID
+                  - observedAt
+                  - phase
+                  - revision
+                  type: object
+                type: array
+              observedConfigurationRevision:
+                format: int64
+                type: integer
+              phase:
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

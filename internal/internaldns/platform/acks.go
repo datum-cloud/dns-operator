@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const dnsValueNode = "node"
+
 // AckSink relies on NATS subject ACLs to bind each authenticated serving member
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
@@ -93,7 +95,7 @@ func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope)
 		}
 		return s.publication(ctx, a, row, now)
 	case model.KindServingSnapshot:
-		if member.Role != "node" && member.Role != dnsValueCluster && member.Role != dnsValueResolver && member.Role != dnsValueRegional {
+		if member.Role != dnsValueNode && member.Role != dnsValueCluster && member.Role != dnsValueResolver && member.Role != dnsValueRegional {
 			return fmt.Errorf("serving ack is not from a resolver member")
 		}
 		return s.serving(ctx, a, row, now)
@@ -339,7 +341,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 	for _, member := range s.Members {
 		match := member.Role == role
 		if role == dnsValueResolver {
-			match = member.Role == "node" || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
+			match = member.Role == dnsValueNode || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
 		}
 		if !match {
 			continue
@@ -556,7 +558,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		if role == dnsValueCluster {
 			role = dnsValueRegional
 		}
-		if role == "node" || role == dnsValueResolver || role == dnsValueRegional {
+		if role == dnsValueNode || role == dnsValueResolver || role == dnsValueRegional {
 			tiers[role] = append(tiers[role], member)
 		}
 	}

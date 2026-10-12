@@ -3,11 +3,14 @@
 package platform
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"time"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool) {
@@ -77,4 +80,18 @@ func safeExpansion(old, candidate model.Binding) bool {
 		}
 	}
 	return true
+}
+
+func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, rejected map[string]bool, now time.Time) error {
+	for i := range bindings {
+		binding := &bindings[i]
+		base := binding.DeepCopy()
+		condition(&binding.Status.Conditions, "CapacityAvailable", !rejected[string(binding.UID)], "ShardCapacity", binding.Generation, now)
+		if !jsonEqualStatus(base.Status, binding.Status) {
+			if err := p.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

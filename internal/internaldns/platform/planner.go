@@ -216,15 +216,8 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	var rejected map[string]bool
 	snapshot, rejected = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
-	for i := range bindings.Items {
-		binding := &bindings.Items[i]
-		base := binding.DeepCopy()
-		condition(&binding.Status.Conditions, "CapacityAvailable", !rejected[string(binding.UID)], "ShardCapacity", binding.Generation, now)
-		if !jsonEqualStatus(base.Status, binding.Status) {
-			if err := p.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
-			}
-		}
+	if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
+		return err
 	}
 	if err := snapshot.Validate(); err != nil {
 		return err

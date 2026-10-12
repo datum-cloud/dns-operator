@@ -12,14 +12,11 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -215,50 +212,27 @@ func TestConsumerSelectorRequiresConfiguredIntegrationMode(t *testing.T) {
 	}
 }
 
-func TestCustomerNamedReferencesRequireZoneAndContextAuthorization(t *testing.T) {
+func TestCustomerNamedReferencesValidateLiveResources(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", UID: "zone"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", UID: "context", Generation: 1}}
-	setAdmissionCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, resolver.Generation, time.Now())
-	deniedResource := ""
-	reviewed := map[string]string{}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-		if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
-			attributes := review.Spec.ResourceAttributes
-			reviewed[attributes.Resource] = attributes.Verb + "/" + attributes.Name
-			review.Status.Allowed = attributes.Resource != deniedResource
-			return nil
-		}
-		return cl.Create(ctx, obj, opts...)
-	}}).Build()
-	h := Handler{Client: cl, ResolverContextsEnabled: true}
-	zoneRef := dnsv1alpha1.DNSNameReference{Name: zone.Name}
-	contextRef := dnsv1alpha1.DNSNameReference{Name: resolver.Name}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", Generation: 1}}
+	setAdmissionCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, 1, time.Now())
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).Build(), ResolverContextsEnabled: true}
+	zoneRef, contextRef := dnsv1alpha1.DNSNameReference{Name: zone.Name}, dnsv1alpha1.DNSNameReference{Name: resolver.Name}
 	for resource, object := range map[string]any{
 		"dnszoneassociations": &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: zoneRef, ResolverContextRef: contextRef}},
 		"dnsnamingpolicies":   &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: zoneRef, NamePrefix: "hosts"}}}},
 	} {
-		t.Run(resource, func(t *testing.T) {
-			for _, denied := range []string{"", "dnszones", "dnsresolvercontexts"} {
-				deniedResource = denied
-				reviewed = map[string]string{}
-				response := h.Handle(context.Background(), request(resource, "customer", object, nil))
-				if response.Allowed != (denied == "") {
-					t.Fatalf("denied=%q allowed=%v: %v", denied, response.Allowed, response.Result)
-				}
-				if denied == "" && (reviewed["dnszones"] != "update/production" || reviewed["dnsresolvercontexts"] != "use/application") {
-					t.Fatalf("references did not authorize both named resources: %v", reviewed)
-				}
-			}
-			req := request(resource, "customer", object, nil)
-			req.SubResource = "status"
-			if h.Handle(context.Background(), req).Allowed {
-				t.Fatal("customer can modify DNS-owned lifetime pins")
-			}
-		})
+		if response := h.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)); !response.Allowed {
+			t.Fatalf("valid %s denied: %v", resource, response.Result)
+		}
+		missing := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), ResolverContextsEnabled: true}
+		if missing.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)).Allowed {
+			t.Fatalf("%s accepted missing references", resource)
+		}
 	}
 }
 

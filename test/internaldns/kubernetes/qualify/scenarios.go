@@ -139,7 +139,7 @@ func (s *suite) scenarios(a, b *project) error {
 	}
 	stale := pa.contribution.DeepCopy()
 	stale.Status.Sequence--
-	if err := a.product.Status().Update(s.ctx, stale); err == nil {
+	if err := a.product.Status().Patch(s.ctx, stale, client.MergeFrom(&pa.contribution)); err == nil {
 		return fmt.Errorf("stale producer sequence was accepted")
 	} else if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
 		return fmt.Errorf("stale producer sequence failed for an unrelated reason: %w", err)

@@ -532,14 +532,20 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		if err != nil {
 			return err
 		}
-		if err := a.flushRemovedBindingZones(ctx, snapshot); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
+		previous := a.state.Snapshot
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
+		if !a.canRetainActive() {
+			a.state.Active = nil
+			a.suspendActiveHealth()
+		}
 		if err := a.store.Save(a.state); err != nil {
+			_ = a.failClosed(ctx)
+			return err
+		}
+		if err := a.flushRemovedBindingZones(ctx, previous, snapshot); err != nil {
+			_ = a.failClosed(ctx)
 			return err
 		}
 	}
@@ -552,8 +558,8 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 // A configuration change can detach a zone without changing its publication.
 // Clear its old cache tree before accepting the mapping, including when the
 // context is temporarily pending. The cache hook must flush descendants too.
-func (a *Agent) flushRemovedBindingZones(ctx context.Context, snapshot model.ServingSnapshot) error {
-	if a.state.Snapshot == nil {
+func (a *Agent) flushRemovedBindingZones(ctx context.Context, previous *model.ServingSnapshot, snapshot model.ServingSnapshot) error {
+	if previous == nil {
 		return nil
 	}
 	attached := map[string]bool{}
@@ -563,7 +569,7 @@ func (a *Agent) flushRemovedBindingZones(ctx context.Context, snapshot model.Ser
 		}
 	}
 	flushed := map[string]bool{}
-	for _, binding := range a.state.Snapshot.Bindings {
+	for _, binding := range previous.Bindings {
 		for _, zone := range binding.Zones {
 			if !attached[binding.BindingUID+"/"+zone.ZoneUID+"/"+zone.Apex] && !flushed[zone.Apex] {
 				if err := a.flushName(ctx, zone.Apex); err != nil {

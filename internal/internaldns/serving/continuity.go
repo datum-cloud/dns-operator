@@ -93,6 +93,9 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 		return err
 	}
 	if a.state.Active != nil && equalJSON(*a.state.Active, active) {
+		a.healthMu.Lock()
+		a.healthEnabled = true
+		a.healthMu.Unlock()
 		return nil
 	}
 	a.state.Active = &active

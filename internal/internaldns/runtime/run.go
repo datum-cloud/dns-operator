@@ -146,8 +146,6 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			PlatformSubjects:        cfg.Admission.PlatformSubjects,
-			IntegrationSubjects:     cfg.Admission.IntegrationSubjects,
 			MaxContributionLease:    cfg.Admission.maxLease(),
 			MaxAccessLease:          cfg.Admission.maxAccessLease(),
 			ResolverContextsEnabled: true,

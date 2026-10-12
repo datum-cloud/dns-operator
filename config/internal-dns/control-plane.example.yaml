@@ -65,8 +65,6 @@ data:
         "enabled": true,
         "port": 9443,
         "certDir": "/var/run/internal-dns/admission",
-        "platformSubjects": ["system:serviceaccount:internal-dns-system:internal-dns-control-plane"],
-        "integrationSubjects": ["system:serviceaccount:network-system:dns-vpc-integration"],
         "maxContributionLeaseSeconds": 90,
         "maxAccessLeaseSeconds": 300
       }

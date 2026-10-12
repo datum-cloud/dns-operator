@@ -42,13 +42,11 @@ type KubeAPIClientConfig struct {
 }
 
 type AdmissionConfig struct {
-	Enabled                     bool     `json:"enabled"`
-	Port                        int      `json:"port,omitempty"`
-	CertDir                     string   `json:"certDir,omitempty"`
-	PlatformSubjects            []string `json:"platformSubjects,omitempty"`
-	MaxContributionLeaseSeconds int64    `json:"maxContributionLeaseSeconds,omitempty"`
-	IntegrationSubjects         []string `json:"integrationSubjects,omitempty"`
-	MaxAccessLeaseSeconds       int64    `json:"maxAccessLeaseSeconds,omitempty"`
+	Enabled                     bool   `json:"enabled"`
+	Port                        int    `json:"port,omitempty"`
+	CertDir                     string `json:"certDir,omitempty"`
+	MaxContributionLeaseSeconds int64  `json:"maxContributionLeaseSeconds,omitempty"`
+	MaxAccessLeaseSeconds       int64  `json:"maxAccessLeaseSeconds,omitempty"`
 }
 
 type RegionalTransportConfig struct {

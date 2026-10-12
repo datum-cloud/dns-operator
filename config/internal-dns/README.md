@@ -34,8 +34,10 @@ projection or publication for healthy sources.
 
 DNS always consumes `DNSResolverContext` and `DNSResolverAccessBinding` from
 the project API. It does not watch a networking API. A trusted integration
-principal in `admission.integrationSubjects` creates a context and writes
-short-lived regional access intent. Product publishers cannot authorize access.
+principal bound to `internal-dns-vpc-integration` creates a context and writes
+short-lived regional access intent. RBAC separates integration, grant issuer,
+product publisher, and DNS controller permissions. Product publishers cannot
+issue grants or modify resolver authority.
 The context UID, access UID, authorization writer epoch, sequence, and original
 deadline are carried into the internal `DNSResolverBinding`.
 
@@ -138,3 +140,14 @@ configurations plus one Deployment template. Instantiate the template for each
 member and create a second regional BIND member with distinct addresses and
 storage. `control-plane.example.yaml` lists both regional members in
 `clusterBackends` and `members`.
+
+## Resource access
+
+The project API server authorizes DNS resource and status operations. Bind the
+roles in `rbac.yaml` to service principals in each project namespace. Customer
+access uses the protected resources and DNS roles in `config/iam`.
+
+The webhook validates live references and lease limits. It also verifies that
+changes to a publisher's contribution and freshness observation use that
+publisher's current grant. Publication-result updates cannot renew a publisher's
+observation. Resource permissions do not depend on webhook principal lists.

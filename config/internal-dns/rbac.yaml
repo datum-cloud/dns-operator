@@ -26,7 +26,7 @@ rules:
   verbs: [get, list, watch]
 ---
 # Project products write declarations and their own freshness observations.
-# Platform artifacts and every other status subresource are deliberately absent.
+# Product writers cannot modify grants, resolver access, or publication artifacts.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -52,8 +52,7 @@ metadata:
 rules:
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnsregistrations]
-  # Admission authorizes grant issuance against the exact registration's update permission.
-  verbs: [get, update]
+  verbs: [get]
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnscontributiongrants]
   verbs: [get, list, watch, create, update, patch, delete]
@@ -104,9 +103,6 @@ rules:
   - dnsresolvercontexts/status
   - dnsresolveraccessbindings/status
   verbs: [get, update, patch]
-- apiGroups: [authorization.k8s.io]
-  resources: [subjectaccessreviews]
-  verbs: [create]
 - apiGroups: [coordination.k8s.io]
   resources: [leases]
   verbs: [get, list, watch, create, update, patch]

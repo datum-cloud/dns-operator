@@ -87,7 +87,7 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, identity := range []struct{ name, role string }{{"product", "internal-dns-product-writer"}, {"issuer", "internal-dns-grant-issuer"}} {
+	for _, identity := range []struct{ name, role string }{{"product", "internal-dns-product-writer"}, {"issuer", "internal-dns-grant-issuer"}, {"integration", "internal-dns-vpc-integration"}} {
 		binding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: identity.name + "-test", Namespace: "example-project"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: identity.name, Namespace: "example-project"}}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: identity.role}}
 		if err := cl.Create(ctx, binding); err != nil {
 			t.Fatal(err)
@@ -126,8 +126,14 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 		{"product", "dnsresolvercontexts", "", "patch", false},
 		{"product", "dnsresolveraccessbindings", "", "create", false},
 		{"product", "dnspublicationmanifests", "", "create", false},
+		{"integration", "dnsresolvercontexts", "", "create", true},
+		{"integration", "dnsresolveraccessbindings", "", "create", true},
+		{"integration", "dnsresolvercontexts", "status", "patch", false},
+		{"integration", "dnscontributiongrants", "", "create", false},
+		{"integration", "dnspublicationmanifests", "", "create", false},
 		{"issuer", "dnscontributiongrants", "", "create", true},
-		{"issuer", "dnsregistrations", "", "update", true},
+
+		{"issuer", "dnsregistrations", "", "update", false},
 		{"issuer", "dnscontributiongrants", "status", "patch", false},
 		{"issuer", "dnsrecordcontributions", "", "create", false},
 		{"issuer", "dnsresolveraccessbindings", "", "create", false},

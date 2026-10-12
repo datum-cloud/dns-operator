@@ -393,24 +393,27 @@ spec:
   resolverContextRef:
     name: application
   additionalNames:
-    # Add instance identity names, such as web-01.instances.prod.internal.
-    - registrationClass: InstanceIdentity
+    # Match DNS registration labels from any authorized publisher.
+    - selector:
+        matchLabels:
+          app: storefront
       dnsZoneRef:
         name: production
-      namePrefix: instances
-    # Add discovery names, such as api.services.prod.internal.
-    - registrationClass: ServiceDiscovery
-      dnsZoneRef:
+      namePrefix: storefront
+    # An omitted selector adds this name for every registration in the context.
+    - dnsZoneRef:
         name: production
       namePrefix: services
 ```
 
 Every target zone must be associated with the context. DNS retains the policy's
 resolved lifetimes; recreate the policy to use a replacement zone or context
-with the same name. The proposed classes are
-`InstanceIdentity`, `ServiceDiscovery`, `ServiceVIP`, and `ServiceExport`.
-Product integrations apply the appropriate rule when reserving names. DNS does
-not inspect the underlying product resource to determine its class.
+with the same name. Selectors match `DNSRegistration.metadata.labels` using
+`matchLabels` or `matchExpressions`. An omitted or empty selector matches every
+registration in the context. Matching rules add
+`<allocated-name>.<namePrefix>.<zone-domain>`; overlapping rules produce one
+reservation per zone and name. Product integrations apply the accepted rules
+when reserving additional names. Scoped grants authorize publication.
 
 #### Product publication
 
@@ -423,6 +426,9 @@ apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRegistration
 metadata:
   name: instance-web-01
+  # Naming policies match these generic registration labels.
+  labels:
+    app: storefront
 spec:
   # Select the managed zone allocated for the resource's DNS context.
   dnsZoneRef:

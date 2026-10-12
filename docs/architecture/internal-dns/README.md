@@ -648,7 +648,8 @@ Availability, latency, and withdrawal SLOs remain to be defined.
 ### Dependencies
 
 Project APIs, Galactic/Karmada, NATS, and the DNS fleet support updates and
-connectivity. API or broker outages delay updates while the fleet continues
+connectivity. Galactic must retain applied private connectivity during control
+plane outages. API or broker outages delay updates while the fleet continues
 serving its applied configuration. Health changes and deletions take effect
 after delivery resumes.
 

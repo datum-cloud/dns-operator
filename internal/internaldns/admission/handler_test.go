@@ -56,6 +56,12 @@ func TestContributionAuthenticatedWriter(t *testing.T) {
 	}{
 		{"scoped fresh producer", producer, nil, true},
 		{"another producer", "system:serviceaccount:connector-system:dns-publisher", nil, false},
+		{"controller binds issued epoch", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) {
+			c.Status.Conditions = []metav1.Condition{{Type: "AuthorityBound", Status: metav1.ConditionTrue}}
+		}, true},
+		{"controller cannot bind another epoch", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.WriterEpoch = 99 }, false},
+		{"epoch binding cannot assert health", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Eligible = true }, false},
+
 		{"retired epoch", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.WriterEpoch = 7 }, false},
 		{"unchanged observation", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 17 }, true},
 		{"decreasing sequence", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 16 }, false},
@@ -71,6 +77,10 @@ func TestContributionAuthenticatedWriter(t *testing.T) {
 			c := contribution.DeepCopy()
 			old := contribution.DeepCopy()
 			old.Status.Sequence = 17
+			if tc.name == "controller binds issued epoch" || tc.name == "controller cannot bind another epoch" || tc.name == "epoch binding cannot assert health" {
+				old.Status = dnsv1alpha1.DNSRecordContributionStatus{}
+				c.Status = dnsv1alpha1.DNSRecordContributionStatus{WriterEpoch: 8}
+			}
 			if tc.mutate != nil {
 				tc.mutate(c)
 			}

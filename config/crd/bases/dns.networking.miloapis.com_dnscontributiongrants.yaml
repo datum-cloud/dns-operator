@@ -45,8 +45,10 @@ spec:
               principal:
                 properties:
                   clusterUID:
+                    minLength: 1
                     type: string
                   subject:
+                    minLength: 1
                     type: string
                 required:
                 - clusterUID
@@ -80,14 +82,17 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -98,6 +103,10 @@ spec:
             - recordTypes
             - registrationRef
             type: object
+            x-kubernetes-validations:
+            - message: registrationRef requires name and UID
+              rule: self.registrationRef.name.size() > 0 && has(self.registrationRef.uid)
+                && self.registrationRef.uid.size() > 0
           status:
             properties:
               activeWriterEpoch:

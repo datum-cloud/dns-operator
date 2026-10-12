@@ -43,7 +43,13 @@ storage:
     # Snapshots must have been available for at least this interval before they
     # are considered for cleaning, so that slower instances have a chance to
     # download them.
-    must_keep_interval: 24h
+    #
+    # Every PoP lists the whole bucket each time a snapshot lands, so each one
+    # kept here is listed again by every PoP on every change, and those listings
+    # are most of the bucket's download bill (datum-cloud/infra#6790). PoPs and
+    # restore points need only the newest snapshot of each instance, which the
+    # cleaner keeps regardless of this interval.
+    must_keep_interval: 1h
     # Remove stale instances without newer snapshots after this interval, but
     # only after we are sure this instance has downloaded and merged that
     # snapshot, and subsequently written a new snapshots that incorporates these

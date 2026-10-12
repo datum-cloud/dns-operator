@@ -153,16 +153,11 @@ func (h *Handler) resolverContext(req kubeadmission.Request) error {
 	if err := decode(req, &current); err != nil {
 		return err
 	}
-	if current.Spec.ConsumerID == "" {
-		return fmt.Errorf("consumerID is required")
-	}
 	if len(req.OldObject.Raw) > 0 {
 		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
 			return err
 		}
-		if old.Spec.ConsumerID != current.Spec.ConsumerID {
-			return fmt.Errorf("consumerID is immutable")
-		}
+
 		if !reflect.DeepEqual(old.Status, current.Status) {
 			return fmt.Errorf("resolver context status is DNS platform-owned")
 		}
@@ -176,9 +171,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 		return err
 	}
 	a := current.Spec.Authorization
-	if current.Spec.ContextRef.Name == "" || current.Spec.ContextRef.UID == "" {
-		return fmt.Errorf("access binding must pin context name and UID")
-	}
 	var resolverContext dnsv1alpha1.DNSResolverContext
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: current.Spec.ContextRef.Name}, &resolverContext); err != nil {
 		return fmt.Errorf("resolver context lookup: %w", err)
@@ -192,15 +184,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
 		return fmt.Errorf("resolver context is not ready for its current generation")
-	}
-	if current.Spec.QueryIdentity.Type != dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress {
-		return fmt.Errorf("query identity type must be DestinationAddress")
-	}
-	if current.Spec.Region == "" || current.Spec.QueryIdentity.Value == "" || current.Spec.Port < 1 || a.WriterEpoch < 1 || a.Sequence < 1 || a.ValidUntil.IsZero() {
-		return fmt.Errorf("region, destination, port, writer epoch, sequence, and deadline are required")
-	}
-	if current.Spec.Port != 53 || !validTransports(current.Spec.Transports) {
-		return fmt.Errorf("access requires port 53 and exactly UDP and TCP")
 	}
 	max := h.MaxAccessLease
 	if max <= 0 {
@@ -220,15 +203,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
 			return err
 		}
-		if old.Spec.ContextRef != current.Spec.ContextRef || old.Spec.Region != current.Spec.Region || old.Spec.QueryIdentity != current.Spec.QueryIdentity || old.Spec.Port != current.Spec.Port || !reflect.DeepEqual(old.Spec.Transports, current.Spec.Transports) {
-			return fmt.Errorf("access identity and transport are immutable; create a new binding")
-		}
-		if a.WriterEpoch != old.Spec.Authorization.WriterEpoch {
-			return fmt.Errorf("writer epoch is immutable for an access binding lifetime")
-		}
-		if a.Sequence <= old.Spec.Authorization.Sequence {
-			return fmt.Errorf("access renewal sequence must increase")
-		}
 		if !reflect.DeepEqual(old.Status, current.Status) {
 			return fmt.Errorf("access binding status is DNS platform-owned")
 		}
@@ -236,27 +210,10 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	return nil
 }
 
-func validTransports(values []string) bool {
-	if len(values) != 2 {
-		return false
-	}
-	seen := map[string]bool{}
-	for _, v := range values {
-		if (v != "UDP" && v != "TCP") || seen[v] {
-			return false
-		}
-		seen[v] = true
-	}
-	return seen["UDP"] && seen["TCP"]
-}
-
 func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID string, req kubeadmission.Request) error {
 	var c, old dnsv1alpha1.DNSRecordContribution
 	if err := decode(req, &c); err != nil {
 		return err
-	}
-	if c.Spec.GrantRef.UID == "" || c.Spec.RegistrationRef.UID == "" || c.Spec.RegistrationRef.Generation < 1 {
-		return fmt.Errorf("contribution must pin grant UID and registration UID/generation")
 	}
 	var g dnsv1alpha1.DNSContributionGrant
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: c.Spec.GrantRef.Name}, &g); err != nil {
@@ -302,9 +259,6 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
 			return err
 		}
-		if old.Spec.GrantRef != c.Spec.GrantRef || old.Spec.RegistrationRef != c.Spec.RegistrationRef {
-			return fmt.Errorf("contribution authority references are immutable; create a new contribution for a new policy lifetime")
-		}
 	}
 	if req.SubResource == "status" {
 		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {
@@ -346,12 +300,6 @@ func (h *Handler) grant(ctx context.Context, cl client.Client, req kubeadmission
 	var g dnsv1alpha1.DNSContributionGrant
 	if err := decode(req, &g); err != nil {
 		return err
-	}
-	if g.Spec.Principal.Subject == "" || g.Spec.Principal.ClusterUID == "" {
-		return fmt.Errorf("producer principal is required")
-	}
-	if g.Spec.RegistrationRef.UID == "" {
-		return fmt.Errorf("grant must pin its registration UID")
 	}
 	var r dnsv1alpha1.DNSRegistration
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Spec.RegistrationRef.Name}, &r); err != nil {
@@ -433,16 +381,6 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 func validateConsumerSelector(vpcRef, contextRef dnsv1alpha1.DNSObjectReference, contextMode bool) error {
 	hasVPC := vpcRef.Name != "" || vpcRef.UID != "" || vpcRef.Generation != 0
 	hasContext := contextRef.Name != "" || contextRef.UID != "" || contextRef.Generation != 0
-	if hasVPC == hasContext {
-		return fmt.Errorf("exactly one of vpcRef or resolverContextRef is required")
-	}
-	selected := vpcRef
-	if hasContext {
-		selected = contextRef
-	}
-	if selected.Name == "" || selected.UID == "" {
-		return fmt.Errorf("consumer reference must pin name and UID")
-	}
 	if contextMode && !hasContext {
 		return fmt.Errorf("resolver context mode requires resolverContextRef")
 	}
@@ -515,9 +453,7 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 	if err := decode(req, &registration); err != nil {
 		return err
 	}
-	if registration.Spec.TTLSeconds < 1 || registration.Spec.TTLSeconds > dnsv1alpha1.DNSRegistrationMaxTTLSeconds {
-		return fmt.Errorf("dynamic TTL must be between 1 and %d seconds", dnsv1alpha1.DNSRegistrationMaxTTLSeconds)
-	}
+
 	zone, err := currentPrivateZone(ctx, cl, req.Namespace, registration.Spec.DNSZoneRef)
 	if err != nil {
 		return err

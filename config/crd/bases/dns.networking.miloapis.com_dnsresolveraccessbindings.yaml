@@ -63,19 +63,24 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name
                 type: object
               port:
+                enum:
+                - 53
                 format: int32
                 type: integer
               queryIdentity:
@@ -85,17 +90,27 @@ spec:
                     - DestinationAddress
                     type: string
                   value:
+                    maxLength: 253
+                    minLength: 1
                     type: string
                 required:
                 - type
                 - value
                 type: object
               region:
+                maxLength: 253
+                minLength: 1
                 type: string
               transports:
                 items:
+                  enum:
+                  - UDP
+                  - TCP
                   type: string
+                maxItems: 2
+                minItems: 2
                 type: array
+                x-kubernetes-list-type: set
             required:
             - authorization
             - contextRef
@@ -104,6 +119,20 @@ spec:
             - region
             - transports
             type: object
+            x-kubernetes-validations:
+            - message: contextRef requires name and UID
+              rule: self.contextRef.name.size() > 0 && has(self.contextRef.uid) &&
+                self.contextRef.uid.size() > 0
+            - message: contextRef is immutable
+              rule: self.contextRef == oldSelf.contextRef
+            - message: access identity and transport are immutable
+              rule: self.region == oldSelf.region && self.queryIdentity == oldSelf.queryIdentity
+                && self.port == oldSelf.port && self.transports == oldSelf.transports
+            - message: writerEpoch is immutable for an access binding
+              rule: self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
+            - message: authorization changes require an increasing sequence
+              rule: self.authorization == oldSelf.authorization || self.authorization.sequence
+                > oldSelf.authorization.sequence
           status:
             properties:
               bindingRef:
@@ -113,14 +142,17 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name

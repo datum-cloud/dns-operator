@@ -45,14 +45,17 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -307,14 +310,17 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -324,6 +330,17 @@ spec:
             - recordSets
             - registrationRef
             type: object
+            x-kubernetes-validations:
+            - message: registrationRef requires name, UID, and generation
+              rule: self.registrationRef.name.size() > 0 && has(self.registrationRef.uid)
+                && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation)
+                && self.registrationRef.generation > 0
+            - message: grantRef requires name and UID
+              rule: self.grantRef.name.size() > 0 && has(self.grantRef.uid) && self.grantRef.uid.size()
+                > 0
+            - message: contribution authority references are immutable
+              rule: self.registrationRef == oldSelf.registrationRef && self.grantRef
+                == oldSelf.grantRef
           status:
             properties:
               conditions:

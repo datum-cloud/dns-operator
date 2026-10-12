@@ -13,9 +13,13 @@ import (
 // DNSObjectReference pins a namespaced object by API-assigned UID. Generation
 // is used where a writer must also be fenced against policy changes.
 type DNSObjectReference struct {
-	Name       string    `json:"name"`
-	UID        types.UID `json:"uid,omitempty"`
-	Generation int64     `json:"generation,omitempty"`
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MaxLength=128
+	UID types.UID `json:"uid,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="(has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name) && self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0)",message="exactly one UID-pinned vpcRef or resolverContextRef is required"
@@ -41,6 +45,8 @@ type DNSZoneAssociationStatus struct {
 // a trusted network integration. consumerID is opaque to DNS and immutable.
 // +kubebuilder:validation:XValidation:rule="oldSelf.consumerID == self.consumerID",message="consumerID is immutable"
 type DNSResolverContextSpec struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
 	ConsumerID       string                             `json:"consumerID"`
 	ManagedNamespace DNSResolverContextManagedNamespace `json:"managedNamespace,omitempty"`
 }
@@ -89,8 +95,10 @@ type DNSResolverQueryIdentityType string
 const DNSResolverQueryIdentityDestinationAddress DNSResolverQueryIdentityType = "DestinationAddress"
 
 type DNSResolverQueryIdentity struct {
-	Type  DNSResolverQueryIdentityType `json:"type"`
-	Value string                       `json:"value"`
+	Type DNSResolverQueryIdentityType `json:"type"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Value string `json:"value"`
 }
 
 type DNSResolverAccessAuthorization struct {
@@ -117,11 +125,23 @@ func (a DNSResolverAccessAuthorization) MarshalJSON() ([]byte, error) {
 	}{WriterEpoch: a.WriterEpoch, Sequence: a.Sequence, ValidUntil: deadline})
 }
 
+// +kubebuilder:validation:XValidation:rule="self.contextRef.name.size() > 0 && has(self.contextRef.uid) && self.contextRef.uid.size() > 0",message="contextRef requires name and UID"
+// +kubebuilder:validation:XValidation:rule="self.contextRef == oldSelf.contextRef",message="contextRef is immutable"
+// +kubebuilder:validation:XValidation:rule="self.region == oldSelf.region && self.queryIdentity == oldSelf.queryIdentity && self.port == oldSelf.port && self.transports == oldSelf.transports",message="access identity and transport are immutable"
+// +kubebuilder:validation:XValidation:rule="self.authorization.writerEpoch == oldSelf.authorization.writerEpoch",message="writerEpoch is immutable for an access binding"
+// +kubebuilder:validation:XValidation:rule="self.authorization == oldSelf.authorization || self.authorization.sequence > oldSelf.authorization.sequence",message="authorization changes require an increasing sequence"
 type DNSResolverAccessBindingSpec struct {
-	ContextRef    DNSObjectReference             `json:"contextRef"`
-	Region        string                         `json:"region"`
-	QueryIdentity DNSResolverQueryIdentity       `json:"queryIdentity"`
-	Port          int32                          `json:"port"`
+	ContextRef DNSObjectReference `json:"contextRef"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Region        string                   `json:"region"`
+	QueryIdentity DNSResolverQueryIdentity `json:"queryIdentity"`
+	// +kubebuilder:validation:Enum=53
+	Port int32 `json:"port"`
+	// +kubebuilder:validation:MinItems=2
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=UDP;TCP
+	// +listType=set
 	Transports    []string                       `json:"transports"`
 	Authorization DNSResolverAccessAuthorization `json:"authorization"`
 }
@@ -215,10 +235,13 @@ type DNSRegistrationList struct {
 }
 
 type DNSProducerPrincipal struct {
+	// +kubebuilder:validation:MinLength=1
 	ClusterUID string `json:"clusterUID"`
-	Subject    string `json:"subject"`
+	// +kubebuilder:validation:MinLength=1
+	Subject string `json:"subject"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0",message="registrationRef requires name and UID"
 type DNSContributionGrantSpec struct {
 	RegistrationRef DNSObjectReference   `json:"registrationRef"`
 	ProducerID      string               `json:"producerID"`
@@ -256,6 +279,9 @@ type DNSContributionRecordSet struct {
 	Records    []RecordEntry `json:"records"`
 }
 
+// +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation) && self.registrationRef.generation > 0",message="registrationRef requires name, UID, and generation"
+// +kubebuilder:validation:XValidation:rule="self.grantRef.name.size() > 0 && has(self.grantRef.uid) && self.grantRef.uid.size() > 0",message="grantRef requires name and UID"
+// +kubebuilder:validation:XValidation:rule="self.registrationRef == oldSelf.registrationRef && self.grantRef == oldSelf.grantRef",message="contribution authority references are immutable"
 type DNSRecordContributionSpec struct {
 	RegistrationRef DNSObjectReference         `json:"registrationRef"`
 	GrantRef        DNSObjectReference         `json:"grantRef"`

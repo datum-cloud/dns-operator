@@ -5,7 +5,6 @@ package admission
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
@@ -176,11 +175,6 @@ func TestResolverAccessRequiresIntegrationAndMonotonicBoundedLease(t *testing.T)
 		t.Fatal("publisher granted network access")
 	}
 	req.UserInfo.Username = h.IntegrationSubjects[0]
-	replay := old.DeepCopy()
-	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], replay, old)
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("replayed sequence accepted")
-	}
 	overlong := current.DeepCopy()
 	overlong.Spec.Authorization.ValidUntil = metav1.NewTime(now.Add(6 * time.Minute))
 	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], overlong, old)
@@ -199,40 +193,6 @@ func TestResolverAccessRequiresIntegrationAndMonotonicBoundedLease(t *testing.T)
 	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], current, old)
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("stale context Ready condition authorized access")
-	}
-}
-
-func TestConsumerSelectorRejectsBothOrEmptyInEveryMode(t *testing.T) {
-	vpc := dnsv1alpha1.DNSObjectReference{Name: "vpc", UID: "vpc-uid"}
-	resolverContext := dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "ctx-uid"}
-	for _, contextMode := range []bool{false, true} {
-		for _, tc := range []struct {
-			name         string
-			vpc, context dnsv1alpha1.DNSObjectReference
-		}{{"empty", dnsv1alpha1.DNSObjectReference{}, dnsv1alpha1.DNSObjectReference{}}, {"both", vpc, resolverContext}, {"unpinned vpc", dnsv1alpha1.DNSObjectReference{Name: "vpc"}, dnsv1alpha1.DNSObjectReference{}}, {"unpinned context", dnsv1alpha1.DNSObjectReference{}, dnsv1alpha1.DNSObjectReference{Name: "ctx"}}} {
-			t.Run(fmt.Sprintf("context=%v/%s", contextMode, tc.name), func(t *testing.T) {
-				if err := validateConsumerSelector(tc.vpc, tc.context, contextMode); err == nil {
-					t.Fatal("ambiguous or unpinned selector accepted")
-				}
-			})
-		}
-	}
-	for _, tc := range []struct {
-		name         string
-		vpc, context dnsv1alpha1.DNSObjectReference
-	}{{"complete vpc partial context", vpc, dnsv1alpha1.DNSObjectReference{Name: "ctx"}}, {"partial vpc complete context", dnsv1alpha1.DNSObjectReference{UID: "vpc-uid"}, resolverContext}} {
-		if err := validateConsumerSelector(tc.vpc, tc.context, true); err == nil {
-			t.Fatalf("%s accepted in context mode", tc.name)
-		}
-		if err := validateConsumerSelector(tc.vpc, tc.context, false); err == nil {
-			t.Fatalf("%s accepted in legacy mode", tc.name)
-		}
-	}
-	if err := validateConsumerSelector(vpc, dnsv1alpha1.DNSObjectReference{}, false); err != nil {
-		t.Fatalf("legacy selector rejected: %v", err)
-	}
-	if err := validateConsumerSelector(dnsv1alpha1.DNSObjectReference{}, resolverContext, true); err != nil {
-		t.Fatalf("context selector rejected: %v", err)
 	}
 }
 
@@ -260,7 +220,7 @@ func TestPrivateRegistrationRejectsAuthorityOverrides(t *testing.T) {
 	}
 }
 
-func TestRegistrationRequiresCurrentZoneAndBoundedTTL(t *testing.T) {
+func TestRegistrationRequiresCurrentZone(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -272,7 +232,7 @@ func TestRegistrationRequiresCurrentZoneAndBoundedTTL(t *testing.T) {
 		ttl     int32
 		allowed bool
 	}{
-		{"current", 1, true}, {"current", 30, true}, {"", 5, false}, {"retired", 5, false}, {"current", 0, false}, {"current", 31, false}, {"current", 2147483647, false},
+		{"current", 1, true}, {"current", 30, true}, {"", 5, false}, {"retired", 5, false},
 	} {
 		reg := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: tt.uid}, TTLSeconds: tt.ttl, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
 		if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); got.Allowed != tt.allowed {

@@ -39,6 +39,7 @@ spec:
             properties:
               index:
                 format: int32
+                minimum: 0
                 type: integer
               manifestUID:
                 description: |-
@@ -48,14 +49,18 @@ spec:
                 type: string
               payload:
                 format: byte
+                minLength: 1
                 type: string
               revision:
                 format: int64
+                minimum: 1
                 type: integer
               sha256:
+                pattern: ^[a-fA-F0-9]{64}$
                 type: string
               writerEpoch:
                 format: int64
+                minimum: 1
                 type: integer
             required:
             - index

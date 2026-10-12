@@ -41,11 +41,14 @@ spec:
                 items:
                   properties:
                     name:
+                      minLength: 1
                       type: string
                     sha256:
+                      pattern: ^[a-fA-F0-9]{64}$
                       type: string
                     size:
                       format: int32
+                      minimum: 1
                       type: integer
                   required:
                   - name
@@ -54,6 +57,7 @@ spec:
                   type: object
                 type: array
               contentHash:
+                pattern: ^[a-fA-F0-9]{64}$
                 type: string
               contextUIDs:
                 items:
@@ -122,6 +126,7 @@ spec:
                 type: array
               revision:
                 format: int64
+                minimum: 1
                 type: integer
               servingTargets:
                 items:
@@ -139,8 +144,10 @@ spec:
                 type: boolean
               writerEpoch:
                 format: int64
+                minimum: 1
                 type: integer
               zoneApex:
+                minLength: 1
                 type: string
               zoneRef:
                 description: |-
@@ -149,14 +156,17 @@ spec:
                 properties:
                   generation:
                     format: int64
+                    minimum: 0
                     type: integer
                   name:
+                    maxLength: 253
                     type: string
                   uid:
                     description: |-
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -174,6 +184,16 @@ spec:
             x-kubernetes-validations:
             - message: publication manifests are immutable
               rule: oldSelf == self
+            - message: zoneRef requires name and UID
+              rule: self.zoneRef.name.size() > 0 && has(self.zoneRef.uid) && self.zoneRef.uid.size()
+                > 0
+            - message: previousRevision must precede revision
+              rule: '!has(self.previousRevision) || (self.previousRevision >= 0 &&
+                self.previousRevision < self.revision)'
+            - message: withdrawal requires empty content; publication requires chunks
+              rule: '(has(self.tombstone) && self.tombstone) ? (self.chunks.size()
+                == 0 && self.contentHash == ''e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'')
+                : self.chunks.size() > 0'
           status:
             properties:
               conditions:

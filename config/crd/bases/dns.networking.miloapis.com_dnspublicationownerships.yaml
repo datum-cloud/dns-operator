@@ -43,6 +43,8 @@ spec:
               activeManifestName:
                 type: string
               holderIdentity:
+                maxLength: 512
+                minLength: 1
                 type: string
               lastContentHash:
                 type: string
@@ -51,16 +53,23 @@ spec:
                 type: string
               nextRevision:
                 format: int64
+                minimum: 1
                 type: integer
               writerEpoch:
                 format: int64
+                minimum: 1
                 type: integer
               zoneUID:
                 description: |-
                   UID is a type that holds unique ID values, including UUIDs.  Because we
                   don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                   intent and helps make sure that UIDs and names do not get conflated.
+                maxLength: 128
+                minLength: 1
                 type: string
+                x-kubernetes-validations:
+                - message: zoneUID is immutable
+                  rule: self == oldSelf
             required:
             - holderIdentity
             - leaseUntil
@@ -68,6 +77,13 @@ spec:
             - writerEpoch
             - zoneUID
             type: object
+            x-kubernetes-validations:
+            - message: publication ownership fences must not decrease
+              rule: self.writerEpoch >= oldSelf.writerEpoch && self.nextRevision >=
+                oldSelf.nextRevision
+            - message: ownership transfer requires a new writer epoch
+              rule: self.holderIdentity == oldSelf.holderIdentity || self.writerEpoch
+                > oldSelf.writerEpoch
         required:
         - spec
         type: object

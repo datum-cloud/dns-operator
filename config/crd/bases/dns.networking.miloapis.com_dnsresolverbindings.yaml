@@ -68,6 +68,7 @@ spec:
                       node:
                         properties:
                           address:
+                            maxLength: 253
                             minLength: 1
                             type: string
                           port:
@@ -93,6 +94,7 @@ spec:
                       regional:
                         properties:
                           address:
+                            maxLength: 253
                             minLength: 1
                             type: string
                           port:
@@ -134,14 +136,17 @@ spec:
                       properties:
                         generation:
                           format: int64
+                          minimum: 0
                           type: integer
                         name:
+                          maxLength: 253
                           type: string
                         uid:
                           description: |-
                             UID is a type that holds unique ID values, including UUIDs.  Because we
                             don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                             intent and helps make sure that UIDs and names do not get conflated.
+                          maxLength: 128
                           type: string
                       required:
                       - name
@@ -161,8 +166,12 @@ spec:
               placement:
                 properties:
                   region:
+                    maxLength: 253
+                    minLength: 1
                     type: string
                   shard:
+                    maxLength: 253
+                    minLength: 1
                     type: string
                 required:
                 - region
@@ -180,14 +189,17 @@ spec:
                     properties:
                       generation:
                         format: int64
+                        minimum: 0
                         type: integer
                       name:
+                        maxLength: 253
                         type: string
                       uid:
                         description: |-
                           UID is a type that holds unique ID values, including UUIDs.  Because we
                           don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                           intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
                         type: string
                     required:
                     - name
@@ -197,6 +209,7 @@ spec:
                       UID is a type that holds unique ID values, including UUIDs.  Because we
                       don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                       intent and helps make sure that UIDs and names do not get conflated.
+                    maxLength: 128
                     type: string
                   resolverContextRef:
                     description: |-
@@ -205,14 +218,17 @@ spec:
                     properties:
                       generation:
                         format: int64
+                        minimum: 0
                         type: integer
                       name:
+                        maxLength: 253
                         type: string
                       uid:
                         description: |-
                           UID is a type that holds unique ID values, including UUIDs.  Because we
                           don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                           intent and helps make sure that UIDs and names do not get conflated.
+                        maxLength: 128
                         type: string
                     required:
                     - name

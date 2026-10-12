@@ -143,4 +143,6 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		a.Spec.GrantRef.Name = "other"
 		requireInvalid(t, cl.Update(ctx, a))
 	})
+	validateServiceDNSContracts(t, cl)
+
 }

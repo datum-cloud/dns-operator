@@ -25,6 +25,8 @@ type DNSResolverBindingSpec struct {
 // +kubebuilder:validation:XValidation:rule="oldSelf == self",message="binding source identity is immutable"
 // +kubebuilder:validation:XValidation:rule="self.projectUID.size() > 0 && self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0 && self.accessBindingRef.name.size() > 0 && has(self.accessBindingRef.uid) && self.accessBindingRef.uid.size() > 0",message="binding source requires project UID and UID-pinned context and access references"
 type DNSResolverBindingSource struct {
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MaxLength=128
 	ProjectUID         types.UID          `json:"projectUID"`
 	ResolverContextRef DNSObjectReference `json:"resolverContextRef"`
 	AccessBindingRef   DNSObjectReference `json:"accessBindingRef"`
@@ -32,8 +34,12 @@ type DNSResolverBindingSource struct {
 
 // +kubebuilder:validation:XValidation:rule="oldSelf == self",message="binding placement is immutable"
 type DNSResolverBindingPlacement struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Region string `json:"region"`
-	Shard  string `json:"shard"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Shard string `json:"shard"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.zoneRefs.all(z, z.name.size() > 0 && has(z.uid) && z.uid.size() > 0)",message="zone references must pin name and UID"
@@ -55,6 +61,7 @@ type DNSResolverBindingListeners struct {
 
 type DNSResolverBindingListener struct {
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	Address string `json:"address"`
 	// +kubebuilder:validation:Enum=53
 	Port int32 `json:"port"`
@@ -103,26 +110,36 @@ type DNSResolverBindingList struct {
 }
 
 type DNSPublicationChunkReference struct {
-	Name   string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
 	SHA256 string `json:"sha256"`
-	Size   int32  `json:"size"`
+	// +kubebuilder:validation:Minimum=1
+	Size int32 `json:"size"`
 }
 
 // +kubebuilder:validation:XValidation:rule="oldSelf == self",message="publication manifests are immutable"
+// +kubebuilder:validation:XValidation:rule="self.zoneRef.name.size() > 0 && has(self.zoneRef.uid) && self.zoneRef.uid.size() > 0",message="zoneRef requires name and UID"
+// +kubebuilder:validation:XValidation:rule="!has(self.previousRevision) || (self.previousRevision >= 0 && self.previousRevision < self.revision)",message="previousRevision must precede revision"
+// +kubebuilder:validation:XValidation:rule="(has(self.tombstone) && self.tombstone) ? (self.chunks.size() == 0 && self.contentHash == 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') : self.chunks.size() > 0",message="withdrawal requires empty content; publication requires chunks"
 type DNSPublicationManifestSpec struct {
-	ZoneRef            DNSObjectReference             `json:"zoneRef"`
-	ZoneApex           string                         `json:"zoneApex"`
-	ContextUIDs        []types.UID                    `json:"contextUIDs"`
-	WriterEpoch        int64                          `json:"writerEpoch"`
-	Revision           int64                          `json:"revision"`
-	PreviousRevision   int64                          `json:"previousRevision,omitempty"`
-	Tombstone          bool                           `json:"tombstone,omitempty"`
-	Chunks             []DNSPublicationChunkReference `json:"chunks"`
-	ContentHash        string                         `json:"contentHash"`
-	GeneratedAt        metav1.Time                    `json:"generatedAt"`
-	ContributionFences []DNSContributionFence         `json:"contributionFences,omitempty"`
-	RegistrationFences []DNSRegistrationFence         `json:"registrationFences,omitempty"`
-	ServingTargets     []DNSPublicationTarget         `json:"servingTargets,omitempty"`
+	ZoneRef DNSObjectReference `json:"zoneRef"`
+	// +kubebuilder:validation:MinLength=1
+	ZoneApex    string      `json:"zoneApex"`
+	ContextUIDs []types.UID `json:"contextUIDs"`
+	// +kubebuilder:validation:Minimum=1
+	WriterEpoch int64 `json:"writerEpoch"`
+	// +kubebuilder:validation:Minimum=1
+	Revision         int64                          `json:"revision"`
+	PreviousRevision int64                          `json:"previousRevision,omitempty"`
+	Tombstone        bool                           `json:"tombstone,omitempty"`
+	Chunks           []DNSPublicationChunkReference `json:"chunks"`
+	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
+	ContentHash        string                 `json:"contentHash"`
+	GeneratedAt        metav1.Time            `json:"generatedAt"`
+	ContributionFences []DNSContributionFence `json:"contributionFences,omitempty"`
+	RegistrationFences []DNSRegistrationFence `json:"registrationFences,omitempty"`
+	ServingTargets     []DNSPublicationTarget `json:"servingTargets,omitempty"`
 }
 
 type DNSPublicationTarget struct {
@@ -173,11 +190,16 @@ type DNSPublicationManifestList struct {
 // +kubebuilder:validation:XValidation:rule="oldSelf == self",message="publication chunks are immutable"
 type DNSPublicationChunkSpec struct {
 	ManifestUID types.UID `json:"manifestUID,omitempty"`
-	WriterEpoch int64     `json:"writerEpoch"`
-	Revision    int64     `json:"revision"`
-	Index       int32     `json:"index"`
-	SHA256      string    `json:"sha256"`
-	Payload     []byte    `json:"payload"`
+	// +kubebuilder:validation:Minimum=1
+	WriterEpoch int64 `json:"writerEpoch"`
+	// +kubebuilder:validation:Minimum=1
+	Revision int64 `json:"revision"`
+	// +kubebuilder:validation:Minimum=0
+	Index int32 `json:"index"`
+	// +kubebuilder:validation:Pattern=`^[a-fA-F0-9]{64}$`
+	SHA256 string `json:"sha256"`
+	// +kubebuilder:validation:MinLength=1
+	Payload []byte `json:"payload"`
 }
 
 // +kubebuilder:object:root=true
@@ -235,10 +257,20 @@ type DNSTransportOutboxList struct {
 
 // DNSPublicationOwnership is a durable compare-and-swap record for a zone
 // compiler. A lease takeover increments WriterEpoch and fences delayed holders.
+// +kubebuilder:validation:XValidation:rule="self.writerEpoch >= oldSelf.writerEpoch && self.nextRevision >= oldSelf.nextRevision",message="publication ownership fences must not decrease"
+// +kubebuilder:validation:XValidation:rule="self.holderIdentity == oldSelf.holderIdentity || self.writerEpoch > oldSelf.writerEpoch",message="ownership transfer requires a new writer epoch"
 type DNSPublicationOwnershipSpec struct {
-	ZoneUID            types.UID   `json:"zoneUID"`
-	HolderIdentity     string      `json:"holderIdentity"`
-	WriterEpoch        int64       `json:"writerEpoch"`
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="zoneUID is immutable"
+	ZoneUID types.UID `json:"zoneUID"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	HolderIdentity string `json:"holderIdentity"`
+	// +kubebuilder:validation:Minimum=1
+	WriterEpoch int64 `json:"writerEpoch"`
+	// +kubebuilder:validation:Minimum=1
 	NextRevision       int64       `json:"nextRevision"`
 	LeaseUntil         metav1.Time `json:"leaseUntil"`
 	LastContentHash    string      `json:"lastContentHash,omitempty"`

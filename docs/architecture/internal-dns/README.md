@@ -250,8 +250,11 @@ are not fields consumers submit when creating resources.
 Customers select zones and contexts by name within their project namespace. DNS
 resolves these references and retains their UIDs in controller-owned status.
 Internal publication and access contracts pin UIDs and policy generations.
-Admission authenticates writers and enforces field ownership. Publishers cannot
-grant themselves rights or authorize resolver access.
+The project API server authenticates callers and uses RBAC to authorize resource
+and status operations. Separate roles govern product publication, grant issuance,
+network integration, and DNS controllers. Publishers cannot issue grants or
+modify resolver authority. Admission validates live DNS references, lease limits,
+and the relationship between an authenticated publisher and its current grant.
 
 #### Context and regional access
 

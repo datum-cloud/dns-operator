@@ -140,12 +140,18 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 			return err
 		}
 	}
+	bindEpoch := false
 	if req.SubResource == "status" {
 		previous, current := old.Status, c.Status
 		previous.Conditions, current.Conditions = nil, nil
 		previous.PublishedRevision, current.PublishedRevision = 0, 0
 		if reflect.DeepEqual(previous, current) {
 			return nil
+		}
+		// Binding an issued epoch cannot introduce or renew endpoint eligibility.
+		if previous.WriterEpoch == 0 && previous.ObservedGeneration == 0 && previous.Sequence == 0 && !previous.Eligible && previous.ValidUntil == nil && current.WriterEpoch > 0 {
+			current.WriterEpoch = 0
+			bindEpoch = reflect.DeepEqual(previous, current)
 		}
 	}
 	var g dnsv1alpha1.DNSContributionGrant
@@ -155,7 +161,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 	if g.UID != c.Spec.GrantRef.UID || !g.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("grant lifetime is not current")
 	}
-	if clusterUID == "" || g.Spec.Principal.ClusterUID != clusterUID || g.Spec.Principal.Subject != req.UserInfo.Username {
+	if clusterUID == "" || g.Spec.Principal.ClusterUID != clusterUID || (!bindEpoch && g.Spec.Principal.Subject != req.UserInfo.Username) {
 		return fmt.Errorf("caller does not match the grant's authenticated producer principal")
 	}
 	if g.Spec.RegistrationRef.UID != c.Spec.RegistrationRef.UID || g.Spec.RegistrationRef.Name != c.Spec.RegistrationRef.Name {
@@ -187,6 +193,12 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		if !containsType(g.Spec.RecordTypes, rrset.RecordType) || !containsType(r.Spec.RecordTypes, rrset.RecordType) {
 			return fmt.Errorf("record type %s is outside the writer's scope", rrset.RecordType)
 		}
+	}
+	if bindEpoch {
+		if c.Status.WriterEpoch != g.Status.ActiveWriterEpoch {
+			return fmt.Errorf("writer epoch is retired or not issued")
+		}
+		return nil
 	}
 	if req.SubResource == "status" {
 		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {

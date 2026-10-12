@@ -153,16 +153,17 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	if err := cl.Update(ctx, mutated); !apierrors.IsInvalid(err) {
 		t.Fatalf("same-fence deadline mutation accepted: %v", err)
 	}
-	// Even if the source API has no admission webhook, the controller compares
-	// against its retained authorization fence and rejects a deadline replay.
+	// Source CEL rejects deadline changes without an increasing sequence.
 	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	baseAccess := access.DeepCopy()
 	renewedDeadline := metav1.NewTime(expiredAt.Add(time.Minute + 987654321*time.Nanosecond))
 	access.Spec.Authorization.ValidUntil = renewedDeadline
-	requireAccessTestSuccess(t, cl.Patch(ctx, access, client.MergeFromWithOptions(baseAccess, client.MergeFromWithOptimisticLock{})))
+	if err := cl.Patch(ctx, access, client.MergeFromWithOptions(baseAccess, client.MergeFromWithOptimisticLock{})); !apierrors.IsInvalid(err) {
+		t.Fatalf("same-sequence source deadline mutation accepted: %v", err)
+	}
 	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
-	if !access.Spec.Authorization.ValidUntil.Equal(&renewedDeadline) {
-		t.Fatal("typed merge patch lost source deadline precision")
+	if !access.Spec.Authorization.ValidUntil.Equal(&deadline) {
+		t.Fatal("rejected source patch changed its retained deadline")
 	}
 	reconcile(expiredAt)
 	readBinding()
@@ -172,7 +173,12 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	// Ordinary next-sequence renewal is independent of private DNS counters.
 	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	access.Spec.Authorization.Sequence = 3
+	access.Spec.Authorization.ValidUntil = renewedDeadline
 	requireAccessTestSuccess(t, cl.Update(ctx, access))
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
+	if !access.Spec.Authorization.ValidUntil.Equal(&renewedDeadline) {
+		t.Fatal("source renewal lost deadline precision")
+	}
 	reconcile(expiredAt)
 	readBinding()
 	if binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 3 || binding.Spec.Configuration.Revision != 3 || !binding.Spec.Authorization.ValidUntil.Equal(&access.Spec.Authorization.ValidUntil) {
@@ -231,7 +237,14 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess))
 	freshAccess.Spec.QueryIdentity.Value = "fd70:100::11"
 	freshAccess.Spec.Authorization.Sequence = 2
-	requireAccessTestSuccess(t, cl.Update(ctx, freshAccess))
+	if err := cl.Update(ctx, freshAccess); !apierrors.IsInvalid(err) {
+		t.Fatalf("access identity changed in place: %v", err)
+	}
+	freshSpec := freshAccess.Spec
+	requireAccessTestSuccess(t, cl.Delete(ctx, freshAccess))
+	freshAccess = &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: freshSpec}
+	requireAccessTestSuccess(t, cl.Create(ctx, freshAccess))
+	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(freshAccess), freshAccess))
 	reconcile(expiredAt)
 	requireAccessTestSuccess(t, cl.List(ctx, &bindings, client.InNamespace("platform")))
 	if len(bindings.Items) != 2 {

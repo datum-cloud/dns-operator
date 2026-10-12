@@ -352,7 +352,7 @@ func (s *suite) offlineServing(a, b *project) (resultErr error) {
 		return err
 	}
 	// The outage spans multiple DNS cache and fleet acknowledgement intervals.
-	until := time.Now().Add(2 * time.Minute)
+	until := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(until) {
 		for _, tcp := range []bool{false, true} {
 			for _, tenant := range []struct {

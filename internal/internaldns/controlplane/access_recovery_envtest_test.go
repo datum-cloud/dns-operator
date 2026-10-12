@@ -82,6 +82,9 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		requireAccessTestSuccess(t, cl.Status().Update(ctx, c))
 	}
 	readyContext(resolverContext)
+	t.Run("name-only customer references", func(t *testing.T) {
+		verifyNamedReferencesWithAPI(t, cl)
+	})
 	deadline := metav1.NewTime(now.Add(time.Minute + 22357123*time.Nanosecond))
 	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 2, ValidUntil: deadline}}}
 	access.APIVersion = dnsv1alpha1.GroupVersion.String()

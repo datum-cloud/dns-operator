@@ -79,7 +79,7 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}, Status: dnsv1alpha1.DNSResolverContextStatus{AccessWriterEpoch: 4}}
 	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 1, now)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid"}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid", Generation: 1}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "zone"}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "ctx"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid", Generation: 1}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}}
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	until := metav1.NewTime(now.Add(2 * time.Minute))
 	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 4, Sequence: 12, ValidUntil: until}}}
@@ -113,8 +113,8 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 	extraZone.UID = "extra-uid"
 	extraAssociation := association.DeepCopy()
 	extraAssociation.Name = "extra-assoc"
-	extraAssociation.Spec.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: extraZone.Name, UID: extraZone.UID}
-	extraAssociation.Status.ResolvedDNSZoneRef = extraAssociation.Spec.DNSZoneRef
+	extraAssociation.Spec.DNSZoneRef = dnsv1alpha1.DNSNameReference{Name: extraZone.Name}
+	extraAssociation.Status.ResolvedDNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: extraZone.Name, UID: extraZone.UID, Generation: extraZone.Generation}
 	if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association, *extraAssociation}, map[string]*dnsv1alpha1.DNSZone{"zone": zone, "extra": extraZone}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -252,9 +252,10 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	z2 := dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "services", Namespace: "project", UID: "zone-2", Generation: 3}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	associations := []dnsv1alpha1.DNSZoneAssociation{{Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{UID: z1.UID}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: resolverContext.UID}}}, {Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{UID: z2.UID}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: resolverContext.UID}}}}
 	for i := range associations {
+		associations[i].Generation = 1
 		setCondition(&associations[i].Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{RegistrationClass: dnsv1alpha1.DNSRegistrationClassInstanceIdentity, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z1.Name, UID: z1.UID, Generation: z1.Generation}, NamePrefix: "instances"}, {RegistrationClass: dnsv1alpha1.DNSRegistrationClassServiceDiscovery, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z2.Name, UID: z2.UID, Generation: z2.Generation}, NamePrefix: "services"}}}}
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolverContext.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: z1.Name}, NamePrefix: "instances"}, {DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: z2.Name}, NamePrefix: "services"}}}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolverContext, policy).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSNamingPolicy{}).Build()
 	r := &Reconciler{Client: c, Options: ReconcilerOptions{}}
 	if err := r.reconcileNamingPolicies(ctx, []dnsv1alpha1.DNSNamingPolicy{*policy}, associations, map[string]*dnsv1alpha1.DNSZone{z1.Name: &z1, z2.Name: &z2}, now); err != nil {

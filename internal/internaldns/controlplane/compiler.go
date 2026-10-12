@@ -11,8 +11,6 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -518,9 +516,8 @@ func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1
 	vpcs := map[types.UID]struct{}{}
 	for i := range associations {
 		a := &associations[i]
-		accepted := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
 		consumerUID := a.Status.ResolvedResolverContextRef.UID
-		if a.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && refMatches(a.Status.ResolvedDNSZoneRef, zone.Name, zone.UID, zone.Generation) && consumerUID != "" {
+		if associationMatchesZone(a, zone) && consumerUID != "" {
 			vpcs[consumerUID] = struct{}{}
 		}
 	}

@@ -40,22 +40,10 @@ spec:
             properties:
               dnsZoneRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -64,44 +52,20 @@ spec:
                 type: boolean
               resolverContextRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
                 type: object
               vpcRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -110,25 +74,12 @@ spec:
             - dnsZoneRef
             type: object
             x-kubernetes-validations:
-            - message: exactly one UID-pinned vpcRef or resolverContextRef is required
+            - message: exactly one named vpcRef or resolverContextRef is required
               rule: (has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size()
-                > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0) != (has(self.resolverContextRef)
-                && has(self.resolverContextRef.name) && self.resolverContextRef.name.size()
-                > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
-                > 0)
-            - message: a nonempty vpcRef must pin name and UID
-              rule: '!has(self.vpcRef) || ((self.vpcRef.name.size() == 0 && !has(self.vpcRef.uid)
-                && (!has(self.vpcRef.generation) || self.vpcRef.generation == 0))
-                || (self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size()
-                > 0))'
-            - message: a nonempty resolverContextRef must pin name and UID
-              rule: '!has(self.resolverContextRef) || ((self.resolverContextRef.name.size()
-                == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation)
-                || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size()
-                > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
-                > 0))'
-            - message: dnsZoneRef must pin the zone UID
-              rule: has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0
+                > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name)
+                && self.resolverContextRef.name.size() > 0)
+            - message: dnsZoneRef requires a name
+              rule: self.dnsZoneRef.name.size() > 0
           status:
             properties:
               bindingRef:

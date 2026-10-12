@@ -364,7 +364,7 @@ func (s *suite) prepare(p *project) error {
 }
 
 func (s *suite) associate(p *project, zone *dnsv1.DNSZone, name string) error {
-	association := &dnsv1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace}, Spec: dnsv1.DNSZoneAssociationSpec{DNSZoneRef: objectRef(zone), ResolverContextRef: objectRef(&p.resolverContext)}}
+	association := &dnsv1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace}, Spec: dnsv1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1.DNSNameReference{Name: p.resolverContext.Name}}}
 	if err := p.customer.Create(s.ctx, association); err != nil {
 		return err
 	}

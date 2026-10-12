@@ -42,62 +42,78 @@ spec:
                   properties:
                     dnsZoneRef:
                       description: |-
-                        DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                        is used where a writer must also be fenced against policy changes.
+                        DNSNameReference selects a resource in the same project namespace.
+                        DNS records its resolved lifetime in controller-owned status.
                       properties:
-                        generation:
-                          format: int64
-                          minimum: 0
-                          type: integer
                         name:
-                          maxLength: 253
-                          type: string
-                        uid:
-                          description: |-
-                            UID is a type that holds unique ID values, including UUIDs.  Because we
-                            don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                            intent and helps make sure that UIDs and names do not get conflated.
-                          maxLength: 128
                           type: string
                       required:
                       - name
                       type: object
                     namePrefix:
                       type: string
-                    registrationClass:
-                      enum:
-                      - InstanceIdentity
-                      - ServiceDiscovery
-                      - ServiceVIP
-                      - ServiceExport
-                      type: string
+                    selector:
+                      description: |-
+                        Selector matches DNSRegistration metadata labels within this DNS context.
+                        An omitted or empty selector matches every registration in the context.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
                   required:
                   - dnsZoneRef
                   - namePrefix
-                  - registrationClass
                   type: object
                   x-kubernetes-validations:
-                  - message: dnsZoneRef must pin the zone UID
-                    rule: has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() >
-                      0
+                  - message: dnsZoneRef requires a name
+                    rule: self.dnsZoneRef.name.size() > 0
                 type: array
               dnsZoneRef:
-                description: Legacy single-rule fields are retained during the v1alpha1
-                  transition.
+                description: |-
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -105,26 +121,12 @@ spec:
               priority:
                 format: int32
                 type: integer
-              product:
-                type: string
               resolverContextRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -133,22 +135,10 @@ spec:
                 type: string
               vpcRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -157,26 +147,10 @@ spec:
             - additionalNames
             type: object
             x-kubernetes-validations:
-            - message: exactly one UID-pinned vpcRef or resolverContextRef is required
+            - message: exactly one named vpcRef or resolverContextRef is required
               rule: (has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size()
-                > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size() > 0) != (has(self.resolverContextRef)
-                && has(self.resolverContextRef.name) && self.resolverContextRef.name.size()
-                > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
-                > 0)
-            - message: a nonempty vpcRef must pin name and UID
-              rule: '!has(self.vpcRef) || ((self.vpcRef.name.size() == 0 && !has(self.vpcRef.uid)
-                && (!has(self.vpcRef.generation) || self.vpcRef.generation == 0))
-                || (self.vpcRef.name.size() > 0 && has(self.vpcRef.uid) && self.vpcRef.uid.size()
-                > 0))'
-            - message: a nonempty resolverContextRef must pin name and UID
-              rule: '!has(self.resolverContextRef) || ((self.resolverContextRef.name.size()
-                == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation)
-                || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size()
-                > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size()
-                > 0))'
-            - message: a selected dnsZoneRef must pin the zone UID
-              rule: '!has(self.dnsZoneRef) || self.dnsZoneRef.name.size() == 0 ||
-                (has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0)'
+                > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name)
+                && self.resolverContextRef.name.size() > 0)
           status:
             properties:
               conditions:
@@ -262,17 +236,58 @@ spec:
                       type: object
                     namePrefix:
                       type: string
-                    registrationClass:
-                      enum:
-                      - InstanceIdentity
-                      - ServiceDiscovery
-                      - ServiceVIP
-                      - ServiceExport
-                      type: string
+                    selector:
+                      description: |-
+                        A label selector is a label query over a set of resources. The result of matchLabels and
+                        matchExpressions are ANDed. An empty label selector matches all objects. A null
+                        label selector matches no objects.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
                   required:
                   - dnsZoneRef
                   - namePrefix
-                  - registrationClass
                   type: object
                 type: array
               resolvedDNSZoneRef:

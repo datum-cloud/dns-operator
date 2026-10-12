@@ -5,17 +5,21 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -194,6 +198,98 @@ func TestResolverAccessRequiresCurrentContextAndBoundedLease(t *testing.T) {
 	req = request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", current, old)
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("stale context Ready condition authorized access")
+	}
+}
+
+func TestConsumerSelectorUsesNamesAndRejectsAmbiguity(t *testing.T) {
+	vpc := dnsv1alpha1.DNSNameReference{Name: "vpc"}
+	resolverContext := dnsv1alpha1.DNSNameReference{Name: "ctx"}
+	for _, contextMode := range []bool{false, true} {
+		for _, tc := range []struct {
+			name         string
+			vpc, context dnsv1alpha1.DNSNameReference
+		}{{"empty", dnsv1alpha1.DNSNameReference{}, dnsv1alpha1.DNSNameReference{}}, {"both", vpc, resolverContext}} {
+			t.Run(fmt.Sprintf("context=%v/%s", contextMode, tc.name), func(t *testing.T) {
+				if err := validateConsumerSelector(tc.vpc, tc.context, contextMode); err == nil {
+					t.Fatal("ambiguous selector accepted")
+				}
+			})
+		}
+	}
+	if err := validateConsumerSelector(vpc, dnsv1alpha1.DNSNameReference{}, false); err != nil {
+		t.Fatalf("network selector rejected: %v", err)
+	}
+	if err := validateConsumerSelector(dnsv1alpha1.DNSNameReference{}, resolverContext, true); err != nil {
+		t.Fatalf("context selector rejected: %v", err)
+	}
+	if validateConsumerSelector(vpc, dnsv1alpha1.DNSNameReference{}, true) == nil || validateConsumerSelector(dnsv1alpha1.DNSNameReference{}, resolverContext, false) == nil {
+		t.Fatal("selector accepted in the wrong integration mode")
+	}
+}
+
+func TestCustomerNamedReferencesRequireZoneAndContextAuthorization(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", UID: "zone"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", UID: "context", Generation: 1}}
+	setAdmissionCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, resolver.Generation, time.Now())
+	deniedResource := ""
+	reviewed := map[string]string{}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		if review, ok := obj.(*authorizationv1.SubjectAccessReview); ok {
+			attributes := review.Spec.ResourceAttributes
+			reviewed[attributes.Resource] = attributes.Verb + "/" + attributes.Name
+			review.Status.Allowed = attributes.Resource != deniedResource
+			return nil
+		}
+		return cl.Create(ctx, obj, opts...)
+	}}).Build()
+	h := Handler{Client: cl, ResolverContextsEnabled: true}
+	zoneRef := dnsv1alpha1.DNSNameReference{Name: zone.Name}
+	contextRef := dnsv1alpha1.DNSNameReference{Name: resolver.Name}
+	for resource, object := range map[string]any{
+		"dnszoneassociations": &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: zoneRef, ResolverContextRef: contextRef}},
+		"dnsnamingpolicies":   &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: zoneRef, NamePrefix: "hosts"}}}},
+	} {
+		t.Run(resource, func(t *testing.T) {
+			for _, denied := range []string{"", "dnszones", "dnsresolvercontexts"} {
+				deniedResource = denied
+				reviewed = map[string]string{}
+				response := h.Handle(context.Background(), request(resource, "customer", object, nil))
+				if response.Allowed != (denied == "") {
+					t.Fatalf("denied=%q allowed=%v: %v", denied, response.Allowed, response.Result)
+				}
+				if denied == "" && (reviewed["dnszones"] != "update/production" || reviewed["dnsresolvercontexts"] != "use/application") {
+					t.Fatalf("references did not authorize both named resources: %v", reviewed)
+				}
+			}
+			req := request(resource, "customer", object, nil)
+			req.SubResource = "status"
+			if h.Handle(context.Background(), req).Allowed {
+				t.Fatal("customer can modify DNS-owned lifetime pins")
+			}
+		})
+	}
+}
+
+func TestNamingPolicyRejectsMalformedSelectors(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), ResolverContextsEnabled: true}
+	for _, selector := range []*metav1.LabelSelector{
+		{MatchLabels: map[string]string{"bad key": "value"}},
+		{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "Unsupported"}}},
+		{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}},
+	} {
+		policy := &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "application"}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: selector, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "production"}, NamePrefix: "application"}}}}
+		response := h.Handle(context.Background(), request("dnsnamingpolicies", "customer", policy, nil))
+		if response.Allowed || response.Result == nil || !strings.Contains(response.Result.Message, "invalid naming selector") {
+			t.Fatalf("malformed selector was not rejected by validation: %v", response.Result)
+		}
 	}
 }
 

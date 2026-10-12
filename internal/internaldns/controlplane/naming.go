@@ -11,6 +11,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -24,7 +25,8 @@ type ResolvedName struct {
 // ResolveNaming returns the stable platform namespace first and authorized
 // additive policy names after it. It never selects an arbitrary associated
 // customer zone.
-func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID, vpcUID types.UID, class dnsv1alpha1.DNSRegistrationClass, allocatedName string) ([]ResolvedName, error) {
+// Selectors match DNSRegistration metadata labels supplied by the publisher.
+func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID, vpcUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
 	label := dnsLabel(allocatedName)
 	if label == "" {
 		return nil, fmt.Errorf("allocated name %q has no DNS-safe label", allocatedName)
@@ -45,6 +47,7 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	if len(out) == 0 {
 		return nil, fmt.Errorf("managed DNS namespace for VPC %s is not ready", vpcUID)
 	}
+	seen := map[string]bool{string(out[0].DNSZoneRef.UID) + "\x00" + out[0].Name: true}
 	var policies dnsv1alpha1.DNSNamingPolicyList
 	if err := c.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
 		return nil, err
@@ -58,16 +61,30 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	for i := range policies.Items {
 		p := &policies.Items[i]
 		accepted := apimeta.FindStatusCondition(p.Status.Conditions, dnsValueAccepted)
-		if p.Status.ResolvedVPCRef.UID != vpcUID || accepted == nil || accepted.Status != metav1.ConditionTrue {
+		if p.Status.ResolvedVPCRef.UID != vpcUID || !p.DeletionTimestamp.IsZero() || accepted == nil || accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != p.Generation {
 			continue
 		}
 		for _, rule := range p.Status.ResolvedAdditionalNames {
-			if rule.RegistrationClass == class {
-				out = append(out, ResolvedName{DNSZoneRef: rule.DNSZoneRef, Name: label + "." + canonicalName(rule.NamePrefix)})
+			selector, err := namingSelector(rule.Selector)
+			if err != nil {
+				return nil, fmt.Errorf("naming policy %s has an invalid selector: %w", p.Name, err)
+			}
+			name := label + "." + canonicalName(rule.NamePrefix)
+			key := string(rule.DNSZoneRef.UID) + "\x00" + name
+			if selector.Matches(labels.Set(registrationLabels)) && !seen[key] {
+				out = append(out, ResolvedName{DNSZoneRef: rule.DNSZoneRef, Name: name})
+				seen[key] = true
 			}
 		}
 	}
 	return out, nil
+}
+
+func namingSelector(selector *metav1.LabelSelector) (labels.Selector, error) {
+	if selector == nil {
+		return labels.Everything(), nil
+	}
+	return metav1.LabelSelectorAsSelector(selector)
 }
 
 func dnsLabel(s string) string {

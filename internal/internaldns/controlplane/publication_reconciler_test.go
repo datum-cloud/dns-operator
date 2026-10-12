@@ -84,8 +84,8 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	assoc := input.Associations[0].DeepCopy()
 	assoc.Namespace = "project"
 	assoc.Name = "zone-prod"
-	assoc.Spec.VPCRef = dnsv1alpha1.DNSObjectReference{}
-	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}
+	assoc.Spec.VPCRef = dnsv1alpha1.DNSNameReference{}
+	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: "prod"}
 	assoc.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
 	reg := input.Registrations[0].DeepCopy()
 	reg.Namespace = "project"
@@ -292,8 +292,8 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 	assoc := fixture(now).Associations[0].DeepCopy()
 	assoc.Namespace = "project"
 	assoc.Name = "zone-prod"
-	assoc.Spec.VPCRef = dnsv1alpha1.DNSObjectReference{}
-	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}
+	assoc.Spec.VPCRef = dnsv1alpha1.DNSNameReference{}
+	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: "prod"}
 	assoc.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
 	reg := fixture(now).Registrations[0].DeepCopy()
 	reg.Namespace = "project"

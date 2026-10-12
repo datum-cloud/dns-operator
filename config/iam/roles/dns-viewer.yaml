@@ -24,8 +24,6 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.get
     - dns.networking.miloapis.com/dnszonediscoveries/status.get
     - dns.networking.miloapis.com/dnszonediscoveries.watch
-
-
     - dns.networking.miloapis.com/dnszoneassociations.list
     - dns.networking.miloapis.com/dnszoneassociations.get
     - dns.networking.miloapis.com/dnszoneassociations.watch

@@ -14,7 +14,6 @@ data:
         {
           "name": "example-project",
           "projectUID": "00000000-0000-0000-0000-000000000001",
-          "sourceClusterUID": "00000000-0000-0000-0000-000000000010",
           "namespace": "example-project",
           "kubeAPI": {"qps":20,"burst":40,"requestTimeoutSeconds":10}
         }
@@ -63,9 +62,7 @@ data:
       "admission": {
         "enabled": true,
         "port": 9443,
-        "certDir": "/var/run/internal-dns/admission",
-        "maxContributionLeaseSeconds": 90,
-        "maxAccessLeaseSeconds": 300
+        "certDir": "/var/run/internal-dns/admission"
       }
     }
 ---

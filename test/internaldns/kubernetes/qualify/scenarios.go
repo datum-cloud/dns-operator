@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -23,11 +24,11 @@ func (s *suite) scenarios(a, b *project) error {
 			return err
 		}
 	}
-	pa, err := s.publish(a, objectRef(&a.zone), "common", "common", "10.42.0.10", "fd42::10", 90*time.Second)
+	pa, err := s.publish(a, objectRef(&a.zone), "common", "common", "10.42.0.10", "fd42::10")
 	if err != nil {
 		return err
 	}
-	pb, err := s.publish(b, objectRef(&b.zone), "common", "common", "10.42.0.20", "fd42::20", 90*time.Second)
+	pb, err := s.publish(b, objectRef(&b.zone), "common", "common", "10.42.0.20", "fd42::20")
 	if err != nil {
 		return err
 	}
@@ -74,7 +75,7 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("an unbound destination cannot resolve either tenant's private records", nil)
-	if _, err := s.publish(a, objectRef(&a.zone), "only-a", "only-a", "10.42.0.20", "", 90*time.Second); err != nil {
+	if _, err := s.publish(a, objectRef(&a.zone), "only-a", "only-a", "10.42.0.20", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "only-a.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
@@ -85,7 +86,7 @@ func (s *suite) scenarios(a, b *project) error {
 	}
 	s.pass("negative caches and overlapping endpoint address spaces stay isolated", nil)
 	// Products discover their managed zone through context status.
-	if _, err := s.publish(a, a.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.11", "", 90*time.Second); err != nil {
+	if _, err := s.publish(a, a.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.11", ""); err != nil {
 		return err
 	}
 	managedName := "web." + a.resolverContext.Status.ManagedNamespace.Suffix
@@ -94,7 +95,7 @@ func (s *suite) scenarios(a, b *project) error {
 			return err
 		}
 	}
-	if _, err := s.publish(b, b.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.21", "", 90*time.Second); err != nil {
+	if _, err := s.publish(b, b.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.21", ""); err != nil {
 		return err
 	}
 	for _, tcp := range []bool{false, true} {
@@ -113,14 +114,14 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.associate(a, apps, "apps"); err != nil {
 		return err
 	}
-	if _, err := s.publish(a, objectRef(apps), "apps", "api", "10.42.0.12", "", 90*time.Second); err != nil {
+	if _, err := s.publish(a, objectRef(apps), "apps", "api", "10.42.0.12", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "api.apps.internal", "A", true, dns.RcodeSuccess, "10.42.0.12"); err != nil {
 		return err
 	}
 	s.pass("one resolver context serves its managed namespace and multiple custom zones", nil)
-	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
+	if err := s.observe(b, pb, true); err != nil {
 		return err
 	}
 	if err := s.update(a, pa, "10.42.0.30", "fd42::30"); err != nil {
@@ -132,7 +133,7 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.expect(b, "common.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
 		return err
 	}
-	if err := s.observe(a, pa, false, 90*time.Second); err != nil {
+	if err := s.observe(a, pa, false); err != nil {
 		return err
 	}
 	for _, tcp := range []bool{false, true} {
@@ -141,7 +142,7 @@ func (s *suite) scenarios(a, b *project) error {
 		}
 	}
 	s.pass("an unhealthy endpoint stops producing DNS answers", nil)
-	if err := s.observe(a, pa, true, 90*time.Second); err != nil {
+	if err := s.observe(a, pa, true); err != nil {
 		return err
 	}
 	if err := s.expect(a, "common.prod.internal", "A", true, dns.RcodeSuccess, "10.42.0.30"); err != nil {
@@ -161,10 +162,10 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.takeover(a, pa); err != nil {
 		return err
 	}
-	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
+	if err := s.observe(b, pb, true); err != nil {
 		return err
 	}
-	deleted, err := s.publish(a, objectRef(&a.zone), "deleted", "deleted", "10.42.0.14", "", 90*time.Second)
+	deleted, err := s.publish(a, objectRef(&a.zone), "deleted", "deleted", "10.42.0.14", "")
 	if err != nil {
 		return err
 	}
@@ -178,10 +179,10 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("deleting a contribution withdraws its answer and preserves registration ownership", nil)
-	if err := s.offlineExpiry(a, b, pa, pb); err != nil {
+	if err := s.offlineServing(a, b); err != nil {
 		return err
 	}
-	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
+	if err := s.observe(b, pb, true); err != nil {
 		return err
 	}
 	if err := s.expect(b, "common.prod.internal", "A", true, dns.RcodeSuccess, "10.42.0.20"); err != nil {
@@ -200,7 +201,7 @@ func (s *suite) update(p *project, pub *publication, address, ipv6 string) error
 	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFrom(before)); err != nil {
 		return err
 	}
-	return s.observe(p, pub, true, 90*time.Second)
+	return s.observe(p, pub, true)
 }
 
 func (s *suite) owner(zoneUID string) (dnsv1.DNSPublicationOwnership, error) {
@@ -284,7 +285,7 @@ func (s *suite) takeover(p *project, pub *publication) (resultErr error) {
 	}); err != nil {
 		return err
 	}
-	if err := s.observe(p, pub, true, 90*time.Second); err != nil {
+	if err := s.observe(p, pub, true); err != nil {
 		return err
 	}
 	if err := s.expect(p, "common.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.30"); err != nil {
@@ -322,49 +323,18 @@ func (s *suite) scaleBroker(replicas int32) error {
 	})
 }
 
-func (s *suite) offlineExpiry(a, b *project, pa, pb *publication) (resultErr error) {
-	// Keep the healthy tenant's original record and access lease long enough to
-	// cover the outage. Only the expired tenant receives the short access lease.
-	// Finish access readiness before starting the record leases: serving ACKs
-	// follow the production 30-second interval and can consume that setup time.
-	if err := s.renewAccess(b, 5*time.Minute); err != nil {
-		return err
-	}
-	if err := s.observe(a, pa, true, 90*time.Second); err != nil {
-		return err
-	}
-	if err := s.observe(b, pb, true, 90*time.Second); err != nil {
-		return err
-	}
-	expiring, err := s.publish(a, objectRef(&a.zone), "expires", "expires", "10.42.0.15", "", 45*time.Second)
-	if err != nil {
-		return err
-	}
-	if err := s.expect(a, "expires.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.15"); err != nil {
-		return err
-	}
-	if err := a.integration.Get(s.ctx, client.ObjectKeyFromObject(&a.access), &a.access); err != nil {
-		return err
-	}
-	before := a.access.DeepCopy()
-	a.access.Spec.Authorization.Sequence++
-	a.access.Spec.Authorization.ValidUntil = metav1.NewTime(time.Now().Add(50 * time.Second).UTC())
-	if err := a.integration.Patch(s.ctx, &a.access, client.MergeFrom(before)); err != nil {
-		return err
-	}
-	if err := s.waitAccess(a); err != nil {
-		return err
-	}
+// offlineServing checks uncached queries while control-plane delivery is unavailable.
+func (s *suite) offlineServing(a, b *project) (resultErr error) {
 	var broker appsv1.StatefulSet
 	if err := s.platform.Get(s.ctx, client.ObjectKey{Namespace: s.env.Namespace, Name: s.env.BrokerStatefulSet}, &broker); err != nil {
 		return err
 	}
-	brokerReplicas := int32(1)
+	replicas := int32(3)
 	if broker.Spec.Replicas != nil {
-		brokerReplicas = *broker.Spec.Replicas
+		replicas = *broker.Spec.Replicas
 	}
 	defer func() {
-		if err := s.scaleBroker(brokerReplicas); err != nil {
+		if err := s.scaleBroker(replicas); err != nil {
 			resultErr = errors.Join(resultErr, fmt.Errorf("broker restoration: %w", err))
 		}
 		for _, name := range s.env.ControllerDeployments {
@@ -381,81 +351,72 @@ func (s *suite) offlineExpiry(a, b *project, pa, pb *publication) (resultErr err
 	if err := s.scaleBroker(0); err != nil {
 		return err
 	}
-	if expiring.contribution.Status.ValidUntil == nil || !expiring.contribution.Status.ValidUntil.After(time.Now().Add(3*time.Second)) {
-		return fmt.Errorf("record expired before the outage; no offline expiry proof")
-	}
-	if !a.access.Spec.Authorization.ValidUntil.After(time.Now().Add(10 * time.Second)) {
-		return fmt.Errorf("access expired before the outage; no offline authorization proof")
-	}
-	if !a.access.Spec.Authorization.ValidUntil.After(expiring.contribution.Status.ValidUntil.Add(5 * time.Second)) {
-		return fmt.Errorf("record and access deadlines overlap; no independent expiry proof")
-	}
-	if pb.contribution.Status.ValidUntil == nil ||
-		!pb.contribution.Status.ValidUntil.After(a.access.Spec.Authorization.ValidUntil.Add(15*time.Second)) {
-		return fmt.Errorf("healthy record lease cannot cover access expiry; no outage positive control")
-	}
-	if err := s.expect(a, "expires.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.15"); err != nil {
-		return err
-	}
-	s.pass("Kubernetes controllers and broker stop without stopping the serving pods", nil)
-	if deadline := expiring.contribution.Status.ValidUntil; deadline != nil {
-		if remaining := time.Until(deadline.Add(3 * time.Second)); remaining > 0 {
-			time.Sleep(remaining)
+	// The outage spans multiple DNS cache and fleet acknowledgement intervals.
+	until := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(until) {
+		for _, tcp := range []bool{false, true} {
+			for _, tenant := range []struct {
+				project *project
+				address string
+			}{{a, "10.42.0.30"}, {b, "10.42.0.20"}} {
+				answer, err := s.query(tenant.project, "common.prod.internal", "A", tcp)
+				if err != nil {
+					return err
+				}
+				if answer.Error != "" || answer.Rcode != dns.RcodeSuccess || len(answer.Answers) != 1 || answer.Answers[0] != tenant.address {
+					return fmt.Errorf("outage query for %s TCP=%t: %#v", tenant.project.Name, tcp, answer)
+				}
+			}
+		}
+		select {
+		case <-s.ctx.Done():
+			return s.ctx.Err()
+		case <-time.After(time.Second):
 		}
 	}
-	if err := s.expect(a, "expires.prod.internal", "A", false, dns.RcodeSuccess); err != nil {
+	s.pass("both tenants keep resolving over UDP and TCP with controllers and messaging stopped", nil)
+	var pods corev1.PodList
+	if err := s.platform.List(s.ctx, &pods, client.InNamespace(s.env.Namespace), client.MatchingLabels{"internal-dns-role": "node"}); err != nil {
 		return err
 	}
-	if err := s.expect(b, "common.prod.internal", "A", true, dns.RcodeSuccess, "10.42.0.20"); err != nil {
+	if len(pods.Items) != 1 {
+		return fmt.Errorf("expected one node resolver, got %d", len(pods.Items))
+	}
+	pod := pods.Items[0]
+	var restarts int32
+	for _, status := range pod.Status.ContainerStatuses {
+		if status.Name == "agent" {
+			restarts = status.RestartCount
+		}
+	}
+	cmd := exec.CommandContext(s.ctx, "kubectl", "--kubeconfig", s.env.PlatformKubeconfig, "-n", s.env.Namespace, "exec", pod.Name, "-c", "agent", "--", "pkill", "-TERM", "-f", "^/internal-dns --role=agent")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("restart resolver agent: %w: %s", err, output)
+	}
+	if err := s.wait("resolver agent restart without messaging", time.Minute, func() (bool, error) {
+		var current corev1.Pod
+		if err := s.platform.Get(s.ctx, client.ObjectKeyFromObject(&pod), &current); err != nil {
+			return false, err
+		}
+		for _, status := range current.Status.ContainerStatuses {
+			if status.Name == "agent" && status.RestartCount > restarts && status.State.Running != nil {
+				return true, nil
+			}
+		}
+		return false, nil
+	}); err != nil {
 		return err
-	}
-	s.pass("local record expiry preserves the original deadline during a broker and controller outage", expiring.contribution.Status.ValidUntil)
-	if remaining := time.Until(a.access.Spec.Authorization.ValidUntil.Add(-3 * time.Second)); remaining > 0 {
-		time.Sleep(remaining)
-	}
-	answer, err := s.query(a, "expires.prod.internal", "A", false)
-	if err != nil {
-		return err
-	}
-	if answer.Error != "" || answer.Rcode != dns.RcodeSuccess || len(answer.Answers) != 0 ||
-		!a.access.Spec.Authorization.ValidUntil.After(time.Now()) {
-		return fmt.Errorf("access was not usable just before its original deadline: %+v", answer)
-	}
-	s.pass("unexpired access remains usable after record expiry", map[string]any{
-		"validUntil": a.access.Spec.Authorization.ValidUntil, "answer": answer,
-	})
-	if remaining := time.Until(a.access.Spec.Authorization.ValidUntil.Add(3 * time.Second)); remaining > 0 {
-		time.Sleep(remaining)
 	}
 	for _, tcp := range []bool{false, true} {
-		if err := s.wait("expired access rejected", 15*time.Second, func() (bool, error) {
-			answer, err := s.query(a, "common.prod.internal", "A", tcp)
-			if err != nil {
-				return false, err
-			}
-			return answer.Error != "" || answer.Rcode == dns.RcodeRefused || answer.Rcode == dns.RcodeServerFailure, nil
-		}); err != nil {
+		if err := s.expect(a, "common.prod.internal", "A", tcp, dns.RcodeSuccess, "10.42.0.30"); err != nil {
+			return err
+		}
+		if err := s.expect(b, "common.prod.internal", "A", tcp, dns.RcodeSuccess, "10.42.0.20"); err != nil {
 			return err
 		}
 	}
-	if err := s.expect(b, "common.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
-		return err
-	}
-	s.pass("expired access fails closed while another tenant keeps resolving", a.access.Spec.Authorization.ValidUntil)
+	s.pass("resolver agent restores both tenant contexts from persistent state without messaging", nil)
 	return nil
-}
-
-func (s *suite) renewAccess(p *project, lifetime time.Duration) error {
-	if err := p.integration.Get(s.ctx, client.ObjectKeyFromObject(&p.access), &p.access); err != nil {
-		return err
-	}
-	before := p.access.DeepCopy()
-	p.access.Spec.Authorization.Sequence++
-	p.access.Spec.Authorization.ValidUntil = metav1.NewTime(time.Now().Add(lifetime).UTC())
-	if err := p.integration.Patch(s.ctx, &p.access, client.MergeFrom(before)); err != nil {
-		return err
-	}
-	return s.waitAccess(p)
 }
 
 func readyPods(pods []corev1.Pod, replicas int32) bool {

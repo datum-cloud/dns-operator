@@ -160,14 +160,13 @@ func envelope(t *testing.T, kind model.Kind, uid string, epoch, revision uint64,
 }
 
 func testSnapshot(now time.Time) model.ServingSnapshot {
-	b := model.Binding{BindingUID: "binding-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 2, RequiredPublicationRevision: 4}}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1, ValidUntil: now.Add(10 * time.Minute)}}
+	b := model.Binding{BindingUID: "binding-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 2, RequiredPublicationRevision: 4}}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}
 	return model.ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []model.Binding{b}, Members: []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}}
 }
 
 func testPublication(t *testing.T, now time.Time) (model.PublicationChunk, model.PublicationManifest) {
 	t.Helper()
-	validUntil := now.Add(time.Minute)
-	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 1, Sequence: 1, ValidUntil: validUntil}}, Owners: []string{"api.prod.internal"}, RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 1, Sequence: 1, Eligible: true, ValidUntil: validUntil}}}}}
+	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 1, Sequence: 1}}, Owners: []string{"api.prod.internal"}, RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 1, Sequence: 1, Eligible: true}}}}}
 	payload, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -179,23 +178,21 @@ func testPublication(t *testing.T, now time.Time) (model.PublicationChunk, model
 
 func TestWithdrawnObservationFencesOlderHealthyRecord(t *testing.T) {
 	t.Parallel()
-	now := time.Now().UTC()
 	agent := &Agent{state: newCheckpoint()}
 	withdrawn := model.PublicationPlan{
 		ZoneUID: "zone-a", Apex: "prod.internal",
-		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 33, ValidUntil: now.Add(-time.Minute)}},
+		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 33}},
 		RRSets:            []model.RRSet{},
 	}
 	if err := withdrawn.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	agent.commitContributionFences(withdrawn)
-	olderDeadline := now.Add(time.Minute)
 	olderHealthy := model.PublicationPlan{
 		ZoneUID: "zone-a", Apex: "prod.internal",
-		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 32, ValidUntil: olderDeadline}},
+		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 32}},
 		RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{
-			Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 7, Sequence: 32, Eligible: true, ValidUntil: olderDeadline,
+			Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 7, Sequence: 32, Eligible: true,
 		}}}},
 	}
 	if err := olderHealthy.Validate(); err != nil {
@@ -206,17 +203,16 @@ func TestWithdrawnObservationFencesOlderHealthyRecord(t *testing.T) {
 	}
 }
 
-func TestObservationFenceReplayCannotExtendDeadline(t *testing.T) {
+func TestObservationFenceReplayCannotChangeGrant(t *testing.T) {
 	t.Parallel()
-	now := time.Now().UTC()
 	agent := &Agent{state: newCheckpoint()}
-	original := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 2, Sequence: 4, ValidUntil: now}}, RRSets: []model.RRSet{}}
+	original := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 2, Sequence: 4}}, RRSets: []model.RRSet{}}
 	agent.commitContributionFences(original)
 	replay := original
 	replay.ObservationFences = append([]model.ObservationFence(nil), original.ObservationFences...)
-	replay.ObservationFences[0].ValidUntil = now.Add(time.Hour)
+	replay.ObservationFences[0].GrantUID = "another-grant"
 	if err := agent.validateContributionFences(replay); err == nil {
-		t.Fatal("equal observation fence extended its original deadline")
+		t.Fatal("equal observation fence changed its grant")
 	}
 }
 
@@ -277,7 +273,7 @@ func TestStartForceActivatesPersistedUnchangedConfigBeforeLease(t *testing.T) {
 	config := Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: stateDir, Mode: ModeResolver,
 		Render: renderConfig, UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true,
-		WatchdogLeasePath: leasePath, WatchdogLease: 5 * time.Second, ExpiryInterval: time.Hour,
+		WatchdogLeasePath: leasePath, WatchdogLease: 5 * time.Second, ReconcileInterval: time.Hour,
 		Transaction: TransactionConfig{
 			StageDir:   filepath.Join(dir, "stage"),
 			FailClosed: []Command{{Path: "gate"}},
@@ -347,13 +343,19 @@ func TestStepBoundsStalledAckPublishAndRenewsLocalLease(t *testing.T) {
 		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
 		UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true, WatchdogLeasePath: leasePath,
 		WatchdogLease: 5 * time.Second, AckPublishTimeout: 30 * time.Millisecond,
-	}, Dependencies{AckPublisher: stalledPublisher{}, Runner: &recordingRunner{}, OnError: func(err error) { reported = append(reported, err) }})
+	}, Dependencies{Runner: &recordingRunner{}, OnError: func(err error) { reported = append(reported, err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	agent.state.Snapshot = &snapshot
 	agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
 	agent.state.ServingFence = fence{Epoch: 1, Revision: 1}
+	// Complete durable activation before measuring the ACK publication bound.
+	if err := agent.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	agent.deps.AckPublisher = stalledPublisher{}
+	agent.lastServingAck = make(map[string]servingAckState)
 	started := time.Now()
 	if err := agent.Step(context.Background()); err != nil {
 		t.Fatal(err)
@@ -512,7 +514,6 @@ func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
 	renderConfig.ClusterBIND = BINDRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
-	snapshot.Bindings[0].Authorization.ValidUntil = time.Now().Add(10 * time.Second)
 	leasePath := filepath.Join(dir, "lease.json")
 	publishStarted := make(chan struct{}, 1)
 	publishRelease := make(chan struct{})
@@ -522,8 +523,8 @@ func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.
 		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
 		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true,
 		WatchdogLeasePath: leasePath, WatchdogLease: 500 * time.Millisecond,
-		ExpiryInterval: 20 * time.Millisecond, AckInterval: 50 * time.Millisecond,
-		AckPublishTimeout: 10 * time.Millisecond, LocalServingLease: time.Second,
+		ReconcileInterval: 20 * time.Millisecond, AckInterval: 50 * time.Millisecond,
+		AckPublishTimeout: 10 * time.Millisecond,
 	}, Dependencies{AckPublisher: publisher, Runner: &recordingRunner{}})
 	if err != nil {
 		t.Fatal(err)

@@ -47,7 +47,7 @@ func installTestPublication(t *testing.T, a *Agent, now time.Time) {
 }
 func currentZone(t *testing.T, a *Agent) string {
 	t.Helper()
-	files, err := renderPublications(a.cfg.Render, *a.state.Snapshot, map[string]bool{}, a.state.Publications, a.deps.Clock())
+	files, err := renderPublications(a.cfg.Render, *a.state.Snapshot, map[string]bool{}, a.state.Publications)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestBINDPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 	}
 	installTestPublication(t, agent, now)
 	data := currentZone(t, agent)
-	if !strings.Contains(data, "192.0.2.10") || !strings.Contains(data, publicationMailbox(agent.state.Publications["zone-a"], now)) {
+	if !strings.Contains(data, "192.0.2.10") || !strings.Contains(data, publicationMailbox(agent.state.Publications["zone-a"])) {
 		t.Fatalf("bad zone: %s", data)
 	}
 	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
@@ -84,7 +84,7 @@ func TestBINDPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 		t.Fatal("publication not verified")
 	}
 }
-func TestBINDExpirySurvivesBrokerOutageAndRestart(t *testing.T) {
+func TestBINDPublicationSurvivesBrokerOutageAndRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	clock := now
@@ -98,12 +98,12 @@ func TestBINDExpirySurvivesBrokerOutageAndRestart(t *testing.T) {
 	installTestPublication(t, a, now)
 	a.deps.AckPublisher = newBoundedAckPublisher(stalledPublisher{})
 	a.cfg.AckPublishTimeout = time.Millisecond
-	clock = now.Add(61 * time.Second)
+	clock = now.Add(24 * time.Hour)
 	if err := a.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if data := currentZone(t, a); strings.Contains(data, "192.0.2.10") || !strings.Contains(data, "api.prod.internal. 5 IN "+model.OwnershipMarkerType) {
-		t.Fatalf("expiry did not preserve NODATA ownership: %s", data)
+	if data := currentZone(t, a); !strings.Contains(data, "192.0.2.10") {
+		t.Fatalf("outage removed the published record: %s", data)
 	}
 	local := a.state.Publications["zone-a"].LocalRevision
 	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }})
@@ -114,10 +114,10 @@ func TestBINDExpirySurvivesBrokerOutageAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if restarted.state.Publications["zone-a"].LocalRevision != local {
-		t.Fatal("restart renewed expired observation")
+		t.Fatal("restart changed the applied publication")
 	}
-	if data := currentZone(t, restarted); strings.Contains(data, "192.0.2.10") {
-		t.Fatal("restart resurrected record")
+	if data := currentZone(t, restarted); !strings.Contains(data, "192.0.2.10") {
+		t.Fatal("restart lost the published record")
 	}
 }
 func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
@@ -145,7 +145,7 @@ func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := saved.ContributionFences["contrib-a"]; f.Epoch != 1 || f.Sequence != 1 || !f.ValidUntil.Equal(now.Add(time.Minute)) {
+	if f := saved.ContributionFences["contrib-a"]; f.Epoch != 1 || f.Sequence != 1 {
 		t.Fatalf("observation fence lost: %#v", f)
 	}
 	if saved.Publications["zone-a"].Verified {
@@ -157,36 +157,6 @@ func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
 	runner.failAt = 0
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, m)); err != nil {
 		t.Fatalf("equal fenced retry failed: %v", err)
-	}
-}
-func TestBINDFailedExpiryDoesNotRenewWatchdog(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	clock := now
-	cfg := regionalTestConfig(t)
-	runner := &recordingRunner{}
-	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, a, now)
-	if err := os.Remove(cfg.WatchdogLeasePath); err != nil {
-		t.Fatal(err)
-	}
-	clock = now.Add(61 * time.Second)
-	runner.failAt = len(runner.calls) + 1
-	if err := a.Step(context.Background()); err == nil {
-		t.Fatal("expiry validation failure accepted")
-	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("failed expiry renewed watchdog")
-	}
-	runner.failAt = 0
-	if err := a.Step(context.Background()); err != nil {
-		t.Fatalf("pending expiry retry failed: %v", err)
-	}
-	if strings.Contains(currentZone(t, a), "192.0.2.10") {
-		t.Fatal("retry resurrected expired record")
 	}
 }
 func TestBINDTombstoneFencesReplayAcrossRestart(t *testing.T) {
@@ -214,7 +184,7 @@ func TestBINDTombstoneFencesReplayAcrossRestart(t *testing.T) {
 		t.Fatal("old snapshot defeated tombstone")
 	}
 }
-func TestNodeRequiresDeadlinePlanAndExpiresCacheLocally(t *testing.T) {
+func TestNodeRequiresPublicationAndRetainsCacheDuringOutage(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	clock := now
@@ -234,9 +204,9 @@ func TestNodeRequiresDeadlinePlanAndExpiresCacheLocally(t *testing.T) {
 	snapshot = testSnapshot(now)
 	a.state.Snapshot = &snapshot
 	a.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
-	a.state.Acks["zone-a"] = map[string]replicaAck{"regional-0/regional-0": {Fence: fence{2, 4}, ValidUntil: now.Add(time.Minute)}}
+	a.state.Acks["zone-a"] = map[string]replicaAck{"regional-0/regional-0": {Fence: fence{2, 4}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}}
 	if a.publicationsReady(snapshot.Bindings[0]) {
-		t.Fatal("node enabled from ACK without deadline plan")
+		t.Fatal("node enabled from ACK without publication plan")
 	}
 	chunk, m := testPublication(t, now)
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
@@ -249,7 +219,7 @@ func TestNodeRequiresDeadlinePlanAndExpiresCacheLocally(t *testing.T) {
 		t.Fatal("complete plan + current proof not eligible")
 	}
 	runner.calls = nil
-	clock = now.Add(61 * time.Second)
+	clock = now.Add(24 * time.Hour)
 	if err := a.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -259,15 +229,15 @@ func TestNodeRequiresDeadlinePlanAndExpiresCacheLocally(t *testing.T) {
 			flushed = true
 		}
 	}
-	if !flushed {
-		t.Fatal("node did not flush original-deadline record without broker")
+	if flushed {
+		t.Fatal("node flushed a valid record during the outage")
 	}
 	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.state.Publications["zone-a"].Plan.ObservationFences[0].ValidUntil != now.Add(time.Minute) {
-		t.Fatal("restart changed original deadline")
+	if !restarted.publicationsReady(snapshot.Bindings[0]) {
+		t.Fatal("restart lost the installed publication proof")
 	}
 }
 func TestBINDPublicationVersionProofIncludesFullContentFingerprint(t *testing.T) {
@@ -279,9 +249,9 @@ func TestBINDPublicationVersionProofIncludesFullContentFingerprint(t *testing.T)
 		t.Fatal(err)
 	}
 	p := publicationState{Fence: fence{m.WriterEpoch, m.Revision}, Plan: plan}
-	first := publicationMailbox(p, now)
+	first := publicationMailbox(p)
 	p.Plan.RRSets[0].Records[0].Content = "192.0.2.11"
-	if first == publicationMailbox(p, now) {
+	if first == publicationMailbox(p) {
 		t.Fatal("different installed data shares fingerprint")
 	}
 	if len(first) > 255 {
@@ -323,7 +293,7 @@ func TestRegionalPoolRequiresOneMemberWithEveryCurrentZone(t *testing.T) {
 		a.state.Publications[z.ZoneUID] = publicationState{Fence: fence{2, 4}, Verified: true}
 		a.state.Acks[z.ZoneUID] = map[string]replicaAck{}
 	}
-	proof := replicaAck{Fence: fence{2, 4}, ValidUntil: now.Add(time.Minute)}
+	proof := replicaAck{Fence: fence{2, 4}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
 	a.state.Acks["zone-a"]["regional-0/"] = proof
 	a.state.Acks["zone-b"]["regional-1/"] = proof
 	if a.publicationsReady(b) {
@@ -346,11 +316,11 @@ func TestRegionalPoolRequiresOneMemberWithEveryCurrentZone(t *testing.T) {
 	if strings.Count(conf, "server:addPool(") != 1 {
 		t.Fatalf("stale live member remains in context pool:\n%s", conf)
 	}
-	// A newer ACK without the matching deadline plan gates even the formerly
-	// current member; a missed record stream cannot serve data with old leases.
-	a.state.Acks["zone-a"]["regional-1/"] = replicaAck{Fence: fence{2, 5}, ValidUntil: now.Add(time.Minute)}
+	// A newer ACK without the matching publication plan gates even the formerly
+	// current member; a resolver must hold the publication version confirmed by the member.
+	a.state.Acks["zone-a"]["regional-1/"] = replicaAck{Fence: fence{2, 5}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
 	if a.publicationsReady(b) {
-		t.Fatal("ACK ahead of local deadline plan activated context")
+		t.Fatal("ACK ahead of local publication plan activated context")
 	}
 }
 func TestMissingOrStalePrivatePublicationHasNoPublicFallback(t *testing.T) {
@@ -358,7 +328,7 @@ func TestMissingOrStalePrivatePublicationHasNoPublicFallback(t *testing.T) {
 	c, snapshot := renderFixture(t)
 	c.Role = RenderRegionalBIND
 	publications := map[string]publicationState{"zone-a": {Fence: fence{1, 1}, Plan: model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal"}}}
-	rendered, err := renderPublications(c, snapshot, map[string]bool{}, publications, time.Now())
+	rendered, err := renderPublications(c, snapshot, map[string]bool{}, publications)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +363,7 @@ func TestRejectedMemberProofRevokesRoutingAndIgnoresOlderReplay(t *testing.T) {
 	if err := json.Unmarshal(chunk.Payload, &plan); err != nil {
 		t.Fatal(err)
 	}
-	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 4}, Plan: plan, Verified: true, EffectiveHash: effectivePlanHash(plan, now)}
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 4}, Plan: plan, Verified: true, EffectiveHash: effectivePlanHash(plan)}
 	a.state.Acks["zone-a"] = map[string]replicaAck{"regional-0/regional-0": {Fence: fence{2, 4}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}}
 	ack := model.MemberAck{MemberID: "regional-0", ReplicaID: "regional-0", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckRejected, ObservedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute)}
 	if err := a.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err != nil {
@@ -506,47 +476,6 @@ func installedFileVerifier(t *testing.T, configPath string) PublicationVerifier 
 	})
 }
 
-func TestBINDProofPinsActivatedFilesWhenDeadlineCrossesReload(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	clock := now
-	cfg := regionalTestConfig(t)
-	runner := &afterReloadRunner{}
-	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterBIND.Path)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, a, now)
-	clock = now.Add(59 * time.Second)
-	a.needsActivation = true
-	runner.after = func() { clock = now.Add(61 * time.Second) }
-	if err := a.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if a.state.Publications["zone-a"].LocalRevision == 0 || strings.Contains(currentZone(t, a), "192.0.2.10") {
-		t.Fatal("expiry crossing reload was not materialized before watchdog renewal")
-	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil {
-		t.Fatalf("safe expired authority did not renew watchdog: %v", err)
-	}
-	// Restart must reconstruct file proofs through activation, never trust the
-	// earlier process's in-memory proof or its persisted rendered hash alone.
-	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterBIND.Path)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(restarted.installedPublications) != 0 {
-		t.Fatal("restart inherited unverified process file proofs")
-	}
-	restarted.needsActivation = true
-	if err := restarted.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(restarted.installedPublications["zone-a"].Views) == 0 {
-		t.Fatal("restart did not reconstruct exact activated zone proof")
-	}
-}
-
 func TestFailedBINDActivationRetainsPriorInstalledProof(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
@@ -592,7 +521,7 @@ func TestBINDDoesNotProbeAuthorityBelowRequiredPublicationFence(t *testing.T) {
 	if err := json.Unmarshal(chunk.Payload, &plan); err != nil {
 		t.Fatal(err)
 	}
-	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 4}, Manifest: manifest, Plan: plan, Verified: true, EffectiveHash: effectivePlanHash(plan, now)}
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 4}, Manifest: manifest, Plan: plan, Verified: true, EffectiveHash: effectivePlanHash(plan)}
 	if err := a.reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -602,58 +531,6 @@ func TestBINDDoesNotProbeAuthorityBelowRequiredPublicationFence(t *testing.T) {
 	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
 	if err != nil || !strings.Contains(string(config), "forward only; forwarders { 127.0.0.1 port 9; }") {
 		t.Fatalf("behind-required private zone was not gated: %s %v", config, err)
-	}
-}
-
-func TestBINDWatchdogCannotRenewExpiredInstalledSnapshot(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	clock := now
-	cfg := regionalTestConfig(t)
-	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, a, now)
-	clock = now.Add(61 * time.Second)
-	if err := a.renewWatchdogLease(context.Background()); err == nil {
-		t.Fatal("expired installed snapshot renewed watchdog")
-	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); !errors.Is(err, os.ErrNotExist) || !a.needsActivation {
-		t.Fatalf("expired snapshot was not gated: %v", err)
-	}
-}
-
-func TestBINDExpiryCrossingProofSettlesBeforeWatchdogRenewal(t *testing.T) {
-	t.Parallel()
-	now := time.Now().UTC()
-	clock := now
-	cfg := regionalTestConfig(t)
-	files := installedFileVerifier(t, cfg.Render.ClusterBIND.Path)
-	advance := false
-	verifier := publicationVerifierFunc(func(ctx context.Context, plan model.PublicationPlan, views []PublicationView) error {
-		err := files.VerifyPublication(ctx, plan, views)
-		if advance {
-			advance = false
-			clock = now.Add(61 * time.Second)
-		}
-		return err
-	})
-	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }, PublicationVerifier: verifier})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, a, now)
-	clock = now.Add(59 * time.Second)
-	advance = true
-	if err := a.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(currentZone(t, a), "192.0.2.10") || a.state.Publications["zone-a"].LocalRevision == 0 {
-		t.Fatal("deadline crossing proof renewed stale authority")
-	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil {
-		t.Fatalf("settled expiry unnecessarily gated process: %v", err)
 	}
 }
 
@@ -676,7 +553,7 @@ func (p *partitioningAckPublisher) Publish(_ context.Context, _ string, env mode
 	return transport.PublishAck{}, nil
 }
 
-func TestBINDActivationRacingBrokerDisconnectKeepsSafeLeaseAndOriginalDeadline(t *testing.T) {
+func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	clock := now
@@ -724,7 +601,7 @@ func TestBINDActivationRacingBrokerDisconnectKeepsSafeLeaseAndOriginalDeadline(t
 		t.Fatalf("ACK partition removed safe local lease: %v", err)
 	}
 	// Identical manifest redelivery and snapshot delivery must share the same
-	// best-effort ACK boundary without extending observation deadlines.
+	// best-effort ACK boundary without changing the observation.
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err != nil {
 		t.Fatal(err)
 	}
@@ -734,18 +611,15 @@ func TestBINDActivationRacingBrokerDisconnectKeepsSafeLeaseAndOriginalDeadline(t
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, snapshot)); err != nil {
 		t.Fatal(err)
 	}
-	clock = now.Add(61 * time.Second)
+	clock = now.Add(24 * time.Hour)
 	if err := a.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(currentZone(t, a), "192.0.2.11") {
-		t.Fatal("ACK partition left records past their original deadline")
-	}
-	if !a.state.Publications["zone-a"].Plan.ObservationFences[0].ValidUntil.Equal(now.Add(time.Minute)) {
-		t.Fatal("activation or ACK retry renewed the observation deadline")
+	if !strings.Contains(currentZone(t, a), "192.0.2.11") {
+		t.Fatal("ACK partition removed an applied record")
 	}
 	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil || a.needsActivation {
-		t.Fatalf("safe local expiry was gated by ACK outage: %v", err)
+		t.Fatalf("healthy local serving was gated by ACK outage: %v", err)
 	}
 	before := publisher.verified.Load()
 	publisher.disconnected.Store(false)

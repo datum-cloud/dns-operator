@@ -44,16 +44,12 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
-                  validUntil:
-                    format: date-time
-                    type: string
                   writerEpoch:
                     format: int64
                     minimum: 1
                     type: integer
                 required:
                 - sequence
-                - validUntil
                 - writerEpoch
                 type: object
               contextRef:

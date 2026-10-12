@@ -20,7 +20,6 @@ import (
 
 type ReconcilerOptions struct {
 	ProjectUID           types.UID
-	SourceClusterUID     string
 	ProjectNamespace     string
 	PlatformNamespace    string
 	Region               string
@@ -32,7 +31,6 @@ type ReconcilerOptions struct {
 	AddressAllocator     AddressAllocator
 	PrivateZoneClassName string
 	ServingRegions       []ServingRegion
-	MaxAccessLease       time.Duration
 }
 
 type ServingRegion struct {
@@ -68,9 +66,6 @@ func (o *ReconcilerOptions) defaults() {
 		o.LeaseDuration = 30 * time.Second
 	}
 
-	if o.MaxAccessLease <= 0 {
-		o.MaxAccessLease = 5 * time.Minute
-	}
 	if o.Now == nil {
 		o.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -85,9 +80,7 @@ func (o ReconcilerOptions) servingRegions() []ServingRegion {
 
 type Options = ReconcilerOptions
 
-// Reconciler compiles one project's desired DNS state. ProjectUID and
-// SourceClusterUID are trusted configuration supplied by the replication
-// bridge; Kubernetes namespace identity is never treated as project identity.
+// Reconciler compiles records within a configured project scope.
 type Reconciler struct {
 	client.Client
 	Scheme  *runtime.Scheme
@@ -96,8 +89,8 @@ type Reconciler struct {
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	r.Options.defaults()
-	if r.Options.ProjectUID == "" || r.Options.SourceClusterUID == "" {
-		return ctrl.Result{}, errors.New("projectUID and sourceClusterUID are required")
+	if r.Options.ProjectUID == "" {
+		return ctrl.Result{}, errors.New("projectUID is required")
 	}
 	ns := r.Options.ProjectNamespace
 	if ns == "" {

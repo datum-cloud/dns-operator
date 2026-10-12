@@ -58,14 +58,14 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 	}
 }
 
-func TestContributionDeadlineCannotDelayOwnershipRenewal(t *testing.T) {
+func TestScheduledReconciliationCannotDelayOwnershipRenewal(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	lease := 10 * time.Second
 	if got := nextProjectRequeue(now, now.Add(90*time.Second), lease); got != 5*time.Second {
-		t.Fatalf("long-lived contribution delayed lease renewal: got %s want 5s", got)
+		t.Fatalf("later reconciliation delayed lease renewal: got %s want 5s", got)
 	}
 	if got := nextProjectRequeue(now, now.Add(2*time.Second), lease); got != 2*time.Second {
-		t.Fatalf("near contribution expiry was not honored: got %s want 2s", got)
+		t.Fatalf("earlier reconciliation was not honored: got %s want 2s", got)
 	}
 }
 
@@ -96,12 +96,10 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	contribution.Namespace = "project"
 	contribution.Status.WriterEpoch = 0
 	contribution.Status.Sequence = 1
-	until := metav1.NewTime(now.Add(90 * time.Second))
-	contribution.Status.ValidUntil = &until
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, grant, contribution).
 		WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSContributionGrant{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
 	options := ReconcilerOptions{
-		ProjectUID: "project-a", SourceClusterUID: "cluster-a", ProjectNamespace: "project", PlatformNamespace: "platform",
+		ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "platform",
 		Identity: "writer-a", LeaseDuration: 10 * time.Second,
 		ServingRegions: []ServingRegion{{Region: "east", Shard: "shared"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now },
 	}
@@ -154,12 +152,11 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	deadline := now.Add(-time.Minute).Add(101582 * time.Microsecond)
 	s := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(model.PublicationPlan{ZoneUID: "zone-a", Apex: "corp.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contribution-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 19, ValidUntil: deadline}}, RRSets: []model.RRSet{}})
+	payload, err := json.Marshal(model.PublicationPlan{ZoneUID: "zone-a", Apex: "corp.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contribution-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 19}}, RRSets: []model.RRSet{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +172,7 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 			ContentHash: model.Hash(payload),
 			// The metadata deliberately represents the precision an API server may
 			// retain. Recovery must use the exact immutable wire observation.
-			ContributionFences: []dnsv1alpha1.DNSContributionFence{{UID: "contribution-a", GrantUID: "grant-a", Epoch: 7, Sequence: 19, ValidUntil: metav1.NewTime(deadline.Truncate(time.Second))}},
+			ContributionFences: []dnsv1alpha1.DNSContributionFence{{UID: "contribution-a", GrantUID: "grant-a", Epoch: 7, Sequence: 19}},
 		},
 	}
 	owner := &dnsv1alpha1.DNSPublicationOwnership{
@@ -197,9 +194,6 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 	}
 	if len(previous.Contributions) != 1 || previous.Contributions[0].Sequence != 19 {
 		t.Fatalf("old epoch high-water fence was lost: %#v", previous)
-	}
-	if !previous.Contributions[0].ValidUntil.Equal(deadline) {
-		t.Fatalf("wire deadline precision was lost: got %s want %s", previous.Contributions[0].ValidUntil, deadline)
 	}
 	in := fixture(now)
 	in.Previous = previous
@@ -304,14 +298,14 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 	contrib.Namespace = "project"
 	contrib.Status.WriterEpoch = 0
 	contrib.Status.Sequence = 1
-	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd53::11"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1, ValidUntil: metav1.NewTime(now.Add(3 * time.Minute))}}}
+	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd53::11"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1}}}
 	accessWest := accessEast.DeepCopy()
 	accessWest.Name = "prod-west"
 	accessWest.UID = "access-west"
 	accessWest.Spec.Region = "west"
 	accessWest.Spec.QueryIdentity.Value = "fd53::12"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, grant, contrib, accessEast, accessWest).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSContributionGrant{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
-	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", SourceClusterUID: "cluster-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s2"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s2"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
 	for i := 0; i < 8; i++ {
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}); err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)

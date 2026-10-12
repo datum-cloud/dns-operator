@@ -33,7 +33,7 @@ cluster health or that the proposed private DNS fleet is deployed.
 - [NATS infrastructure](https://github.com/datum-cloud/infra/blob/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/infrastructure/databases/nats/base/nats-hr.yaml)
   declares three broker replicas, persistent JetStream storage, and client and
   route TLS. The Kubernetes lab uses that three-replica storage and TLS pattern.
-  Its full broker outage test proves local expiry and replica restart using
+  Its full broker outage test proves local serving continuity and replica restart using
   retained PVCs. Quorum loss, disk/host-loss recovery, and regional transport
   still need dedicated scenarios.
 - [Public edge DNS](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/downstream/edge)
@@ -137,7 +137,7 @@ intended for staging. Do not mount the Docker socket into those workloads.
 2. **Kubernetes deployment (implemented).** Reuse pinned test-infra, serving
    images and command helpers, TLS admission, scoped worker/product credentials,
    two controllers, three TLS brokers, and persistent serving state. Run
-   publication, isolation, takeover, and expiry checks against real pods. ACK
+   publication, isolation, takeover, and outage checks against real pods. ACK
    timing is 30/90 seconds; ownership lease and termination grace are shortened
    to 10 and 2 seconds. CI runs the public regression chain in the same job.
    Publication resumes after broker/controller restoration using retained
@@ -172,11 +172,14 @@ Required deployment and consumer-path scenarios:
   service route cannot return another VPC's records. Product credentials cannot
   issue grants or authorize network access.
 - Endpoint health withdrawal and recovery, deletion, source API loss, and
-  stale-observation replay obey the original deadlines and configured TTLs.
+  stale-observation replay preserve current source fences and configured TTLs.
+  Records remain available during control-plane outages until an explicit update
+  withdraws them.
 - Either controller can take ownership without stale publication; a healthy
   project continues publishing while another project's API is unavailable.
-- Broker leader loss retains publication with quorum; quorum loss, agent
-  restart, member failure, and node failure preserve expiry and fail closed.
+- Broker leader loss retains publication with quorum. Agent restart during
+  quorum loss restores verified checkpoints without broker access. Member and node
+  failures stop unsafe local serving through independent health checks.
 - Certificate rotation, webhook unavailability, rolling member replacement,
   and PVC reuse do not bypass admission or regress checkpoint authority.
 - Adding contexts leaves the workload count fixed, and public authoritative

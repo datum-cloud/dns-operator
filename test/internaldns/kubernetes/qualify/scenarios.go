@@ -84,15 +84,28 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("negative caches and overlapping endpoint address spaces stay isolated", nil)
-	// The product discovers the zone from context status rather than accepting a
-	// zone selection on the Compute resource.
-	if _, err := s.publish(a, a.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web.instances", "10.42.0.11", "", 90*time.Second); err != nil {
+	// Products discover their managed zone through context status.
+	if _, err := s.publish(a, a.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.11", "", 90*time.Second); err != nil {
 		return err
 	}
-	managedName := "web.instances." + a.resolverContext.Status.ManagedNamespace.Suffix
-	if err := s.expect(a, managedName, "A", false, dns.RcodeSuccess, "10.42.0.11"); err != nil {
+	managedName := "web." + a.resolverContext.Status.ManagedNamespace.Suffix
+	for _, tcp := range []bool{false, true} {
+		if err := s.expect(b, managedName, "A", tcp, dns.RcodeNameError); err != nil {
+			return err
+		}
+	}
+	if _, err := s.publish(b, b.resolverContext.Status.ManagedNamespace.DNSZoneRef, "managed", "web", "10.42.0.21", "", 90*time.Second); err != nil {
 		return err
 	}
+	for _, tcp := range []bool{false, true} {
+		if err := s.expect(a, managedName, "A", tcp, dns.RcodeSuccess, "10.42.0.11"); err != nil {
+			return err
+		}
+		if err := s.expect(b, managedName, "A", tcp, dns.RcodeSuccess, "10.42.0.21"); err != nil {
+			return err
+		}
+	}
+	s.pass("the same hostname in the shared managed domain resolves within its own context over UDP and TCP", managedName)
 	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
 	if err := a.customer.Create(s.ctx, apps); err != nil {
 		return err

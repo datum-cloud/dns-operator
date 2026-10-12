@@ -261,12 +261,7 @@ func sourceObjects(project string) []object {
 	worker := obj("rbac.authorization.k8s.io/v1", "RoleBinding", "internal-dns-source-worker", projectNS)
 	worker["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
 	worker["subjects"] = []object{{"kind": "ServiceAccount", "name": "internal-dns-control-plane", "namespace": ns}}
-	sar := obj("rbac.authorization.k8s.io/v1", "ClusterRole", "internal-dns-source-authorization", "")
-	sar["rules"] = []object{{"apiGroups": []string{"authorization.k8s.io"}, "resources": []string{"subjectaccessreviews"}, "verbs": []string{"create"}}}
-	sarBinding := obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", "internal-dns-source-authorization", "")
-	sarBinding["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "internal-dns-source-authorization"}
-	sarBinding["subjects"] = worker["subjects"]
-	items = append(items, worker, sar, sarBinding)
+	items = append(items, worker)
 	accounts := []struct{ name, namespace, role string }{{"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-grant-issuer", "compute-system", "internal-dns-grant-issuer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
 	for _, account := range accounts {
 		if account.role != "" {
@@ -401,8 +396,6 @@ func configure() {
 	cfg.Projects = []runtime.ProjectConfig{{Name: "project-a", ProjectUID: "project-a-uid", SourceClusterUID: "source-cluster-a-uid", Namespace: projectNS, Kubeconfig: "/sources/project-a.json"}, {Name: "project-b", ProjectUID: "project-b-uid", SourceClusterUID: "source-cluster-b-uid", Namespace: projectNS, Kubeconfig: "/sources/project-b.json"}}
 	cfg.NodeBackends = []model.Backend{{MemberID: "node-bind-0", Address: "127.0.0.1", Port: 5300}}
 	cfg.ClusterBackends = []model.Backend{{MemberID: memberNames[2], Address: bindIP[0], Port: 5300}, {MemberID: memberNames[3], Address: bindIP[1], Port: 5300}}
-	cfg.Admission.PlatformSubjects = []string{"system:serviceaccount:" + ns + ":internal-dns-control-plane", "kubernetes-admin"}
-	cfg.Admission.IntegrationSubjects = []string{"system:serviceaccount:network-system:dns-vpc-integration"}
 	cfg.Admission.MaxAccessLeaseSeconds = 600
 	for _, name := range []string{"control-a", "control-b"} {
 		c := cfg

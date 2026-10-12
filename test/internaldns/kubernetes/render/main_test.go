@@ -55,7 +55,7 @@ func TestSourceWorkerBindingIsProjectScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(root)
-	scoped, sar := false, false
+	scoped := false
 	for _, item := range sourceObjects("project-a") {
 		metadata := item["metadata"].(map[string]any)
 		switch {
@@ -63,12 +63,10 @@ func TestSourceWorkerBindingIsProjectScoped(t *testing.T) {
 			t.Fatal("source worker inherited platform cluster-wide binding")
 		case item["kind"] == "RoleBinding" && metadata["name"] == "internal-dns-source-worker":
 			scoped = metadata["namespace"] == projectNS
-		case item["kind"] == "ClusterRole" && metadata["name"] == "internal-dns-source-authorization":
-			rules := item["rules"].([]object)
-			sar = len(rules) == 1 && rules[0]["resources"].([]string)[0] == "subjectaccessreviews"
+
 		}
 	}
-	if !scoped || !sar {
-		t.Fatal("source worker requires project scope and separate authorization access")
+	if !scoped {
+		t.Fatal("source worker requires project-scoped permissions")
 	}
 }

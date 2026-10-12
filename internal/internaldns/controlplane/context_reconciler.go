@@ -76,7 +76,7 @@ func (r *Reconciler) reconcileNamingPolicies(ctx context.Context, items []dnsv1a
 			if !zoneCurrent || !contextCurrent || !associatedWithContext(assocs, zonePin.UID, contextPin.UID) {
 				valid = false
 			}
-			selector, selectorErr := namingSelector(rule.Selector)
+			selector, selectorErr := namingSelector(rule.Selector.AsLabelSelector())
 			selectorKey := ""
 			if selectorErr != nil {
 				valid = false
@@ -88,7 +88,7 @@ func (r *Reconciler) reconcileNamingPolicies(ctx context.Context, items []dnsv1a
 				valid = false
 			}
 			seen[key] = true
-			resolved = append(resolved, dnsv1alpha1.DNSResolvedAdditionalNameRule{Selector: rule.Selector.DeepCopy(), DNSZoneRef: zonePin, NamePrefix: canonicalName(rule.NamePrefix)})
+			resolved = append(resolved, dnsv1alpha1.DNSResolvedAdditionalNameRule{Selector: rule.Selector.AsLabelSelector().DeepCopy(), DNSZoneRef: zonePin, NamePrefix: canonicalName(rule.NamePrefix)})
 		}
 		p.Status.ResolvedAdditionalNames = resolved
 		status := metav1.ConditionTrue

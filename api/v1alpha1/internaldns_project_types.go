@@ -25,6 +25,7 @@ type DNSObjectReference struct {
 // DNSNameReference selects a resource in the same project namespace.
 // DNS records its resolved lifetime in controller-owned status.
 type DNSNameReference struct {
+	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 }
 
@@ -329,21 +330,57 @@ type DNSRecordContributionList struct {
 
 // +kubebuilder:validation:XValidation:rule="(has(self.vpcRef) && has(self.vpcRef.name) && self.vpcRef.name.size() > 0) != (has(self.resolverContextRef) && has(self.resolverContextRef.name) && self.resolverContextRef.name.size() > 0)",message="exactly one named vpcRef or resolverContextRef is required"
 type DNSNamingPolicySpec struct {
-	VPCRef             DNSNameReference        `json:"vpcRef,omitempty"`
-	ResolverContextRef DNSNameReference        `json:"resolverContextRef,omitempty"`
-	AdditionalNames    []DNSAdditionalNameRule `json:"additionalNames"`
-	DNSZoneRef         DNSNameReference        `json:"dnsZoneRef,omitempty"`
-	ScopePrefix        string                  `json:"scopePrefix,omitempty"`
-	Priority           int32                   `json:"priority,omitempty"`
+	VPCRef             DNSNameReference `json:"vpcRef,omitempty"`
+	ResolverContextRef DNSNameReference `json:"resolverContextRef,omitempty"`
+	// +kubebuilder:validation:MaxItems=256
+	AdditionalNames []DNSAdditionalNameRule `json:"additionalNames"`
+	DNSZoneRef      DNSNameReference        `json:"dnsZoneRef,omitempty"`
+	ScopePrefix     string                  `json:"scopePrefix,omitempty"`
+	Priority        int32                   `json:"priority,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
 type DNSAdditionalNameRule struct {
 	// Selector matches DNSRegistration metadata labels within this DNS context.
 	// An omitted or empty selector matches every registration in the context.
-	Selector   *metav1.LabelSelector `json:"selector,omitempty"`
-	DNSZoneRef DNSNameReference      `json:"dnsZoneRef"`
-	NamePrefix string                `json:"namePrefix"`
+	Selector   *DNSRegistrationSelector `json:"selector,omitempty"`
+	DNSZoneRef DNSNameReference         `json:"dnsZoneRef"`
+	NamePrefix string                   `json:"namePrefix"`
+}
+
+// DNSRegistrationSelector matches registration labels using Kubernetes selector semantics.
+type DNSRegistrationSelector struct {
+	// +kubebuilder:validation:MaxProperties=64
+	MatchLabels map[string]string `json:"matchLabels,omitempty"`
+	// +kubebuilder:validation:MaxItems=64
+	MatchExpressions []DNSRegistrationSelectorRequirement `json:"matchExpressions,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="(self.operator in ['In', 'NotIn']) ? (has(self.values) && self.values.size() > 0) : (!has(self.values) || self.values.size() == 0)",message="selector operator requires compatible values"
+type DNSRegistrationSelectorRequirement struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=317
+	Key string `json:"key"`
+	// +kubebuilder:validation:Enum=In;NotIn;Exists;DoesNotExist
+	Operator metav1.LabelSelectorOperator `json:"operator"`
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$`
+	Values []string `json:"values,omitempty"`
+}
+
+// AsLabelSelector converts the API selector for Kubernetes label matching.
+func (s *DNSRegistrationSelector) AsLabelSelector() *metav1.LabelSelector {
+	if s == nil {
+		return nil
+	}
+	out := &metav1.LabelSelector{MatchLabels: s.MatchLabels}
+	for _, requirement := range s.MatchExpressions {
+		out.MatchExpressions = append(out.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key: requirement.Key, Operator: requirement.Operator, Values: requirement.Values,
+		})
+	}
+	return out
 }
 
 type DNSNamingPolicyStatus struct {

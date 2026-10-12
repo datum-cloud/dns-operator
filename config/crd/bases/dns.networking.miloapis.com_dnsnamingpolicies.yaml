@@ -46,6 +46,7 @@ spec:
                         DNS records its resolved lifetime in controller-owned status.
                       properties:
                         name:
+                          maxLength: 253
                           type: string
                       required:
                       - name
@@ -58,48 +59,45 @@ spec:
                         An omitted or empty selector matches every registration in the context.
                       properties:
                         matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
                           items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
                             properties:
                               key:
-                                description: key is the label key that the selector
-                                  applies to.
+                                maxLength: 317
+                                minLength: 1
                                 type: string
                               operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                description: A label selector operator is the set
+                                  of operators that can be used in a selector requirement.
+                                enum:
+                                - In
+                                - NotIn
+                                - Exists
+                                - DoesNotExist
                                 type: string
                               values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
                                 items:
+                                  maxLength: 63
+                                  pattern: ^([A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?)?$
                                   type: string
+                                maxItems: 64
                                 type: array
-                                x-kubernetes-list-type: atomic
                             required:
                             - key
                             - operator
                             type: object
+                            x-kubernetes-validations:
+                            - message: selector operator requires compatible values
+                              rule: '(self.operator in [''In'', ''NotIn'']) ? (has(self.values)
+                                && self.values.size() > 0) : (!has(self.values) ||
+                                self.values.size() == 0)'
+                          maxItems: 64
                           type: array
-                          x-kubernetes-list-type: atomic
                         matchLabels:
                           additionalProperties:
                             type: string
-                          description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          maxProperties: 64
                           type: object
                       type: object
-                      x-kubernetes-map-type: atomic
                   required:
                   - dnsZoneRef
                   - namePrefix
@@ -107,6 +105,7 @@ spec:
                   x-kubernetes-validations:
                   - message: dnsZoneRef requires a name
                     rule: self.dnsZoneRef.name.size() > 0
+                maxItems: 256
                 type: array
               dnsZoneRef:
                 description: |-
@@ -114,6 +113,7 @@ spec:
                   DNS records its resolved lifetime in controller-owned status.
                 properties:
                   name:
+                    maxLength: 253
                     type: string
                 required:
                 - name
@@ -127,6 +127,7 @@ spec:
                   DNS records its resolved lifetime in controller-owned status.
                 properties:
                   name:
+                    maxLength: 253
                     type: string
                 required:
                 - name
@@ -139,6 +140,7 @@ spec:
                   DNS records its resolved lifetime in controller-owned status.
                 properties:
                   name:
+                    maxLength: 253
                     type: string
                 required:
                 - name

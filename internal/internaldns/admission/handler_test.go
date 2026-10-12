@@ -201,21 +201,9 @@ func TestResolverAccessRequiresCurrentContextAndBoundedLease(t *testing.T) {
 	}
 }
 
-func TestConsumerSelectorUsesNamesAndRejectsAmbiguity(t *testing.T) {
+func TestConsumerSelectorRequiresConfiguredIntegrationMode(t *testing.T) {
 	vpc := dnsv1alpha1.DNSNameReference{Name: "vpc"}
 	resolverContext := dnsv1alpha1.DNSNameReference{Name: "ctx"}
-	for _, contextMode := range []bool{false, true} {
-		for _, tc := range []struct {
-			name         string
-			vpc, context dnsv1alpha1.DNSNameReference
-		}{{"empty", dnsv1alpha1.DNSNameReference{}, dnsv1alpha1.DNSNameReference{}}, {"both", vpc, resolverContext}} {
-			t.Run(fmt.Sprintf("context=%v/%s", contextMode, tc.name), func(t *testing.T) {
-				if err := validateConsumerSelector(tc.vpc, tc.context, contextMode); err == nil {
-					t.Fatal("ambiguous selector accepted")
-				}
-			})
-		}
-	}
 	if err := validateConsumerSelector(vpc, dnsv1alpha1.DNSNameReference{}, false); err != nil {
 		t.Fatalf("network selector rejected: %v", err)
 	}
@@ -280,10 +268,10 @@ func TestNamingPolicyRejectsMalformedSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), ResolverContextsEnabled: true}
-	for _, selector := range []*metav1.LabelSelector{
+	for _, selector := range []*dnsv1alpha1.DNSRegistrationSelector{
 		{MatchLabels: map[string]string{"bad key": "value"}},
-		{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "Unsupported"}}},
-		{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}},
+		{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: "Unsupported"}}},
+		{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}},
 	} {
 		policy := &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "application"}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: selector, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "production"}, NamePrefix: "application"}}}}
 		response := h.Handle(context.Background(), request("dnsnamingpolicies", "customer", policy, nil))

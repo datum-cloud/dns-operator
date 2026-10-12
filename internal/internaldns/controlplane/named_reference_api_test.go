@@ -24,7 +24,7 @@ func verifyNamedReferencesWithAPI(t *testing.T, cl client.Client) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "named-zone", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "named.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, DNSZoneClassName: "private"}}
 	requireAccessTestSuccess(t, cl.Create(ctx, zone))
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "named-association", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "named-policy", Namespace: "project"}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "storefront"}}, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, NamePrefix: "hosts"}}}}
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "named-policy", Namespace: "project"}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: &dnsv1alpha1.DNSRegistrationSelector{MatchLabels: map[string]string{"app": "storefront"}}, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, NamePrefix: "hosts"}}}}
 	requireAccessTestSuccess(t, cl.Create(ctx, association))
 	requireAccessTestSuccess(t, cl.Create(ctx, policy))
 	r := &Reconciler{Client: cl}

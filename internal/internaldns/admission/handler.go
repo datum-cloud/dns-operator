@@ -291,7 +291,7 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 		}
 	}
 	for _, rule := range p.Spec.AdditionalNames {
-		if _, err := metav1.LabelSelectorAsSelector(rule.Selector); err != nil {
+		if _, err := metav1.LabelSelectorAsSelector(rule.Selector.AsLabelSelector()); err != nil {
 			return fmt.Errorf("invalid naming selector: %w", err)
 		}
 		if err := validateNamedPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {

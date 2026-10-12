@@ -102,17 +102,17 @@ func TestNamingPolicyValidatesSelectorsAndDuplicateRules(t *testing.T) {
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	for _, tc := range []struct {
 		name      string
-		selectors []*metav1.LabelSelector
+		selectors []*dnsv1alpha1.DNSRegistrationSelector
 		valid     bool
 	}{
-		{"omitted", []*metav1.LabelSelector{nil}, true},
-		{"empty", []*metav1.LabelSelector{{}}, true},
-		{"labels", []*metav1.LabelSelector{{MatchLabels: map[string]string{"app": "storefront"}}}, true},
-		{"invalid-key", []*metav1.LabelSelector{{MatchLabels: map[string]string{"bad key": "value"}}}, false},
-		{"invalid-operator", []*metav1.LabelSelector{{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: "Unsupported"}}}}, false},
-		{"missing-values", []*metav1.LabelSelector{{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}}}, false},
-		{"duplicate", []*metav1.LabelSelector{nil, {}}, false},
-		{"overlapping", []*metav1.LabelSelector{nil, {MatchLabels: map[string]string{"app": "storefront"}}}, true},
+		{"omitted", []*dnsv1alpha1.DNSRegistrationSelector{nil}, true},
+		{"empty", []*dnsv1alpha1.DNSRegistrationSelector{{}}, true},
+		{"labels", []*dnsv1alpha1.DNSRegistrationSelector{{MatchLabels: map[string]string{"app": "storefront"}}}, true},
+		{"invalid-key", []*dnsv1alpha1.DNSRegistrationSelector{{MatchLabels: map[string]string{"bad key": "value"}}}, false},
+		{"invalid-operator", []*dnsv1alpha1.DNSRegistrationSelector{{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: "Unsupported"}}}}, false},
+		{"missing-values", []*dnsv1alpha1.DNSRegistrationSelector{{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}}}, false},
+		{"duplicate", []*dnsv1alpha1.DNSRegistrationSelector{nil, {}}, false},
+		{"overlapping", []*dnsv1alpha1.DNSRegistrationSelector{nil, {MatchLabels: map[string]string{"app": "storefront"}}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: "project", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}

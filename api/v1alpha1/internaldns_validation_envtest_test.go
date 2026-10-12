@@ -144,5 +144,6 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		requireInvalid(t, cl.Update(ctx, a))
 	})
 	validateServiceDNSContracts(t, cl)
+	validateNamingAPISchemas(t, cl)
 
 }

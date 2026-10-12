@@ -22,6 +22,8 @@ import (
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
+const subresourceStatus = "status"
+
 const contributionResource = "dnsrecordcontributions"
 
 const Path = "/validate-internal-dns"
@@ -50,7 +52,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Operation == admissionv1.Delete {
 		return kubeadmission.Allowed("API server authorization applies")
 	}
-	if req.SubResource == "status" && req.Resource.Resource != contributionResource {
+	if req.SubResource == subresourceStatus && req.Resource.Resource != contributionResource {
 		return kubeadmission.Allowed("API server status authorization applies")
 	}
 	switch req.Resource.Resource {
@@ -141,7 +143,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		}
 	}
 	bindEpoch := false
-	if req.SubResource == "status" {
+	if req.SubResource == subresourceStatus {
 		previous, current := old.Status, c.Status
 		previous.Conditions, current.Conditions = nil, nil
 		previous.PublishedRevision, current.PublishedRevision = 0, 0
@@ -200,7 +202,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		}
 		return nil
 	}
-	if req.SubResource == "status" {
+	if req.SubResource == subresourceStatus {
 		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {
 			return fmt.Errorf("publisher observations cannot change publication results")
 		}

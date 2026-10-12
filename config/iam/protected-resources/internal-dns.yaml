@@ -19,13 +19,13 @@ spec:
 apiVersion: iam.miloapis.com/v1alpha1
 kind: ProtectedResource
 metadata:
-  name: dns.networking.miloapis.com-dnsnamingpolicie
+  name: dns.networking.miloapis.com-dnsnamingpolicy
 spec:
   serviceRef:
     name: dns.networking.miloapis.com
   kind: DNSNamingPolicy
   plural: dnsnamingpolicies
-  singular: dnsnamingpolicie
+  singular: dnsnamingpolicy
   permissions: [list, get, watch, create, update, patch, delete]
   subresources:
     - name: status

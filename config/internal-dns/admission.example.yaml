@@ -1,0 +1,67 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: internal-dns-authorization
+  annotations:
+    cert-manager.io/inject-ca-from: internal-dns-system/internal-dns-admission-tls
+webhooks:
+- name: authorization.internal-dns.miloapis.com
+  admissionReviewVersions: [v1]
+  sideEffects: None
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  timeoutSeconds: 5
+  clientConfig:
+    service:
+      namespace: internal-dns-system
+      name: internal-dns-admission
+      path: /validate-internal-dns
+      port: 443
+  rules:
+  # Product declarations and the private-visibility guard for DNSZone. The
+  # legacy DNSRecordSet API is intentionally outside this webhook.
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [CREATE, UPDATE, DELETE]
+    resources:
+    - dnszones
+    - dnszoneassociations
+    - dnsregistrations
+    - dnscontributiongrants
+    - dnsrecordcontributions
+    - dnsnamingpolicies
+    - dnsresolvercontexts
+    - dnsresolveraccessbindings
+    scope: Namespaced
+  # A product can report only its own contribution freshness. No
+  # dnsrecordsets/status rule is installed, preserving the public operator.
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [UPDATE]
+    resources: [dnsrecordcontributions/status]
+    scope: Namespaced
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [UPDATE]
+    resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status]
+    scope: Namespaced
+  # Platform-owned serving and publication state, including their status.
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [CREATE, UPDATE, DELETE]
+    resources:
+    - dnsresolverbindings
+    - dnsresolverbindings/status
+    - dnspublicationmanifests
+    - dnspublicationmanifests/status
+    - dnspublicationchunks
+    - dnstransportoutboxes
+    - dnstransportoutboxes/status
+    - dnspublicationownerships
+    - dnspublicationownerships/status
+    - dnsmanagednamespaces
+    - dnsmanagednamespaces/status
+    - dnsregistrations/status
+    - dnscontributiongrants/status
+    - dnszones/status
+    scope: Namespaced

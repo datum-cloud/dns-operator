@@ -1,0 +1,123 @@
+# Fixed shared fleet members for one regional shard. Deploy at least two copies
+# of the regional-bind member with distinct IDs, addresses, state, config, NATS
+# credentials, and watchdog leases. Contexts and zones never create workloads.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: internal-dns-node-0-config, namespace: internal-dns-system}
+data:
+  config.json: |
+    {
+      "nats":{"url":"tls://nats.internal-dns-system.svc:4222","name":"node-us-central1-0","username":"node-us-central1-0","passwordFile":"/var/run/internal-dns/nats/password","tls":{"caFile":"/var/run/internal-dns/nats/ca.crt","certificateFile":"/var/run/internal-dns/nats/tls.crt","keyFile":"/var/run/internal-dns/nats/tls.key","serverName":"nats.internal-dns-system.svc"}},
+      "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
+      "agent":{
+        "region":"us-central1","shard":"shared-0","memberID":"node-us-central1-0","replicaID":"node-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"resolver",
+        "render":{"role":"node","nodeDNSDist":{"path":"/etc/internal-dns/node-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:100::/64"],"poolName":"node_shared","backends":[{"memberID":"node-bind-0","address":"fd70:10::10","port":5300}]},"nodeBIND":{"path":"/etc/internal-dns/node-bind.conf","listenAddress":"fd70:10::10","port":5300,"proxyPeers":["fd70:10::20"],"defaultCacheSize":"2M","maxNegativeCacheTTLSeconds":5,"dnssecValidation":"auto","rndcIncludePath":"/etc/bind/rndc.key","controlAddress":"127.0.0.1","controlPort":9953,"controlKeyName":"internal-dns"}},
+        "transaction":{"stageDir":"/var/lib/internal-dns/stage","validate":[{"path":"/usr/local/sbin/internal-dns-validate-dnsdist","args":["node","{stageDir}/node-dnsdist.conf"],"whenChanged":["/etc/internal-dns/node-dnsdist.conf"]},{"path":"/usr/local/sbin/internal-dns-validate-bind","args":["node","{stageDir}/node-bind.conf"],"whenChanged":["/etc/internal-dns/node-bind.conf"]}],"reload":[{"path":"/usr/local/sbin/internal-dns-reload-bind","args":["node"],"whenChanged":["/etc/internal-dns/node-bind.conf"]},{"path":"/usr/local/sbin/internal-dns-reload-dnsdist","args":["node"],"whenChanged":["/etc/internal-dns/node-dnsdist.conf"]}]},
+        "cacheFlush":[{"path":"/usr/local/sbin/internal-dns-flush-bind","args":["node","{name}"]}],"expiryInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"localServingLease":90000000000,"maxBindings":200,"watchdogLeasePath":"/run/internal-dns/lease.json","watchdogLease":5000000000,"externalWatchdog":true,"resolverDNSProbe":{"timeout":3000000000},"resolverVerifyConcurrency":16
+      },
+      "watchdog":{"leasePath":"/run/internal-dns/lease.json","memberID":"node-us-central1-0","replicaID":"node-us-central1-0","maxLeaseSeconds":5,"startupGraceSeconds":0,"intervalMillis":250,"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["node"]}]}
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: internal-dns-regional-front-0-config, namespace: internal-dns-system}
+data:
+  config.json: |
+    {
+      "nats":{"url":"tls://nats.internal-dns-system.svc:4222","name":"regional-front-us-central1-0","username":"regional-front-us-central1-0","passwordFile":"/var/run/internal-dns/nats/password","tls":{"caFile":"/var/run/internal-dns/nats/ca.crt","certificateFile":"/var/run/internal-dns/nats/tls.crt","keyFile":"/var/run/internal-dns/nats/tls.key","serverName":"nats.internal-dns-system.svc"}},
+      "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
+      "agent":{
+        "region":"us-central1","shard":"shared-0","memberID":"regional-front-us-central1-0","replicaID":"regional-front-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"resolver",
+        "render":{"role":"regional-dnsdist","clusterDNSDist":{"path":"/etc/internal-dns/cluster-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:200::/64"],"poolName":"regional_shared","backends":[{"memberID":"regional-bind-us-central1-0","address":"fd70:20::10","port":5300},{"memberID":"regional-bind-us-central1-1","address":"fd70:20::11","port":5300}]}},
+        "transaction":{"stageDir":"/var/lib/internal-dns/stage","validate":[{"path":"/usr/local/sbin/internal-dns-validate-dnsdist","args":["regional","{stageDir}/cluster-dnsdist.conf"],"whenChanged":["/etc/internal-dns/cluster-dnsdist.conf"]}],"reload":[{"path":"/usr/local/sbin/internal-dns-reload-dnsdist","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-dnsdist.conf"]}]},
+        "expiryInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"localServingLease":90000000000,"maxBindings":200,"watchdogLeasePath":"/run/internal-dns/lease.json","watchdogLease":5000000000,"externalWatchdog":true,"resolverDNSProbe":{"timeout":3000000000},"resolverVerifyConcurrency":16
+      },
+      "watchdog":{"leasePath":"/run/internal-dns/lease.json","memberID":"regional-front-us-central1-0","replicaID":"regional-front-us-central1-0","maxLeaseSeconds":5,"startupGraceSeconds":0,"intervalMillis":250,"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-front"]}]}
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: internal-dns-regional-bind-0-config, namespace: internal-dns-system}
+data:
+  config.json: |
+    {
+      "nats":{"url":"tls://nats.internal-dns-system.svc:4222","name":"regional-bind-us-central1-0","username":"regional-bind-us-central1-0","passwordFile":"/var/run/internal-dns/nats/password","tls":{"caFile":"/var/run/internal-dns/nats/ca.crt","certificateFile":"/var/run/internal-dns/nats/tls.crt","keyFile":"/var/run/internal-dns/nats/tls.key","serverName":"nats.internal-dns-system.svc"}},
+      "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
+      "agent":{
+        "region":"us-central1","shard":"shared-0","memberID":"regional-bind-us-central1-0","replicaID":"regional-bind-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"combined",
+        "render":{"role":"regional-bind","clusterBIND":{"path":"/etc/internal-dns/cluster-bind.conf","listenAddress":"fd70:20::10","port":5300,"proxyPeers":["fd70:20::20","fd70:20::30"],"defaultCacheSize":"2M","maxNegativeCacheTTLSeconds":5,"dnssecValidation":"auto","rndcIncludePath":"/etc/bind/rndc.key","controlAddress":"127.0.0.1","controlPort":9953,"controlKeyName":"internal-dns"}},
+        "transaction":{"stageDir":"/var/lib/internal-dns/stage","validate":[{"path":"/usr/local/sbin/internal-dns-validate-bind","args":["regional","-z","{stageDir}/cluster-bind.conf"],"whenChanged":["/etc/internal-dns/cluster-bind.conf"]}],"reload":[{"path":"/usr/local/sbin/internal-dns-reload-bind","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-bind.conf"]}]},
+        "cacheFlush":[{"path":"/usr/local/sbin/internal-dns-flush-bind","args":["regional","{name}"]}],"expiryInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"watchdogLeasePath":"/run/internal-dns/lease.json","watchdogLease":5000000000,"externalWatchdog":true,"publicationDNSProbe":{"server":"[fd70:20::10]:5300","timeout":3000000000}
+      },
+      "watchdog":{"leasePath":"/run/internal-dns/lease.json","memberID":"regional-bind-us-central1-0","replicaID":"regional-bind-us-central1-0","maxLeaseSeconds":5,"startupGraceSeconds":0,"intervalMillis":250,"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-bind"]}]}
+    }
+---
+# The second regional member has independent identity, listener, state,
+# checkpoint, and watchdog storage. Its backend memberID exactly matches the
+# second clusterBackends entry in the control-plane configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: internal-dns-regional-bind-1-config, namespace: internal-dns-system}
+data:
+  config.json: |
+    {
+      "nats":{"url":"tls://nats.internal-dns-system.svc:4222","name":"regional-bind-us-central1-1","username":"regional-bind-us-central1-1","passwordFile":"/var/run/internal-dns/nats/password","tls":{"caFile":"/var/run/internal-dns/nats/ca.crt","certificateFile":"/var/run/internal-dns/nats/tls.crt","keyFile":"/var/run/internal-dns/nats/tls.key","serverName":"nats.internal-dns-system.svc"}},
+      "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
+      "agent":{
+        "region":"us-central1","shard":"shared-0","memberID":"regional-bind-us-central1-1","replicaID":"regional-bind-us-central1-1","stateDir":"/var/lib/internal-dns","mode":"combined",
+        "render":{"role":"regional-bind","clusterBIND":{"path":"/etc/internal-dns/cluster-bind.conf","listenAddress":"fd70:20::11","port":5300,"proxyPeers":["fd70:20::20","fd70:20::31"],"defaultCacheSize":"2M","maxNegativeCacheTTLSeconds":5,"dnssecValidation":"auto","rndcIncludePath":"/etc/bind/rndc.key","controlAddress":"127.0.0.1","controlPort":9953,"controlKeyName":"internal-dns"}},
+        "transaction":{"stageDir":"/var/lib/internal-dns/stage","validate":[{"path":"/usr/local/sbin/internal-dns-validate-bind","args":["regional","-z","{stageDir}/cluster-bind.conf"],"whenChanged":["/etc/internal-dns/cluster-bind.conf"]}],"reload":[{"path":"/usr/local/sbin/internal-dns-reload-bind","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-bind.conf"]}]},
+        "cacheFlush":[{"path":"/usr/local/sbin/internal-dns-flush-bind","args":["regional","{name}"]}],"expiryInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"watchdogLeasePath":"/run/internal-dns/lease.json","watchdogLease":5000000000,"externalWatchdog":true,"publicationDNSProbe":{"server":"[fd70:20::11]:5300","timeout":3000000000}
+      },
+      "watchdog":{"leasePath":"/run/internal-dns/lease.json","memberID":"regional-bind-us-central1-1","replicaID":"regional-bind-us-central1-1","maxLeaseSeconds":5,"startupGraceSeconds":0,"intervalMillis":250,"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-bind"]}]}
+    }
+---
+# This Deployment template is instantiated once for each ConfigMap above and a
+# second time for regional-bind-1. The serving image contains the local dnsdist
+# and/or BIND process selected by MEMBER_ROLE plus the validation/reload/gate
+# wrappers referenced by that member's config.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: internal-dns-regional-bind-0, namespace: internal-dns-system}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app.kubernetes.io/name: internal-dns-regional-bind-0}}
+  template:
+    metadata: {labels: {app.kubernetes.io/name: internal-dns-regional-bind-0, internal-dns.datum.net/tier: regional}}
+    spec:
+      serviceAccountName: internal-dns-fleet
+      automountServiceAccountToken: false
+      shareProcessNamespace: true
+      securityContext: {fsGroup: 65532, fsGroupChangePolicy: OnRootMismatch}
+      containers:
+      - name: agent
+        image: example.invalid/dns-operator/internal-dns-serving:VERSION
+        args: ["--role=agent","--config=/config/config.json"]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+        volumeMounts: &member-mounts
+        - {name: config, mountPath: /config, readOnly: true}
+        - {name: nats, mountPath: /var/run/internal-dns/nats, readOnly: true}
+        - {name: lease, mountPath: /run/internal-dns}
+        - {name: state, mountPath: /var/lib/internal-dns}
+        - {name: daemon-config, mountPath: /etc/internal-dns}
+      - name: watchdog
+        image: example.invalid/dns-operator/internal-dns-serving:VERSION
+        args: ["--role=watchdog","--config=/config/config.json"]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+        volumeMounts: *member-mounts
+      - name: serving
+        image: example.invalid/dns-operator/internal-dns-bind:VERSION
+        args: ["regional-bind"]
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsUser: 65532, runAsGroup: 65532, capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}}
+        volumeMounts:
+        - {name: daemon-config, mountPath: /etc/internal-dns}
+        # BIND requires a writable working directory with a read-only root filesystem.
+        - {name: runtime, mountPath: /tmp}
+      volumes:
+      - {name: config, configMap: {name: internal-dns-regional-bind-0-config}}
+      - {name: nats, secret: {secretName: internal-dns-regional-bind-0-nats}}
+      - {name: lease, emptyDir: {medium: Memory}}
+      - {name: runtime, emptyDir: {}}
+      - {name: daemon-config, persistentVolumeClaim: {claimName: internal-dns-regional-bind-0-config}}
+      - {name: state, persistentVolumeClaim: {claimName: internal-dns-regional-bind-0-state}}

@@ -15,7 +15,7 @@ webhooks:
       url: https://host.docker.internal:9443/validate-internal-dns
       caBundle: ${CA_BUNDLE}
     rules:
-      - operations: [CREATE, UPDATE, DELETE]
+      - operations: [CREATE, UPDATE]
         apiGroups: [dns.networking.miloapis.com]
         apiVersions: [v1alpha1]
         resources:
@@ -25,13 +25,4 @@ webhooks:
           - dnsrecordcontributions
           - dnsrecordcontributions/status
           - dnsnamingpolicies
-          - dnsmanagednamespaces
-          - dnsresolvercontexts
-          - dnsresolvercontexts/status
           - dnsresolveraccessbindings
-          - dnsresolveraccessbindings/status
-          - dnsresolverbindings
-          - dnspublicationownerships
-          - dnspublicationmanifests
-          - dnspublicationchunks
-          - dnstransportoutboxes

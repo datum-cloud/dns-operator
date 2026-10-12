@@ -24,3 +24,15 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.delete
 
 
+    - dns.networking.miloapis.com/dnszoneassociations.create
+    - dns.networking.miloapis.com/dnszoneassociations.update
+    - dns.networking.miloapis.com/dnszoneassociations.patch
+    - dns.networking.miloapis.com/dnszoneassociations.delete
+    - dns.networking.miloapis.com/dnsnamingpolicies.create
+    - dns.networking.miloapis.com/dnsnamingpolicies.update
+    - dns.networking.miloapis.com/dnsnamingpolicies.patch
+    - dns.networking.miloapis.com/dnsnamingpolicies.delete
+    - dns.networking.miloapis.com/dnsregistrations.create
+    - dns.networking.miloapis.com/dnsregistrations.update
+    - dns.networking.miloapis.com/dnsregistrations.patch
+    - dns.networking.miloapis.com/dnsregistrations.delete

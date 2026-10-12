@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package admission enforces the authenticated writer boundary for internal DNS.
+// Package admission validates live DNS references and publisher grant relationships.
 // Compiler validation remains necessary, but cannot infer a Kubernetes caller
 // from a stored object's spec. Install this webhook with failurePolicy: Fail.
 package admission
@@ -16,8 +16,6 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
-	authorizationv1 "k8s.io/api/authorization/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,8 +31,6 @@ const Path = "/validate-internal-dns"
 type Handler struct {
 	Client                  client.Client
 	TrustedClusterUID       string
-	PlatformSubjects        []string
-	IntegrationSubjects     []string
 	MaxContributionLease    time.Duration
 	MaxAccessLease          time.Duration
 	ResolverContextsEnabled bool
@@ -48,73 +44,18 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Resource.Group != dnsv1alpha1.GroupVersion.Group {
 		return kubeadmission.Denied("unexpected API group")
 	}
-	// Public-zone admission remains owned by the existing DNS operator. This
-	// webhook must not give the internal service exclusive authority over the
-	// public controller's status writes.
-	if req.Resource.Resource == "dnszones" {
-		var zone dnsv1alpha1.DNSZone
-		if err := decode(req, &zone); err != nil {
-			return kubeadmission.Denied(err.Error())
-		}
-		if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
-			return kubeadmission.Allowed("public DNS admission applies")
-		}
-	}
-	platform := contains(h.PlatformSubjects, req.UserInfo.Username)
-	integration := contains(h.IntegrationSubjects, req.UserInfo.Username)
-	if req.Resource.Resource == "dnsresolvercontexts" || req.Resource.Resource == "dnsresolveraccessbindings" {
-		if req.SubResource == "status" {
-			if !platform {
-				return kubeadmission.Denied("resolver context status is DNS platform-owned")
-			}
-			return kubeadmission.Allowed("platform writer")
-		}
-		if !integration {
-			return kubeadmission.Denied("resolver context and access specs require a trusted integration writer")
-		}
-		cl := h.Client
-		if h.ClientForRequest != nil {
-			var err error
-			cl, _, err = h.ClientForRequest(ctx, req)
-			if err != nil {
-				return kubeadmission.Errored(http.StatusServiceUnavailable, err)
-			}
-		}
-		if cl == nil {
-			return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
-		}
-		if req.Operation == admissionv1.Delete {
-			return kubeadmission.Allowed("integration revocation")
-		}
-		var err error
-		if req.Resource.Resource == "dnsresolvercontexts" {
-			err = h.resolverContext(req)
-		} else {
-			err = h.resolverAccess(ctx, cl, req)
-		}
-		if err != nil {
-			return kubeadmission.Denied(err.Error())
-		}
-		return kubeadmission.Allowed("trusted integration writer")
-	}
-	if platformResource(req.Resource.Resource) {
-		if !platform {
-			return kubeadmission.Denied("internal serving and publication resources require a platform writer")
-		}
-		return kubeadmission.Allowed("platform writer")
-	}
-	if req.SubResource == "status" && req.Resource.Resource != "dnsrecordcontributions" && !platform {
-		return kubeadmission.Denied("DNS publication and writer authority status is platform-owned")
-	}
-	if platform {
-		return kubeadmission.Allowed("platform writer; compiler validates publication inputs")
-	}
-	// Deletion revokes intent and cannot introduce serving authority. The API
-	// server has already authorized delete on this exact project resource.
-	// Requiring a live grant/registration here would strand retired objects and
-	// block garbage collection after their parents have been deleted.
+	// The API server authorizes resource and status access through RBAC.
 	if req.Operation == admissionv1.Delete {
-		return kubeadmission.Allowed("project deletion authorization applies")
+		return kubeadmission.Allowed("API server authorization applies")
+	}
+	if req.SubResource == "status" && req.Resource.Resource != "dnsrecordcontributions" {
+		return kubeadmission.Allowed("API server status authorization applies")
+	}
+	switch req.Resource.Resource {
+	case "dnsregistrations", "dnsrecordcontributions", "dnscontributiongrants", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
+		// These resources require live references or bounded freshness checks.
+	default:
+		return kubeadmission.Allowed("API server authorization and schema validation apply")
 	}
 	cl, clusterUID := h.Client, h.TrustedClusterUID
 	if h.ClientForRequest != nil {
@@ -129,6 +70,8 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	}
 	var err error
 	switch req.Resource.Resource {
+	case "dnsresolveraccessbindings":
+		err = h.resolverAccess(ctx, cl, req)
 	case "dnsregistrations":
 		err = h.registration(ctx, cl, req)
 	case "dnsrecordcontributions":
@@ -148,25 +91,8 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	return kubeadmission.Allowed("authenticated and scoped DNS writer")
 }
 
-func (h *Handler) resolverContext(req kubeadmission.Request) error {
-	var current, old dnsv1alpha1.DNSResolverContext
-	if err := decode(req, &current); err != nil {
-		return err
-	}
-	if len(req.OldObject.Raw) > 0 {
-		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
-			return err
-		}
-
-		if !reflect.DeepEqual(old.Status, current.Status) {
-			return fmt.Errorf("resolver context status is DNS platform-owned")
-		}
-	}
-	return nil
-}
-
 func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
-	var current, old dnsv1alpha1.DNSResolverAccessBinding
+	var current dnsv1alpha1.DNSResolverAccessBinding
 	if err := decode(req, &current); err != nil {
 		return err
 	}
@@ -199,14 +125,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	if a.ValidUntil.After(now.Add(max)) {
 		return fmt.Errorf("access deadline exceeds platform lease limit")
 	}
-	if len(req.OldObject.Raw) > 0 {
-		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
-			return err
-		}
-		if !reflect.DeepEqual(old.Status, current.Status) {
-			return fmt.Errorf("access binding status is DNS platform-owned")
-		}
-	}
 	return nil
 }
 
@@ -214,6 +132,19 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 	var c, old dnsv1alpha1.DNSRecordContribution
 	if err := decode(req, &c); err != nil {
 		return err
+	}
+	if len(req.OldObject.Raw) > 0 {
+		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
+			return err
+		}
+	}
+	if req.SubResource == "status" {
+		previous, current := old.Status, c.Status
+		previous.Conditions, current.Conditions = nil, nil
+		previous.PublishedRevision, current.PublishedRevision = 0, 0
+		if reflect.DeepEqual(previous, current) {
+			return nil
+		}
 	}
 	var g dnsv1alpha1.DNSContributionGrant
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: c.Spec.GrantRef.Name}, &g); err != nil {
@@ -255,14 +186,9 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 			return fmt.Errorf("record type %s is outside the writer's scope", rrset.RecordType)
 		}
 	}
-	if len(req.OldObject.Raw) > 0 {
-		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
-			return err
-		}
-	}
 	if req.SubResource == "status" {
 		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {
-			return fmt.Errorf("DNS publication status fields are platform-owned")
+			return fmt.Errorf("publisher observations cannot change publication results")
 		}
 		if c.Status.WriterEpoch != g.Status.ActiveWriterEpoch {
 			return fmt.Errorf("writer epoch is retired or not issued")
@@ -308,7 +234,7 @@ func (h *Handler) grant(ctx context.Context, cl client.Client, req kubeadmission
 	if r.UID != g.Spec.RegistrationRef.UID {
 		return fmt.Errorf("registration lifetime is not current")
 	}
-	return authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnsregistrations", r.Name, "update")
+	return nil
 }
 
 func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
@@ -319,22 +245,16 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if _, err := currentPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
 		return err
 	}
-	if a.Spec.Managed {
-		return fmt.Errorf("managed associations are platform-owned")
-	}
 	if err := validateConsumerSelector(a.Spec.VPCRef, a.Spec.ResolverContextRef, h.ResolverContextsEnabled); err != nil {
-		return err
-	}
-	if err := authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnszones", a.Spec.DNSZoneRef.Name, "update"); err != nil {
 		return err
 	}
 	if h.ResolverContextsEnabled {
 		if a.Spec.ResolverContextRef.UID == "" {
 			return fmt.Errorf("association must pin resolver context UID")
 		}
-		return authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnsresolvercontexts", a.Spec.ResolverContextRef.Name, "use")
+		return nil
 	}
-	return authorize(ctx, cl, req.UserInfo, req.Namespace, "networking.datumapis.com", "networks", a.Spec.VPCRef.Name, "use")
+	return nil
 }
 
 func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
@@ -349,15 +269,9 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 		if _, err := currentPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
 			return err
 		}
-		if err := authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnszones", p.Spec.DNSZoneRef.Name, "update"); err != nil {
-			return err
-		}
 	}
 	for _, rule := range p.Spec.AdditionalNames {
 		if _, err := currentPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {
-			return err
-		}
-		if err := authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnszones", rule.DNSZoneRef.Name, "update"); err != nil {
 			return err
 		}
 	}
@@ -373,9 +287,9 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 		if resolverContext.UID != p.Spec.ResolverContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
 			return fmt.Errorf("resolver context lifetime is not ready")
 		}
-		return authorize(ctx, cl, req.UserInfo, req.Namespace, dnsv1alpha1.GroupVersion.Group, "dnsresolvercontexts", resolverContext.Name, "use")
+		return nil
 	}
-	return authorize(ctx, cl, req.UserInfo, req.Namespace, "networking.datumapis.com", "networks", p.Spec.VPCRef.Name, "use")
+	return nil
 }
 
 func validateConsumerSelector(vpcRef, contextRef dnsv1alpha1.DNSObjectReference, contextMode bool) error {
@@ -386,27 +300,6 @@ func validateConsumerSelector(vpcRef, contextRef dnsv1alpha1.DNSObjectReference,
 	}
 	if !contextMode && !hasVPC {
 		return fmt.Errorf("legacy networking mode requires vpcRef")
-	}
-	return nil
-}
-
-func authorize(ctx context.Context, cl client.Client, user authenticationv1.UserInfo, namespace, group, resource, name, verb string) error {
-	if name == "" {
-		return fmt.Errorf("authorization target name is required")
-	}
-	extra := map[string]authorizationv1.ExtraValue{}
-	for k, v := range user.Extra {
-		extra[k] = authorizationv1.ExtraValue(v)
-	}
-	review := &authorizationv1.SubjectAccessReview{ObjectMeta: metav1.ObjectMeta{}, Spec: authorizationv1.SubjectAccessReviewSpec{
-		User: user.Username, UID: user.UID, Groups: user.Groups, Extra: extra,
-		ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Group: group, Resource: resource, Name: name, Verb: verb},
-	}}
-	if err := cl.Create(ctx, review); err != nil {
-		return fmt.Errorf("authorization review unavailable: %w", err)
-	}
-	if !review.Status.Allowed {
-		return fmt.Errorf("caller is not authorized to %s %s/%s", verb, resource, name)
 	}
 	return nil
 }
@@ -422,23 +315,6 @@ func decode(req kubeadmission.Request, obj any) error {
 	return json.Unmarshal(data, obj)
 }
 
-func platformResource(resource string) bool {
-	switch resource {
-	case "dnsresolverbindings", "dnspublicationmanifests", "dnspublicationchunks", "dnstransportoutboxes", "dnspublicationownerships", "dnsmanagednamespaces":
-		return true
-	default:
-		return false
-	}
-}
-
-func contains(values []string, value string) bool {
-	for _, v := range values {
-		if v == value {
-			return true
-		}
-	}
-	return false
-}
 func containsType(values []dnsv1alpha1.RRType, value dnsv1alpha1.RRType) bool {
 	for _, v := range values {
 		if v == value {

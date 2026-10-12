@@ -122,7 +122,7 @@ func TestPublicationVerifierProvesMemberContextAndFingerprintOverBothTransports(
 					return
 				}
 				defer func() { _ = conn.Close() }()
-				header := make([]byte, 28)
+				header := make([]byte, 28, 30)
 				if _, err := io.ReadFull(conn, header); err != nil {
 					return
 				}

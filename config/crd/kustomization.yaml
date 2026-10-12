@@ -7,17 +7,29 @@ resources:
 - bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 - bases/dns.networking.miloapis.com_dnszonediscoveries.yaml
 - bases/dns.networking.miloapis.com_dnscontributiongrants.yaml
+
 - bases/dns.networking.miloapis.com_dnsmanagednamespaces.yaml
+
 - bases/dns.networking.miloapis.com_dnsnamingpolicies.yaml
+
 - bases/dns.networking.miloapis.com_dnsrecordcontributions.yaml
+
 - bases/dns.networking.miloapis.com_dnsregistrations.yaml
+
 - bases/dns.networking.miloapis.com_dnsresolveraccessbindings.yaml
+
 - bases/dns.networking.miloapis.com_dnsresolvercontexts.yaml
+
 - bases/dns.networking.miloapis.com_dnszoneassociations.yaml
+
 - bases/dns.networking.miloapis.com_dnspublicationchunks.yaml
+
 - bases/dns.networking.miloapis.com_dnspublicationmanifests.yaml
+
 - bases/dns.networking.miloapis.com_dnspublicationownerships.yaml
+
 - bases/dns.networking.miloapis.com_dnsresolverbindings.yaml
+
 - bases/dns.networking.miloapis.com_dnstransportoutboxes.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 

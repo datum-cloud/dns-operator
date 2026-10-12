@@ -157,3 +157,28 @@ func bindingReadyInConfig(config, address string) bool {
 	}
 	return false
 }
+
+func TestPendingConfigurationCannotBeActivatedByReadinessMap(t *testing.T) {
+	t.Parallel()
+	config, snapshot := renderFixture(t)
+	snapshot.Bindings[0].ConfigurationPending = true
+	snapshot.Bindings[0].Zones = nil
+	rendered, err := Render(config, snapshot, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{config.NodeDNSDist.Path, config.ClusterDNSDist.Path} {
+		address := snapshot.Bindings[0].ConsumerAddress
+		if path == config.ClusterDNSDist.Path {
+			address = snapshot.Bindings[0].ClusterAddress
+		}
+		if bindingReadyInConfig(string(rendered.Files[path]), address) {
+			t.Fatal("readiness activated a pending context")
+		}
+	}
+	for _, path := range []string{config.NodeBIND.Path, config.ClusterBIND.Path} {
+		if !strings.Contains(string(rendered.Files[path]), "allow-recursion { none; };") {
+			t.Fatal("pending BIND context can recurse")
+		}
+	}
+}

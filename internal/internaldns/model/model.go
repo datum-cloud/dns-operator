@@ -17,7 +17,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-const APIVersion = "internal.dns.networking.miloapis.com/v1alpha2"
+const APIVersion = "internal.dns.networking.miloapis.com/v1alpha3"
 
 type Kind string
 
@@ -112,6 +112,9 @@ type Binding struct {
 	ClusterBackends       []Backend        `json:"clusterBackends"`
 	Authorization         Authorization    `json:"authorization"`
 	Tombstone             bool             `json:"tombstone,omitempty"`
+	// ConfigurationPending gates queries while attached publications are absent.
+	// It does not revoke or advance the source authorization.
+	ConfigurationPending bool `json:"configurationPending,omitempty"`
 }
 
 func (b Binding) ViewName() string {
@@ -191,6 +194,9 @@ func (s ServingSnapshot) Validate() error {
 		}
 		if b.Port == 0 || len(b.Transports) == 0 || b.Authorization.IssuerEpoch == 0 || b.Authorization.Revision == 0 || b.Authorization.ValidUntil.IsZero() {
 			return fmt.Errorf("binding %q has incomplete transport or authorization", b.BindingUID)
+		}
+		if b.ConfigurationPending && len(b.Zones) != 0 {
+			return fmt.Errorf("binding %q pending configuration must not expose partial zones", b.BindingUID)
 		}
 		if err := validateTransports(b.Transports); err != nil {
 			return fmt.Errorf("binding %q: %w", b.BindingUID, err)

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+touch /run/internal-dns/allow-named
+for attempt in $(seq 1 35); do
+  if rndc -s 127.0.0.1 -p 9953 -k /etc/bind/rndc.key status >/dev/null 2>&1; then
+    exec rndc -s 127.0.0.1 -p 9953 -k /etc/bind/rndc.key reload
+  fi
+  sleep 0.05
+done
+echo 'BIND control listener did not become ready' >&2
+exit 1

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+touch /run/internal-dns/allow-dnsdist
+pkill -TERM -x dnsdist || true
+for attempt in $(seq 1 35); do
+  if nc -z -w 1 ::1 53 >/dev/null 2>&1; then exit 0; fi
+  sleep 0.05
+done
+echo 'dnsdist listener did not become ready' >&2
+exit 1

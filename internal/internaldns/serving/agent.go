@@ -512,6 +512,10 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		if err != nil {
 			return err
 		}
+		if err := a.flushRemovedBindingZones(ctx, snapshot); err != nil {
+			_ = a.failClosed(ctx)
+			return err
+		}
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
@@ -523,6 +527,33 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		return err
 	}
 	return a.finishEvent(ctx)
+}
+
+// A configuration change can detach a zone without changing its publication.
+// Clear its old cache tree before accepting the mapping, including when the
+// context is temporarily pending. The cache hook must flush descendants too.
+func (a *Agent) flushRemovedBindingZones(ctx context.Context, snapshot model.ServingSnapshot) error {
+	if a.state.Snapshot == nil {
+		return nil
+	}
+	attached := map[string]bool{}
+	for _, binding := range snapshot.Bindings {
+		for _, zone := range binding.Zones {
+			attached[binding.BindingUID+"/"+zone.ZoneUID+"/"+zone.Apex] = true
+		}
+	}
+	flushed := map[string]bool{}
+	for _, binding := range a.state.Snapshot.Bindings {
+		for _, zone := range binding.Zones {
+			if !attached[binding.BindingUID+"/"+zone.ZoneUID+"/"+zone.Apex] && !flushed[zone.Apex] {
+				if err := a.flushName(ctx, zone.Apex); err != nil {
+					return err
+				}
+				flushed[zone.Apex] = true
+			}
+		}
+	}
+	return nil
 }
 
 func (a *Agent) handleChunk(env model.Envelope) error {
@@ -968,7 +999,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 		}
 	}
 	for _, b := range a.state.Snapshot.Bindings {
-		if b.Tombstone {
+		if b.Tombstone || b.ConfigurationPending {
 			continue
 		}
 		p := model.AckVerified
@@ -1071,6 +1102,9 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 }
 
 func (a *Agent) publicationsReady(b model.Binding) bool {
+	if b.ConfigurationPending {
+		return false
+	}
 	if len(b.Zones) == 0 {
 		return true
 	}
@@ -1090,7 +1124,7 @@ func (a *Agent) publicationsReady(b model.Binding) bool {
 // plan version this resolver holds. One zone per different member is unsafe.
 func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 	out := map[string]bool{}
-	if a.state.Snapshot == nil {
+	if a.state.Snapshot == nil || b.ConfigurationPending {
 		return out
 	}
 	if a.cfg.Mode == ModeCombined {
@@ -1155,7 +1189,7 @@ func (a *Agent) publicationViewsAt(p publicationState, now time.Time) []Publicat
 	}
 	var out []PublicationView
 	for _, b := range a.state.Snapshot.Bindings {
-		if b.Tombstone || !now.Before(b.Authorization.ValidUntil) {
+		if b.Tombstone || b.ConfigurationPending || !now.Before(b.Authorization.ValidUntil) {
 			continue
 		}
 		for _, z := range b.Zones {

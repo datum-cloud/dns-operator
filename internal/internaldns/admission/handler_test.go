@@ -57,7 +57,8 @@ func TestContributionAuthenticatedWriter(t *testing.T) {
 		{"scoped fresh producer", producer, nil, true},
 		{"another producer", "system:serviceaccount:connector-system:dns-publisher", nil, false},
 		{"retired epoch", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.WriterEpoch = 7 }, false},
-		{"replayed sequence", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 17 }, false},
+		{"unchanged observation", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 17 }, true},
+		{"decreasing sequence", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 16 }, false},
 		{"stale generation", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.ObservedGeneration = 1 }, false},
 		{"forged grant UID", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Spec.GrantRef.UID = "other-grant" }, false},
 		{"retired registration UID", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Spec.RegistrationRef.UID = "old-reg" }, false},
@@ -83,22 +84,17 @@ func TestContributionAuthenticatedWriter(t *testing.T) {
 	}
 }
 
-func TestPlatformAuthorityCannotBeWrittenByProducer(t *testing.T) {
-	h := Handler{PlatformSubjects: []string{"system:serviceaccount:dns-system:control-plane"}}
-	for _, resource := range []string{"dnsresolverbindings", "dnspublicationmanifests", "dnspublicationchunks", "dnstransportoutboxes"} {
-		req := request(resource, "system:serviceaccount:compute-system:dns-publisher", map[string]any{}, nil)
-		if h.Handle(context.Background(), req).Allowed {
-			t.Fatalf("producer allowed to write %s", resource)
-		}
-		req.UserInfo.Username = h.PlatformSubjects[0]
-		if !h.Handle(context.Background(), req).Allowed {
-			t.Fatalf("platform writer denied %s", resource)
+func TestResourceAccessUsesAPIServerAuthorization(t *testing.T) {
+	h := Handler{}
+	for _, resource := range []string{"dnsresolvercontexts", "dnsresolverbindings", "dnspublicationmanifests", "dnspublicationchunks", "dnstransportoutboxes", "dnspublicationownerships"} {
+		if !h.Handle(context.Background(), request(resource, "authorized-user", map[string]any{}, nil)).Allowed {
+			t.Fatalf("admission duplicates resource authorization for %s", resource)
 		}
 	}
-	req := request("dnscontributiongrants", "system:serviceaccount:compute-system:dns-publisher", map[string]any{}, nil)
+	req := request("dnscontributiongrants", "authorized-user", map[string]any{}, nil)
 	req.SubResource = "status"
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("producer allowed to issue own epoch")
+	if !h.Handle(context.Background(), req).Allowed {
+		t.Fatal("admission duplicates status authorization")
 	}
 }
 
@@ -127,7 +123,7 @@ func request(resource, username string, obj, old any) kubeadmission.Request {
 }
 
 func TestInternalAdmissionPreservesPublicZoneControllerStatus(t *testing.T) {
-	h := Handler{PlatformSubjects: []string{"system:serviceaccount:internal-dns-system:controller"}}
+	h := Handler{}
 	req := kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Operation: admissionv1.Update, Resource: metav1.GroupVersionResource{Group: dnsv1alpha1.GroupVersion.Group, Version: "v1alpha1", Resource: "dnszones"}, SubResource: "status", UserInfo: authenticationv1.UserInfo{Username: "system:serviceaccount:dns-system:public-controller"}}}
 	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPublic}}
 	req.Object.Raw, _ = json.Marshal(zone)
@@ -136,8 +132,8 @@ func TestInternalAdmissionPreservesPublicZoneControllerStatus(t *testing.T) {
 	}
 	zone.Spec.Visibility = dnsv1alpha1.DNSZoneVisibilityPrivate
 	req.Object.Raw, _ = json.Marshal(zone)
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("legacy public writer received private publication authority")
+	if !h.Handle(context.Background(), req).Allowed {
+		t.Fatal("status authorization must use the API server")
 	}
 }
 
@@ -148,12 +144,12 @@ func TestRetiredProductIntentCanBeDeletedWithoutLiveGrant(t *testing.T) {
 		t.Fatal("retired contribution cleanup required a live deleted grant")
 	}
 	req.Resource.Resource = "dnspublicationownerships"
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("product cleanup acquired platform ownership deletion authority")
+	if !h.Handle(context.Background(), req).Allowed {
+		t.Fatal("deletion authorization must use the API server")
 	}
 }
 
-func TestResolverAccessRequiresIntegrationAndMonotonicBoundedLease(t *testing.T) {
+func TestResolverAccessRequiresCurrentContextAndBoundedLease(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
@@ -161,36 +157,31 @@ func TestResolverAccessRequiresIntegrationAndMonotonicBoundedLease(t *testing.T)
 	}
 	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}, Status: dnsv1alpha1.DNSResolverContextStatus{AccessWriterEpoch: 3}}
 	setAdmissionCondition(&resolverContext.Status.Conditions, "Ready", metav1.ConditionTrue, 1, now)
-	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext).Build(), IntegrationSubjects: []string{"system:serviceaccount:network-system:integration"}, MaxAccessLease: 5 * time.Minute, Now: func() time.Time { return now }}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext).Build(), MaxAccessLease: 5 * time.Minute, Now: func() time.Time { return now }}
 	old := &dnsv1alpha1.DNSResolverAccessBinding{Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "ctx-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 9, ValidUntil: metav1.NewTime(now.Add(2 * time.Minute))}}}
 	current := old.DeepCopy()
 	current.Spec.Authorization.Sequence = 10
 	current.Spec.Authorization.ValidUntil = metav1.NewTime(now.Add(3 * time.Minute))
-	req := request("dnsresolveraccessbindings", h.IntegrationSubjects[0], current, old)
+	req := request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", current, old)
 	if res := h.Handle(context.Background(), req); !res.Allowed {
 		t.Fatalf("fresh integration renewal denied: %v", res.Result)
 	}
-	req.UserInfo.Username = "system:serviceaccount:compute:publisher"
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("publisher granted network access")
-	}
-	req.UserInfo.Username = h.IntegrationSubjects[0]
 	overlong := current.DeepCopy()
 	overlong.Spec.Authorization.ValidUntil = metav1.NewTime(now.Add(6 * time.Minute))
-	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], overlong, old)
+	req = request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", overlong, old)
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("overlong access lease accepted")
 	}
 	forged := current.DeepCopy()
 	forged.Spec.ContextRef.UID = "replacement"
-	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], forged, old)
+	req = request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", forged, old)
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("context lifetime changed in place")
 	}
 	staleContext := resolverContext.DeepCopy()
 	staleContext.Generation = 2
 	h.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(staleContext).Build()
-	req = request("dnsresolveraccessbindings", h.IntegrationSubjects[0], current, old)
+	req = request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", current, old)
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("stale context Ready condition authorized access")
 	}
@@ -238,5 +229,24 @@ func TestRegistrationRequiresCurrentZone(t *testing.T) {
 		if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); got.Allowed != tt.allowed {
 			t.Errorf("UID=%q TTL=%d: allowed=%v: %v", tt.uid, tt.ttl, got.Allowed, got.Result)
 		}
+	}
+}
+
+func TestPublicationStatusDoesNotRenewPublisherObservation(t *testing.T) {
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()}
+	old := &dnsv1alpha1.DNSRecordContribution{Status: dnsv1alpha1.DNSRecordContributionStatus{WriterEpoch: 4, Sequence: 10, Eligible: true, ValidUntil: ptrTime(time.Now().Add(-time.Minute))}}
+	current := old.DeepCopy()
+	current.Status.PublishedRevision = 12
+	current.Status.Conditions = []metav1.Condition{{Type: "Published", Status: metav1.ConditionTrue}}
+	req := request("dnsrecordcontributions", "rbac-authorized-controller", current, old)
+	req.SubResource = "status"
+	if result := h.Handle(context.Background(), req); !result.Allowed {
+		t.Fatalf("publication result needs no producer grant: %v", result.Result)
+	}
+	current.Status.ValidUntil = ptrTime(time.Now().Add(time.Minute))
+	req = request("dnsrecordcontributions", "rbac-authorized-controller", current, old)
+	req.SubResource = "status"
+	if h.Handle(context.Background(), req).Allowed {
+		t.Fatal("publication update renewed producer freshness without a grant")
 	}
 }

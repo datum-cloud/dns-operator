@@ -116,46 +116,12 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: "project"}}}
 	})
 	controllerName := "internal-dns-control-plane-" + model.OpaqueToken(string(r.Options.ProjectUID))[:12]
-	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).For(&dnsv1alpha1.DNSResolverContext{}, builder.WithPredicates()).
+	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).For(&dnsv1alpha1.DNSRecordContribution{}, builder.WithPredicates()).
 		Watches(&dnsv1alpha1.DNSZone{}, enqueue).Watches(&dnsv1alpha1.DNSZoneAssociation{}, enqueue).
-		Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue).
+		Watches(&dnsv1alpha1.DNSRegistration{}, enqueue).Watches(&dnsv1alpha1.DNSContributionGrant{}, enqueue).
+		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue).
 		Watches(&dnsv1alpha1.DNSManagedNamespace{}, enqueue)
 
-	return b.Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
+	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 
-}
-
-func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
-	now := r.Options.Now().UTC()
-
-	if err := r.reconcileResolverContexts(ctx, ns, now); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	if err := r.reconcileManagedNamespaces(ctx, ns, now); err != nil {
-		return ctrl.Result{}, err
-	}
-	var zones dnsv1alpha1.DNSZoneList
-	var assocs dnsv1alpha1.DNSZoneAssociationList
-	var policies dnsv1alpha1.DNSNamingPolicyList
-	for _, item := range []client.ObjectList{&zones, &assocs, &policies} {
-		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
-	for i := range zones.Items {
-		z := &zones.Items[i]
-		zoneByName[z.Name] = z
-	}
-	if err := r.reconcileAssociations(ctx, assocs.Items, zoneByName, now); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
-		return ctrl.Result{}, err
-	}
-	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: r.Options.LeaseDuration / 2}, nil
 }

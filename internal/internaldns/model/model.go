@@ -398,7 +398,7 @@ func (p PublicationPlan) Validate() error {
 		owner := strings.ToLower(AbsoluteName(rr.Name))
 		rrType := strings.ToUpper(rr.Type)
 		key := owner + "\x00" + rrType
-		if rr.TTL == 0 || len(rr.Records) == 0 || rr.Type == "" {
+		if len(rr.Records) == 0 || rr.Type == "" {
 			return fmt.Errorf("RRset %q is incomplete", key)
 		}
 		if _, ok := dns.IsDomainName(owner); !ok || !dns.IsSubDomain(apex, owner) {

@@ -50,7 +50,8 @@ withdraw endpoints that are no longer eligible.
 - Allocate default names and support additional custom zones.
 - Isolate overlapping names, addresses, and resolver caches across DNS contexts.
 - Accept publications from distributed product control planes and withdraw
-  expired or ineligible endpoints.
+  endpoints after an explicit health update or deletion.
+- Keep serving applied DNS configuration during control plane outages.
 - Scale shared serving capacity across regions without deployments per VPC.
 
 ### Non-Goals
@@ -72,8 +73,10 @@ stable resolver address in their VPC while the platform selects shared capacity.
 
 - Tenant leakage: authorize network identity before cache lookup, isolate
   resolver views, and test overlapping zones and forged identities.
-- Stale endpoints or access: preserve original deadlines, fence writers and
-  replay, and enforce expiry locally at serving nodes.
+- Delayed health updates: retain the last reported endpoint state during outages
+  and reconcile changes when connectivity returns.
+- Tenant identity reuse: retain destination allocations until withdrawal is
+  confirmed across the serving fleet.
 - Shared fleet failure: qualify configuration activation, readiness, capacity,
   and regional failure handling before release.
 
@@ -189,7 +192,7 @@ unmatched destinations before lookup.
 ### Publication and service discovery
 
 A registration reserves a name and record types. A grant authorizes a product
-publisher. A contribution supplies records and a time-limited eligibility
+publisher. A contribution supplies records and an explicit eligibility
 observation. DNS compiles accepted contributions into a complete zone snapshot.
 
 ```mermaid
@@ -200,13 +203,13 @@ sequenceDiagram
   participant Store as DNS service project API
   participant Transport as Regional NATS
   participant Agent as Serving agent
-  Product->>Project: Records and fresh eligibility observation
-  DNS->>Project: Validate identities, grants, and deadlines
+  Product->>Project: Records and eligibility observation
+  DNS->>Project: Validate identities, grants, and versions
   DNS->>Store: Stage immutable chunks and manifest
   DNS->>Store: Commit active snapshot under writer lease
   Store->>Transport: Export committed update through durable outbox
-  Transport->>Agent: Deliver update, including original deadlines
-  Agent->>Agent: Verify, apply, and enforce local expiry
+  Transport->>Agent: Deliver committed update
+  Agent->>Agent: Verify and apply local configuration
   Agent->>Store: Acknowledge applied snapshot
   DNS->>Project: Report serving status
   Product->>Project: Higher-sequence ineligible observation
@@ -228,13 +231,18 @@ acknowledges applied state separately from broker receipt. Queries use local
 state without contacting project APIs or the broker.
 
 Products define eligibility for instance identity, application discovery, or
-stable service addresses. Serving agents enforce contribution freshness and
-access deadlines independently. Replay and restart cannot extend them; expired
-endpoints are withdrawn locally. Retained tombstones and writer fences prevent
-restoration, and watchdogs remove members that cannot enforce expiry.
+stable service addresses. Records and resolver bindings persist until an explicit
+update or withdrawal. Control plane and messaging outages delay changes but do
+not expire applied DNS configuration. Agents can restore verified configuration
+from local checkpoints without contacting the control plane.
+
+Local DNS probes and backend health checks detect serving failures independently
+of update delivery. Retained tombstones and writer fences prevent replay from
+restoring withdrawn records or access. A new serving node requires a complete
+configuration before accepting queries.
 
 A reserved name without eligible addresses returns NODATA. Missing required
-private state returns SERVFAIL; unknown or expired access returns REFUSED.
+private state returns SERVFAIL; unknown or withdrawn access returns REFUSED.
 Private names never fall back to public resolution. Disable stale private
 answers and bound dynamic TTLs; withdrawal budgets include client caching.
 
@@ -253,7 +261,7 @@ Internal publication and access contracts pin UIDs and policy generations.
 The project API server authenticates callers and uses RBAC to authorize resource
 and status operations. Separate roles govern product publication, grant issuance,
 network integration, and DNS controllers. Publishers cannot issue grants or
-modify resolver authority. Admission validates live DNS references, lease limits,
+modify resolver authority. Admission validates live DNS references
 and the relationship between an authenticated publisher and its current grant.
 
 #### Context and regional access
@@ -311,18 +319,15 @@ spec:
   authorization:
     # Match the DNS-issued context epoch; stale issuers cannot restore access.
     writerEpoch: 3
-    # Renewals advance monotonically within this access-binding lifetime.
+    # Order updates monotonically within this access-binding lifetime.
     sequence: 27
-    # Preserve this deadline through transport, replay, and local installation.
-    validUntil: "2026-10-08T20:05:00Z"
 ```
 
 Access reports `Accepted` after validation and `Ready` after required members
 apply current authorization and configuration. Context, region, query identity,
 port, transports, and authorization epoch are immutable per access lifetime.
-Renewals advance the sequence with a bounded deadline; destinations are unique
-within their routing scope. Galactic owns the consumer frontend and network
-lease separately.
+Updates advance the sequence; destinations are unique within their routing
+scope. Galactic owns the consumer frontend and network authorization.
 
 #### Private zones and associations
 
@@ -436,14 +441,13 @@ spec:
   # Select the managed zone allocated for the resource's DNS context.
   dnsZoneRef:
     name: managed-application
-    uid: 44444444-4444-4444-8444-444444444444
   # Reserve this relative owner name, rather than one particular IP address.
   name: web-01
   # Constrain which record types contributions can populate.
   recordTypes: [A, AAAA]
   # Publish only contributions with a current eligible observation.
   publicationPolicy: EligibleContributions
-  # Bound client caching; this does not replace the observation deadline.
+  # Bound client caching after a record update or withdrawal.
   ttlSeconds: 30
   # Optional descendant reservations must not overlap other owners.
   reservedDescendants: []
@@ -464,8 +468,7 @@ spec:
   # Audit label; the authenticated principal below authorizes the writer.
   producerID: compute
   principal:
-    # Trusted source-cluster identity distinguishes distributed publishers.
-    clusterUID: 99999999-9999-4999-8999-999999999999
+    # Match the authenticated publisher within this project's API context.
     subject: system:serviceaccount:compute-system:dns-publisher
   # Scope the writer to these types and owner names.
   recordTypes: [A, AAAA]
@@ -516,17 +519,15 @@ status:
   # Producer-owned: product policy determines readiness for this name's purpose.
   eligible: true
   reason: NetworkInterfaceProgrammed
-  # Producer-owned: DNS must preserve this original freshness deadline.
-  validUntil: "2026-10-08T20:01:00Z"
   # DNS-owned: the publication revision that included this contribution.
   publishedRevision: 12
 ```
 
 Publishers preserve DNS-owned status fields and observe the current contribution
 generation. An ineligible endpoint gets a higher-sequence observation with
-`eligible: false`; recovery requires a fresh eligible observation. Publisher
-loss does not renew the original deadline. Admission checks the principal,
-grant epoch, sequence, record scope, and freshness bound.
+`eligible: false`; recovery requires a newer eligible observation. Publisher
+unavailability leaves the last reported state in place. Admission checks the
+principal, grant epoch, sequence, and record scope.
 
 #### DNS service project contracts
 
@@ -584,10 +585,9 @@ spec:
       - name: production
         uid: 88888888-8888-4888-8888-888888888888
   authorization:
-    # Copy the accepted access epoch, sequence, and deadline without renewal.
+    # Copy the accepted access epoch and sequence.
     writerEpoch: 3
     sequence: 27
-    validUntil: "2026-10-08T20:05:00Z"
 ```
 
 Source and zone references resolve in `source.projectUID`, not the DNS service
@@ -595,12 +595,12 @@ namespace. Source identity is immutable. The region and node listener match the
 access binding; DNS allocates the regional listener.
 
 Configuration generation fences plan replacement; revision orders its updates.
-Authorization copies the accepted access epoch, sequence, and deadline. Serving
+Authorization copies the accepted access epoch and sequence. Serving
 acknowledgments identify the binding UID and both version sets; readiness
 requires current acknowledgments from all required members.
 
 Resolver engine, isolation, deployment model, and dnsdist cache policy belong to
-shared fleet configuration. The nested binding is proposed; the prototype is flat.
+shared fleet configuration.
 
 DNS-owned publication resources retain the compiler lease and active pointer
 (`DNSPublicationOwnership`), immutable snapshot data (`DNSPublicationManifest`
@@ -609,12 +609,10 @@ Their storage schemas can be reviewed with the implementation.
 
 #### Compatibility and API review
 
-Prototype schema, controller, transport, and agent migration must preserve UID,
-configuration, and authorization fences and original deadlines. The prototype's
-authoritative backend must be replaced with BIND zone materialization and
-revalidated for tenant isolation and expiry. Review naming conflicts, grant
-revocation, field ownership, freshness bounds, regional readiness, and snapshot
-limits before stabilizing the APIs.
+Schemas, transport, and checkpoints must preserve object lifetimes and ordered
+configuration versions. Review naming conflicts, grant revocation, field
+ownership, outage recovery, regional readiness, and snapshot limits before
+stabilizing the APIs.
 
 ### Integration boundaries
 
@@ -637,32 +635,33 @@ workloads lose resolution. Reenabling requires fresh authorization and observati
 
 ### Rollout, Upgrade and Rollback Planning
 
-Qualify tenant isolation, expiry, failover, replay, and upgrade/rollback over
+Qualify tenant isolation, outage continuity, failover, replay, and upgrade/rollback over
 Galactic UDP and TCP paths, including guest resolver configuration. Expand by
 context and region after setting withdrawal budgets and tombstone retention.
 
 ### Monitoring Requirements
 
-Measure query latency/errors, publication lag, outbox backlog, expiry delay, and
+Measure query latency/errors, publication lag, outbox backlog, withdrawal delay, and
 activation failures. Use bounded metric labels and per-context API status.
 Availability, latency, and withdrawal SLOs remain to be defined.
 
 ### Dependencies
 
 Project APIs, Galactic/Karmada, NATS, and the DNS fleet support updates and
-connectivity. API or broker outages delay updates while installed state remains
-subject to its original deadlines; network authorization expires independently.
+connectivity. API or broker outages delay updates while the fleet continues
+serving its applied configuration. Health changes and deletions take effect
+after delivery resumes.
 
 ### Scalability
 
-Measure context capacity, renewal/write rates, snapshot size, transport fanout,
+Measure context capacity, update rates, snapshot size, transport fanout,
 cache memory, reload time, and query throughput. Bound chunks and retained
 history; establish supported limits and regional failover capacity before release.
 
 ### Troubleshooting
 
 Trace project/context/access UIDs through authorization, committed snapshots,
-and serving acknowledgments. Inspect expiry for REFUSED, private state for
+and serving acknowledgments. Inspect network identity for REFUSED, private state for
 SERVFAIL, and product eligibility for NODATA.
 
 ## Implementation History
@@ -673,8 +672,9 @@ boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
 
 ## Drawbacks
 
-Shared BIND views increase fleet complexity and failure scope. Leases, snapshots,
-and freshness renewals add coordination state and API traffic.
+Shared BIND views increase fleet complexity and failure scope. Snapshots and
+writer coordination add state and API traffic. During control plane outages,
+DNS retains endpoints whose health may have changed.
 
 ## Alternatives
 

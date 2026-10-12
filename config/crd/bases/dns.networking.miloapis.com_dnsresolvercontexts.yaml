@@ -47,15 +47,31 @@ spec:
                 type: string
               managedNamespace:
                 properties:
+                  domainSuffix:
+                    description: DomainSuffix is the zone apex requested by the trusted
+                      consumer integration.
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$
+                    type: string
                   enabled:
                     type: boolean
                 type: object
+                x-kubernetes-validations:
+                - message: domainSuffix is required when the managed namespace is
+                    enabled
+                  rule: '!has(self.enabled) || !self.enabled || (has(self.domainSuffix)
+                    && self.domainSuffix.size() > 0)'
             required:
             - consumerID
             type: object
             x-kubernetes-validations:
             - message: consumerID is immutable
               rule: oldSelf.consumerID == self.consumerID
+            - message: managed namespace domainSuffix is immutable
+              rule: '!has(oldSelf.managedNamespace) || !has(oldSelf.managedNamespace.domainSuffix)
+                || (has(self.managedNamespace) && has(self.managedNamespace.domainSuffix)
+                && self.managedNamespace.domainSuffix == oldSelf.managedNamespace.domainSuffix)'
           status:
             properties:
               accessWriterEpoch:

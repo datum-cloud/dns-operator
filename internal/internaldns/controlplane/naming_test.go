@@ -22,7 +22,7 @@ func TestResolveNamingReturnsCanonicalThenAuthorizedAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 2 || names[0].Name != "web-01.instances" || !names[0].Canonical || names[1].Name != "web-01.instances" || names[1].Canonical {
+	if len(names) != 2 || names[0].Name != "web-01" || !names[0].Canonical || names[1].Name != "web-01.instances" || names[1].Canonical {
 		t.Fatalf("unexpected names: %#v", names)
 	}
 }

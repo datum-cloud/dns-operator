@@ -120,8 +120,8 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 				ProjectUID: project.ProjectUID, SourceClusterUID: project.SourceClusterUID,
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
-				LeaseDuration:    cfg.ownershipLease(),
-				AddressAllocator: allocator, ManagedDomainSuffix: cfg.ManagedDomainSuffix,
+				LeaseDuration:        cfg.ownershipLease(),
+				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 				MaxAccessLease: cfg.Admission.maxAccessLease(),
 			}}

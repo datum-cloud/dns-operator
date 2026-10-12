@@ -34,7 +34,6 @@ data:
       ],
       "consumerPrefix": "fd70:100::/48",
       "clusterPrefix": "fd70:200::/48",
-      "managedDomainSuffix": "internal.example.net",
       "privateZoneClassName": "private-bind",
       "ownershipLeaseSeconds": 30,
       "shards": [

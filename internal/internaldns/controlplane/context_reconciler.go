@@ -20,6 +20,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -114,10 +115,9 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 			}
 			continue
 		}
-		consumerToken := model.OpaqueToken(string(m.Spec.VPCRef.UID))
 		lifetimeToken := model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
 
-		suffix := canonicalName(consumerToken + "." + m.Spec.DomainSuffix)
+		suffix := canonicalName(m.Spec.DomainSuffix)
 		zoneName := "managed-" + lifetimeToken[:12]
 		zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: m.Spec.DNSZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 		if r.Scheme != nil {
@@ -155,7 +155,7 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 		}
 		base := m.DeepCopy()
 		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, dnsValueAccepted)
-		ready := accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
+		ready := zone.Spec.DomainName == suffix && metav1.IsControlledBy(zone, m) && accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
 		if ready {
 			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}
 			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{Name: assoc.Name, UID: assoc.UID}
@@ -190,6 +190,8 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			consumerOwners[c.Spec.ConsumerID] = c.UID
 		}
 		valid = valid && !duplicate
+		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(c.Spec.ManagedNamespace.DomainSuffix)) > 0
+		valid = valid && !invalidDomain
 		previousReady := apimeta.FindStatusCondition(c.Status.Conditions, "Ready")
 		if !valid && c.Status.AccessWriterEpoch > 0 && previousReady != nil && previousReady.Status == metav1.ConditionTrue {
 			c.Status.AccessWriterEpoch++
@@ -204,9 +206,10 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		if c.Spec.ManagedNamespace.Enabled && valid {
 			name := "context-" + model.OpaqueToken(string(c.UID))[:20]
-			m := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"internal-dns.miloapis.com/platform-owned": "true", "internal-dns.miloapis.com/context-uid": string(c.UID)}}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: r.Options.ProjectUID, VPCRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: types.UID(c.Spec.ConsumerID)}, DomainSuffix: r.Options.ManagedDomainSuffix, DNSZoneClassName: r.Options.PrivateZoneClassName}}
+			m := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"internal-dns.miloapis.com/platform-owned": "true", "internal-dns.miloapis.com/context-uid": string(c.UID)}}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: r.Options.ProjectUID, VPCRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: types.UID(c.Spec.ConsumerID)}, DomainSuffix: c.Spec.ManagedNamespace.DomainSuffix, DNSZoneClassName: r.Options.PrivateZoneClassName}}
 			if r.Scheme != nil {
 				if err := controllerutil.SetControllerReference(c, m, r.Scheme); err != nil {
 					return err
@@ -218,9 +221,9 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			if err := r.Get(ctx, client.ObjectKeyFromObject(m), m); err != nil {
 				return err
 			}
-			c.Status.ManagedNamespace.DNSZoneRef = m.Status.DNSZoneRef
-			c.Status.ManagedNamespace.Suffix = m.Status.CanonicalSuffix
-			if condition := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted); condition != nil && condition.Status == metav1.ConditionTrue && m.Status.DNSZoneRef.UID != "" {
+			if condition := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted); condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == m.Generation && m.Status.DNSZoneRef.UID != "" && metav1.IsControlledBy(m, c) && m.Spec.DomainSuffix == c.Spec.ManagedNamespace.DomainSuffix && m.Status.CanonicalSuffix == c.Spec.ManagedNamespace.DomainSuffix {
+				c.Status.ManagedNamespace.DNSZoneRef = m.Status.DNSZoneRef
+				c.Status.ManagedNamespace.Suffix = m.Status.CanonicalSuffix
 				ready = true
 			}
 		}
@@ -229,6 +232,9 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			status, reason, msg = metav1.ConditionFalse, "InvalidIdentity", "consumerID is required and context must be live"
 			if duplicate {
 				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
+			}
+			if invalidDomain {
+				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a valid domainSuffix"
 			}
 		}
 		if valid && !ready {

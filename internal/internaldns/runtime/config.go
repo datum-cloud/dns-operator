@@ -73,7 +73,6 @@ type Config struct {
 	RegionalTransports    []RegionalTransportConfig `json:"regionalTransports,omitempty"`
 	Admission             AdmissionConfig           `json:"admission,omitempty"`
 	OwnershipLeaseSeconds int64                     `json:"ownershipLeaseSeconds,omitempty"`
-	ManagedDomainSuffix   string                    `json:"managedDomainSuffix,omitempty"`
 	PrivateZoneClassName  string                    `json:"privateZoneClassName,omitempty"`
 	Agent                 serving.Config            `json:"agent,omitempty"`
 	Watchdog              watchdog.Config           `json:"watchdog,omitempty"`

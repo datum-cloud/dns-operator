@@ -48,6 +48,30 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	for _, ns := range []string{"project", "platform"} {
 		requireAccessTestSuccess(t, cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}))
 	}
+	t.Run("requested managed domain admission", func(t *testing.T) {
+		for name, domain := range map[string]string{"missing": "", "invalid": "bad..internal", "wildcard": "*.internal"} {
+			resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: name, ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: domain}}}
+			if err := cl.Create(ctx, resolver); !apierrors.IsInvalid(err) {
+				t.Fatalf("invalid managed domain %q was not rejected: %v", domain, err)
+			}
+		}
+		resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "custom-domain", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "custom", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "private.example.net"}}}
+		requireAccessTestSuccess(t, cl.Create(ctx, resolver))
+		changed := resolver.DeepCopy()
+		changed.Spec.ManagedNamespace.DomainSuffix = "different.internal"
+		if err := cl.Update(ctx, changed); !apierrors.IsInvalid(err) {
+			t.Fatalf("domain mutation was not rejected: %v", err)
+		}
+		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(resolver)
+		requireAccessTestSuccess(t, err)
+		unstructured.RemoveNestedField(raw, "spec", "managedNamespace")
+		removed := &unstructured.Unstructured{Object: raw}
+		removed.SetAPIVersion(dnsv1alpha1.GroupVersion.String())
+		removed.SetKind("DNSResolverContext")
+		if err := cl.Update(ctx, removed); !apierrors.IsInvalid(err) {
+			t.Fatalf("domain removal was not rejected: %v", err)
+		}
+	})
 	now := time.Now().UTC().Truncate(time.Second)
 	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "opaque-consumer"}}
 	readyContext := func(c *dnsv1alpha1.DNSResolverContext) {

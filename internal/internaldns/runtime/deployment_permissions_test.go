@@ -87,7 +87,7 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, identity := range []struct{ name, role string }{{"product", "internal-dns-product-writer"}, {"issuer", "internal-dns-grant-issuer"}, {"integration", "internal-dns-vpc-integration"}} {
+	for _, identity := range []struct{ name, role string }{{"product", "internal-dns-product-writer"}, {"issuer", "internal-dns-grant-issuer"}, {"integration", "internal-dns-vpc-integration"}, {"customer", "internal-dns-customer"}} {
 		binding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: identity.name + "-test", Namespace: "example-project"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: identity.name, Namespace: "example-project"}}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: identity.role}}
 		if err := cl.Create(ctx, binding); err != nil {
 			t.Fatal(err)
@@ -126,6 +126,17 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 		{"product", "dnsresolvercontexts", "", "patch", false},
 		{"product", "dnsresolveraccessbindings", "", "create", false},
 		{"product", "dnspublicationmanifests", "", "create", false},
+		{"customer", "dnszones", "", "create", true},
+		{"customer", "dnszoneassociations", "", "create", true},
+		{"customer", "dnsnamingpolicies", "", "create", true},
+		{"customer", "dnsresolvercontexts", "", "get", true},
+		{"customer", "dnsmanagednamespaces", "", "get", true},
+		{"customer", "dnsresolvercontexts", "", "patch", false},
+		{"customer", "dnscontributiongrants", "", "create", false},
+		{"customer", "dnscontributiongrants", "status", "patch", false},
+		{"customer", "dnsresolveraccessbindings", "", "create", false},
+		{"customer", "dnszoneassociations", "status", "patch", false},
+		{"customer", "dnspublicationmanifests", "", "create", false},
 		{"integration", "dnsresolvercontexts", "", "create", true},
 		{"integration", "dnsresolveraccessbindings", "", "create", true},
 		{"integration", "dnsresolvercontexts", "status", "patch", false},

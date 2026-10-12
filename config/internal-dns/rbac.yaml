@@ -43,6 +43,20 @@ rules:
   resources: [dnsrecordcontributions/status]
   verbs: [get, update, patch]
 ---
+# Customers configure private zones and naming within their project namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-customer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnszones, dnsrecordsets, dnszoneassociations, dnsnamingpolicies, dnsregistrations]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts, dnsmanagednamespaces]
+  verbs: [get, list, watch]
+---
 # Bind only to a trusted issuer that applies the product's registration policy.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

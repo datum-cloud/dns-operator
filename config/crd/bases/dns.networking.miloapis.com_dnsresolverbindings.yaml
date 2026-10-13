@@ -45,16 +45,12 @@ spec:
                     format: int64
                     minimum: 1
                     type: integer
-                  validUntil:
-                    format: date-time
-                    type: string
                   writerEpoch:
                     format: int64
                     minimum: 1
                     type: integer
                 required:
                 - sequence
-                - validUntil
                 - writerEpoch
                 type: object
               configuration:
@@ -263,10 +259,6 @@ spec:
               rule: self.authorization.writerEpoch > oldSelf.authorization.writerEpoch
                 || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
                 && self.authorization.sequence >= oldSelf.authorization.sequence)
-            - message: changing an authorization deadline requires a new fence
-              rule: self.authorization.writerEpoch != oldSelf.authorization.writerEpoch
-                || self.authorization.sequence != oldSelf.authorization.sequence ||
-                self.authorization.validUntil == oldSelf.authorization.validUntil
             - message: zone membership changes require a new cache generation and
                 configuration revision
               rule: self.configuration.zoneRefs == oldSelf.configuration.zoneRefs

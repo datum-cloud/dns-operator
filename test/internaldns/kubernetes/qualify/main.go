@@ -34,7 +34,6 @@ import (
 type project struct {
 	Name                                   string `json:"name"`
 	ProjectUID                             string `json:"projectUID"`
-	SourceClusterUID                       string `json:"sourceClusterUID"`
 	Namespace                              string `json:"namespace"`
 	CustomerKubeconfig                     string `json:"customerKubeconfig"`
 	ProductKubeconfig                      string `json:"productKubeconfig"`
@@ -268,7 +267,7 @@ func (s *suite) run(path string) error {
 				return fmt.Errorf("%s client: %w", p.Name, err)
 			}
 		}
-		if net.ParseIP(p.ConsumerAddress) == nil || p.ProjectUID == "" || p.SourceClusterUID == "" || p.PublisherSubject == "" {
+		if net.ParseIP(p.ConsumerAddress) == nil || p.ProjectUID == "" || p.PublisherSubject == "" {
 			return fmt.Errorf("%s has incomplete identity or resolver address", p.Name)
 		}
 	}
@@ -351,7 +350,7 @@ func (s *suite) prepare(p *project) error {
 	p.access = dnsv1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "application-network-access", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverAccessBindingSpec{
 		ContextRef: objectRef(&p.resolverContext), Region: s.env.Region,
 		QueryIdentity: dnsv1.DNSResolverQueryIdentity{Type: dnsv1.DNSResolverQueryIdentityDestinationAddress, Value: p.ConsumerAddress}, Port: 53, Transports: []string{"UDP", "TCP"},
-		Authorization: dnsv1.DNSResolverAccessAuthorization{WriterEpoch: p.resolverContext.Status.AccessWriterEpoch, Sequence: 1, ValidUntil: metav1.NewTime(time.Now().Add(5 * time.Minute).UTC())},
+		Authorization: dnsv1.DNSResolverAccessAuthorization{WriterEpoch: p.resolverContext.Status.AccessWriterEpoch, Sequence: 1},
 	}}
 	if err := p.integration.Create(s.ctx, &p.access); err != nil {
 		return err
@@ -395,7 +394,7 @@ func recordSets(name, address, ipv6 string) []dnsv1.DNSContributionRecordSet {
 	return sets
 }
 
-func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name, address, ipv6 string, lifetime time.Duration) (*publication, error) {
+func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name, address, ipv6 string) (*publication, error) {
 	pub := &publication{registration: dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-registration", Namespace: p.Namespace}, Spec: dnsv1.DNSRegistrationSpec{DNSZoneRef: zone, Name: name, RecordTypes: []dnsv1.RRType{dnsv1.RRTypeA}, PublicationPolicy: dnsv1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 2}}}
 	if ipv6 != "" {
 		pub.registration.Spec.RecordTypes = append(pub.registration.Spec.RecordTypes, dnsv1.RRTypeAAAA)
@@ -403,7 +402,7 @@ func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name,
 	if err := p.product.Create(s.ctx, &pub.registration); err != nil {
 		return nil, err
 	}
-	pub.grant = dnsv1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-compute", Namespace: p.Namespace}, Spec: dnsv1.DNSContributionGrantSpec{RegistrationRef: objectRef(&pub.registration), ProducerID: "compute", Principal: dnsv1.DNSProducerPrincipal{ClusterUID: p.SourceClusterUID, Subject: p.PublisherSubject}, RecordTypes: pub.registration.Spec.RecordTypes}}
+	pub.grant = dnsv1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-compute", Namespace: p.Namespace}, Spec: dnsv1.DNSContributionGrantSpec{RegistrationRef: objectRef(&pub.registration), ProducerID: "compute", Principal: dnsv1.DNSProducerPrincipal{Subject: p.PublisherSubject}, RecordTypes: pub.registration.Spec.RecordTypes}}
 	if err := p.issuer.Create(s.ctx, &pub.grant); err != nil {
 		return nil, err
 	}
@@ -423,13 +422,13 @@ func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name,
 	}); err != nil {
 		return nil, err
 	}
-	if err := s.observe(p, pub, true, lifetime); err != nil {
+	if err := s.observe(p, pub, true); err != nil {
 		return nil, err
 	}
 	return pub, nil
 }
 
-func (s *suite) observe(p *project, pub *publication, eligible bool, lifetime time.Duration) error {
+func (s *suite) observe(p *project, pub *publication, eligible bool) error {
 	if err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&pub.contribution), &pub.contribution); err != nil {
 		return err
 	}
@@ -442,8 +441,6 @@ func (s *suite) observe(p *project, pub *publication, eligible bool, lifetime ti
 	if !eligible {
 		pub.contribution.Status.Reason = "EndpointNotReady"
 	}
-	deadline := metav1.NewTime(time.Now().Add(lifetime).UTC())
-	pub.contribution.Status.ValidUntil = &deadline
 	if err := p.product.Status().Patch(s.ctx, &pub.contribution, client.MergeFrom(before)); err != nil {
 		return err
 	}

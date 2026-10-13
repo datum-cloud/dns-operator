@@ -41,7 +41,7 @@ func TestKubeAPIRateLimitDefaultsOverridesAndValidation(t *testing.T) {
 		Region: "central", Shard: "one",
 		NATS:   transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
-		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", SourceClusterUID: "c1", Namespace: "project",
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project",
 			KubeAPI: KubeAPIClientConfig{QPS: 30, Burst: 60}}},
 		Members: []model.Member{{MemberID: "regional-1", Role: "regional"}},
 	}
@@ -102,7 +102,7 @@ func TestControlPlaneRejectsAmbiguousProjectsAndMemberIDs(t *testing.T) {
 	base := Config{
 		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
-		Projects: []ProjectConfig{{ProjectUID: "p1", SourceClusterUID: "c1", Namespace: "n1"}, {ProjectUID: "p2", SourceClusterUID: "c2", Namespace: "n2"}},
+		Projects: []ProjectConfig{{ProjectUID: "p1", Namespace: "n1"}, {ProjectUID: "p2", Namespace: "n2"}},
 	}
 	if err := base.Validate("control-plane"); err == nil {
 		t.Fatal("unnamed multi-project configuration was accepted")
@@ -150,5 +150,58 @@ func TestConfigLoaderRejectsRemovedPrivateServingFields(t *testing.T) {
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("multiple config objects accepted")
+	}
+}
+
+func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://127.0.0.1:1", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Agent: serving.Config{MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage")}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, WatchdogLeasePath: filepath.Join(dir, "lease.json"), ReconcileInterval: 10 * time.Millisecond}}
+	if err := cfg.Validate(roleAgent); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := serving.NewAgent(cfg.Agent, serving.Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := model.ServingSnapshot{Region: "central", Shard: "one", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: time.Now(), Bindings: []model.Binding{{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::1", ClusterAddress: "fd53::2", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}}}
+	env, err := model.NewEnvelope(model.KindServingSnapshot, "initial", "central", "one", "shard", 1, 1, time.Now(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Handle(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cfg.Agent.WatchdogLeasePath); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- runAgent(ctx, cfg) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(cfg.Agent.WatchdogLeasePath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("checkpoint activation waited for broker connectivity")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, err := os.ReadFile(cfg.Agent.Render.NodeDNSDist.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), "ready=true") {
+		t.Fatalf("persisted resolver mapping was not restored: %s", data)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent did not stop")
 	}
 }

@@ -53,9 +53,6 @@ func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingS
 			if cmp < 0 {
 				return nil, fmt.Errorf("binding %s source authorization regressed", b.BindingUID)
 			}
-			if cmp == 0 && !candidate.Authorization.ValidUntil.Equal(old.Authorization.ValidUntil) {
-				return nil, fmt.Errorf("binding %s changed the original deadline at the same source fence", b.BindingUID)
-			}
 			if old.Tombstone && !candidate.Tombstone && cmp <= 0 {
 				return nil, fmt.Errorf("binding %s reactivation requires a newer source authorization", b.BindingUID)
 			}

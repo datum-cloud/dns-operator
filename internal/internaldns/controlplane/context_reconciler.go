@@ -346,11 +346,11 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		spec := a.Spec
 		contextObject := contextByUID[spec.ContextRef.UID]
 		contextReady := resolverContextReady(contextObject)
-		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady && contextObject.Status.AccessWriterEpoch > 0 && spec.Authorization.WriterEpoch == contextObject.Status.AccessWriterEpoch && spec.Authorization.Sequence >= a.Status.ObservedSequence && spec.Authorization.ValidUntil.After(now) && !spec.Authorization.ValidUntil.After(now.Add(r.Options.MaxAccessLease))
+		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady && contextObject.Status.AccessWriterEpoch > 0 && spec.Authorization.WriterEpoch == contextObject.Status.AccessWriterEpoch && spec.Authorization.Sequence >= a.Status.ObservedSequence
 		bindingName := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
 		if prior := bindingsByName[bindingName]; prior != nil {
 			compare := model.Compare(uint64(spec.Authorization.WriterEpoch), uint64(spec.Authorization.Sequence), uint64(prior.Spec.Authorization.WriterEpoch), uint64(prior.Spec.Authorization.Sequence))
-			if compare < 0 || (compare == 0 && (!spec.Authorization.ValidUntil.Equal(&prior.Spec.Authorization.ValidUntil) || prior.Spec.Tombstone)) {
+			if compare < 0 || (compare == 0 && prior.Spec.Tombstone) {
 				valid = false
 			}
 		}
@@ -416,7 +416,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		}
-		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForRegion(spec.Region))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForRegion(spec.Region)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Listeners: dnsv1alpha1.DNSResolverBindingListeners{Node: dnsv1alpha1.DNSResolverBindingListener{Address: spec.QueryIdentity.Value, Port: spec.Port, Transports: append([]string(nil), spec.Transports...)}, Regional: dnsv1alpha1.DNSResolverBindingListener{Address: cluster, Port: spec.Port, Transports: append([]string(nil), spec.Transports...)}}, ZoneRefs: zoneReferences(zids, zones)}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: spec.Authorization.WriterEpoch, Sequence: spec.Authorization.Sequence, ValidUntil: spec.Authorization.ValidUntil}}}
+		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForRegion(spec.Region))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForRegion(spec.Region)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Listeners: dnsv1alpha1.DNSResolverBindingListeners{Node: dnsv1alpha1.DNSResolverBindingListener{Address: spec.QueryIdentity.Value, Port: spec.Port, Transports: append([]string(nil), spec.Transports...)}, Regional: dnsv1alpha1.DNSResolverBindingListener{Address: cluster, Port: spec.Port, Transports: append([]string(nil), spec.Transports...)}}, ZoneRefs: zoneReferences(zids, zones)}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: spec.Authorization.WriterEpoch, Sequence: spec.Authorization.Sequence}}}
 		if !exists {
 			if err := r.Create(ctx, binding); err != nil {
 				return err
@@ -455,7 +455,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
 			continue
 		}
-		withdraw, err := r.confirmAccessWithdrawal(ctx, ns, b, now)
+		withdraw, err := r.confirmAccessWithdrawal(ctx, ns, b)
 		if err != nil {
 			return err
 		}
@@ -476,8 +476,8 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 
 // confirmAccessWithdrawal prevents a stale or incomplete source List from
 // withdrawing a binding renewed by another controller. Read uncertainty leaves
-// the existing authorization intact; serving agents still enforce its deadline.
-func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace string, binding *dnsv1alpha1.DNSResolverBinding, now time.Time) (bool, error) {
+// the existing authorization intact; serving agents retain the applied configuration.
+func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace string, binding *dnsv1alpha1.DNSResolverBinding) (bool, error) {
 	var access dnsv1alpha1.DNSResolverAccessBinding
 	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.Source.AccessBindingRef.Name}, &access); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -491,7 +491,7 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 	authorization := access.Spec.Authorization
 	prior := binding.Spec.Authorization
 	compare := model.Compare(uint64(authorization.WriterEpoch), uint64(authorization.Sequence), uint64(prior.WriterEpoch), uint64(prior.Sequence))
-	if compare < 0 || (compare == 0 && !authorization.ValidUntil.Equal(&prior.ValidUntil)) {
+	if compare < 0 {
 		return false, nil
 	}
 	if access.Spec.ContextRef.Name != binding.Spec.Source.ResolverContextRef.Name || access.Spec.ContextRef.UID != binding.Spec.Source.ResolverContextRef.UID {
@@ -508,11 +508,11 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return true, nil
 	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
-	if !authorization.ValidUntil.After(now) || resolverContext.Status.AccessWriterEpoch > authorization.WriterEpoch {
+	if resolverContext.Status.AccessWriterEpoch > authorization.WriterEpoch {
 		return true, nil
 	}
 	// Readiness or epoch propagation can lag a healthy authorization. Such
-	// uncertainty is not retirement evidence and must not consume its lease.
+	// uncertainty is not retirement evidence and must not withdraw its binding.
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation || resolverContext.Status.AccessWriterEpoch < authorization.WriterEpoch {
 		return false, nil
 	}
@@ -555,7 +555,7 @@ func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) b
 		// past the exact configuration/authorization generation or its local ACK
 		// lease. An ACK lease may be shorter than the access deadline, but never
 		// longer because AckSink caps it before persisting the row.
-		if ack.Phase == string(model.AckVerified) && ack.Revision == binding.Spec.Configuration.Revision && ack.AuthorizationIssuerEpoch == binding.Spec.Authorization.WriterEpoch && ack.AuthorizationRevision == binding.Spec.Authorization.Sequence && ack.ValidUntil != nil && ack.ValidUntil.After(now) && !ack.ValidUntil.After(binding.Spec.Authorization.ValidUntil.Time) {
+		if ack.Phase == string(model.AckVerified) && ack.Revision == binding.Spec.Configuration.Revision && ack.AuthorizationIssuerEpoch == binding.Spec.Authorization.WriterEpoch && ack.AuthorizationRevision == binding.Spec.Authorization.Sequence && ack.ValidUntil != nil && ack.ValidUntil.After(now) {
 			return true
 		}
 	}
@@ -644,8 +644,6 @@ func BindingAddressCandidates(uid types.UID) (string, string) {
 func bindingEqual(a, b dnsv1alpha1.DNSResolverBindingSpec) bool {
 	x := a
 	y := b
-	x.Authorization.ValidUntil = metav1.Time{}
-	y.Authorization.ValidUntil = metav1.Time{}
 	xb, _ := json.Marshal(x)
 	yb, _ := json.Marshal(y)
 	return string(xb) == string(yb)

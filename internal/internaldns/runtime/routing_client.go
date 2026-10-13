@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 
+	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -16,24 +18,23 @@ type RoutingClient struct {
 	PlatformNamespace string
 }
 
-func (c *RoutingClient) target(obj client.Object) client.Client {
-	if obj != nil && obj.GetNamespace() == c.PlatformNamespace {
+func (c *RoutingClient) target(obj k8sruntime.Object) client.Client {
+	switch obj.(type) {
+	case *dnsv1.DNSZone, *dnsv1.DNSZoneList, *dnsv1.DNSZoneAssociation, *dnsv1.DNSZoneAssociationList,
+		*dnsv1.DNSRecordSet, *dnsv1.DNSRecordSetList, *dnsv1.DNSResolverContext, *dnsv1.DNSResolverContextList,
+		*dnsv1.DNSResolverAccessBinding, *dnsv1.DNSResolverAccessBindingList,
+		*dnsv1.DNSRegistration, *dnsv1.DNSRegistrationList, *dnsv1.DNSNamingPolicy, *dnsv1.DNSNamingPolicyList,
+		*dnsv1.DNSRecordContribution, *dnsv1.DNSRecordContributionList:
+		return c.Source
+	default:
 		return c.Client
 	}
-	return c.Source
-}
-func (c *RoutingClient) targetNamespace(namespace string) client.Client {
-	if namespace == c.PlatformNamespace {
-		return c.Client
-	}
-	return c.Source
 }
 func (c *RoutingClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	return c.targetNamespace(key.Namespace).Get(ctx, key, obj, opts...)
+	return c.target(obj).Get(ctx, key, obj, opts...)
 }
 func (c *RoutingClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	o := (&client.ListOptions{}).ApplyOptions(opts)
-	return c.targetNamespace(o.Namespace).List(ctx, list, opts...)
+	return c.target(list).List(ctx, list, opts...)
 }
 func (c *RoutingClient) Apply(ctx context.Context, obj k8sruntime.ApplyConfiguration, opts ...client.ApplyOption) error {
 	return c.Client.Apply(ctx, obj, opts...)
@@ -51,8 +52,7 @@ func (c *RoutingClient) Patch(ctx context.Context, obj client.Object, p client.P
 	return c.target(obj).Patch(ctx, obj, p, opts...)
 }
 func (c *RoutingClient) DeleteAllOf(ctx context.Context, obj client.Object, opts ...client.DeleteAllOfOption) error {
-	o := (&client.DeleteAllOfOptions{}).ApplyOptions(opts)
-	return c.targetNamespace(o.Namespace).DeleteAllOf(ctx, obj, opts...)
+	return c.target(obj).DeleteAllOf(ctx, obj, opts...)
 }
 func (c *RoutingClient) Status() client.SubResourceWriter {
 	return &routingSubresource{parent: c, name: "status"}

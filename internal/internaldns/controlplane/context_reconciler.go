@@ -327,7 +327,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		}
-		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
+		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/source-namespace": ns, "internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
 		if !exists {
 			if err := r.Create(ctx, binding); err != nil {
 				return err
@@ -335,7 +335,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if err := r.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 				return err
 			}
-		} else if !bindingEqual(old.Spec, binding.Spec) {
+		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns {
 			baseOld := old.DeepCopy()
 			old.Spec = binding.Spec
 			old.Labels = binding.Labels
@@ -367,6 +367,25 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
 			continue
+		}
+		sourceNamespace := b.Labels["internal-dns.miloapis.com/source-namespace"]
+		if sourceNamespace != "" && sourceNamespace != ns {
+			continue
+		}
+		if sourceNamespace == "" && r.Options.ProjectNamespace == "" {
+			var sourceAccesses dnsv1alpha1.DNSResolverAccessBindingList
+			if err := r.sourceReader().List(ctx, &sourceAccesses); err != nil {
+				return err
+			}
+			for j := range sourceAccesses.Items {
+				if sourceAccesses.Items[j].UID == b.Spec.Source.AccessBindingRef.UID {
+					sourceNamespace = sourceAccesses.Items[j].Namespace
+					break
+				}
+			}
+			if sourceNamespace != "" && sourceNamespace != ns {
+				continue
+			}
 		}
 		withdraw, err := r.confirmAccessWithdrawal(ctx, ns, b)
 		if err != nil {

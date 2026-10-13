@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -283,5 +284,53 @@ func TestStableOneShardPerRegionAssignment(t *testing.T) {
 	after := r.selectServingTargets("vpc-1", existing)
 	if after[0].Shard != central.Shard {
 		t.Fatalf("adding a shard moved live VPC: before=%s after=%s", central.Shard, after[0].Shard)
+	}
+}
+
+func TestNamespaceReconciliationCannotWithdrawAnotherNamespace(t *testing.T) {
+	for _, labeled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("namespace-label-%t", labeled), func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			if err := addReferenceStateToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "other", UID: "other-access"}}
+			binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: "platform", Labels: map[string]string{"internal-dns.miloapis.com/context-uid": "other-context"}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project", AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: access.Name, UID: access.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "context", UID: "other-context"}}}}
+			if labeled {
+				binding.Labels["internal-dns.miloapis.com/source-namespace"] = access.Namespace
+			}
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(access, binding).Build()
+			reconciler := &Reconciler{Client: cl, APIReader: cl, Options: ReconcilerOptions{ProjectUID: "project", PlatformNamespace: "platform"}}
+			if err := reconciler.reconcileContextBindings(ctx, "different", nil, nil, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+				t.Fatal(err)
+			}
+			if binding.Spec.Tombstone {
+				t.Fatal("another source namespace was withdrawn")
+			}
+		})
+	}
+}
+
+func TestAllNamespaceReconcileIncludesPlatformNamedSourceNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := addReferenceStateToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "platform", UID: "context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "network"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(contextObject).WithStatusSubresource(contextObject).Build()
+	r := &Reconciler{Client: cl, APIReader: cl, Options: ReconcilerOptions{ProjectUID: "project", PlatformNamespace: "platform"}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(contextObject)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(contextObject), contextObject); err != nil {
+		t.Fatal(err)
+	}
+	if !apimeta.IsStatusConditionTrue(contextObject.Status.Conditions, "Ready") {
+		t.Fatal("source namespace was excluded because it shares the managed namespace name")
 	}
 }

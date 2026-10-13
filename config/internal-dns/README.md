@@ -38,6 +38,15 @@ identity and storage; do not run two pods against one checkpoint.
 
 ## Control-plane and API boundaries
 
+Control-plane replicas discover ready Milo projects through the core API and
+watch every namespace in each project control plane. New projects are included
+without restarting the service. `projectDiscovery.kubeconfig` authenticates
+discovery and project API access; the process `--kubeconfig` authenticates the
+DNS service project. Generated kubeconfig Secrets use the `value` key.
+Unavailable discovery retains active sources and applied DNS configuration.
+Admission resolves the authenticated project parent against its live identity,
+and acknowledgement projection follows the discovered source clients.
+
 Control-plane replicas can concurrently watch the platform API and source
 projects. Publication and shard ownership use resource-version checks and
 increasing writer epochs on takeover. Each source project has an authenticated

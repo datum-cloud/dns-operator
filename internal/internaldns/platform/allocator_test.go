@@ -41,16 +41,16 @@ func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			uid := types.UID(fmt.Sprintf("vpc-%d", i))
-			a, b, err := allocator.Allocate(ctx, "project", uid)
+			a, err := allocator.Allocate(ctx, "project", uid)
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				failures = append(failures, err)
 				return
 			}
-			for _, address := range []string{a, b} {
+			for _, address := range []string{a} {
 				if previous, ok := addresses[address]; ok && previous != string(uid) {
-					failures = append(failures, fmt.Errorf("cross-VPC address collision"))
+					failures = append(failures, fmt.Errorf("cross-context address collision"))
 				}
 				addresses[address] = string(uid)
 			}
@@ -60,18 +60,18 @@ func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {
 	if len(failures) > 0 {
 		t.Fatal(failures)
 	}
-	if len(addresses) != 80 {
+	if len(addresses) != 40 {
 		t.Fatalf("got %d address claims", len(addresses))
 	}
-	a, b, err := allocator.Allocate(ctx, "project", "vpc-1")
+	a, err := allocator.Allocate(ctx, "project", "vpc-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, b2, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project", "vpc-1")
-	if err != nil || a != a2 || b != b2 {
+	a2, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project", "vpc-1")
+	if err != nil || a != a2 {
 		t.Fatal("allocator restart changed an existing lease")
 	}
-	replacement, _, err := allocator.Allocate(ctx, "project", "new-vpc-lifetime")
+	replacement, err := allocator.Allocate(ctx, "project", "new-vpc-lifetime")
 	if err != nil || replacement == a {
 		t.Fatal("new resource lifetime reused the old address")
 	}

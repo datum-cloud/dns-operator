@@ -61,8 +61,8 @@ func (c *accessListSnapshotClient) List(ctx context.Context, list client.ObjectL
 	return c.Client.List(ctx, list, opts...)
 }
 
-func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, string, error) {
-	return "fd53::10", "fd54::10", nil
+func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, error) {
+	return "fd54::10", nil
 }
 
 func (testAllocator) ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error {
@@ -254,7 +254,7 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	for i := range associations {
 		setCondition(&associations[i].Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{RegistrationClass: dnsv1alpha1.DNSRegistrationClassInstanceIdentity, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z1.Name, UID: z1.UID, Generation: z1.Generation}, NamePrefix: "instances"}, {RegistrationClass: dnsv1alpha1.DNSRegistrationClassServiceDiscovery, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z2.Name, UID: z2.UID, Generation: z2.Generation}, NamePrefix: "services"}}}}
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z1.Name, UID: z1.UID, Generation: z1.Generation}, NamePrefix: "instances"}, {Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z2.Name, UID: z2.UID, Generation: z2.Generation}, NamePrefix: "services"}}}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolverContext, policy).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSNamingPolicy{}).Build()
 	r := &Reconciler{Client: c, Options: ReconcilerOptions{}}
 	if err := r.reconcileNamingPolicies(ctx, []dnsv1alpha1.DNSNamingPolicy{*policy}, associations, map[string]*dnsv1alpha1.DNSZone{z1.Name: &z1, z2.Name: &z2}, now); err != nil {
@@ -267,7 +267,7 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	if accepted == nil || accepted.Status != metav1.ConditionTrue || len(policy.Status.ResolvedAdditionalNames) != 2 {
 		t.Fatalf("context naming policy not resolved: %#v", policy.Status)
 	}
-	if policy.Status.ResolvedResolverContextRef.UID != resolverContext.UID || policy.Status.ResolvedVPCRef.UID != "consumer-uid" {
+	if policy.Status.ResolvedResolverContextRef.UID != resolverContext.UID {
 		t.Fatalf("identity projection incorrect: %#v", policy.Status)
 	}
 }

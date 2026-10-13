@@ -38,28 +38,6 @@ spec:
             type: object
           spec:
             properties:
-              grantRef:
-                description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
-                properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
-                  name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
-                    type: string
-                required:
-                - name
-                type: object
               recordSets:
                 items:
                   properties:
@@ -326,7 +304,6 @@ spec:
                 - name
                 type: object
             required:
-            - grantRef
             - recordSets
             - registrationRef
             type: object
@@ -335,12 +312,8 @@ spec:
               rule: self.registrationRef.name.size() > 0 && has(self.registrationRef.uid)
                 && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation)
                 && self.registrationRef.generation > 0
-            - message: grantRef requires name and UID
-              rule: self.grantRef.name.size() > 0 && has(self.grantRef.uid) && self.grantRef.uid.size()
-                > 0
-            - message: contribution authority references are immutable
-              rule: self.registrationRef == oldSelf.registrationRef && self.grantRef
-                == oldSelf.grantRef
+            - message: contribution registration reference is immutable
+              rule: self.registrationRef == oldSelf.registrationRef
           status:
             properties:
               conditions:
@@ -403,6 +376,7 @@ spec:
                 type: boolean
               observedGeneration:
                 format: int64
+                minimum: 1
                 type: integer
               publishedRevision:
                 format: int64
@@ -411,11 +385,17 @@ spec:
                 type: string
               sequence:
                 format: int64
-                type: integer
-              writerEpoch:
-                format: int64
+                minimum: 1
                 type: integer
             type: object
+            x-kubernetes-validations:
+            - message: observation sequence must not decrease
+              rule: '!has(oldSelf.sequence) || (has(self.sequence) && self.sequence
+                >= oldSelf.sequence)'
+            - message: eligibility changes require a newer observation sequence
+              rule: (has(self.eligible) && self.eligible) == (has(oldSelf.eligible)
+                && oldSelf.eligible) || (has(self.sequence) && (!has(oldSelf.sequence)
+                || self.sequence > oldSelf.sequence))
         required:
         - spec
         type: object

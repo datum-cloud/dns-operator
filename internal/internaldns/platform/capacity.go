@@ -85,6 +85,9 @@ func safeExpansion(old, candidate model.Binding) bool {
 func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, rejected map[string]bool, now time.Time) error {
 	for i := range bindings {
 		binding := &bindings[i]
+		if binding.Spec.Placement.Region != p.Config.Region || binding.Spec.Placement.Shard != p.Config.Shard {
+			continue
+		}
 		base := binding.DeepCopy()
 		condition(&binding.Status.Conditions, "CapacityAvailable", !rejected[string(binding.UID)], "ShardCapacity", binding.Generation, now)
 		if !jsonEqualStatus(base.Status, binding.Status) {

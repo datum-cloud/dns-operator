@@ -3,11 +3,15 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func capacityBinding(index int) model.Binding {
@@ -45,5 +49,22 @@ func TestByteOverflowPreservesExistingContext(t *testing.T) {
 	bounded, rejected := fitSnapshot(candidate, prior, 2, 4096)
 	if !rejected["binding-1"] || len(bounded.Bindings) != 2 || bounded.Bindings[0].ConfigurationRevision != 1 {
 		t.Fatalf("overflow interrupted an established context: %#v", bounded)
+	}
+}
+
+func TestCapacityReportDoesNotOverwriteAnotherShard(t *testing.T) {
+	ctx := context.Background()
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: "platform", UID: "binding-uid"}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: "west", Shard: "b"}}, Status: dnsv1alpha1.DNSResolverBindingStatus{Conditions: []metav1.Condition{{Type: "CapacityAvailable", Status: metav1.ConditionFalse, Reason: "ShardCapacity", LastTransitionTime: metav1.Now()}}}}
+	cl := testClient(t, binding)
+	planner := Planner{Client: cl, Config: PlannerConfig{Region: "east", Shard: "a"}}
+	if err := planner.reportCapacity(ctx, []dnsv1alpha1.DNSResolverBinding{*binding}, nil, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var updated dnsv1alpha1.DNSResolverBinding
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].Status != metav1.ConditionFalse {
+		t.Fatal("capacity from another shard was overwritten")
 	}
 }

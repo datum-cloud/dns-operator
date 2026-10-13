@@ -157,10 +157,10 @@ flowchart TB
   subgraph B[VPC B]
     ClientB[Client 10.0.0.5] --> FrontB[DNS endpoint fd53::53]
   end
-  FrontA --> GrantA[Galactic authorized path A]
-  FrontB --> GrantB[Galactic authorized path B]
-  GrantA --> DestA[Service destination fd70:100::10]
-  GrantB --> DestB[Service destination fd70:100::11]
+  FrontA --> PathA[Galactic private path A]
+  FrontB --> PathB[Galactic private path B]
+  PathA --> DestA[Service destination fd70:100::10]
+  PathB --> DestB[Service destination fd70:100::11]
   subgraph Shared[Shared DNS service fleet]
     DestA --> Dist[dnsdist: trusted destination to context]
     DestB --> Dist
@@ -323,11 +323,11 @@ spec:
   # Select the serving region, not a separate project control plane.
   region: central
   queryIdentity:
-    # Galactic supplies an authorized service-side destination before DNS lookup.
+    # Galactic maps verified VPC traffic to this service-side destination.
     type: DestinationAddress
     # This is distinct from the well-known address exposed inside the VPC.
     value: fd70:100::10
-  # Permit DNS over both transports at the authorized destination.
+  # Serve DNS at this destination over both transports.
   port: 53
   transports: [UDP, TCP]
   version:
@@ -342,7 +342,8 @@ apply the current access mapping and configuration. Zone publication readiness i
 reported separately; a pending zone does not block resolver access. Context, region, query identity,
 port, transports, and access epoch are immutable per access lifetime.
 Updates advance the sequence; destinations are unique within their routing
-scope. Galactic owns the consumer frontend and network authorization.
+scope. Galactic enforces network access to each destination. Project RBAC controls
+who can manage the DNS mappings.
 
 #### Private zones and associations
 

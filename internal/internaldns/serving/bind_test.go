@@ -27,7 +27,7 @@ func regionalTestConfig(t *testing.T) Config {
 	render, _ := renderFixture(t)
 	render.Role = RenderRegionalBIND
 	render.ClusterBIND.Path = filepath.Join(dir, "runtime", "regional.conf")
-	return Config{Region: "east", Shard: "s1", MemberID: "regional-0", ReplicaID: "regional-0", Mode: ModeCombined, StateDir: filepath.Join(dir, "state"), Render: render, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "validate"}}, Reload: []Command{{Path: "reload"}}, FailClosed: []Command{{Path: "gate"}}}, UnsafeAllowNoDNSVerify: true, WatchdogLeasePath: filepath.Join(dir, "lease.json")}
+	return Config{Region: "east", Shard: "s1", MemberID: "regional-0", ReplicaID: "regional-0", Mode: ModeCombined, StateDir: filepath.Join(dir, "state"), Render: render, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "validate"}}, Reload: []Command{{Path: "reload"}}, FailClosed: []Command{{Path: "gate"}}}, UnsafeAllowNoDNSVerify: true}
 }
 func installTestPublication(t *testing.T, a *Agent, now time.Time) {
 	t.Helper()
@@ -390,7 +390,7 @@ func TestRejectedMemberProofRevokesRoutingAndIgnoresOlderReplay(t *testing.T) {
 	}
 }
 
-func TestPublicationProbeTimeoutDoesNotRenewWatchdog(t *testing.T) {
+func TestPublicationProbeTimeoutDoesNotApproveConfiguration(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -419,8 +419,8 @@ func TestPublicationProbeTimeoutDoesNotRenewWatchdog(t *testing.T) {
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, m)); err == nil {
 		t.Fatal("timed out publication accepted")
 	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("failed publication query proof renewed watchdog")
+	if a.state.Publications["zone-a"].Verified {
+		t.Fatal("failed publication query proof became active")
 	}
 }
 
@@ -597,9 +597,7 @@ func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	if !a.state.Publications["zone-a"].Verified || a.needsActivation {
 		t.Fatal("ACK partition revoked proved publication")
 	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil {
-		t.Fatalf("ACK partition removed safe local lease: %v", err)
-	}
+	assertAppliedCheckpoint(t, a)
 	// Identical manifest redelivery and snapshot delivery must share the same
 	// best-effort ACK boundary without changing the observation.
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err != nil {
@@ -618,8 +616,9 @@ func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	if !strings.Contains(currentZone(t, a), "192.0.2.11") {
 		t.Fatal("ACK partition removed an applied record")
 	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil || a.needsActivation {
-		t.Fatalf("healthy local serving was gated by ACK outage: %v", err)
+	assertAppliedCheckpoint(t, a)
+	if a.needsActivation {
+		t.Fatal("healthy serving was gated by ACK outage")
 	}
 	before := publisher.verified.Load()
 	publisher.disconnected.Store(false)
@@ -650,7 +649,5 @@ func TestBINDTombstoneAckFailureDoesNotGateDurableWithdrawal(t *testing.T) {
 	if !p.Verified || !p.Manifest.Tombstone || a.needsActivation {
 		t.Fatal("failed tombstone ACK invalidated safely withdrawn zone")
 	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); err != nil {
-		t.Fatalf("withdrawal lost safe lease because broker was unavailable: %v", err)
-	}
+	assertAppliedCheckpoint(t, a)
 }

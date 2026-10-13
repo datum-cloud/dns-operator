@@ -33,13 +33,12 @@ const Path = "/validate-internal-dns"
 // publisher. For project-aware deployments, ClientForRequest must resolve the
 // authenticated project context and return its immutable source cluster UID.
 type Handler struct {
-	Client                  client.Client
-	TrustedClusterUID       string
-	MaxContributionLease    time.Duration
-	MaxAccessLease          time.Duration
-	ResolverContextsEnabled bool
-	Now                     func() time.Time
-	ClientForRequest        func(context.Context, kubeadmission.Request) (client.Client, string, error)
+	Client               client.Client
+	TrustedClusterUID    string
+	MaxContributionLease time.Duration
+	MaxAccessLease       time.Duration
+	Now                  func() time.Time
+	ClientForRequest     func(context.Context, kubeadmission.Request) (client.Client, string, error)
 }
 
 var _ kubeadmission.Handler = (*Handler)(nil)
@@ -261,14 +260,9 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if _, err := currentPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
 		return err
 	}
-	if err := validateConsumerSelector(a.Spec.VPCRef, a.Spec.ResolverContextRef, h.ResolverContextsEnabled); err != nil {
-		return err
-	}
-	if h.ResolverContextsEnabled {
-		if a.Spec.ResolverContextRef.UID == "" {
-			return fmt.Errorf("association must pin resolver context UID")
-		}
-		return nil
+
+	if a.Spec.ResolverContextRef.UID == "" {
+		return fmt.Errorf("association must pin resolver context UID")
 	}
 	return nil
 }
@@ -278,44 +272,31 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 	if err := decode(req, &p); err != nil {
 		return err
 	}
-	if err := validateConsumerSelector(p.Spec.VPCRef, p.Spec.ResolverContextRef, h.ResolverContextsEnabled); err != nil {
-		return err
-	}
+
 	if p.Spec.DNSZoneRef.Name != "" {
 		if _, err := currentPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
 			return err
 		}
 	}
 	for _, rule := range p.Spec.AdditionalNames {
+		if _, err := metav1.LabelSelectorAsSelector(rule.Selector.AsLabelSelector()); err != nil {
+			return fmt.Errorf("invalid naming selector: %w", err)
+		}
 		if _, err := currentPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {
 			return err
 		}
 	}
-	if h.ResolverContextsEnabled {
-		if p.Spec.ResolverContextRef.Name == "" || p.Spec.ResolverContextRef.UID == "" {
-			return fmt.Errorf("naming policy must pin resolver context name and UID")
-		}
-		var resolverContext dnsv1alpha1.DNSResolverContext
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: p.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
-			return fmt.Errorf("resolver context lookup: %w", err)
-		}
-		ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
-		if resolverContext.UID != p.Spec.ResolverContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
-			return fmt.Errorf("resolver context lifetime is not ready")
-		}
-		return nil
-	}
-	return nil
-}
 
-func validateConsumerSelector(vpcRef, contextRef dnsv1alpha1.DNSObjectReference, contextMode bool) error {
-	hasVPC := vpcRef.Name != "" || vpcRef.UID != "" || vpcRef.Generation != 0
-	hasContext := contextRef.Name != "" || contextRef.UID != "" || contextRef.Generation != 0
-	if contextMode && !hasContext {
-		return fmt.Errorf("resolver context mode requires resolverContextRef")
+	if p.Spec.ResolverContextRef.Name == "" || p.Spec.ResolverContextRef.UID == "" {
+		return fmt.Errorf("naming policy must pin resolver context name and UID")
 	}
-	if !contextMode && !hasVPC {
-		return fmt.Errorf("legacy networking mode requires vpcRef")
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: p.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
+		return fmt.Errorf("resolver context lookup: %w", err)
+	}
+	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
+	if resolverContext.UID != p.Spec.ResolverContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
+		return fmt.Errorf("resolver context lifetime is not ready")
 	}
 	return nil
 }

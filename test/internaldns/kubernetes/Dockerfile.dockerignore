@@ -3,4 +3,4 @@
 **/*_test.go
 !go.mod
 !go.sum
-!test/internaldns/kubernetes/commands/**
+!config/internal-dns/commands/**

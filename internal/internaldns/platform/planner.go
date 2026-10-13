@@ -136,7 +136,6 @@ func (p *Planner) Step(ctx context.Context) error {
 	for _, b := range prior.Bindings {
 		priorBindings[b.BindingUID] = b
 	}
-	dependencies := map[string]bool{}
 	for _, obj := range bindings.Items {
 		b := obj.Spec
 		if b.Placement.Region != c.Region || b.Placement.Shard != c.Shard || b.Tombstone || !obj.DeletionTimestamp.IsZero() {
@@ -152,13 +151,24 @@ func (p *Planner) Step(ctx context.Context) error {
 		complete := true
 		for _, zoneRef := range b.Configuration.ZoneRefs {
 			uid := zoneRef.UID
+			apex := b.Configuration.ZoneApices[string(uid)]
+			pending := func() {
+				if apex == "" {
+					complete = false
+					return
+				}
+				view.Zones = append(view.Zones, model.ZoneAttachment{Pending: true, ZoneUID: string(uid), Apex: apex, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
+			}
 			o, ok := byZone[string(uid)]
 			if !ok || o.Spec.ActiveManifestName == "" {
-				complete = false
-				break
+				pending()
+				continue
 			}
 			var m dnsv1alpha1.DNSPublicationManifest
-			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: o.Spec.ActiveManifestName}, &m); err != nil {
+			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: o.Spec.ActiveManifestName}, &m); apierrors.IsNotFound(err) {
+				pending()
+				continue
+			} else if err != nil {
 				return err
 			}
 			targeted := false
@@ -169,25 +179,27 @@ func (p *Planner) Step(ctx context.Context) error {
 				}
 			}
 			if m.Spec.ZoneRef.UID != uid || m.Spec.Tombstone || !targeted {
-				complete = false
-				break
+				pending()
+				continue
 			}
 			attachment := model.ZoneAttachment{ZoneUID: string(uid), Apex: m.Spec.ZoneApex, RequiredPublicationEpoch: uint64(m.Spec.WriterEpoch), RequiredPublicationRevision: uint64(m.Spec.Revision)}
 			// Record updates do not change a view's minimum activation dependency.
 			if old, ok := priorBindings[view.BindingUID]; ok && old.BindingGeneration == view.BindingGeneration {
 				for _, z := range old.Zones {
-					if z.ZoneUID == attachment.ZoneUID && z.Apex == attachment.Apex {
+					if !z.Pending && z.ZoneUID == attachment.ZoneUID && z.Apex == attachment.Apex {
 						attachment.RequiredPublicationEpoch = z.RequiredPublicationEpoch
 						attachment.RequiredPublicationRevision = z.RequiredPublicationRevision
 					}
 				}
 			}
-			activationName := model.PublicationActivationName(m.Name, c.Region, c.Shard)
 			view.Zones = append(view.Zones, attachment)
-			dependencies[activationName] = true
 		}
 		if !complete {
-			continue
+			// Missing configuration is not a withdrawal of source authorization.
+			// Retain the identity but expose no partial or removed zone set. The
+			// pending snapshot can publish without waiting on this tenant's outbox.
+			view.ConfigurationPending = true
+			view.Zones = nil
 		}
 		sort.Slice(view.Zones, func(i, j int) bool { return view.Zones[i].ZoneUID < view.Zones[j].ZoneUID })
 		snapshot.Bindings = append(snapshot.Bindings, view)
@@ -198,8 +210,14 @@ func (p *Planner) Step(ctx context.Context) error {
 	if maxBindings <= 0 {
 		maxBindings = 256
 	}
-	if len(snapshot.Bindings) > maxBindings {
-		return fmt.Errorf("shard %s/%s exceeds binding budget: %d > %d; no partial snapshot will be exported", c.Region, c.Shard, len(snapshot.Bindings), maxBindings)
+	maxBytes := c.MaxSnapshotBytes
+	if maxBytes <= 0 {
+		maxBytes = 512 * 1024
+	}
+	var rejected map[string]bool
+	snapshot, rejected = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
+	if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
+		return err
 	}
 	if err := snapshot.Validate(); err != nil {
 		return err
@@ -239,19 +257,10 @@ func (p *Planner) Step(ctx context.Context) error {
 		return err
 	}
 	payload, _ := json.Marshal(env)
-	maxBytes := c.MaxSnapshotBytes
-	if maxBytes <= 0 {
-		maxBytes = 512 * 1024
-	}
 	if len(payload) > maxBytes {
 		return fmt.Errorf("shard serving envelope exceeds configured transport budget: %d > %d", len(payload), maxBytes)
 	}
-	deps := make([]string, 0, len(dependencies))
-	for name := range dependencies {
-		deps = append(deps, name)
-	}
-	sort.Strings(deps)
-	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.Namespace, Labels: map[string]string{shardOwnerLabel: owner.Name, "internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: model.ServingSubject(c.Region, c.Shard), ResourceUID: owner.UID, WriterEpoch: int64(state.Epoch), Revision: int64(revision), PayloadHash: model.Hash(payload), Payload: payload, Activation: true, DependsOn: deps}}
+	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.Namespace, Labels: map[string]string{shardOwnerLabel: owner.Name, "internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: model.ServingSubject(c.Region, c.Shard), ResourceUID: owner.UID, WriterEpoch: int64(state.Epoch), Revision: int64(revision), PayloadHash: model.Hash(payload), Payload: payload, Activation: true, DependsOn: nil}}
 	if err := p.Client.Create(ctx, out); apierrors.IsAlreadyExists(err) {
 		var existing dnsv1alpha1.DNSTransportOutbox
 		if err := p.Client.Get(ctx, client.ObjectKeyFromObject(out), &existing); err != nil {

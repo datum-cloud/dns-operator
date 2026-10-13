@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const dnsValueNode = "node"
+
 // AckSink relies on NATS subject ACLs to bind each authenticated serving member
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
@@ -93,7 +95,7 @@ func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope)
 		}
 		return s.publication(ctx, a, row, now)
 	case model.KindServingSnapshot:
-		if member.Role != "node" && member.Role != dnsValueCluster && member.Role != dnsValueResolver && member.Role != dnsValueRegional {
+		if member.Role != dnsValueNode && member.Role != dnsValueCluster && member.Role != dnsValueResolver && member.Role != dnsValueRegional {
 			return fmt.Errorf("serving ack is not from a resolver member")
 		}
 		return s.serving(ctx, a, row, now)
@@ -169,7 +171,7 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			} else {
 				binding.Status.Phase = dnsValuePending
 			}
-			condition(&binding.Status.Conditions, dnsValueServing, complete, "MemberVerification", binding.Generation, now)
+			s.bindingConditions(binding, e, snapshot, now, complete)
 			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
@@ -263,7 +265,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				if registrationGenerations[string(r.UID)] != uint64(r.Generation) {
 					continue
 				}
-				if r.Spec.DNSZoneRef.Name != z.Name || r.Spec.DNSZoneRef.UID != "" && r.Spec.DNSZoneRef.UID != z.UID {
+				if r.Spec.DNSZoneRef.Name != z.Name {
 					continue
 				}
 				available := false
@@ -339,7 +341,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 	for _, member := range s.Members {
 		match := member.Role == role
 		if role == dnsValueResolver {
-			match = member.Role == "node" || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
+			match = member.Role == dnsValueNode || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
 		}
 		if !match {
 			continue
@@ -400,7 +402,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
 		complete := s.bindingVerified(b, envelope, snapshot, now)
-		condition(&b.Status.Conditions, dnsValueServing, complete, "MemberVerification", b.Generation, now)
+		s.bindingConditions(b, envelope, snapshot, now, complete)
 		if complete {
 			b.Status.Phase = dnsValueServing
 		} else {
@@ -524,6 +526,10 @@ func LoadCommittedServingSnapshot(ctx context.Context, c client.Client, namespac
 }
 
 func (s *AckSink) bindingVerified(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time) bool {
+	return s.bindingProof(b, envelope, snapshot, now, false)
+}
+
+func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time, all bool) bool {
 	if envelope == nil || snapshot == nil || b.Spec.Tombstone {
 		return false
 	}
@@ -543,5 +549,38 @@ func (s *AckSink) bindingVerified(b *dnsv1alpha1.DNSResolverBinding, envelope *m
 			rows = append(rows, row)
 		}
 	}
-	return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+	if all {
+		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+	}
+	tiers := map[string][]model.Member{}
+	for _, member := range s.Members {
+		role := member.Role
+		if role == dnsValueCluster {
+			role = dnsValueRegional
+		}
+		if role == dnsValueNode || role == dnsValueResolver || role == dnsValueRegional {
+			tiers[role] = append(tiers[role], member)
+		}
+	}
+	for _, members := range tiers {
+		ready := false
+		for _, member := range members {
+			scoped := *s
+			scoped.Members = []model.Member{member}
+			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+		}
+		if !ready {
+			return false
+		}
+	}
+	return len(tiers) > 0
+}
+
+func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time, available bool) {
+	condition(&b.Status.Conditions, "FullyReplicated", s.bindingProof(b, envelope, snapshot, now, true), "ReplicaVerification", b.Generation, now)
+	condition(&b.Status.Conditions, "ObservationHealthy", available, "MemberObservation", b.Generation, now)
+	condition(&b.Status.Conditions, dnsValueServing, available, "MemberVerification", b.Generation, now)
+	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
+		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
+	}
 }

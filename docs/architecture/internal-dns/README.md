@@ -138,7 +138,7 @@ flowchart LR
 ```
 
 Bindings live in the consumer project API; `region` selects serving capacity.
-Each has independent identity, authorization, and readiness. Publication is
+Each has independent identity, access mapping, and readiness. Publication is
 asynchronous, and a failed region must not block healthy regions. Regional access
 does not imply that discovery returns only region-local endpoints.
 
@@ -187,8 +187,8 @@ Shared node and regional tiers use:
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
 preserves the destination. [BIND PROXY access controls](https://bind9.readthedocs.io/en/v9.20.2/reference.html#namedconf-statement-allow-proxy)
-restrict trusted peers and listeners. A shared pool member must have current
-configuration and authorization for every assigned context.
+restrict trusted peers and listeners. A shared pool member must have the current
+configuration and access version for every assigned context.
 
 [BIND views](https://bind9.readthedocs.io/en/v9.20.2/reference.html#view-block-grammar)
 select the private zones visible to each context. Keep caches separate and reject
@@ -196,9 +196,9 @@ unmatched destinations before lookup.
 
 ### Publication and service discovery
 
-A registration reserves a name and record types. A grant authorizes a product
-publisher. A contribution supplies records and an explicit eligibility
-observation. DNS compiles accepted contributions into a complete zone snapshot.
+A registration reserves a name and record types. An RBAC-authorized product
+service publishes records and explicit endpoint eligibility through a contribution.
+DNS validates ownership and observation versions, then compiles a zone snapshot.
 
 ```mermaid
 sequenceDiagram
@@ -209,7 +209,7 @@ sequenceDiagram
   participant Transport as Regional NATS
   participant Agent as Serving agent
   Product->>Project: Records and eligibility observation
-  DNS->>Project: Validate identities, grants, and versions
+  DNS->>Project: Validate references and observation versions
   DNS->>Store: Stage immutable chunks and manifest
   DNS->>Store: Commit active snapshot under writer lease
   Store->>Transport: Export committed update through durable outbox
@@ -275,10 +275,9 @@ resolves these references and stores ownership identities in internal reference
 records in the DNS service project. Project status exposes names and conditions.
 Internal publication and access contracts pin UIDs and policy generations.
 The project API server authenticates callers and uses RBAC to authorize resource
-and status operations. Separate roles govern product publication, grant issuance,
-network integration, and DNS controllers. Publishers cannot issue grants or
-modify resolver authority. Admission validates live DNS references
-and the relationship between an authenticated publisher and its current grant.
+and status operations. Separate roles govern product publication, network integration, and DNS
+controllers. Product services are trusted within their project permissions.
+Admission validates live references; DNS checks name conflicts and record scope.
 
 #### Context and regional access
 
@@ -305,8 +304,8 @@ status:
     dnsZoneRef:
       name: managed-application
     suffix: datum.internal
-  # DNS-owned fencing epoch for trusted access authorization.
-  accessWriterEpoch: 3
+  # DNS-owned epoch for ordering access mapping updates.
+  accessEpoch: 3
   # Regional assignments do not move this object out of the project API.
   servingTargets:
     - region: central
@@ -331,17 +330,17 @@ spec:
   # Permit DNS over both transports at the authorized destination.
   port: 53
   transports: [UDP, TCP]
-  authorization:
-    # Match the DNS-issued context epoch; stale issuers cannot restore access.
-    writerEpoch: 3
+  version:
+    # Match the context epoch to reject stale mapping updates.
+    epoch: 3
     # Order updates monotonically within this access-binding lifetime.
     sequence: 27
 ```
 
 Access reports `Accepted` after validation and `Ready` after required members
-apply current authorization and configuration. Zone publication readiness is
+apply the current access mapping and configuration. Zone publication readiness is
 reported separately; a pending zone does not block resolver access. Context, region, query identity,
-port, transports, and authorization epoch are immutable per access lifetime.
+port, transports, and access epoch are immutable per access lifetime.
 Updates advance the sequence; destinations are unique within their routing
 scope. Galactic owns the consumer frontend and network authorization.
 
@@ -437,13 +436,13 @@ with the same name. Selectors match `DNSRegistration.metadata.labels` using
 registration in the context. Matching rules add
 `<allocated-name>.<namePrefix>.<zone-domain>`; overlapping rules produce one
 reservation per zone and name. Product integrations apply the accepted rules
-when reserving additional names. Scoped grants authorize publication.
+when reserving additional names. Project RBAC authorizes publication.
 
 #### Product publication
 
-Compute can reserve a name in the managed namespace, obtain a scoped publisher
-grant, and publish eligible interface addresses. Connect uses the same contract
-with its own publisher principal and export eligibility policy.
+Compute reserves names in the managed namespace and publishes eligible interface
+addresses. Connect uses the same contribution API with its export eligibility
+policy. Each service authenticates to the project API with scoped RBAC access.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -472,31 +471,6 @@ status:
   canonicalFQDN: web-01.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSContributionGrant
-metadata:
-  name: web-01-compute
-spec:
-  # Pin both the registration lifetime and the policy being authorized.
-  registrationRef:
-    name: instance-web-01
-    uid: 55555555-5555-4555-8555-555555555555
-    generation: 1
-  # Audit label; the authenticated principal below authorizes the writer.
-  producerID: compute
-  principal:
-    # Match the authenticated publisher within this project's API context.
-    subject: system:serviceaccount:compute-system:dns-publisher
-  # Scope the writer to these types and owner names.
-  recordTypes: [A, AAAA]
-  nameScopes: [web-01]
-status:
-  # DNS allocates the epoch; the producer cannot choose its own fencing token.
-  activeWriterEpoch: 3
-  # Identify the grant and registration policy versions DNS accepted.
-  observedGrantGeneration: 1
-  observedRegistrationGeneration: 1
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
 metadata:
   name: web-01-endpoint
@@ -505,11 +479,6 @@ spec:
   registrationRef:
     name: instance-web-01
     uid: 55555555-5555-4555-8555-555555555555
-    generation: 1
-  # Bind the producer to its authorized grant lifetime and policy.
-  grantRef:
-    name: web-01-compute
-    uid: 66666666-6666-4666-8666-666666666666
     generation: 1
   # Reuse the existing typed record representation.
   recordSets:
@@ -528,9 +497,7 @@ spec:
 status:
   # Producer-owned: this observation covers the current contribution spec.
   observedGeneration: 1
-  # Producer-owned: echo the DNS-issued grant epoch.
-  writerEpoch: 3
-  # Producer-owned: order observations within that epoch.
+  # Producer-owned: increase for each eligibility observation.
   sequence: 18
   # Producer-owned: product policy determines readiness for this name's purpose.
   eligible: true
@@ -542,8 +509,8 @@ status:
 Publishers preserve DNS-owned status fields and observe the current contribution
 generation. An ineligible endpoint gets a higher-sequence observation with
 `eligible: false`; recovery requires a newer eligible observation. Publisher
-unavailability leaves the last reported state in place. Admission checks the
-principal, grant epoch, sequence, and record scope.
+unavailability leaves the last reported state in place. The compiler rejects stale
+generations, sequence rollback, and records outside the registration.
 
 #### DNS service project contracts
 
@@ -552,7 +519,7 @@ publishers cannot write them. Examples show selected fields that explain
 coordination; they are not complete generated serving plans or transport payloads.
 
 The proposed `DNSResolverBinding` groups four concerns: source identity,
-regional placement, generated serving configuration, and access authorization.
+regional placement, generated serving configuration, and access versions.
 It binds a consumer DNS context to shared capacity; it does not describe a VPC
 or create a resolver deployment.
 
@@ -570,7 +537,7 @@ spec:
     resolverContextRef:
       name: application
       uid: 33333333-3333-4333-8333-333333333333
-    # Retain the exact regional access authorization that produced this plan.
+    # Identify the regional access mapping that produced this plan.
     accessBindingRef:
       name: application-central
       uid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
@@ -583,17 +550,13 @@ spec:
     generation: 1
     # Order configuration changes within this plan generation.
     revision: 7
-    listeners:
-      # Node-tier service destination, reached through the private network path.
-      node:
-        address: fd70:100::10
-        port: 53
-        transports: [UDP, TCP]
-      # Regional-tier destination used by the context's node resolver view.
-      regional:
-        address: fd70:200::10
-        port: 53
-        transports: [UDP, TCP]
+    query:
+      # Galactic maps the consumer resolver address to this context destination.
+      nodeAddress: fd70:100::10
+      # Node resolvers forward to this regional context destination.
+      regionalAddress: fd70:200::10
+      # Both destinations use DNS port 53 and the same transports.
+      transports: [UDP, TCP]
     # Reserve private apices even while their publication is pending.
     zoneApices:
       44444444-4444-4444-8444-444444444444: datum.internal
@@ -604,9 +567,9 @@ spec:
         uid: 44444444-4444-4444-8444-444444444444
       - name: production
         uid: 88888888-8888-4888-8888-888888888888
-  authorization:
-    # Copy the accepted access epoch and sequence.
-    writerEpoch: 3
+  version:
+    # Copy the current access mapping version.
+    epoch: 3
     sequence: 27
 ```
 
@@ -633,7 +596,7 @@ Their storage schemas can be reviewed with the implementation.
 #### Compatibility and API review
 
 Schemas, transport, and checkpoints must preserve object lifetimes and ordered
-configuration versions. Review naming conflicts, grant revocation, field
+configuration versions. Review naming conflicts, record withdrawal, field
 ownership, outage recovery, regional readiness, and snapshot limits before
 stabilizing the APIs.
 
@@ -654,7 +617,7 @@ before release.
 
 Define separate alpha controls for publication and serving. Public visibility
 remains the default. Revoke access before draining private capacity; dependent
-workloads lose resolution. Reenabling requires fresh authorization and observations.
+workloads lose resolution. Reenabling requires a newer access version and current observations.
 
 ### Rollout, Upgrade and Rollback Planning
 
@@ -688,7 +651,7 @@ history; establish supported limits and regional failover capacity before releas
 
 ### Troubleshooting
 
-Trace project/context/access UIDs through authorization, committed snapshots,
+Trace project/context/access UIDs through access mappings, committed snapshots,
 and serving acknowledgments. Inspect network identity for REFUSED, private state for
 SERVFAIL, and product eligibility for NODATA.
 

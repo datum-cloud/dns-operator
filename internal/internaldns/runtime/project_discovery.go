@@ -113,8 +113,8 @@ func (d *projectDiscovery) step(ctx context.Context) error {
 		d.directory.mu.RLock()
 		existing, exists := d.directory.projects[p.Name]
 		d.directory.mu.RUnlock()
-		ready := p.DeletionTimestamp.IsZero() && apimeta.IsStatusConditionTrue(p.Status.Conditions, resourcemanagerv1alpha1.ProjectReady)
-		if exists && (existing.config.ProjectUID != p.UID || !ready) {
+		ready := apimeta.IsStatusConditionTrue(p.Status.Conditions, resourcemanagerv1alpha1.ProjectReady)
+		if exists && existing.config.ProjectUID != p.UID {
 			d.remove(p.Name)
 			exists = false
 		}

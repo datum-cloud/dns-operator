@@ -177,14 +177,11 @@ func (s *suite) scenarios(a, b *project) error {
 }
 
 func (s *suite) update(p *project, pub *publication, address, ipv6 string) error {
-	if err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&pub.contribution), &pub.contribution); err != nil {
-		return err
-	}
-	before := pub.contribution.DeepCopy()
-	pub.contribution.Spec.RecordSets = recordSets(pub.registration.Spec.Name, address, ipv6)
-	pub.contribution.Spec.Eligible = true
-	pub.contribution.Spec.Reason = "EndpointReady"
-	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := mutateContribution(s.ctx, p.product, &pub.contribution, func(spec *dnsv1.DNSRecordContributionSpec) {
+		spec.RecordSets = recordSets(pub.registration.Spec.Name, address, ipv6)
+		spec.Eligible = true
+		spec.Reason = "EndpointReady"
+	}); err != nil {
 		return err
 	}
 	return s.waitPublication(pub)

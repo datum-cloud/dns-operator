@@ -26,7 +26,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	for name, domain := range domains {
 		objects = append(objects, &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "project", UID: types.UID(name + "-context"), Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/" + name, ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: domain}}})
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSManagedNamespace{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objects...).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 		obj.SetUID(types.UID(obj.GetName() + "-uid"))
 		obj.SetGeneration(1)
 		return cl.Create(ctx, obj, opts...)
@@ -38,9 +38,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.reconcileManagedNamespaces(ctx, "project", now); err != nil {
-		t.Fatal(err)
-	}
+
 	var zones dnsv1alpha1.DNSZoneList
 	if err := c.List(ctx, &zones); err != nil {
 		t.Fatal(err)
@@ -60,9 +58,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := r.reconcileManagedNamespaces(ctx, "project", now); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +77,16 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 		if zone.Spec.DomainName != domains[resolver.Name] {
 			t.Fatalf("requested %q, allocated %q", domains[resolver.Name], zone.Spec.DomainName)
 		}
+		if !metav1.IsControlledBy(&zone, &resolver) {
+			t.Fatal("managed zone must share the resolver context lifecycle")
+		}
+		var association dnsv1alpha1.DNSZoneAssociation
+		if err := c.Get(ctx, client.ObjectKey{Namespace: "project", Name: zone.Name + "-context"}, &association); err != nil {
+			t.Fatal(err)
+		}
+		if !metav1.IsControlledBy(&association, &resolver) {
+			t.Fatal("managed association must share the resolver context lifecycle")
+		}
 	}
 	if contexts.Items[0].Status.ManagedNamespace.DNSZoneRef.UID == contexts.Items[1].Status.ManagedNamespace.DNSZoneRef.UID {
 		t.Fatal("contexts share a zone lifetime")
@@ -90,9 +96,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	if err := c.Update(ctx, zone); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.reconcileManagedNamespaces(ctx, "project", now); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +129,7 @@ func TestManagedNamespaceRequiresRequestedDomain(t *testing.T) {
 			if len(resolver.Status.Conditions) != 1 || resolver.Status.Conditions[0].Reason != "InvalidManagedDomain" {
 				t.Fatalf("invalid domain was accepted: %#v", resolver.Status)
 			}
-			var namespaces dnsv1alpha1.DNSManagedNamespaceList
+			var namespaces dnsv1alpha1.DNSZoneList
 			if err := c.List(context.Background(), &namespaces); err != nil || len(namespaces.Items) != 0 {
 				t.Fatalf("invalid domain allocated a namespace: %#v, %v", namespaces.Items, err)
 			}

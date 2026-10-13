@@ -8,8 +8,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
-// bindingFence retains source authority independently of shard snapshot ordering.
-// Omission withdraws access without inventing a source-issued sequence number.
+// bindingFence retains mapping lifetime and order independently of shard snapshots.
 type bindingFence struct {
 	Identity                string              `json:"identity"`
 	ConfigurationGeneration uint64              `json:"configurationGeneration"`

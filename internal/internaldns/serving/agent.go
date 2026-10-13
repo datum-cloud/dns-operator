@@ -1435,6 +1435,9 @@ func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {
 		if !ok {
 			continue
 		}
+		if current.Retired && !observation.Retired {
+			return fmt.Errorf("contribution %q lifetime is retired", observation.ContributionUID)
+		}
 		comparison := model.Compare(observation.Generation, observation.Sequence, current.Generation, current.Sequence)
 		if comparison < 0 {
 			return fmt.Errorf("contribution %q regressed from epoch %d sequence %d", observation.ContributionUID, current.Generation, current.Sequence)
@@ -1446,10 +1449,10 @@ func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {
 
 func (a *Agent) commitContributionFences(plan model.PublicationPlan) {
 	for _, observation := range plan.ObservationFences {
-		next := contributionFence{Generation: observation.Generation, Sequence: observation.Sequence}
+		next := contributionFence{Generation: observation.Generation, Sequence: observation.Sequence, Retired: observation.Retired}
 		current := a.state.ContributionFences[observation.ContributionUID]
 		comparison := model.Compare(next.Generation, next.Sequence, current.Generation, current.Sequence)
-		if comparison > 0 {
+		if comparison > 0 || (comparison == 0 && next.Retired && !current.Retired) {
 			a.state.ContributionFences[observation.ContributionUID] = next
 		}
 	}

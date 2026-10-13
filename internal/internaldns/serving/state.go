@@ -16,6 +16,7 @@ import (
 type contributionFence struct {
 	Generation uint64 `json:"generation"`
 	Sequence   uint64 `json:"sequence"`
+	Retired    bool   `json:"retired,omitempty"`
 }
 
 type replicaAck struct {
@@ -25,7 +26,7 @@ type replicaAck struct {
 	ValidUntil time.Time `json:"validUntil"`
 }
 
-const checkpointFormatVersion = 6
+const checkpointFormatVersion = 7
 
 type checkpoint struct {
 	Active             *activeConfiguration                         `json:"active,omitempty"`

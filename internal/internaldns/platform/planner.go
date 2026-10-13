@@ -142,9 +142,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			continue
 		}
 		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}}
-		for _, t := range b.Configuration.Query.Transports {
-			view.Transports = append(view.Transports, model.Transport(t))
-		}
+		view.Transports = []model.Transport{model.TransportUDP, model.TransportTCP}
 		complete := true
 		for _, zoneRef := range b.Configuration.ZoneRefs {
 			uid := zoneRef.UID

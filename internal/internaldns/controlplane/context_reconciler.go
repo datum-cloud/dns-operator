@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/netip"
 	"reflect"
 	"sort"
@@ -103,78 +102,6 @@ func associatedWithContext(assocs []dnsv1alpha1.DNSZoneAssociation, zoneUID, con
 	return false
 }
 
-func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, now time.Time) error {
-
-	var list dnsv1alpha1.DNSManagedNamespaceList
-	if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
-		return err
-	}
-	for i := range list.Items {
-		m := &list.Items[i]
-		if m.Spec.ProjectUID != r.Options.ProjectUID || m.Spec.ResolverContextRef.UID == "" {
-			if err := r.patchCondition(ctx, m, dnsValueAccepted, metav1.ConditionFalse, "InvalidIdentity", "project and pinned resolver context UID are required", now); err != nil {
-				return err
-			}
-			continue
-		}
-		lifetimeToken := model.OpaqueToken(m.Labels["internal-dns.miloapis.com/context-uid"])
-
-		suffix := canonicalName(m.Spec.DomainSuffix)
-		zoneName := "managed-" + lifetimeToken[:12]
-		zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: ns, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: m.Spec.DNSZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-		if r.Scheme != nil {
-			if err := controllerutil.SetControllerReference(m, zone, r.Scheme); err != nil {
-				return err
-			}
-		}
-		if err := r.createIfAbsent(ctx, zone); err != nil {
-			return err
-		}
-		if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
-			return err
-		}
-		assocName := zoneName + "-context"
-		assocSpec := dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Managed: true}
-
-		var contextObject dnsv1alpha1.DNSResolverContext
-		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: m.Spec.ResolverContextRef.Name}, &contextObject); err != nil {
-			return err
-		}
-		assocSpec.ResolverContextRef = dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}
-
-		assoc := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: assocName, Namespace: ns, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: assocSpec}
-		if r.Scheme != nil {
-			if err := controllerutil.SetControllerReference(m, assoc, r.Scheme); err != nil {
-				return err
-			}
-		}
-		if err := r.createIfAbsent(ctx, assoc); err != nil {
-			return err
-		}
-		if err := r.Get(ctx, client.ObjectKeyFromObject(assoc), assoc); err != nil {
-			return err
-		}
-		base := m.DeepCopy()
-		accepted := apimeta.FindStatusCondition(assoc.Status.Conditions, dnsValueAccepted)
-		ready := zone.Spec.DomainName == suffix && metav1.IsControlledBy(zone, m) && accepted != nil && accepted.Status == metav1.ConditionTrue && assoc.Status.ResolvedDNSZoneRef.UID == zone.UID
-		if ready {
-			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}
-			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{Name: assoc.Name, UID: assoc.UID}
-			m.Status.CanonicalSuffix = suffix
-			setCondition(&m.Status.Conditions, dnsValueAccepted, metav1.ConditionTrue, "Ready", "managed namespace is allocated", m.Generation, now)
-		} else {
-			m.Status.DNSZoneRef = dnsv1alpha1.DNSObjectReference{}
-			m.Status.AssociationRef = dnsv1alpha1.DNSObjectReference{}
-			m.Status.CanonicalSuffix = ""
-			setCondition(&m.Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "PendingAssociation", "managed namespace association is not accepted", m.Generation, now)
-		}
-		if err := r.Status().Patch(ctx, m, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
-}
-
 func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, now time.Time) error {
 	var contexts dnsv1alpha1.DNSResolverContextList
 	var existing dnsv1alpha1.DNSResolverBindingList
@@ -197,13 +124,6 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		valid = valid && !duplicate
 		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(c.Spec.ManagedNamespace.DomainSuffix)) > 0
 		valid = valid && !invalidDomain
-		previousReady := apimeta.FindStatusCondition(c.Status.Conditions, "Ready")
-		if !valid && c.Status.AccessEpoch > 0 && previousReady != nil && previousReady.Status == metav1.ConditionTrue {
-			c.Status.AccessEpoch++
-		}
-		if valid && c.Status.AccessEpoch == 0 {
-			c.Status.AccessEpoch = 1
-		}
 		c.Status.ServingTargets = nil
 		if valid {
 			for _, target := range r.selectServingTargets(c.UID, existing.Items) {
@@ -213,23 +133,10 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		if c.Spec.ManagedNamespace.Enabled && valid {
-			name := "context-" + model.OpaqueToken(string(c.UID))[:20]
-			m := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"internal-dns.miloapis.com/platform-owned": "true", "internal-dns.miloapis.com/context-uid": string(c.UID)}}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}, DomainSuffix: c.Spec.ManagedNamespace.DomainSuffix, DNSZoneClassName: r.Options.PrivateZoneClassName}}
-			if r.Scheme != nil {
-				if err := controllerutil.SetControllerReference(c, m, r.Scheme); err != nil {
-					return err
-				}
-			}
-			if err := r.createIfAbsent(ctx, m); err != nil {
+			var err error
+			ready, err = r.reconcileManagedZone(ctx, c)
+			if err != nil {
 				return err
-			}
-			if err := r.Get(ctx, client.ObjectKeyFromObject(m), m); err != nil {
-				return err
-			}
-			if condition := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted); condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == m.Generation && m.Status.DNSZoneRef.UID != "" && metav1.IsControlledBy(m, c) && m.Spec.DomainSuffix == c.Spec.ManagedNamespace.DomainSuffix && m.Status.CanonicalSuffix == c.Spec.ManagedNamespace.DomainSuffix {
-				c.Status.ManagedNamespace.DNSZoneRef = m.Status.DNSZoneRef
-				c.Status.ManagedNamespace.Suffix = m.Status.CanonicalSuffix
-				ready = true
 			}
 		}
 		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "resolver context is active"
@@ -247,7 +154,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		}
 		setCondition(&c.Status.Conditions, "Ready", status, reason, msg, c.Generation, now)
 		if !jsonEqual(base.Status, c.Status) {
-			if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil {
+			if err := r.Status().Patch(ctx, c, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
 		}
@@ -322,13 +229,6 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	if err := r.List(ctx, &existing, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
 		return err
 	}
-	bindingsByName := map[string]*dnsv1alpha1.DNSResolverBinding{}
-	for i := range existing.Items {
-		b := &existing.Items[i]
-		if b.Spec.Source.ProjectUID == r.Options.ProjectUID {
-			bindingsByName[b.Name] = b
-		}
-	}
 	contextByUID := map[types.UID]*dnsv1alpha1.DNSResolverContext{}
 	for i := range contexts.Items {
 		contextByUID[contexts.Items[i].UID] = &contexts.Items[i]
@@ -347,28 +247,42 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	for i := range accesses.Items {
 		a := &accesses.Items[i]
 		base := a.DeepCopy()
+		var current dnsv1alpha1.DNSResolverAccessBinding
+		if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(a), &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if current.UID != a.UID || current.ResourceVersion != a.ResourceVersion {
+			continue
+		}
 		spec := a.Spec
 		contextObject := contextByUID[spec.ContextRef.UID]
-		contextReady := resolverContextReady(contextObject)
-		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady && contextObject.Status.AccessEpoch > 0 && spec.Version.Epoch == contextObject.Status.AccessEpoch && spec.Version.Sequence >= a.Status.ObservedSequence
-		bindingName := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
-		if prior := bindingsByName[bindingName]; prior != nil {
-			compare := model.Compare(uint64(spec.Version.Epoch), uint64(spec.Version.Sequence), uint64(prior.Spec.Version.Epoch), uint64(prior.Spec.Version.Sequence))
-			if compare < 0 || (compare == 0 && prior.Spec.Tombstone) {
-				valid = false
+		var currentContext dnsv1alpha1.DNSResolverContext
+		if err := r.sourceReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: spec.ContextRef.Name}, &currentContext); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return err
 			}
+			contextObject = nil
+		} else if currentContext.UID == spec.ContextRef.UID {
+			contextObject = &currentContext
+		} else {
+			contextObject = nil
 		}
-		if _, err := netip.ParseAddr(spec.QueryIdentity.Value); err != nil || spec.QueryIdentity.Type != dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress || spec.Port < 1 {
+		contextReady := resolverContextReady(contextObject)
+		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady
+		if _, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
 			valid = false
 		}
-		if _, ok := r.targetForRegion(spec.Region); !ok || spec.Port != 53 || !validAccessTransports(spec.Transports) {
+		if _, ok := r.targetForRegion(spec.Region); !ok {
 			valid = false
 		}
-		key := spec.Region + "\x00" + spec.QueryIdentity.Value + "\x00" + fmt.Sprint(spec.Port)
+		key := spec.Region + "\x00" + spec.DestinationAddress
 		if owner := destinations[key]; owner != "" && owner != a.UID {
 			valid = false
 		} else if valid {
-			if r.Options.AddressAllocator == nil || r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.QueryIdentity.Value).String(), spec.Port) != nil {
+			if r.Options.AddressAllocator == nil || r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.DestinationAddress).String(), 53) != nil {
 				valid = false
 			} else {
 				destinations[key] = a.UID
@@ -376,7 +290,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
 		if !valid {
-			status, reason, msg = metav1.ConditionFalse, "InvalidOrStaleAccess", "context lifetime, epoch, sequence, and destination must be current"
+			status, reason, msg = metav1.ConditionFalse, "InvalidOrStaleAccess", "context lifetime and destination must be current"
 		}
 		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
 		if !valid {
@@ -401,14 +315,19 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		cluster := ""
 		generation, revision := int64(1), int64(1)
+		version := dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}
 		if exists {
+			version = old.Spec.Version
+			if old.Spec.Tombstone {
+				version.Sequence++
+			}
 			cluster = old.Spec.Configuration.Query.RegionalAddress
 			generation = old.Spec.Configuration.Generation
 			revision = old.Spec.Configuration.Revision
 			if !zoneUIDsEqual(old.Spec.Configuration.ZoneRefs, zids) {
 				generation++
 				revision++
-			} else if old.Spec.Tombstone || old.Spec.Version.Epoch != spec.Version.Epoch || old.Spec.Version.Sequence != spec.Version.Sequence {
+			} else if old.Spec.Tombstone {
 				revision++
 			}
 		} else {
@@ -420,7 +339,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		}
-		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.QueryIdentity.Value, RegionalAddress: cluster, Transports: append([]string(nil), spec.Transports...)}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: spec.Version.Epoch, Sequence: spec.Version.Sequence}}}
+		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
 		if !exists {
 			if err := r.Create(ctx, binding); err != nil {
 				return err
@@ -439,7 +358,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else {
 			binding = &old
 		}
-		a.Status.ObservedSequence = spec.Version.Sequence
+		a.Status.ObservedGeneration = a.Generation
 		a.Status.BindingRef = &dnsv1alpha1.DNSObjectReference{Name: binding.Name, UID: binding.UID}
 		setCondition(&a.Status.Conditions, "Ready", metav1.ConditionFalse, "PendingReplicaVerification", "serving fleet acknowledgement is pending", a.Generation, now)
 		if c := apimeta.FindStatusCondition(binding.Status.Conditions, "Serving"); c != nil && c.Status == metav1.ConditionTrue && binding.Status.ObservedConfigurationRevision == binding.Spec.Configuration.Revision && bindingAckCurrent(binding, now) {
@@ -471,8 +390,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		base := b.DeepCopy()
 		b.Spec.Tombstone = true
 		b.Spec.Configuration.Revision++
-		// Access version belongs to the network integration. Preserve its epoch and
-		// revision; withdrawal is ordered independently by configuration revision.
+		b.Spec.Version.Sequence++
 		if err := r.Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return err
 		}
@@ -485,7 +403,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 // the existing version intact; serving agents retain the applied configuration.
 func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace string, binding *dnsv1alpha1.DNSResolverBinding) (bool, error) {
 	var access dnsv1alpha1.DNSResolverAccessBinding
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.Source.AccessBindingRef.Name}, &access); err != nil {
+	if err := r.sourceReader().Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.Source.AccessBindingRef.Name}, &access); err != nil {
 		if apierrors.IsNotFound(err) {
 			return true, nil
 		}
@@ -494,17 +412,11 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 	if access.UID != binding.Spec.Source.AccessBindingRef.UID || !access.DeletionTimestamp.IsZero() {
 		return true, nil
 	}
-	version := access.Spec.Version
-	prior := binding.Spec.Version
-	compare := model.Compare(uint64(version.Epoch), uint64(version.Sequence), uint64(prior.Epoch), uint64(prior.Sequence))
-	if compare < 0 {
-		return false, nil
-	}
 	if access.Spec.ContextRef.Name != binding.Spec.Source.ResolverContextRef.Name || access.Spec.ContextRef.UID != binding.Spec.Source.ResolverContextRef.UID {
 		return true, nil
 	}
 	var resolverContext dnsv1alpha1.DNSResolverContext
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.Source.ResolverContextRef.Name}, &resolverContext); err != nil {
+	if err := r.sourceReader().Get(ctx, client.ObjectKey{Namespace: namespace, Name: binding.Spec.Source.ResolverContextRef.Name}, &resolverContext); err != nil {
 		if apierrors.IsNotFound(err) {
 			return true, nil
 		}
@@ -514,15 +426,16 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return true, nil
 	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
-	if resolverContext.Status.AccessEpoch > version.Epoch {
-		return true, nil
-	}
-	// Readiness or epoch propagation can lag a healthy version. Such
-	// uncertainty is not retirement evidence and must not withdraw its binding.
-	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation || resolverContext.Status.AccessEpoch < version.Epoch {
+	if ready == nil || ready.ObservedGeneration != resolverContext.Generation {
 		return false, nil
 	}
-	valid := access.Spec.Region == binding.Spec.Placement.Region && access.Spec.QueryIdentity.Type == dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress && access.Spec.QueryIdentity.Value == binding.Spec.Configuration.Query.NodeAddress && access.Spec.Port == 53 && validAccessTransports(access.Spec.Transports)
+	if ready.Status != metav1.ConditionTrue {
+		return ready.Reason == "InvalidIdentity" || ready.Reason == "DuplicateConsumerID" || ready.Reason == "InvalidManagedDomain", nil
+	}
+	if access.Generation < binding.Spec.Source.AccessBindingRef.Generation {
+		return false, nil
+	}
+	valid := access.Spec.Region == binding.Spec.Placement.Region && access.Spec.DestinationAddress == binding.Spec.Configuration.Query.NodeAddress
 	return !valid, nil
 }
 
@@ -544,27 +457,11 @@ func (r *Reconciler) targetForRegion(region string) (ServingRegion, bool) {
 	return ServingRegion{}, false
 }
 
-func validAccessTransports(values []string) bool {
-	if len(values) != 2 {
-		return false
-	}
-	seen := map[string]bool{}
-	for _, v := range values {
-		if (v != "UDP" && v != "TCP") || seen[v] {
-			return false
-		}
-		seen[v] = true
-	}
-	return seen["UDP"] && seen["TCP"]
-}
-
 func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) bool {
 	for _, ack := range binding.Status.MemberAcknowledgements {
 		// Serving=True is the aggregate full-member gate computed by AckSink.
 		// This row check additionally prevents a stale condition from surviving
-		// past the exact configuration/version generation or its local ACK
-		// lease. An ACK lease may be shorter than the access deadline, but never
-		// longer because AckSink caps it before persisting the row.
+		// past the exact configuration/version generation or its local ACK lease.
 		if ack.Phase == string(model.AckVerified) && ack.Revision == binding.Spec.Configuration.Revision && ack.AccessEpoch == binding.Spec.Version.Epoch && ack.AccessSequence == binding.Spec.Version.Sequence && ack.ValidUntil != nil && ack.ValidUntil.After(now) {
 			return true
 		}
@@ -628,14 +525,6 @@ func (r *Reconciler) createIfAbsent(ctx context.Context, o client.Object) error 
 		return nil
 	}
 	return err
-}
-
-func (r *Reconciler) patchCondition(ctx context.Context, m *dnsv1alpha1.DNSManagedNamespace, t string, status metav1.ConditionStatus, reason, msg string, now time.Time) error {
-	base := m.DeepCopy()
-	if !setCondition(&m.Status.Conditions, t, status, reason, msg, m.Generation, now) {
-		return nil
-	}
-	return r.Status().Patch(ctx, m, client.MergeFrom(base))
 }
 
 func setCondition(cs *[]metav1.Condition, t string, status metav1.ConditionStatus, reason, msg string, generation int64, now time.Time) bool {
@@ -704,4 +593,39 @@ func resolverContextReady(contextObject *dnsv1alpha1.DNSResolverContext) bool {
 	}
 	ready := apimeta.FindStatusCondition(contextObject.Status.Conditions, "Ready")
 	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == contextObject.Generation
+}
+
+func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
+	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
+	zoneName := "managed-" + model.OpaqueToken(string(c.UID))[:12]
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	if r.Scheme != nil {
+		if err := controllerutil.SetControllerReference(c, zone, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
+			return false, err
+		}
+	}
+	if err := r.createIfAbsent(ctx, zone); err != nil {
+		return false, err
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
+		return false, err
+	}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}, Managed: true}}
+	if r.Scheme != nil {
+		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
+			return false, err
+		}
+	}
+	if err := r.createIfAbsent(ctx, association); err != nil {
+		return false, err
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(association), association); err != nil {
+		return false, err
+	}
+	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
+	ready := metav1.IsControlledBy(zone, c) && metav1.IsControlledBy(association, c) && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation && association.Status.ResolvedDNSZoneRef.UID == zone.UID && association.Status.ResolvedResolverContextRef.UID == c.UID
+	if ready {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Suffix: suffix}
+	}
+	return ready, nil
 }

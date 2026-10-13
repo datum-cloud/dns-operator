@@ -25,11 +25,11 @@ func (c *statusConflictClient) Patch(ctx context.Context, object client.Object, 
 	c.patches++
 	if c.patches == 1 {
 		var current dnsv1.DNSRecordContribution
-		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(object), &current); err != nil {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(object), &current); err != nil {
 			return err
 		}
 		current.Status.PublishedRevision = 21
-		if err := c.Client.Status().Update(ctx, &current); err != nil {
+		if err := c.Status().Update(ctx, &current); err != nil {
 			return err
 		}
 		return apierrors.NewConflict(schema.GroupResource{Group: dnsv1.GroupVersion.Group, Resource: "dnsrecordcontributions"}, object.GetName(), errors.New("DNS readiness changed"))

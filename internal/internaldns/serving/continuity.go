@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
@@ -113,9 +112,7 @@ func (a *Agent) suspendActiveHealth() {
 	a.healthMu.Lock()
 	defer a.healthMu.Unlock()
 	a.healthEnabled = false
-	if a.cfg.WatchdogLeasePath != "" {
-		_ = os.Remove(a.cfg.WatchdogLeasePath)
-	}
+
 }
 
 func (a *Agent) restoreActive(ctx context.Context) error {

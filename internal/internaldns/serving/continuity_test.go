@@ -3,6 +3,7 @@
 package serving
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -165,5 +166,38 @@ func TestActiveHealthDoesNotWaitForCandidateValidation(t *testing.T) {
 	close(runner.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWithdrawalTransactionRetainsOnlyExistingWatchdogDeadline(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	before, err := os.ReadFile(cfg.WatchdogLeasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.suspendActiveHealth()
+	now = now.Add(time.Hour)
+	if err := agent.refreshActiveHealth(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(cfg.WatchdogLeasePath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("transaction changed the existing watchdog deadline")
+	}
+	var lease watchdogLease
+	if err := json.Unmarshal(after, &lease); err != nil || lease.ValidUntil.After(now) {
+		t.Fatal("suspended health extended serving authority")
+	}
+	if err := agent.failClosed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfg.WatchdogLeasePath); !os.IsNotExist(err) {
+		t.Fatal("failed withdrawal retained watchdog readiness")
 	}
 }

@@ -150,7 +150,7 @@ func bootstrap() {
 		users = append(users, object{"user": name, "password": password, "permissions": object{"publish": object{"allow": allow}, "subscribe": object{"allow": subscribe}}})
 	}
 	tls := object{"cert_file": "/tls/tls.crt", "key_file": "/tls/tls.key", "ca_file": "/tls/ca.crt", "verify": true}
-	cfg := object{"port": 4222, "http_port": 8222, "jetstream": object{"store_dir": "/data"}, "tls": tls, "version": object{"users": users}, "cluster": object{"name": "internal-dns-e2e", "port": 6222, "tls": tls, "routes": []string{"nats-route://internal-dns-nats-0.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-1.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-2.internal-dns-nats." + ns + ".svc.cluster.local:6222"}}}
+	cfg := object{"port": 4222, "http_port": 8222, "jetstream": object{"store_dir": "/data"}, "tls": tls, "authorization": object{"users": users}, "cluster": object{"name": "internal-dns-e2e", "port": 6222, "tls": tls, "routes": []string{"nats-route://internal-dns-nats-0.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-1.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-2.internal-dns-nats." + ns + ".svc.cluster.local:6222"}}}
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	// NATS accepts JSON-style configuration but not JSON's HTML Unicode escapes.

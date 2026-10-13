@@ -401,16 +401,13 @@ func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name,
 }
 
 func (s *suite) observe(p *project, pub *publication, eligible bool) error {
-	if err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&pub.contribution), &pub.contribution); err != nil {
-		return err
-	}
-	before := pub.contribution.DeepCopy()
-	pub.contribution.Spec.Eligible = eligible
-	pub.contribution.Spec.Reason = "EndpointReady"
-	if !eligible {
-		pub.contribution.Spec.Reason = "EndpointNotReady"
-	}
-	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := mutateContribution(s.ctx, p.product, &pub.contribution, func(spec *dnsv1.DNSRecordContributionSpec) {
+		spec.Eligible = eligible
+		spec.Reason = "EndpointReady"
+		if !eligible {
+			spec.Reason = "EndpointNotReady"
+		}
+	}); err != nil {
 		return err
 	}
 	return s.waitPublication(pub)

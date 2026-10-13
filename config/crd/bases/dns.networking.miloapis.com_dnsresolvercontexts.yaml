@@ -58,7 +58,7 @@ spec:
               rule: oldSelf.consumerID == self.consumerID
           status:
             properties:
-              accessWriterEpoch:
+              accessEpoch:
                 format: int64
                 type: integer
               conditions:

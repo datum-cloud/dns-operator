@@ -22,7 +22,7 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 		t.Fatal(err)
 	}
 	active := testSnapshot(now)
-	active.Bindings[0].Authorization.Revision = 2
+	active.Bindings[0].Version.Sequence = 2
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
 		t.Fatal(err)
 	}
@@ -42,8 +42,8 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, withdrawn)); err != nil {
 		t.Fatal(err)
 	}
-	if f := a.state.BindingFences["binding-a"]; !f.Tombstone || f.Authorization.Revision != 2 {
-		t.Fatal("withdrawal fabricated source authorization")
+	if f := a.state.BindingFences["binding-a"]; !f.Tombstone || f.Version.Sequence != 2 {
+		t.Fatal("withdrawal fabricated access version")
 	}
 	// Source2 -> Source3 is the next legitimate renewal; DNS must not have
 	// consumed sequence3 itself while withdrawing the withdrawn authorization.
@@ -52,7 +52,7 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	renewed.ConfigurationRevision = 3
 	renewed.Bindings[0].ConfigurationRevision = 3
 	renewed.Bindings[0].Tombstone = false
-	renewed.Bindings[0].Authorization.Revision = 3
+	renewed.Bindings[0].Version.Sequence = 3
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, renewed)); err != nil {
 		t.Fatalf("normal source2 -> source3 renewal rejected: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 		t.Fatal(err)
 	}
 	active := testSnapshot(now)
-	active.Bindings[0].Authorization.Revision = 2
+	active.Bindings[0].Version.Sequence = 2
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, candidate)); err == nil {
 		t.Fatal("same source sequence changed its source revision")
 	}
-	candidate.Bindings[0].Authorization.Revision = 3
+	candidate.Bindings[0].Version.Sequence = 3
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, candidate)); err != nil {
 		t.Fatalf("new source sequence could not reactivate omitted binding: %v", err)
 	}
@@ -123,11 +123,11 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 	replacement.ConfigurationRevision = 4
 	replacement.Bindings[0].BindingUID = "replacement-binding"
 	replacement.Bindings[0].ConfigurationRevision = 1
-	replacement.Bindings[0].Authorization.Revision = 1
+	replacement.Bindings[0].Version.Sequence = 1
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 4, replacement)); err != nil {
 		t.Fatal(err)
 	}
-	if !restarted.state.BindingFences["binding-a"].Tombstone || restarted.state.BindingFences["replacement-binding"].Authorization.Revision != 1 {
+	if !restarted.state.BindingFences["binding-a"].Tombstone || restarted.state.BindingFences["replacement-binding"].Version.Sequence != 1 {
 		t.Fatal("replacement UID discarded old source fences or inherited its sequence")
 	}
 	candidate.ConfigurationRevision = 5

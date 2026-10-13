@@ -113,7 +113,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 				return fmt.Errorf("create manager: %w", err)
 			}
 			// Manager caches deliver watch events only. Every reconciliation read goes
-			// to the source API so a partition cannot renew authorization from stale
+			// to the source API so a partition cannot refresh access mappings from stale
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, Scheme: scheme, Options: controlplane.ReconcilerOptions{

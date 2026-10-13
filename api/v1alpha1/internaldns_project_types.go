@@ -55,10 +55,10 @@ type DNSResolverContextManagedNamespaceStatus struct {
 }
 
 type DNSResolverContextStatus struct {
-	ManagedNamespace  DNSResolverContextManagedNamespaceStatus `json:"managedNamespace,omitempty"`
-	AccessWriterEpoch int64                                    `json:"accessWriterEpoch,omitempty"`
-	ServingTargets    []DNSResolverContextServingTarget        `json:"servingTargets,omitempty"`
-	Conditions        []metav1.Condition                       `json:"conditions,omitempty"`
+	ManagedNamespace DNSResolverContextManagedNamespaceStatus `json:"managedNamespace,omitempty"`
+	AccessEpoch      int64                                    `json:"accessEpoch,omitempty"`
+	ServingTargets   []DNSResolverContextServingTarget        `json:"servingTargets,omitempty"`
+	Conditions       []metav1.Condition                       `json:"conditions,omitempty"`
 }
 
 type DNSResolverContextServingTarget struct {
@@ -95,9 +95,9 @@ type DNSResolverQueryIdentity struct {
 	Value string `json:"value"`
 }
 
-type DNSResolverAccessAuthorization struct {
+type DNSResolverAccessVersion struct {
 	// +kubebuilder:validation:Minimum=1
-	WriterEpoch int64 `json:"writerEpoch"`
+	Epoch int64 `json:"epoch"`
 	// +kubebuilder:validation:Minimum=1
 	Sequence int64 `json:"sequence"`
 }
@@ -105,8 +105,8 @@ type DNSResolverAccessAuthorization struct {
 // +kubebuilder:validation:XValidation:rule="self.contextRef.name.size() > 0 && has(self.contextRef.uid) && self.contextRef.uid.size() > 0",message="contextRef requires name and UID"
 // +kubebuilder:validation:XValidation:rule="self.contextRef == oldSelf.contextRef",message="contextRef is immutable"
 // +kubebuilder:validation:XValidation:rule="self.region == oldSelf.region && self.queryIdentity == oldSelf.queryIdentity && self.port == oldSelf.port && self.transports == oldSelf.transports",message="access identity and transport are immutable"
-// +kubebuilder:validation:XValidation:rule="self.authorization.writerEpoch == oldSelf.authorization.writerEpoch",message="writerEpoch is immutable for an access binding"
-// +kubebuilder:validation:XValidation:rule="self.authorization == oldSelf.authorization || self.authorization.sequence > oldSelf.authorization.sequence",message="authorization changes require an increasing sequence"
+// +kubebuilder:validation:XValidation:rule="self.version.epoch == oldSelf.version.epoch",message="epoch is immutable for an access binding"
+// +kubebuilder:validation:XValidation:rule="self.version == oldSelf.version || self.version.sequence > oldSelf.version.sequence",message="version changes require an increasing sequence"
 type DNSResolverAccessBindingSpec struct {
 	ContextRef DNSObjectReference `json:"contextRef"`
 	// +kubebuilder:validation:MinLength=1
@@ -119,8 +119,8 @@ type DNSResolverAccessBindingSpec struct {
 	// +kubebuilder:validation:MaxItems=2
 	// +kubebuilder:validation:items:Enum=UDP;TCP
 	// +listType=set
-	Transports    []string                       `json:"transports"`
-	Authorization DNSResolverAccessAuthorization `json:"authorization"`
+	Transports []string                 `json:"transports"`
+	Version    DNSResolverAccessVersion `json:"version"`
 }
 
 type DNSResolverAccessBindingStatus struct {
@@ -211,66 +211,29 @@ type DNSRegistrationList struct {
 	Items           []DNSRegistration `json:"items"`
 }
 
-type DNSProducerPrincipal struct {
-	// +kubebuilder:validation:MinLength=1
-	Subject string `json:"subject"`
-}
-
-// +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0",message="registrationRef requires name and UID"
-type DNSContributionGrantSpec struct {
-	RegistrationRef DNSObjectReference   `json:"registrationRef"`
-	ProducerID      string               `json:"producerID"`
-	Principal       DNSProducerPrincipal `json:"principal"`
-	RecordTypes     []RRType             `json:"recordTypes"`
-	NameScopes      []string             `json:"nameScopes,omitempty"`
-}
-
-type DNSContributionGrantStatus struct {
-	ActiveWriterEpoch              int64              `json:"activeWriterEpoch,omitempty"`
-	ObservedGrantGeneration        int64              `json:"observedGrantGeneration,omitempty"`
-	ObservedRegistrationGeneration int64              `json:"observedRegistrationGeneration,omitempty"`
-	Conditions                     []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +kubebuilder:subresource:status
-// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
-type DNSContributionGrant struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec              DNSContributionGrantSpec   `json:"spec"`
-	Status            DNSContributionGrantStatus `json:"status,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-type DNSContributionGrantList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []DNSContributionGrant `json:"items"`
-}
-
 type DNSContributionRecordSet struct {
 	RecordType RRType        `json:"recordType"`
 	Records    []RecordEntry `json:"records"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation) && self.registrationRef.generation > 0",message="registrationRef requires name, UID, and generation"
-// +kubebuilder:validation:XValidation:rule="self.grantRef.name.size() > 0 && has(self.grantRef.uid) && self.grantRef.uid.size() > 0",message="grantRef requires name and UID"
-// +kubebuilder:validation:XValidation:rule="self.registrationRef == oldSelf.registrationRef && self.grantRef == oldSelf.grantRef",message="contribution authority references are immutable"
+// +kubebuilder:validation:XValidation:rule="self.registrationRef == oldSelf.registrationRef",message="contribution registration reference is immutable"
 type DNSRecordContributionSpec struct {
 	RegistrationRef DNSObjectReference         `json:"registrationRef"`
-	GrantRef        DNSObjectReference         `json:"grantRef"`
 	RecordSets      []DNSContributionRecordSet `json:"recordSets"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.sequence) || (has(self.sequence) && self.sequence >= oldSelf.sequence)",message="observation sequence must not decrease"
+// +kubebuilder:validation:XValidation:rule="(has(self.eligible) && self.eligible) == (has(oldSelf.eligible) && oldSelf.eligible) || (has(self.sequence) && (!has(oldSelf.sequence) || self.sequence > oldSelf.sequence))",message="eligibility changes require a newer observation sequence"
 type DNSRecordContributionStatus struct {
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	WriterEpoch        int64              `json:"writerEpoch,omitempty"`
-	Sequence           int64              `json:"sequence,omitempty"`
-	Eligible           bool               `json:"eligible,omitempty"`
-	Reason             string             `json:"reason,omitempty"`
-	PublishedRevision  int64              `json:"publishedRevision,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +kubebuilder:validation:Minimum=1
+	Sequence          int64              `json:"sequence,omitempty"`
+	Eligible          bool               `json:"eligible,omitempty"`
+	Reason            string             `json:"reason,omitempty"`
+	PublishedRevision int64              `json:"publishedRevision,omitempty"`
+	Conditions        []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -404,5 +367,5 @@ type DNSManagedNamespaceList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSZoneAssociation{}, &DNSZoneAssociationList{}, &DNSResolverContext{}, &DNSResolverContextList{}, &DNSResolverAccessBinding{}, &DNSResolverAccessBindingList{}, &DNSRegistration{}, &DNSRegistrationList{}, &DNSContributionGrant{}, &DNSContributionGrantList{}, &DNSRecordContribution{}, &DNSRecordContributionList{}, &DNSNamingPolicy{}, &DNSNamingPolicyList{}, &DNSManagedNamespace{}, &DNSManagedNamespaceList{})
+	SchemeBuilder.Register(&DNSZoneAssociation{}, &DNSZoneAssociationList{}, &DNSResolverContext{}, &DNSResolverContextList{}, &DNSResolverAccessBinding{}, &DNSResolverAccessBindingList{}, &DNSRegistration{}, &DNSRegistrationList{}, &DNSRecordContribution{}, &DNSRecordContributionList{}, &DNSNamingPolicy{}, &DNSNamingPolicyList{}, &DNSManagedNamespace{}, &DNSManagedNamespaceList{})
 }

@@ -160,13 +160,13 @@ func envelope(t *testing.T, kind model.Kind, uid string, epoch, revision uint64,
 }
 
 func testSnapshot(now time.Time) model.ServingSnapshot {
-	b := model.Binding{BindingUID: "binding-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 2, RequiredPublicationRevision: 4}}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}
+	b := model.Binding{BindingUID: "binding-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 2, RequiredPublicationRevision: 4}}, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}
 	return model.ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []model.Binding{b}, Members: []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}}
 }
 
 func testPublication(t *testing.T, now time.Time) (model.PublicationChunk, model.PublicationManifest) {
 	t.Helper()
-	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 1, Sequence: 1}}, Owners: []string{"api.prod.internal"}, RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 1, Sequence: 1, Eligible: true}}}}}
+	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", Sequence: 1, Generation: 1}}, Owners: []string{"api.prod.internal"}, RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{Content: "192.0.2.10", ContributionUID: "contrib-a", Sequence: 1, Eligible: true, Generation: 1}}}}}
 	payload, err := json.Marshal(plan)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestWithdrawnObservationFencesOlderHealthyRecord(t *testing.T) {
 	agent := &Agent{state: newCheckpoint()}
 	withdrawn := model.PublicationPlan{
 		ZoneUID: "zone-a", Apex: "prod.internal",
-		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 33}},
+		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", Sequence: 33, Generation: 7}},
 		RRSets:            []model.RRSet{},
 	}
 	if err := withdrawn.Validate(); err != nil {
@@ -190,29 +190,14 @@ func TestWithdrawnObservationFencesOlderHealthyRecord(t *testing.T) {
 	agent.commitContributionFences(withdrawn)
 	olderHealthy := model.PublicationPlan{
 		ZoneUID: "zone-a", Apex: "prod.internal",
-		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 32}},
-		RRSets: []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{
-			Content: "192.0.2.10", ContributionUID: "contrib-a", WriterEpoch: 7, Sequence: 32, Eligible: true,
-		}}}},
+		ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", Sequence: 32, Generation: 7}},
+		RRSets:            []model.RRSet{{Name: "api.prod.internal", Type: "A", TTL: 30, Records: []model.RRRecord{{Content: "192.0.2.10", ContributionUID: "contrib-a", Sequence: 32, Eligible: true, Generation: 7}}}},
 	}
 	if err := olderHealthy.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	if err := agent.validateContributionFences(olderHealthy); err == nil {
 		t.Fatal("older healthy observation was accepted after a higher withdrawn observation")
-	}
-}
-
-func TestObservationFenceReplayCannotChangeGrant(t *testing.T) {
-	t.Parallel()
-	agent := &Agent{state: newCheckpoint()}
-	original := model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contrib-a", GrantUID: "grant-a", WriterEpoch: 2, Sequence: 4}}, RRSets: []model.RRSet{}}
-	agent.commitContributionFences(original)
-	replay := original
-	replay.ObservationFences = append([]model.ObservationFence(nil), original.ObservationFences...)
-	replay.ObservationFences[0].GrantUID = "another-grant"
-	if err := agent.validateContributionFences(replay); err == nil {
-		t.Fatal("equal observation fence changed its grant")
 	}
 }
 

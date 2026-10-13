@@ -42,7 +42,7 @@ func TestServingSnapshotRejectsSharedDestination(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	b := func(uid, vpc string) Binding {
-		return Binding{BindingUID: uid, ProjectUID: "project", ContextUID: vpc, BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "2001:db8::1", ClusterAddress: "2001:db8::2", Port: 53, Transports: []Transport{TransportUDP, TransportTCP}, Authorization: Authorization{IssuerEpoch: 1, Revision: 1}}
+		return Binding{BindingUID: uid, ProjectUID: "project", ContextUID: vpc, BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "2001:db8::1", ClusterAddress: "2001:db8::2", Port: 53, Transports: []Transport{TransportUDP, TransportTCP}, Version: AccessVersion{Epoch: 1, Sequence: 1}}
 	}
 	s := ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []Binding{b("one", "vpc-a"), b("two", "vpc-b")}}
 	if err := s.Validate(); err == nil {

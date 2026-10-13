@@ -76,25 +76,23 @@ func TestCompileRejectsStaleGenerationAndWholeInvalidBundle(t *testing.T) {
 	})
 }
 
-func TestCompileExpiryStillAdvancesHighWaterAndRejectsRollback(t *testing.T) {
+func TestCompileWithdrawalAdvancesHighWaterAndRejectsRollback(t *testing.T) {
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	in := fixture(now)
 	previous := in.Contributions[0]
-	in.Previous = &PublicationPlan{Contributions: []ContributionFence{{UID: previous.UID, GrantUID: previous.Spec.GrantRef.UID, Epoch: 7, Sequence: 18, ValidUntil: now}}}
+	in.Previous = &PublicationPlan{Contributions: []ContributionFence{{UID: previous.UID, GrantUID: previous.Spec.GrantRef.UID, Epoch: 7, Sequence: 18}}}
 	in.Contributions[0].Status.Sequence = 19
-	expired := metav1.NewTime(now.Add(-time.Second))
-	in.Contributions[0].Status.ValidUntil = &expired
+	in.Contributions[0].Status.Eligible = false
 	got, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Reasons[previous.UID] != "Expired" || len(got.Plan.RRsets) != 0 || got.Plan.Contributions[0].Sequence != 19 {
-		t.Fatalf("expiry fence incorrect: %#v", got)
+	if got.Reasons[previous.UID] != "Ineligible" || len(got.Plan.RRsets) != 0 || got.Plan.Contributions[0].Sequence != 19 {
+		t.Fatalf("withdrawal fence incorrect: %#v", got)
 	}
 	in.Previous = &got.Plan
 	in.Contributions[0].Status.Sequence = 18
-	fresh := metav1.NewTime(now.Add(time.Minute))
-	in.Contributions[0].Status.ValidUntil = &fresh
+	in.Contributions[0].Status.Eligible = true
 	rolled, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
@@ -138,28 +136,6 @@ func TestCompileRetainsHighWaterAcrossRejectedPublications(t *testing.T) {
 	}
 	if retry.Reasons["contribution-a"] != "NonIncreasingSequence" || len(retry.Plan.RRsets) != 0 || retry.Plan.Contributions[0].Sequence != 18 {
 		t.Fatalf("second reconcile resurrected rolled-back data: %#v", retry)
-	}
-}
-
-func TestCompileRejectsEqualSequenceDeadlineMutation(t *testing.T) {
-	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	in := fixture(now)
-	first, err := Compile(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	in.Previous = &first.Plan
-	changed := metav1.NewTime(in.Contributions[0].Status.ValidUntil.Add(time.Minute))
-	in.Contributions[0].Status.ValidUntil = &changed
-	got, err := Compile(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Reasons["contribution-a"] != "FenceDeadlineMismatch" || len(got.Plan.RRsets) != 0 {
-		t.Fatalf("equal sequence changed its immutable deadline: %#v", got)
-	}
-	if len(got.Plan.Contributions) != 1 || !got.Plan.Contributions[0].ValidUntil.Equal(first.Plan.Contributions[0].ValidUntil) {
-		t.Fatalf("deadline mutation replaced durable fence: %#v", got.Plan.Contributions)
 	}
 }
 
@@ -215,8 +191,7 @@ func fixture(now time.Time) CompileInput {
 	}
 	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 30}}
 	grant := dnsv1alpha1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: "compute", UID: "grant-a", Generation: 2}, Spec: dnsv1alpha1.DNSContributionGrantSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, ProducerID: "compute-east", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}}, Status: dnsv1alpha1.DNSContributionGrantStatus{ActiveWriterEpoch: 7, ObservedGrantGeneration: 2, ObservedRegistrationGeneration: 3}}
-	until := metav1.NewTime(now.Add(time.Minute))
-	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 4}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, GrantRef: dnsv1alpha1.DNSObjectReference{Name: grant.Name, UID: grant.UID}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4, WriterEpoch: 7, Sequence: 18, Eligible: true, ValidUntil: &until}}
+	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 4}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, GrantRef: dnsv1alpha1.DNSObjectReference{Name: grant.Name, UID: grant.UID}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4, WriterEpoch: 7, Sequence: 18, Eligible: true}}
 	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b", "vpc-b"), assoc("a", "vpc-a")}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Grants: []dnsv1alpha1.DNSContributionGrant{grant}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
 }
 
@@ -314,5 +289,34 @@ func TestCompileRejectsUnboundedDynamicTTL(t *testing.T) {
 	}
 	if result.Accepted[in.Registrations[0].UID] || len(result.Plan.RRsets) != 0 {
 		t.Fatal("unbounded TTL published")
+	}
+}
+
+func TestCompileRetainsHealthyRecordsUntilExplicitWithdrawal(t *testing.T) {
+	now := time.Now().UTC()
+	input := fixture(now)
+	first, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Now = now.Add(365 * 24 * time.Hour)
+	input.Previous = &first.Plan
+	after, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJSON, _ := json.Marshal(first.Plan)
+	afterJSON, _ := json.Marshal(after.Plan)
+	if string(beforeJSON) != string(afterJSON) {
+		t.Fatal("elapsed time changed the last reported endpoint state")
+	}
+	input.Contributions[0].Status.Eligible = false
+	input.Contributions[0].Status.Sequence++
+	withdrawn, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withdrawn.Plan.RRsets) != 0 {
+		t.Fatal("explicit unhealthy observation did not withdraw the endpoint")
 	}
 }

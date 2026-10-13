@@ -20,20 +20,21 @@ const legacyObservationGrantUID = "legacy-checkpoint"
 // LegacyRevision only exists to decode checkpoints written before Sequence
 // and the original deadline were persisted.
 type contributionFence struct {
-	GrantUID       string    `json:"grantUID,omitempty"`
-	Epoch          uint64    `json:"epoch"`
-	Sequence       uint64    `json:"sequence,omitempty"`
-	ValidUntil     time.Time `json:"validUntil,omitempty"`
-	LegacyRevision uint64    `json:"revision,omitempty"`
+	GrantUID string `json:"grantUID,omitempty"`
+	Epoch    uint64 `json:"epoch"`
+	Sequence uint64 `json:"sequence,omitempty"`
+
+	LegacyRevision uint64 `json:"revision,omitempty"`
 }
 
 type replicaAck struct {
+	Rejected   bool      `json:"rejected,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
 	Fence      fence     `json:"fence"`
 	ValidUntil time.Time `json:"validUntil"`
 }
 
-const checkpointFormatVersion = 3
+const checkpointFormatVersion = 5
 
 type checkpoint struct {
 	FormatVersion      int                                          `json:"formatVersion"`
@@ -75,7 +76,7 @@ func (s stateStore) Load() (checkpoint, error) {
 		return state, errors.New("checkpoint lacks required binding authority history")
 	}
 	for uid, f := range state.BindingFences {
-		if uid == "" || f.Identity == "" || f.ConfigurationGeneration == 0 || f.ConfigurationRevision == 0 || f.Authorization.IssuerEpoch == 0 || f.Authorization.Revision == 0 || f.Authorization.ValidUntil.IsZero() {
+		if uid == "" || f.Identity == "" || f.ConfigurationGeneration == 0 || f.ConfigurationRevision == 0 || f.Authorization.IssuerEpoch == 0 || f.Authorization.Revision == 0 {
 			return state, fmt.Errorf("checkpoint binding %s has incomplete authority history", uid)
 		}
 	}
@@ -133,8 +134,8 @@ func migrateLegacyObservationFences(plan model.PublicationPlan) (model.Publicati
 			if record.ContributionUID == "" {
 				continue
 			}
-			next := model.ObservationFence{ContributionUID: record.ContributionUID, GrantUID: legacyObservationGrantUID, WriterEpoch: record.WriterEpoch, Sequence: record.Sequence, ValidUntil: record.ValidUntil}
-			if old, ok := byUID[record.ContributionUID]; ok && (old.WriterEpoch != next.WriterEpoch || old.Sequence != next.Sequence || !old.ValidUntil.Equal(next.ValidUntil)) {
+			next := model.ObservationFence{ContributionUID: record.ContributionUID, GrantUID: legacyObservationGrantUID, WriterEpoch: record.WriterEpoch, Sequence: record.Sequence}
+			if old, ok := byUID[record.ContributionUID]; ok && (old.WriterEpoch != next.WriterEpoch || old.Sequence != next.Sequence) {
 				return plan, fmt.Errorf("legacy contribution %q has inconsistent record fences", record.ContributionUID)
 			}
 			byUID[record.ContributionUID] = next
@@ -165,9 +166,6 @@ func migrateContributionHighWater(state *checkpoint) error {
 		}
 		current.LegacyRevision = 0
 		if proof, ok := proofs[uid]; ok && proof.WriterEpoch == current.Epoch && proof.Sequence == current.Sequence {
-			if current.ValidUntil.IsZero() {
-				current.ValidUntil = proof.ValidUntil
-			}
 			if current.GrantUID == "" && proof.GrantUID != legacyObservationGrantUID {
 				current.GrantUID = proof.GrantUID
 			}

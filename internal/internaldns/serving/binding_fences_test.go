@@ -23,7 +23,6 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	}
 	active := testSnapshot(now)
 	active.Bindings[0].Authorization.Revision = 2
-	active.Bindings[0].Authorization.ValidUntil = now.Add(10 * time.Second)
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
 		t.Fatal(err)
 	}
@@ -43,18 +42,17 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, withdrawn)); err != nil {
 		t.Fatal(err)
 	}
-	if f := a.state.BindingFences["binding-a"]; !f.Tombstone || f.Authorization.Revision != 2 || !f.Authorization.ValidUntil.Equal(active.Bindings[0].Authorization.ValidUntil) {
+	if f := a.state.BindingFences["binding-a"]; !f.Tombstone || f.Authorization.Revision != 2 {
 		t.Fatal("withdrawal fabricated source authorization")
 	}
 	// Source2 -> Source3 is the next legitimate renewal; DNS must not have
-	// consumed sequence3 itself while withdrawing the expired authorization.
+	// consumed sequence3 itself while withdrawing the withdrawn authorization.
 	renewed := withdrawn
 	renewed.Bindings = append([]model.Binding(nil), withdrawn.Bindings...)
 	renewed.ConfigurationRevision = 3
 	renewed.Bindings[0].ConfigurationRevision = 3
 	renewed.Bindings[0].Tombstone = false
 	renewed.Bindings[0].Authorization.Revision = 3
-	renewed.Bindings[0].Authorization.ValidUntil = now.Add(2 * time.Minute)
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, renewed)); err != nil {
 		t.Fatalf("normal source2 -> source3 renewal rejected: %v", err)
 	}
@@ -66,9 +64,9 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 		t.Fatal(err)
 	}
 	if a.state.Snapshot.Bindings[0].Tombstone || a.state.ServingFence.Revision != 3 {
-		t.Fatal("stale expiry replay withdrew current renewal")
+		t.Fatal("stale withdrawal replay removed current access")
 	}
-	// A higher shard revision cannot legitimize an older source lease.
+	// A higher shard revision cannot legitimize an older source revision.
 	stale := withdrawn
 	stale.ConfigurationRevision = 4
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 4, stale)); err == nil {
@@ -112,9 +110,8 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, candidate)); err == nil {
 		t.Fatal("same source sequence resurrected omitted binding")
 	}
-	candidate.Bindings[0].Authorization.ValidUntil = now.Add(20 * time.Minute)
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, candidate)); err == nil {
-		t.Fatal("same source sequence changed its original deadline")
+		t.Fatal("same source sequence changed its source revision")
 	}
 	candidate.Bindings[0].Authorization.Revision = 3
 	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, candidate)); err != nil {

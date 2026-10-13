@@ -35,11 +35,11 @@ projection or publication for healthy sources.
 DNS always consumes `DNSResolverContext` and `DNSResolverAccessBinding` from
 the project API. It does not watch a networking API. A trusted integration
 principal bound to `internal-dns-vpc-integration` creates a context and writes
-short-lived regional access intent. RBAC separates integration, grant issuer,
+regional access intent. RBAC separates integration, grant issuer,
 product publisher, and DNS controller permissions. Product publishers cannot
 issue grants or modify resolver authority.
-The context UID, access UID, authorization writer epoch, sequence, and original
-deadline are carried into the internal `DNSResolverBinding`.
+The context UID, access UID, writer epoch, and sequence are carried into the
+internal `DNSResolverBinding`. Access persists until an explicit withdrawal.
 
 The control plane allocates a managed namespace when the context requests one.
 Compute discovers the context status and publishes through
@@ -72,7 +72,7 @@ TCP. `verifier.publicName` can override this probe. BIND members need a writable
 Private packet caching stays disabled in dnsdist. Each BIND view has its own
 positive and negative cache. `max-ncache-ttl` defaults to five seconds and is
 bounded at 60 seconds. Public recursion retains DNSSEC validation; each view
-adds validation exceptions only for its private apexes. Unknown or expired
+adds validation exceptions only for its private apexes. Unknown or withdrawn
 destinations are rejected before cache lookup.
 
 Regional publication proof connects directly to that member's BIND listener,
@@ -82,7 +82,7 @@ UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
 network. There are no PowerDNS views, network variants, or per-context source
 markers.
 
-## Transactions, health, and expiry
+## Transactions, health, and outage recovery
 
 The agent writes a complete candidate set into its stage directory. Regional
 zone files are siblings of `cluster-bind.conf`; validation rewrites file
@@ -91,19 +91,20 @@ atomic only after every candidate validates. Reload wrappers must wait for the
 listener and backend pool before returning so the immediate DNS proof observes
 the activated state.
 
-Publication ACKs are leases. A regional frontend and node may keep a context
-available while at least one assigned regional member has a fresh current ACK;
-the project-facing Ready condition can still report degraded membership. If no
-member remains, the frontend gates the context. A regional member that cannot
-apply or prove a publication fails closed and stops renewing its watchdog.
+Publication acknowledgements report verified configuration versions. The fleet
+retains accepted proofs during control plane or broker outages and continues
+using local DNS probes and backend health checks. Status can report degraded
+update delivery without withdrawing an applied resolver binding.
 
-Agents preserve original record and access deadlines in their checkpoints.
-They remove expired records, rewrite regional zone files, and flush affected
-BIND names locally even while NATS or a source API is unavailable. Replay and
-restart cannot extend a deadline or regress writer/configuration fences.
+Records and access bindings have no expiry deadline. Product services withdraw
+endpoints through explicit health updates or deletion. When delivery stops, DNS
+retains the last reported endpoint state. Agents restore applied configuration
+from persistent checkpoints before waiting for messaging connectivity. New
+nodes require a complete configuration before accepting queries. Replay cannot
+regress writer or configuration versions or restore a withdrawn lifetime.
 
-The watchdog lease is at most five seconds. It is renewed only after local
-expiry enforcement, a complete validated transaction, and required DNS proofs.
+The local watchdog lease is at most five seconds. It is renewed only after a
+complete validated transaction and required DNS proofs.
 The gate must stop or firewall the local private listener without depending on
 Kubernetes or NATS. Validation, reload, readiness wait, and proof must fit
 inside the watchdog budget; reduce shard size or improve local operations when
@@ -132,8 +133,8 @@ raising those bounds.
 NATS uses TLS with a verified server name, client certificate, and one scoped
 identity per process. Control-plane credentials publish serving/publication
 subjects and consume ACKs. Each serving member can consume its assigned durable
-subjects and publish only its own hashed ACK subject. Broker partitions do not
-extend record or authorization deadlines.
+subjects and publish only its own hashed ACK subject. Broker partitions delay
+updates while the fleet continues serving its applied configuration.
 
 `fleet.example.yaml` provides node, regional frontend, and regional BIND JSON
 configurations plus one Deployment template. Instantiate the template for each
@@ -147,7 +148,13 @@ The project API server authorizes DNS resource and status operations. Bind the
 roles in `rbac.yaml` to service principals in each project namespace. Customer
 access uses the protected resources and DNS roles in `config/iam`.
 
-The webhook validates live references and lease limits. It also verifies that
-changes to a publisher's contribution and freshness observation use that
-publisher's current grant. Publication-result updates cannot renew a publisher's
+The webhook validates live references and verifies that changes to a publisher's
+contribution and eligibility observation use that publisher's current grant.
+Grants identify the authenticated subject within the project API context.
+Publication-result updates cannot change a publisher's
 observation. Resource permissions do not depend on webhook principal lists.
+The supported internal envelope version is `v1alpha4` and the serving checkpoint
+format is 5. Unsupported versions fail closed. Deploy matching controller and
+fleet versions with fresh internal DNS transport state and checkpoints. Preserve
+any existing state for recovery. The deployment requires a coordinated rollout;
+it does not support mixed versions or automatic state conversion.

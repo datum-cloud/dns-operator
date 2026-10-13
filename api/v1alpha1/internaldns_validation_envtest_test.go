@@ -56,7 +56,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 	}
 	newAccess := func(name string) *DNSResolverAccessBinding {
 		return &DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "validation"}, Spec: DNSResolverAccessBindingSpec{
-			ContextRef: DNSObjectReference{Name: "context", UID: "context-uid"}, Region: "central", QueryIdentity: DNSResolverQueryIdentity{Type: DNSResolverQueryIdentityDestinationAddress, Value: "fd53::1"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1},
+			ContextRef: DNSObjectReference{Name: "context", UID: "context-uid"}, Region: "central", QueryIdentity: DNSResolverQueryIdentity{Type: DNSResolverQueryIdentityDestinationAddress, Value: "fd53::1"}, Port: 53, Transports: []string{"UDP", "TCP"}, Version: DNSResolverAccessVersion{Epoch: 1, Sequence: 1},
 		}}
 	}
 	for _, tc := range []struct {
@@ -72,8 +72,8 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		{"missing-tcp", func(a *DNSResolverAccessBinding) { a.Spec.Transports = []string{"UDP"} }},
 		{"duplicate-transport", func(a *DNSResolverAccessBinding) { a.Spec.Transports = []string{"UDP", "UDP"} }},
 		{"unsupported-transport", func(a *DNSResolverAccessBinding) { a.Spec.Transports = []string{"UDP", "TLS"} }},
-		{"zero-epoch", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.WriterEpoch = 0 }},
-		{"zero-sequence", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.Sequence = 0 }},
+		{"zero-epoch", func(a *DNSResolverAccessBinding) { a.Spec.Version.Epoch = 0 }},
+		{"zero-sequence", func(a *DNSResolverAccessBinding) { a.Spec.Version.Sequence = 0 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) { a := newAccess(tc.name); tc.mutate(a); requireInvalid(t, cl.Create(ctx, a)) })
 	}
@@ -84,12 +84,12 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		{"change-context", func(a *DNSResolverAccessBinding) { a.Spec.ContextRef.Name = "other" }},
 		{"change-region", func(a *DNSResolverAccessBinding) { a.Spec.Region = "east" }},
 		{"change-address", func(a *DNSResolverAccessBinding) { a.Spec.QueryIdentity.Value = "fd53::2" }},
-		{"change-epoch", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.WriterEpoch++ }},
-		{"decrease-sequence", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.Sequence = 1 }},
+		{"change-epoch", func(a *DNSResolverAccessBinding) { a.Spec.Version.Epoch++ }},
+		{"decrease-sequence", func(a *DNSResolverAccessBinding) { a.Spec.Version.Sequence = 1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAccess(tc.name)
-			a.Spec.Authorization.Sequence = 2
+			a.Spec.Version.Sequence = 2
 			if err := cl.Create(ctx, a); err != nil {
 				t.Fatal(err)
 			}
@@ -102,13 +102,13 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		if err := cl.Create(ctx, a); err != nil {
 			t.Fatal(err)
 		}
-		a.Spec.Authorization.Sequence++
+		a.Spec.Version.Sequence++
 		if err := cl.Update(ctx, a); err != nil {
 			t.Fatal(err)
 		}
-		a.Status.ObservedSequence = a.Spec.Authorization.Sequence
+		a.Status.ObservedSequence = a.Spec.Version.Sequence
 		if err := cl.Status().Update(ctx, a); err != nil {
-			t.Fatalf("unchanged source authorization blocked status update: %v", err)
+			t.Fatalf("unchanged access version blocked status update: %v", err)
 		}
 		a.Labels = map[string]string{"test": "metadata"}
 		if err := cl.Update(ctx, a); err != nil {
@@ -131,12 +131,40 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 			requireInvalid(t, cl.Create(ctx, a))
 		})
 	}
-	t.Run("contribution-authority", func(t *testing.T) {
-		a := &DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "contribution", Namespace: "validation"}, Spec: DNSRecordContributionSpec{RegistrationRef: DNSObjectReference{Name: "web", UID: "registration-uid", Generation: 1}, GrantRef: DNSObjectReference{Name: "grant", UID: "grant-uid"}, RecordSets: []DNSContributionRecordSet{}}}
+	t.Run("contribution-registration", func(t *testing.T) {
+		a := &DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "contribution", Namespace: "validation"}, Spec: DNSRecordContributionSpec{RegistrationRef: DNSObjectReference{Name: "web", UID: "registration-uid", Generation: 1}, RecordSets: []DNSContributionRecordSet{}}}
 		if err := cl.Create(ctx, a); err != nil {
 			t.Fatal(err)
 		}
-		a.Spec.GrantRef.Name = "other"
+		a.Spec.RegistrationRef.Name = "other"
 		requireInvalid(t, cl.Update(ctx, a))
 	})
+	t.Run("contribution-observation-order", func(t *testing.T) {
+		a := &DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "observations", Namespace: "validation"}, Spec: DNSRecordContributionSpec{RegistrationRef: DNSObjectReference{Name: "web", UID: "registration-uid", Generation: 1}, RecordSets: []DNSContributionRecordSet{}}}
+		if err := cl.Create(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		a.Status = DNSRecordContributionStatus{ObservedGeneration: a.Generation, Sequence: 2, Eligible: true}
+		if err := cl.Status().Update(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		decreasing := a.DeepCopy()
+		decreasing.Status.Sequence = 1
+		requireInvalid(t, cl.Status().Update(ctx, decreasing))
+		unchanged := a.DeepCopy()
+		unchanged.Status.Eligible = false
+		requireInvalid(t, cl.Status().Update(ctx, unchanged))
+		a.Status.Sequence++
+		a.Status.Eligible = false
+		if err := cl.Status().Update(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		a.Status.Conditions = []metav1.Condition{{Type: "Published", Status: metav1.ConditionTrue, Reason: "Applied", LastTransitionTime: metav1.Now()}}
+		if err := cl.Status().Update(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	})
+	validateServiceDNSContracts(t, cl)
+	validateNamingAPISchemas(t, cl)
+
 }

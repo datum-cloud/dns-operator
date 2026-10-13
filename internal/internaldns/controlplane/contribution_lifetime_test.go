@@ -9,12 +9,46 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestPublicationReadinessPreservesCurrentCompilerStatus(t *testing.T) {
+	input := fixture(time.Now())
+	zone, registration, contribution := input.Zone, input.Registrations[0], input.Contributions[0]
+	zone.Namespace, registration.Namespace, contribution.Namespace = "project", "project", "project"
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken(string(zone.UID))[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: zone.UID, WriterEpoch: 1, ActiveManifestName: "active"}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "active", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{WriterEpoch: 1, Revision: 2, RegistrationFences: []dnsv1alpha1.DNSRegistrationFence{{UID: registration.UID, Generation: registration.Generation}}, ContributionFences: []dnsv1alpha1.DNSContributionFence{{UID: contribution.UID, Generation: contribution.Generation, Sequence: contribution.Generation}}}, Status: dnsv1alpha1.DNSPublicationManifestStatus{Conditions: []metav1.Condition{{Type: "Published", Status: metav1.ConditionTrue}}}}
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner, manifest, &registration, &contribution).WithStatusSubresource(&dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}).Build()
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(&contribution), &contribution); err != nil {
+		t.Fatal(err)
+	}
+	stale := *contribution.DeepCopy()
+	contribution.Status.ObservedGeneration = contribution.Generation
+	contribution.Status.Conditions = []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: contribution.Generation, Reason: "Accepted", LastTransitionTime: metav1.Now()}}
+	if err := cl.Status().Update(context.Background(), &contribution); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Client: cl, Options: ReconcilerOptions{PlatformNamespace: "platform"}}
+	if err := r.aggregatePublicationStatus(context.Background(), zone, []dnsv1alpha1.DNSRegistration{registration}, []dnsv1alpha1.DNSRecordContribution{stale}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(&contribution), &contribution); err != nil {
+		t.Fatal(err)
+	}
+	accepted, published := apimeta.FindStatusCondition(contribution.Status.Conditions, "Accepted"), apimeta.FindStatusCondition(contribution.Status.Conditions, "Published")
+	if accepted == nil || accepted.Status != metav1.ConditionTrue || published == nil || published.Status != metav1.ConditionTrue || contribution.Status.ObservedGeneration != contribution.Generation || contribution.Status.PublishedRevision != 2 {
+		t.Fatalf("readiness lost current compiler output: %#v", contribution.Status)
+	}
+}
 
 func TestContributionLifetimesSurvivePublicationTakeover(t *testing.T) {
 	input := fixture(time.Now())

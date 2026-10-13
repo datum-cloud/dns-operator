@@ -29,9 +29,6 @@ spec:
     - dns.networking.miloapis.com/dnsregistrations.list
     - dns.networking.miloapis.com/dnsregistrations.get
     - dns.networking.miloapis.com/dnsregistrations.watch
-    - dns.networking.miloapis.com/dnscontributiongrants.list
-    - dns.networking.miloapis.com/dnscontributiongrants.get
-    - dns.networking.miloapis.com/dnscontributiongrants.watch
     - dns.networking.miloapis.com/dnsrecordcontributions.list
     - dns.networking.miloapis.com/dnsrecordcontributions.get
     - dns.networking.miloapis.com/dnsrecordcontributions.watch

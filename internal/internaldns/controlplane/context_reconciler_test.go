@@ -4,6 +4,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -360,5 +361,26 @@ func TestAllNamespaceReconcileIncludesPlatformNamedSourceNamespace(t *testing.T)
 	}
 	if !apimeta.IsStatusConditionTrue(contextObject.Status.Conditions, "Ready") {
 		t.Fatal("source namespace was excluded because it shares the managed namespace name")
+	}
+}
+
+func TestUnobservedProjectIdentityPreventsSourceCompilation(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "project", UID: "context"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "network"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver).WithStatusSubresource(resolver).Build()
+	unavailable := errors.New("identity unavailable")
+	r := &Reconciler{Client: cl, Options: ReconcilerOptions{ProjectUID: "project", VerifyProjectIdentity: func(context.Context) error { return unavailable }}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(resolver)}); !errors.Is(err, unavailable) {
+		t.Fatalf("identity error not preserved: %v", err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(resolver), resolver); err != nil {
+		t.Fatal(err)
+	}
+	if len(resolver.Status.Conditions) != 0 {
+		t.Fatal("unobserved identity changed source state")
 	}
 }

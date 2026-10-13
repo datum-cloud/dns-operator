@@ -22,6 +22,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	"go.miloapis.com/dns-operator/internal/internaldns/watchdog"
+	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -29,7 +30,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/flowcontrol"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -85,26 +86,26 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 	}
 
 	identity := holderIdentity()
-	projects := make([]projectRuntime, 0, len(cfg.Projects))
-	for _, p := range cfg.Projects {
-		projectREST := rest.CopyConfig(platformREST)
+	makeProject := func(p ProjectConfig, sourceREST *rest.Config) (projectRuntime, error) {
+		projectREST := rest.CopyConfig(sourceREST)
 		if p.Kubeconfig != "" {
-			projectREST, err = restConfig(p.Kubeconfig)
-			if err != nil {
-				return fmt.Errorf("load project %q kubeconfig: %w", p.Name, err)
+			loaded, loadErr := restConfig(p.Kubeconfig)
+			if loadErr != nil {
+				return projectRuntime{}, fmt.Errorf("load project %q kubeconfig: %w", p.Name, loadErr)
 			}
+			projectREST = loaded
 		}
 		applyKubeAPILimit(projectREST, p.KubeAPI)
 		direct, err := client.New(projectREST, client.Options{Scheme: scheme})
 		if err != nil {
-			return fmt.Errorf("create project %q direct client: %w", p.Name, err)
+			return projectRuntime{}, fmt.Errorf("create project %q direct client: %w", p.Name, err)
 		}
 		direct = &deadlineClient{Client: direct, Timeout: p.KubeAPI.requestTimeout()}
 		project := p
 		start := func(startCtx context.Context) error {
 			mgr, err := ctrl.NewManager(projectREST, ctrl.Options{
 				Scheme:                 scheme,
-				Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{project.Namespace: {}}},
+				Cache:                  projectCache(project.Namespace),
 				Metrics:                metricsserver.Options{BindAddress: "0"},
 				HealthProbeBindAddress: "0",
 				LeaderElection:         false,
@@ -129,7 +130,30 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			}
 			return mgr.Start(startCtx)
 		}
-		projects = append(projects, projectRuntime{config: project, direct: direct, start: start})
+		return projectRuntime{config: project, direct: direct, start: start}, nil
+	}
+	projects := make([]projectRuntime, 0, len(cfg.Projects))
+	for _, p := range cfg.Projects {
+		project, err := makeProject(p, platformREST)
+		if err != nil {
+			return err
+		}
+		projects = append(projects, project)
+	}
+	directory := newProjectDirectory(projects)
+	var discovery *projectDiscovery
+	if cfg.ProjectDiscovery != nil {
+		discoveryREST, loadErr := restConfig(cfg.ProjectDiscovery.Kubeconfig)
+		if loadErr != nil {
+			return fmt.Errorf("load project discovery kubeconfig: %w", loadErr)
+		}
+		applyKubeAPILimit(discoveryREST, cfg.ProjectDiscovery.KubeAPI)
+		discoveryClient, clientErr := client.New(discoveryREST, client.Options{Scheme: scheme})
+		if clientErr != nil {
+			return fmt.Errorf("create project discovery client: %w", clientErr)
+		}
+		discoveryClient = &deadlineClient{Client: discoveryClient, Timeout: cfg.ProjectDiscovery.KubeAPI.requestTimeout()}
+		discovery = &projectDiscovery{client: discoveryClient, directory: directory, rest: discoveryREST, kubeAPI: cfg.ProjectDiscovery.KubeAPI, makeProject: makeProject}
 	}
 
 	var admissionManager ctrl.Manager
@@ -145,13 +169,16 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			ClientForRequest: projectSelector(projects),
+			ClientForRequest: directory.selectProject,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 	}
 
 	errCh := make(chan error, len(projects)+len(planners)*3+8)
 	startProjectSources(ctx, projects)
+	if discovery != nil {
+		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, "project discovery", discovery.step, errCh)
+	}
 	if admissionManager != nil {
 		go func() { errCh <- admissionManager.Start(ctx) }()
 	}
@@ -161,10 +188,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 	for _, planner := range planners {
 		publicationRegions[planner.Region+"/"+planner.Shard] = append([]model.Member(nil), planner.Members...)
 	}
-	projectScopes := make([]platform.ProjectScope, 0, len(projects))
-	for _, p := range projects {
-		projectScopes = append(projectScopes, platform.ProjectScope{Client: p.direct, Namespace: p.config.Namespace, RequestTimeout: p.config.KubeAPI.requestTimeout()})
-	}
+
 	sinks := map[string]*platform.AckSink{}
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
@@ -174,7 +198,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			interval = time.Second
 		}
 		go retryLoop(ctx, interval, "planner "+pc.Region+"/"+pc.Shard, planner.Step, errCh)
-		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, Projects: projectScopes,
+		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, "ack refresh "+pc.Region+"/"+pc.Shard, sink.Refresh, errCh)
@@ -381,6 +405,9 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 func newScheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+	if err := resourcemanagerv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
 	if err := corev1.AddToScheme(scheme); err != nil {

@@ -35,6 +35,12 @@ type ProjectConfig struct {
 	KubeAPI    KubeAPIClientConfig `json:"kubeAPI,omitempty"`
 }
 
+type ProjectDiscoveryConfig struct {
+	Kubeconfig      string              `json:"kubeconfig"`
+	IntervalSeconds int64               `json:"intervalSeconds,omitempty"`
+	KubeAPI         KubeAPIClientConfig `json:"kubeAPI,omitempty"`
+}
+
 type KubeAPIClientConfig struct {
 	QPS                   float32 `json:"qps,omitempty"`
 	Burst                 int     `json:"burst,omitempty"`
@@ -59,7 +65,8 @@ type Config struct {
 	Shard                 string                    `json:"shard"`
 	PlatformNamespace     string                    `json:"platformNamespace"`
 	PlatformKubeAPI       KubeAPIClientConfig       `json:"platformKubeAPI,omitempty"`
-	Projects              []ProjectConfig           `json:"projects"`
+	Projects              []ProjectConfig           `json:"projects,omitempty"`
+	ProjectDiscovery      *ProjectDiscoveryConfig   `json:"projectDiscovery,omitempty"`
 	NodeBackends          []model.Backend           `json:"nodeBackends,omitempty"`
 	ClusterBackends       []model.Backend           `json:"clusterBackends,omitempty"`
 	Members               []model.Member            `json:"members,omitempty"`
@@ -118,6 +125,12 @@ func (c *Config) defaults() {
 	}
 
 	defaultKubeAPI(&c.PlatformKubeAPI, 50, 100)
+	if c.ProjectDiscovery != nil {
+		defaultKubeAPI(&c.ProjectDiscovery.KubeAPI, 20, 40)
+		if c.ProjectDiscovery.IntervalSeconds == 0 {
+			c.ProjectDiscovery.IntervalSeconds = 10
+		}
+	}
 	for i := range c.Projects {
 		defaultKubeAPI(&c.Projects[i].KubeAPI, 20, 40)
 	}
@@ -190,11 +203,25 @@ func (c *Config) Validate(role string) error {
 		}
 		return c.Agent.Validate()
 	}
-	if c.PlatformNamespace == "" || len(c.Projects) == 0 {
-		return errors.New("control-plane requires platformNamespace and projects")
+	if c.PlatformNamespace == "" || (len(c.Projects) == 0 && c.ProjectDiscovery == nil) {
+		return errors.New("control-plane requires platformNamespace and project discovery or projects")
 	}
 	if err := validateKubeAPI("platformKubeAPI", c.PlatformKubeAPI); err != nil {
 		return err
+	}
+	if c.ProjectDiscovery != nil {
+		if len(c.Projects) != 0 {
+			return errors.New("projectDiscovery and projects are mutually exclusive")
+		}
+		if !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
+			return errors.New("projectDiscovery.kubeconfig must be absolute")
+		}
+		if c.ProjectDiscovery.IntervalSeconds < 1 || c.ProjectDiscovery.IntervalSeconds > 300 {
+			return errors.New("projectDiscovery.intervalSeconds must be between 1 and 300")
+		}
+		if err := validateKubeAPI("projectDiscovery.kubeAPI", c.ProjectDiscovery.KubeAPI); err != nil {
+			return err
+		}
 	}
 	names := map[string]bool{}
 	uids := map[types.UID]bool{}

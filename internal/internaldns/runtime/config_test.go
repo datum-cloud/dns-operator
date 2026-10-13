@@ -205,3 +205,23 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 		t.Fatal("agent did not stop")
 	}
 }
+
+func TestControlPlaneProjectDiscoveryValidation(t *testing.T) {
+	base := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://fixture:4222", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Members: []model.Member{{MemberID: "regional", Role: "regional"}}, ProjectDiscovery: &ProjectDiscoveryConfig{Kubeconfig: "/var/run/discovery/kubeconfig"}}
+	if err := base.Validate(roleControlPlane); err != nil {
+		t.Fatal(err)
+	}
+	if base.ProjectDiscovery.IntervalSeconds != 10 || base.ProjectDiscovery.KubeAPI.RequestTimeoutSeconds != 10 {
+		t.Fatal("discovery defaults missing")
+	}
+	mixed := base
+	mixed.Projects = []ProjectConfig{{ProjectUID: "project", Namespace: "project"}}
+	if err := mixed.Validate(roleControlPlane); err == nil {
+		t.Fatal("mixed discovery and static sources accepted")
+	}
+	relative := base
+	relative.ProjectDiscovery = &ProjectDiscoveryConfig{Kubeconfig: "relative"}
+	if err := relative.Validate(roleControlPlane); err == nil {
+		t.Fatal("relative discovery credential accepted")
+	}
+}

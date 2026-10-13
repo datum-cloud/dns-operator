@@ -77,7 +77,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ConsumerPrefix: cfg.ConsumerPrefix, ClusterPrefix: cfg.ClusterPrefix}
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix}
 	planners := cfg.plannerConfigs()
 	regions := make([]controlplane.ServingRegion, 0, len(planners))
 	for _, p := range planners {
@@ -146,10 +146,9 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			MaxContributionLease:    cfg.Admission.maxLease(),
-			MaxAccessLease:          cfg.Admission.maxAccessLease(),
-			ResolverContextsEnabled: true,
-			ClientForRequest:        projectSelector(projects),
+			MaxContributionLease: cfg.Admission.maxLease(),
+			MaxAccessLease:       cfg.Admission.maxAccessLease(),
+			ClientForRequest:     projectSelector(projects),
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 	}

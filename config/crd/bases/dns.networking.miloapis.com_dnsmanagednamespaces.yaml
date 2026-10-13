@@ -36,10 +36,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              DNSManagedNamespace is the DNS-owned lookup and lifecycle record for the
-              canonical private namespace of a VPC. Product controllers read its status;
-              only the DNS platform controller writes the object.
+            description: DNSManagedNamespace tracks a resolver context's canonical
+              private namespace.
             properties:
               dnsZoneClassName:
                 type: string
@@ -51,7 +49,7 @@ spec:
                   don't ONLY use UUIDs, this is an alias to string.  Being a type captures
                   intent and helps make sure that UIDs and names do not get conflated.
                 type: string
-              vpcRef:
+              resolverContextRef:
                 description: |-
                   DNSObjectReference pins a namespaced object by API-assigned UID. Generation
                   is used where a writer must also be fenced against policy changes.
@@ -77,7 +75,7 @@ spec:
             - dnsZoneClassName
             - domainSuffix
             - projectUID
-            - vpcRef
+            - resolverContextRef
             type: object
           status:
             properties:

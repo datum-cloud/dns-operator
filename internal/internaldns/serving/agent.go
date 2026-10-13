@@ -1008,7 +1008,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			continue
 		}
 		p := model.AckVerified
-		if !active[b.BindingUID] || !a.publicationsReady(b) {
+		if !active[b.BindingUID] {
 			p = model.AckApplied
 		}
 		if err := a.emitServingAck(ctx, b, p); err != nil {

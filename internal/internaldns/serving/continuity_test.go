@@ -72,6 +72,9 @@ func TestPendingZoneIsIsolatedFromReadyZone(t *testing.T) {
 		t.Fatal(err)
 	}
 	installTestPublication(t, agent, now)
+	pub := &fakePublisher{}
+	agent.deps.AckPublisher = pub
+	now = now.Add(time.Minute)
 	binding := agent.state.Snapshot.Bindings[0]
 	binding.Zones = append(binding.Zones, model.ZoneAttachment{ZoneUID: "pending", Apex: "pending.internal", Pending: true, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
 	if zones := agent.readyZones(binding); len(zones) != 1 || zones[0].ZoneUID != "zone-a" {
@@ -89,6 +92,19 @@ func TestPendingZoneIsIsolatedFromReadyZone(t *testing.T) {
 	}
 	if zone := currentZone(t, agent); zone == "" {
 		t.Fatal("ready zone was not materialized")
+	}
+	verified := false
+	for _, env := range pub.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Kind == model.KindServingSnapshot && ack.Revision == candidate.ConfigurationRevision && ack.Phase == model.AckVerified {
+			verified = true
+		}
+	}
+	if !verified {
+		t.Fatal("pending zone prevented resolver access from becoming ready")
 	}
 }
 

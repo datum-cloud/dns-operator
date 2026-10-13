@@ -21,10 +21,10 @@ func TestNamingSelectorsMatchRegistrationLabelsWithinContext(t *testing.T) {
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	managed := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: "managed", Namespace: "project"}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: "project-a", VPCRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}}, Status: dnsv1alpha1.DNSManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "canonical-zone"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
+	managed := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: "managed", Namespace: "project"}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: "project-a", ResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}}, Status: dnsv1alpha1.DNSManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "canonical-zone"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
 	zone := dnsv1alpha1.DNSObjectReference{Name: "custom", UID: "custom-zone"}
 	storefront := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "storefront"}}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", Generation: 1}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedVPCRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", Generation: 1}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{
 		{DNSZoneRef: zone, NamePrefix: "all"},
 		{Selector: &metav1.LabelSelector{}, DNSZoneRef: zone, NamePrefix: "empty"},
 		{Selector: storefront, DNSZoneRef: zone, NamePrefix: "storefront"},
@@ -33,7 +33,7 @@ func TestNamingSelectorsMatchRegistrationLabelsWithinContext(t *testing.T) {
 	}}}
 	other := policy.DeepCopy()
 	other.Name = "other-context"
-	other.Status.ResolvedVPCRef.UID = "consumer-b"
+	other.Status.ResolvedResolverContextRef.UID = "consumer-b"
 	other.Status.ResolvedAdditionalNames = []dnsv1alpha1.DNSResolvedAdditionalNameRule{{DNSZoneRef: zone, NamePrefix: "other-context"}}
 	stale := policy.DeepCopy()
 	stale.Name = "stale-policy"

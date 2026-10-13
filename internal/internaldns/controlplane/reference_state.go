@@ -49,7 +49,7 @@ func (r *Reconciler) referenceStateObject(source client.Object) *corev1.ConfigMa
 	}
 	identity := fmt.Sprintf("%s/%s/%s/%s/%s", r.Options.ProjectUID, source.GetNamespace(), referenceKind(source), source.GetName(), source.GetUID())
 	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-		Namespace: namespace, Name: "references-" + model.OpaqueToken(identity)[:32],
+		Namespace: namespace, Name: "references-" + model.OpaqueToken(identity),
 		Labels: map[string]string{referenceStateLabel: "true", referenceProjectLabel: string(r.Options.ProjectUID)},
 	}}
 }

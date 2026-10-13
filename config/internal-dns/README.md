@@ -168,8 +168,12 @@ Publication-result updates cannot change a publisher's
 observation. Resource permissions do not depend on webhook principal lists.
 ## Rollout and recovery
 
+Project APIs select zones by name and report names and readiness. DNS stores
+resolved ownership identities in reference ConfigMaps in the service project.
+The collector checks source resources before removing those records.
+
 The supported envelope version is `v1alpha4` and checkpoint format is 5. Keep
-transport state and persistent checkpoints across compatible upgrades. Deploy
+reference records, transport state, and persistent checkpoints across compatible upgrades. Deploy
 serving agents before controllers that emit per-zone pending state. Enable the
 controller change after every serving member supports that contract; a matching
 wire version alone does not establish feature compatibility.

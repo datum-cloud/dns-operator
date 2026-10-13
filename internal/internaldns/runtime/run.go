@@ -86,6 +86,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 	}
 
 	identity := holderIdentity()
+	var discoveryReader client.Reader
 	makeProject := func(p ProjectConfig, sourceREST *rest.Config) (projectRuntime, error) {
 		projectREST := rest.CopyConfig(sourceREST)
 		if p.Kubeconfig != "" {
@@ -118,7 +119,13 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID:       project.ProjectUID,
+				ProjectUID: project.ProjectUID,
+				VerifyProjectIdentity: func(ctx context.Context) error {
+					if discoveryReader == nil {
+						return nil
+					}
+					return verifyProjectIdentity(ctx, discoveryReader, project.Name, project.ProjectUID)
+				},
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
 				LeaseDuration:        cfg.ownershipLease(),
@@ -153,6 +160,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			return fmt.Errorf("create project discovery client: %w", clientErr)
 		}
 		discoveryClient = &deadlineClient{Client: discoveryClient, Timeout: cfg.ProjectDiscovery.KubeAPI.requestTimeout()}
+		discoveryReader = discoveryClient
 		discovery = &projectDiscovery{client: discoveryClient, directory: directory, rest: discoveryREST, kubeAPI: cfg.ProjectDiscovery.KubeAPI, makeProject: makeProject}
 	}
 

@@ -44,6 +44,7 @@ without restarting the service. `projectDiscovery.kubeconfig` authenticates
 discovery and project API access; the process `--kubeconfig` authenticates the
 DNS service project. Generated kubeconfig Secrets use the `value` key.
 Unavailable discovery retains active sources and applied DNS configuration.
+Compilation requires the live source project identity to match its worker.
 Admission resolves the authenticated project parent against its live identity,
 and acknowledgement projection follows the discovered source clients.
 

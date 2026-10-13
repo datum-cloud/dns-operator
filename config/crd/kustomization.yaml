@@ -6,7 +6,8 @@ resources:
 - bases/dns.networking.miloapis.com_dnszones.yaml
 - bases/dns.networking.miloapis.com_dnsrecordsets.yaml
 - bases/dns.networking.miloapis.com_dnszonediscoveries.yaml
-- bases/dns.networking.miloapis.com_dnsmanagednamespaces.yaml
+
+
 - bases/dns.networking.miloapis.com_dnsnamingpolicies.yaml
 - bases/dns.networking.miloapis.com_dnsrecordcontributions.yaml
 - bases/dns.networking.miloapis.com_dnsregistrations.yaml

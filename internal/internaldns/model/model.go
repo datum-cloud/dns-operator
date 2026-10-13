@@ -17,7 +17,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-const APIVersion = "internal.dns.networking.miloapis.com/v1alpha5"
+const APIVersion = "internal.dns.networking.miloapis.com/v1alpha6"
 
 type Kind string
 
@@ -349,6 +349,8 @@ type ObservationFence struct {
 	ContributionUID string `json:"contributionUID"`
 	Generation      uint64 `json:"generation"`
 	Sequence        uint64 `json:"sequence"`
+	Retired         bool   `json:"retired,omitempty"`
+	SourceName      string `json:"sourceName,omitempty"`
 }
 
 func (p PublicationPlan) Validate() error {
@@ -415,7 +417,7 @@ func (p PublicationPlan) Validate() error {
 				}
 			} else {
 				observation, ok := observationByUID[rec.ContributionUID]
-				if !ok || rec.Generation != observation.Generation || rec.Sequence != observation.Sequence {
+				if !ok || observation.Retired || rec.Generation != observation.Generation || rec.Sequence != observation.Sequence {
 					return fmt.Errorf("RRset %q record fence does not match contribution observation %q", key, rec.ContributionUID)
 				}
 			}

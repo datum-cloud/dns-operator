@@ -265,7 +265,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				if registrationGenerations[string(r.UID)] != uint64(r.Generation) {
 					continue
 				}
-				if r.Spec.DNSZoneRef.Name != z.Name || r.Spec.DNSZoneRef.UID != "" && r.Spec.DNSZoneRef.UID != z.UID {
+				if r.Spec.DNSZoneRef.Name != z.Name {
 					continue
 				}
 				available := false

@@ -57,7 +57,7 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+	if err := addReferenceStateToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&dnsv1alpha1.DNSPublicationManifest{}).Build()
@@ -90,7 +90,7 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 func TestTerminatingAuthorityDoesNotIssueOrBindWriterEpochs(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+	if err := addReferenceStateToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	for _, terminating := range []string{"registration", "grant"} {

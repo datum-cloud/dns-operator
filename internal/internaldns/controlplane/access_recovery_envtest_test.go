@@ -37,7 +37,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		}
 	})
 	scheme := runtime.NewScheme()
-	requireAccessTestSuccess(t, dnsv1alpha1.AddToScheme(scheme))
+	requireAccessTestSuccess(t, addReferenceStateToScheme(scheme))
 	requireAccessTestSuccess(t, corev1.AddToScheme(scheme))
 	cl, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {

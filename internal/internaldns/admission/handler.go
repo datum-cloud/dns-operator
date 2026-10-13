@@ -339,16 +339,15 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 	return nil
 }
 
-// Zone references cannot silently follow a replacement with the same name.
-func currentPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSObjectReference) (*dnsv1alpha1.DNSZone, error) {
-	if ref.Name == "" || ref.UID == "" {
-		return nil, fmt.Errorf("zone reference must pin name and UID")
+func currentPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSNameReference) (*dnsv1alpha1.DNSZone, error) {
+	if ref.Name == "" {
+		return nil, fmt.Errorf("zone reference requires a name")
 	}
 	var zone dnsv1alpha1.DNSZone
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &zone); err != nil {
 		return nil, fmt.Errorf("private zone lookup: %w", err)
 	}
-	if zone.UID != ref.UID || !zone.DeletionTimestamp.IsZero() || (ref.Generation != 0 && ref.Generation != zone.Generation) {
+	if !zone.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("zone lifetime is not current")
 	}
 	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {

@@ -36,11 +36,9 @@ type DNSZoneAssociationSpec struct {
 }
 
 type DNSZoneAssociationStatus struct {
-	ResolvedDNSZoneRef         DNSObjectReference  `json:"resolvedDNSZoneRef,omitempty"`
-	ResolvedVPCRef             DNSObjectReference  `json:"resolvedVPCRef,omitempty"`
-	ResolvedResolverContextRef DNSObjectReference  `json:"resolvedResolverContextRef,omitempty"`
-	BindingRef                 *DNSObjectReference `json:"bindingRef,omitempty"`
-	Conditions                 []metav1.Condition  `json:"conditions,omitempty"`
+	ResolvedDNSZoneRef         DNSNameReference   `json:"resolvedDNSZoneRef,omitempty"`
+	ResolvedResolverContextRef DNSNameReference   `json:"resolvedResolverContextRef,omitempty"`
+	Conditions                 []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // DNSResolverContext is the DNS-owned serving and namespace boundary created by
@@ -65,8 +63,8 @@ type DNSResolverContextManagedNamespace struct {
 }
 
 type DNSResolverContextManagedNamespaceStatus struct {
-	DNSZoneRef DNSObjectReference `json:"dnsZoneRef,omitempty"`
-	Suffix     string             `json:"suffix,omitempty"`
+	DNSZoneRef DNSNameReference `json:"dnsZoneRef,omitempty"`
+	Suffix     string           `json:"suffix,omitempty"`
 }
 
 type DNSResolverContextStatus struct {
@@ -139,9 +137,8 @@ type DNSResolverAccessBindingSpec struct {
 }
 
 type DNSResolverAccessBindingStatus struct {
-	ObservedSequence int64               `json:"observedSequence,omitempty"`
-	BindingRef       *DNSObjectReference `json:"bindingRef,omitempty"`
-	Conditions       []metav1.Condition  `json:"conditions,omitempty"`
+	ObservedSequence int64              `json:"observedSequence,omitempty"`
+	Conditions       []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -188,9 +185,9 @@ const (
 
 const DNSRegistrationMaxTTLSeconds int32 = 30
 
-// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
 type DNSRegistrationSpec struct {
-	DNSZoneRef        DNSObjectReference   `json:"dnsZoneRef"`
+	DNSZoneRef        DNSNameReference     `json:"dnsZoneRef"`
 	Name              string               `json:"name"`
 	RecordTypes       []RRType             `json:"recordTypes"`
 	PublicationPolicy DNSPublicationPolicy `json:"publicationPolicy"`
@@ -361,16 +358,14 @@ func (s *DNSRegistrationSelector) AsLabelSelector() *metav1.LabelSelector {
 }
 
 type DNSNamingPolicyStatus struct {
-	ResolvedVPCRef             DNSObjectReference              `json:"resolvedVPCRef,omitempty"`
-	ResolvedResolverContextRef DNSObjectReference              `json:"resolvedResolverContextRef,omitempty"`
-	ResolvedDNSZoneRef         DNSObjectReference              `json:"resolvedDNSZoneRef,omitempty"`
+	ResolvedResolverContextRef DNSNameReference                `json:"resolvedResolverContextRef,omitempty"`
 	ResolvedAdditionalNames    []DNSResolvedAdditionalNameRule `json:"resolvedAdditionalNames,omitempty"`
 	Conditions                 []metav1.Condition              `json:"conditions,omitempty"`
 }
 
 type DNSResolvedAdditionalNameRule struct {
 	Selector   *metav1.LabelSelector `json:"selector,omitempty"`
-	DNSZoneRef DNSObjectReference    `json:"dnsZoneRef"`
+	DNSZoneRef DNSNameReference      `json:"dnsZoneRef"`
 	NamePrefix string                `json:"namePrefix"`
 }
 
@@ -394,15 +389,13 @@ type DNSNamingPolicyList struct {
 // canonical private namespace of a VPC. Product controllers read its status;
 // only the DNS platform controller writes the object.
 type DNSManagedNamespaceSpec struct {
-	ProjectUID       types.UID          `json:"projectUID"`
-	VPCRef           DNSObjectReference `json:"vpcRef"`
-	DomainSuffix     string             `json:"domainSuffix"`
-	DNSZoneClassName string             `json:"dnsZoneClassName"`
+	ResolverContextRef DNSNameReference `json:"resolverContextRef"`
+	DomainSuffix       string           `json:"domainSuffix"`
+	DNSZoneClassName   string           `json:"dnsZoneClassName"`
 }
 
 type DNSManagedNamespaceStatus struct {
-	DNSZoneRef      DNSObjectReference `json:"dnsZoneRef,omitempty"`
-	AssociationRef  DNSObjectReference `json:"associationRef,omitempty"`
+	DNSZoneRef      DNSNameReference   `json:"dnsZoneRef,omitempty"`
 	CanonicalSuffix string             `json:"canonicalSuffix,omitempty"`
 	Conditions      []metav1.Condition `json:"conditions,omitempty"`
 }

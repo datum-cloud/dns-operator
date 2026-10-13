@@ -53,6 +53,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	for i := range associations.Items {
 		a := &associations.Items[i]
 		a.Status.ResolvedDNSZoneRef = a.Spec.DNSZoneRef
+		a.Status.ResolvedResolverContextRef = a.Spec.ResolverContextRef
 		setCondition(&a.Status.Conditions, "Accepted", metav1.ConditionTrue, "Ready", "", a.Generation, now)
 		if err := c.Status().Update(ctx, a); err != nil {
 			t.Fatal(err)

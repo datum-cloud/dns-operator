@@ -28,22 +28,6 @@ type accessListSnapshotClient struct {
 	getErrorFor string
 }
 
-type bindingPatchRaceClient struct {
-	client.Client
-	beforeWithdrawal func(context.Context) error
-}
-
-func (c *bindingPatchRaceClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	if binding, ok := obj.(*dnsv1alpha1.DNSResolverBinding); ok && binding.Spec.Tombstone && c.beforeWithdrawal != nil {
-		before := c.beforeWithdrawal
-		c.beforeWithdrawal = nil
-		if err := before(ctx); err != nil {
-			return err
-		}
-	}
-	return c.Client.Patch(ctx, obj, patch, opts...)
-}
-
 func (c *accessListSnapshotClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	_, access := obj.(*dnsv1alpha1.DNSResolverAccessBinding)
 	_, resolverContext := obj.(*dnsv1alpha1.DNSResolverContext)
@@ -69,7 +53,7 @@ func (testAllocator) ClaimDestination(context.Context, types.UID, types.UID, str
 	return nil
 }
 
-func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
+func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
@@ -81,10 +65,9 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid"}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid", Generation: 1}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}}
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
-	until := metav1.NewTime(now.Add(2 * time.Minute))
-	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 4, Sequence: 12, ValidUntil: until}}}
+	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 4, Sequence: 12}}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject, zone, association, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverBinding{}).Build()
-	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", MaxAccessLease: 5 * time.Minute, AddressAllocator: testAllocator{}}}
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: testAllocator{}}}
 	if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association}, map[string]*dnsv1alpha1.DNSZone{"zone": zone}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +79,7 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 		t.Fatalf("got %d bindings", len(bindings.Items))
 	}
 	b := bindings.Items[0]
-	if b.Spec.Configuration.Listeners.Node.Address != "fd70:100::10" || b.Spec.Source.ResolverContextRef.UID != "context-uid" || b.Spec.Authorization.WriterEpoch != 4 || b.Spec.Authorization.Sequence != 12 || !b.Spec.Authorization.ValidUntil.Equal(&until) {
+	if b.Spec.Configuration.Listeners.Node.Address != "fd70:100::10" || b.Spec.Source.ResolverContextRef.UID != "context-uid" || b.Spec.Authorization.WriterEpoch != 4 || b.Spec.Authorization.Sequence != 12 {
 		t.Fatalf("access projection drifted: %#v", b.Spec)
 	}
 	if b.Spec.Source.ProjectUID != "project-uid" || b.Spec.Source.ResolverContextRef.Name != "ctx" || b.Spec.Source.AccessBindingRef.Name != "access" || b.Spec.Source.AccessBindingRef.UID != "access-uid" || b.Spec.Configuration.ZoneRefs[0].Name != "zone" || b.Spec.Configuration.ZoneRefs[0].UID != "zone-uid" || b.Spec.Placement.Region != "central" {
@@ -125,13 +108,17 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 		t.Fatalf("zone membership change reused configuration fences: %#v", b.Spec.Configuration)
 	}
 
+	contextObject.Status.AccessWriterEpoch++
+	if err := c.Status().Update(ctx, contextObject); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association}, map[string]*dnsv1alpha1.DNSZone{"zone": zone}, now.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(&b), &b); err != nil {
 		t.Fatal(err)
 	}
-	if !b.Spec.Tombstone || b.Spec.Authorization.Sequence != 12 || !b.Spec.Authorization.ValidUntil.Equal(&until) || b.Spec.Configuration.Revision != 3 {
+	if !b.Spec.Tombstone || b.Spec.Authorization.Sequence != 12 || b.Spec.Configuration.Revision != 3 {
 		t.Fatalf("withdrawal changed integration authority or failed to advance configuration: %#v", b.Spec)
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
@@ -141,8 +128,7 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 	if ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("invalid access retained Ready: %#v", access.Status.Conditions)
 	}
-	staleExpiredAccess := *access.DeepCopy()
-	access.Spec.Authorization.ValidUntil = metav1.NewTime(now.Add(4 * time.Minute))
+	staleAccess := *access.DeepCopy()
 	if err := c.Update(ctx, access); err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +139,12 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !b.Spec.Tombstone {
-		t.Fatal("same-fence source deadline replay reopened access")
+		t.Fatal("same-fence replay reopened access")
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
 		t.Fatal(err)
 	}
+	access.Spec.Authorization.WriterEpoch = contextObject.Status.AccessWriterEpoch
 	access.Spec.Authorization.Sequence++
 	if err := c.Update(ctx, access); err != nil {
 		t.Fatal(err)
@@ -168,10 +155,10 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(&b), &b); err != nil {
 		t.Fatal(err)
 	}
-	if b.Spec.Tombstone || b.Spec.Authorization.Sequence != 13 || !b.Spec.Authorization.ValidUntil.Equal(&access.Spec.Authorization.ValidUntil) || b.Spec.Configuration.Revision != 4 {
+	if b.Spec.Tombstone || b.Spec.Authorization.Sequence != 13 || b.Spec.Configuration.Revision != 4 {
 		t.Fatalf("ordinary next source sequence failed to renew access: %#v", b.Spec)
 	}
-	for _, snapshot := range [][]dnsv1alpha1.DNSResolverAccessBinding{{staleExpiredAccess}, nil} {
+	for _, snapshot := range [][]dnsv1alpha1.DNSResolverAccessBinding{{staleAccess}, nil} {
 		staleController := &Reconciler{Client: &accessListSnapshotClient{Client: c, accesses: snapshot}, Scheme: s, Options: r.Options}
 		if err := staleController.reconcileContextBindings(ctx, "project", nil, nil, now.Add(3*time.Minute)); err != nil {
 			t.Fatal(err)
@@ -216,9 +203,8 @@ func TestContextAccessProjectsExactAuthorizationAndExpiresClosed(t *testing.T) {
 
 func TestBindingAckCurrentRequiresVerifiedExactAuthorization(t *testing.T) {
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
-	deadline := metav1.NewTime(now.Add(time.Minute))
 	ackDeadline := metav1.NewTime(now.Add(30 * time.Second))
-	b := &dnsv1alpha1.DNSResolverBinding{Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 7}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 11, ValidUntil: deadline}}, Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{Phase: string(model.AckVerified), Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 11, ValidUntil: &ackDeadline}}}}
+	b := &dnsv1alpha1.DNSResolverBinding{Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 7}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 11}}, Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{Phase: string(model.AckVerified), Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 11, ValidUntil: &ackDeadline}}}}
 	if !bindingAckCurrent(b, now) {
 		t.Fatal("exact verified ACK was rejected")
 	}
@@ -232,11 +218,6 @@ func TestBindingAckCurrentRequiresVerifiedExactAuthorization(t *testing.T) {
 		t.Fatal("stale authorization ACK was accepted")
 	}
 	b.Status.MemberAcknowledgements[0].AuthorizationRevision = 11
-	overlong := metav1.NewTime(now.Add(2 * time.Minute))
-	b.Status.MemberAcknowledgements[0].ValidUntil = &overlong
-	if bindingAckCurrent(b, now) {
-		t.Fatal("ACK beyond access deadline was accepted")
-	}
 }
 
 func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T) {

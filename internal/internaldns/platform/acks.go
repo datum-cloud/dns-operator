@@ -161,10 +161,6 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			bindingRow.SnapshotRevision = int64(a.Revision)
 			bindingRow.AuthorizationIssuerEpoch = binding.Spec.Authorization.WriterEpoch
 			bindingRow.AuthorizationRevision = binding.Spec.Authorization.Sequence
-			if bindingRow.ValidUntil != nil && bindingRow.ValidUntil.After(b.Authorization.ValidUntil) {
-				u := metav1.NewTime(b.Authorization.ValidUntil)
-				bindingRow.ValidUntil = &u
-			}
 			binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, bindingRow)
 			complete := s.bindingVerified(binding, e, snapshot, now)
 			if complete {
@@ -283,7 +279,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 						continue
 					}
 					for _, record := range rrset.Records {
-						if record.Eligible && (record.ContributionUID == "" || record.ValidUntil.After(now)) {
+						if record.Eligible {
 							available = true
 						}
 					}
@@ -385,7 +381,7 @@ func hasApplied(rows []dnsv1alpha1.DNSApplyAcknowledgement, epoch, revision int6
 	return false
 }
 
-// Refresh withdraws status readiness when a member lease or authorization expires,
+// Refresh withdraws status readiness when member acknowledgment freshness expires,
 // even if its process or event stream has stopped producing acknowledgements.
 func (s *AckSink) Refresh(ctx context.Context) error {
 	now := time.Now().UTC()
@@ -528,7 +524,7 @@ func LoadCommittedServingSnapshot(ctx context.Context, c client.Client, namespac
 }
 
 func (s *AckSink) bindingVerified(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time) bool {
-	if envelope == nil || snapshot == nil || b.Spec.Tombstone || !b.Spec.Authorization.ValidUntil.After(now) {
+	if envelope == nil || snapshot == nil || b.Spec.Tombstone {
 		return false
 	}
 	present := false

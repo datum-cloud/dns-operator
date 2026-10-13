@@ -92,7 +92,7 @@ func Connect(c Config) (*JetStream, error) {
 		nats.Name(c.Name),
 		nats.Timeout(defaultDuration(c.ConnectTimeout, 10*time.Second)),
 		// A regional partition must not permanently close a long-running agent.
-		// Callers keep retrying while local expiry and the watchdog gate serving.
+		// Callers retry delivery while local health checks govern serving.
 		nats.MaxReconnects(-1),
 	}
 	if c.CredentialsFile != "" {

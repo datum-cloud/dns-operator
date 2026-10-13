@@ -101,7 +101,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	return ctrl.Result{RequeueAfter: nextProjectRequeue(now, earliest, r.Options.LeaseDuration)}, nil
 }
 
-// nextProjectRequeue never lets a later contribution or authorization expiry
+// nextProjectRequeue never lets a later scheduled reconciliation
 // postpone ownership renewal. A standby polls more frequently while another
 // holder owns a zone, but the active holder must still run within half a lease
 // even when the compiled publication is otherwise quiescent.
@@ -311,7 +311,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 				return false, time.Time{}, err
 			}
 		}
-		return r.tombstoneAcknowledged(ctx, own), nextExpiry(ownPlan, now), nil
+		return r.tombstoneAcknowledged(ctx, own), time.Time{}, nil
 	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
@@ -342,7 +342,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, time.Time{}, err
 	}
-	return false, nextExpiry(ownPlan, now), nil
+	return false, time.Time{}, nil
 }
 
 func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership) (int64, error) {
@@ -430,7 +430,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	}
 	apiFences := make([]dnsv1alpha1.DNSContributionFence, 0, len(fences))
 	for _, f := range fences {
-		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, GrantUID: f.GrantUID, Epoch: f.Epoch, Sequence: f.Sequence, ValidUntil: metav1.NewTime(f.ValidUntil)})
+		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, GrantUID: f.GrantUID, Epoch: f.Epoch, Sequence: f.Sequence})
 	}
 	apiRegistrations := make([]dnsv1alpha1.DNSRegistrationFence, 0, len(registrations))
 	for _, f := range registrations {
@@ -548,7 +548,7 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	// fields may lose fractional seconds during API round trips, so rebuilding
 	// from manifest metadata can make an unchanged observation appear mutated.
 	for _, f := range wire.ObservationFences {
-		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), GrantUID: types.UID(f.GrantUID), Epoch: int64(f.WriterEpoch), Sequence: int64(f.Sequence), ValidUntil: f.ValidUntil.UTC()})
+		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), GrantUID: types.UID(f.GrantUID), Epoch: int64(f.WriterEpoch), Sequence: int64(f.Sequence)})
 	}
 	return p, nil
 }
@@ -671,14 +671,4 @@ func chunk(b []byte, size int) [][]byte {
 		b = b[n:]
 	}
 	return out
-}
-
-func nextExpiry(p PublicationPlan, now time.Time) time.Time {
-	var next time.Time
-	for _, f := range p.Contributions {
-		if f.ValidUntil.After(now) && (next.IsZero() || f.ValidUntil.Before(next)) {
-			next = f.ValidUntil
-		}
-	}
-	return next
 }

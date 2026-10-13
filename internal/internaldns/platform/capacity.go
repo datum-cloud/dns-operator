@@ -65,7 +65,7 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 }
 
 func safeExpansion(old, candidate model.Binding) bool {
-	if old.Tombstone || candidate.Tombstone || old.ConfigurationPending || candidate.ConfigurationPending || old.Authorization != candidate.Authorization || old.ProjectUID != candidate.ProjectUID || old.ContextUID != candidate.ContextUID || old.ConsumerAddress != candidate.ConsumerAddress || old.ClusterAddress != candidate.ClusterAddress {
+	if old.Tombstone || candidate.Tombstone || old.ConfigurationPending || candidate.ConfigurationPending || old.Version != candidate.Version || old.ProjectUID != candidate.ProjectUID || old.ContextUID != candidate.ContextUID || old.ConsumerAddress != candidate.ConsumerAddress || old.ClusterAddress != candidate.ClusterAddress {
 		return false
 	}
 	for _, zone := range old.Zones {

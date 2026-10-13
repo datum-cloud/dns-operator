@@ -41,10 +41,9 @@ type PublicationRRSet struct {
 }
 
 type ContributionFence struct {
-	UID      types.UID `json:"uid"`
-	GrantUID types.UID `json:"grantUID"`
-	Epoch    int64     `json:"epoch"`
-	Sequence int64     `json:"sequence"`
+	UID        types.UID `json:"uid"`
+	Generation int64     `json:"generation"`
+	Sequence   int64     `json:"sequence"`
 }
 
 type RegistrationFence struct {
@@ -58,7 +57,6 @@ type CompileInput struct {
 	AssociationReferences      map[types.UID]associationReferences
 	RegistrationZoneReferences map[types.UID]dnsv1alpha1.DNSObjectReference
 	Registrations              []dnsv1alpha1.DNSRegistration
-	Grants                     []dnsv1alpha1.DNSContributionGrant
 	Contributions              []dnsv1alpha1.DNSRecordContribution
 	StaticRecords              []dnsv1alpha1.DNSRecordSet
 	Previous                   *PublicationPlan
@@ -168,26 +166,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 		result.Plan.Owners = append(result.Plan.Owners, owner)
 	}
 
-	grants := map[types.UID]*dnsv1alpha1.DNSContributionGrant{}
-	for i := range in.Grants {
-		grant := &in.Grants[i]
-		if !grant.DeletionTimestamp.IsZero() {
-			result.Reasons[grant.UID] = dnsValueTerminating
-			continue
-		}
-		reg := regs[grant.Spec.RegistrationRef.UID]
-		if reg == nil || grant.Spec.RegistrationRef.Name != reg.Name || grant.Spec.RegistrationRef.Generation != reg.Generation {
-			result.Reasons[grant.UID] = dnsValueStaleRegistrationGeneration
-			continue
-		}
-		if grant.Status.ActiveWriterEpoch <= 0 || grant.Status.ObservedGrantGeneration != grant.Generation || grant.Status.ObservedRegistrationGeneration != reg.Generation {
-			result.Reasons[grant.UID] = "WriterAuthorityPending"
-			continue
-		}
-		grants[grant.UID] = grant
-		result.Accepted[grant.UID] = true
-	}
-
 	previousSeq := map[types.UID]ContributionFence{}
 	if in.Previous != nil {
 		for _, f := range in.Previous.Contributions {
@@ -210,15 +188,14 @@ func Compile(in CompileInput) (CompileResult, error) {
 	for i := range in.Contributions {
 		c := &in.Contributions[i]
 		reg := regs[c.Spec.RegistrationRef.UID]
-		grant := grants[c.Spec.GrantRef.UID]
-		reason := validateContribution(c, reg, grant, previousSeq[c.UID])
+		reason := validateContribution(c, reg, previousSeq[c.UID])
 		if reason != "" {
 			result.Reasons[c.UID] = reason
 			continue
 		}
-		currentFence := ContributionFence{UID: c.UID, GrantUID: grant.UID, Epoch: c.Status.WriterEpoch, Sequence: c.Status.Sequence}
+		currentFence := ContributionFence{UID: c.UID, Generation: c.Generation, Sequence: c.Status.Sequence}
 		previousFence := previousSeq[c.UID]
-		if previousFence.UID == "" || currentFence.Epoch > previousFence.Epoch || currentFence.Sequence > previousFence.Sequence {
+		if previousFence.UID == "" || currentFence.Generation > previousFence.Generation || currentFence.Sequence > previousFence.Sequence {
 			publicationFences[c.UID] = currentFence
 		}
 		result.Sequences[c.UID] = c.Status.Sequence
@@ -232,13 +209,13 @@ func Compile(in CompileInput) (CompileResult, error) {
 		}
 		validBundle := true
 		for _, set := range c.Spec.RecordSets {
-			if len(set.Records) == 0 || !containsType(reg.Spec.RecordTypes, set.RecordType) || !containsType(grant.Spec.RecordTypes, set.RecordType) {
+			if len(set.Records) == 0 || !containsType(reg.Spec.RecordTypes, set.RecordType) {
 				validBundle = false
 				break
 			}
 			for _, record := range set.Records {
 				key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), set.RecordType}
-				if model.ValidatePrivateRecordOwner(key.name, result.Plan.ZoneApex, string(set.RecordType)) != nil || !registrationOwns(reg, key, result.Plan.ZoneApex, claims) || !recordAllowed(reg, grant, key, result.Plan.ZoneApex) {
+				if model.ValidatePrivateRecordOwner(key.name, result.Plan.ZoneApex, string(set.RecordType)) != nil || !registrationOwns(reg, key, result.Plan.ZoneApex, claims) || !recordAllowed(reg, key, result.Plan.ZoneApex) {
 					validBundle = false
 					break
 				}
@@ -252,7 +229,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			}
 		}
 		if !validBundle {
-			result.Reasons[c.UID] = "NameOrTypeOutsideGrant"
+			result.Reasons[c.UID] = "NameOrTypeOutsideRegistration"
 			continue
 		}
 		result.Accepted[c.UID] = true
@@ -308,40 +285,29 @@ func Compile(in CompileInput) (CompileResult, error) {
 	return result, nil
 }
 
-func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, grant *dnsv1alpha1.DNSContributionGrant, previous ContributionFence) string {
+func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, previous ContributionFence) string {
 	if reg == nil || c.Spec.RegistrationRef.Name != reg.Name || c.Spec.RegistrationRef.Generation != reg.Generation {
 		return dnsValueStaleRegistrationGeneration
 	}
-	if grant == nil || c.Spec.GrantRef.Name != grant.Name {
-		return "GrantNotActive"
-	}
 	if c.Status.ObservedGeneration != c.Generation {
 		return "ObservationGenerationMismatch"
-	}
-	if c.Status.WriterEpoch != grant.Status.ActiveWriterEpoch {
-		return "StaleWriterEpoch"
 	}
 	if c.Status.Sequence <= 0 {
 		return "InvalidSequence"
 	}
 	if previous.UID != "" {
-		if previous.GrantUID != "" && previous.GrantUID != grant.UID {
-			return "FenceIdentityMismatch"
+		if c.Generation < previous.Generation {
+			return "StaleContributionGeneration"
 		}
-		if c.Status.WriterEpoch < previous.Epoch {
-			return "StaleWriterEpoch"
-		}
-		if previous.Epoch == c.Status.WriterEpoch {
-			if c.Status.Sequence < previous.Sequence {
-				return dnsValueNonIncreasingSequence
-			}
+		if c.Generation == previous.Generation && c.Status.Sequence < previous.Sequence {
+			return dnsValueNonIncreasingSequence
 		}
 	}
 	return ""
 }
 
-func recordAllowed(reg *dnsv1alpha1.DNSRegistration, grant *dnsv1alpha1.DNSContributionGrant, key ownershipKey, apex string) bool {
-	if !containsType(reg.Spec.RecordTypes, key.rrtype) || !containsType(grant.Spec.RecordTypes, key.rrtype) {
+func recordAllowed(reg *dnsv1alpha1.DNSRegistration, key ownershipKey, apex string) bool {
+	if !containsType(reg.Spec.RecordTypes, key.rrtype) {
 		return false
 	}
 	name := zoneOwner(reg.Spec.Name, apex)
@@ -355,16 +321,7 @@ func recordAllowed(reg *dnsv1alpha1.DNSRegistration, grant *dnsv1alpha1.DNSContr
 	if !allowedName {
 		return false
 	}
-	if len(grant.Spec.NameScopes) == 0 {
-		return true
-	}
-	for _, scope := range grant.Spec.NameScopes {
-		s := zoneOwner(scope, apex)
-		if key.name == s || strings.HasSuffix(key.name, "."+s) {
-			return true
-		}
-	}
-	return false
+	return allowedName
 }
 
 func validateSRVTargets(rrsets []PublicationRRSet, apex string) error {

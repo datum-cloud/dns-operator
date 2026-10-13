@@ -145,7 +145,7 @@ func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f := saved.ContributionFences["contrib-a"]; f.Epoch != 1 || f.Sequence != 1 {
+	if f := saved.ContributionFences["contrib-a"]; f.Generation != 1 || f.Sequence != 1 {
 		t.Fatalf("observation fence lost: %#v", f)
 	}
 	if saved.Publications["zone-a"].Verified {
@@ -607,7 +607,7 @@ func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	}
 	snapshot := testSnapshot(now)
 	snapshot.ConfigurationRevision = 2
-	snapshot.Bindings[0].Authorization.Revision = 2
+	snapshot.Bindings[0].Version.Sequence = 2
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, snapshot)); err != nil {
 		t.Fatal(err)
 	}

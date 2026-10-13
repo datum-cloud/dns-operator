@@ -32,19 +32,17 @@ import (
 )
 
 type project struct {
-	Name                                   string `json:"name"`
-	ProjectUID                             string `json:"projectUID"`
-	Namespace                              string `json:"namespace"`
-	CustomerKubeconfig                     string `json:"customerKubeconfig"`
-	ProductKubeconfig                      string `json:"productKubeconfig"`
-	IssuerKubeconfig                       string `json:"issuerKubeconfig"`
-	IntegrationKubeconfig                  string `json:"integrationKubeconfig"`
-	PublisherSubject                       string `json:"publisherSubject"`
-	ConsumerAddress                        string `json:"consumerAddress"`
-	customer, product, issuer, integration client.Client
-	resolverContext                        dnsv1.DNSResolverContext
-	zone                                   dnsv1.DNSZone
-	access                                 dnsv1.DNSResolverAccessBinding
+	Name                           string `json:"name"`
+	ProjectUID                     string `json:"projectUID"`
+	Namespace                      string `json:"namespace"`
+	CustomerKubeconfig             string `json:"customerKubeconfig"`
+	ProductKubeconfig              string `json:"productKubeconfig"`
+	IntegrationKubeconfig          string `json:"integrationKubeconfig"`
+	ConsumerAddress                string `json:"consumerAddress"`
+	customer, product, integration client.Client
+	resolverContext                dnsv1.DNSResolverContext
+	zone                           dnsv1.DNSZone
+	access                         dnsv1.DNSResolverAccessBinding
 }
 
 type environment struct {
@@ -90,7 +88,6 @@ type probeResult struct {
 
 type publication struct {
 	registration dnsv1.DNSRegistration
-	grant        dnsv1.DNSContributionGrant
 	contribution dnsv1.DNSRecordContribution
 	sequence     int64
 }
@@ -260,14 +257,14 @@ func (s *suite) run(path string) error {
 			target *client.Client
 		}{
 			{p.CustomerKubeconfig, &p.customer}, {p.ProductKubeconfig, &p.product},
-			{p.IssuerKubeconfig, &p.issuer}, {p.IntegrationKubeconfig, &p.integration},
+			{p.IntegrationKubeconfig, &p.integration},
 		} {
 			*pair.target, err = newClient(pair.path)
 			if err != nil {
 				return fmt.Errorf("%s client: %w", p.Name, err)
 			}
 		}
-		if net.ParseIP(p.ConsumerAddress) == nil || p.ProjectUID == "" || p.PublisherSubject == "" {
+		if net.ParseIP(p.ConsumerAddress) == nil || p.ProjectUID == "" {
 			return fmt.Errorf("%s has incomplete identity or resolver address", p.Name)
 		}
 	}
@@ -312,10 +309,6 @@ func (s *suite) run(path string) error {
 }
 
 func (s *suite) permissions(p *project) error {
-	grant := &dnsv1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: "unauthorized", Namespace: p.Namespace}}
-	if err := p.product.Create(s.ctx, grant); !apierrors.IsForbidden(err) {
-		return fmt.Errorf("%s product grant creation must be forbidden: %v", p.Name, err)
-	}
 	contextObject := &dnsv1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "unauthorized", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverContextSpec{ConsumerID: "unauthorized"}}
 	if err := p.product.Create(s.ctx, contextObject); !apierrors.IsForbidden(err) {
 		return fmt.Errorf("%s product network authorization must be forbidden: %v", p.Name, err)
@@ -324,7 +317,7 @@ func (s *suite) permissions(p *project) error {
 	if err := p.product.Create(s.ctx, access); !apierrors.IsForbidden(err) {
 		return fmt.Errorf("%s product access binding creation must be forbidden: %v", p.Name, err)
 	}
-	s.pass(p.Name+" product credentials cannot issue grants or authorize resolver access", nil)
+	s.pass(p.Name+" product credentials cannot configure resolver access", nil)
 	return nil
 }
 
@@ -350,7 +343,7 @@ func (s *suite) prepare(p *project) error {
 	p.access = dnsv1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "application-network-access", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverAccessBindingSpec{
 		ContextRef: objectRef(&p.resolverContext), Region: s.env.Region,
 		QueryIdentity: dnsv1.DNSResolverQueryIdentity{Type: dnsv1.DNSResolverQueryIdentityDestinationAddress, Value: p.ConsumerAddress}, Port: 53, Transports: []string{"UDP", "TCP"},
-		Authorization: dnsv1.DNSResolverAccessAuthorization{WriterEpoch: p.resolverContext.Status.AccessWriterEpoch, Sequence: 1},
+		Version: dnsv1.DNSResolverAccessVersion{Epoch: p.resolverContext.Status.AccessEpoch, Sequence: 1},
 	}}
 	if err := p.integration.Create(s.ctx, &p.access); err != nil {
 		return err
@@ -402,24 +395,8 @@ func (s *suite) publish(p *project, zone dnsv1.DNSNameReference, prefix, name, a
 	if err := p.product.Create(s.ctx, &pub.registration); err != nil {
 		return nil, err
 	}
-	pub.grant = dnsv1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-compute", Namespace: p.Namespace}, Spec: dnsv1.DNSContributionGrantSpec{RegistrationRef: objectRef(&pub.registration), ProducerID: "compute", Principal: dnsv1.DNSProducerPrincipal{Subject: p.PublisherSubject}, RecordTypes: pub.registration.Spec.RecordTypes}}
-	if err := p.issuer.Create(s.ctx, &pub.grant); err != nil {
-		return nil, err
-	}
-	if err := s.wait("grant writer epoch", 60*time.Second, func() (bool, error) {
-		err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&pub.grant), &pub.grant)
-		return pub.grant.Status.ActiveWriterEpoch > 0, err
-	}); err != nil {
-		return nil, err
-	}
-	pub.contribution = dnsv1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-endpoint", Namespace: p.Namespace}, Spec: dnsv1.DNSRecordContributionSpec{RegistrationRef: objectRef(&pub.registration), GrantRef: objectRef(&pub.grant), RecordSets: recordSets(name, address, ipv6)}}
+	pub.contribution = dnsv1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-endpoint", Namespace: p.Namespace}, Spec: dnsv1.DNSRecordContributionSpec{RegistrationRef: objectRef(&pub.registration), RecordSets: recordSets(name, address, ipv6)}}
 	if err := p.product.Create(s.ctx, &pub.contribution); err != nil {
-		return nil, err
-	}
-	if err := s.wait("bound contribution epoch", 60*time.Second, func() (bool, error) {
-		err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&pub.contribution), &pub.contribution)
-		return pub.contribution.Status.WriterEpoch == pub.grant.Status.ActiveWriterEpoch, err
-	}); err != nil {
 		return nil, err
 	}
 	if err := s.observe(p, pub, true); err != nil {

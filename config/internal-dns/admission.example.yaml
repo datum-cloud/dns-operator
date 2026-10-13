@@ -26,14 +26,7 @@ webhooks:
     resources:
     - dnszoneassociations
     - dnsregistrations
-    - dnscontributiongrants
     - dnsrecordcontributions
     - dnsnamingpolicies
     - dnsresolveraccessbindings
-    scope: Namespaced
-  # Freshness observations must match the authenticated publisher's live grant.
-  - apiGroups: [dns.networking.miloapis.com]
-    apiVersions: [v1alpha1]
-    operations: [UPDATE]
-    resources: [dnsrecordcontributions/status]
     scope: Namespaced

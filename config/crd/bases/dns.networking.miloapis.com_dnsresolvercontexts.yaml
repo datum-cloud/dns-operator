@@ -74,7 +74,7 @@ spec:
                 && self.managedNamespace.domainSuffix == oldSelf.managedNamespace.domainSuffix)'
           status:
             properties:
-              accessWriterEpoch:
+              accessEpoch:
                 format: int64
                 type: integer
               conditions:

@@ -32,11 +32,11 @@ func (s *suite) scenarios(a, b *project) error {
 	if err != nil {
 		return err
 	}
-	if pa.registration.UID == pb.registration.UID || pa.grant.UID == pb.grant.UID || pa.contribution.UID == pb.contribution.UID {
+	if pa.registration.UID == pb.registration.UID || pa.contribution.UID == pb.contribution.UID {
 		return fmt.Errorf("same-named project publications lost their distinct identities")
 	}
-	s.pass("same-named registrations, grants, and contributions retain independent source identities", nil)
-	foreign := &dnsv1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "foreign-project-endpoint", Namespace: a.Namespace}, Spec: dnsv1.DNSRecordContributionSpec{RegistrationRef: objectRef(&pb.registration), GrantRef: objectRef(&pb.grant), RecordSets: recordSets("common", "10.42.0.99", "")}}
+	s.pass("same-named registrations and contributions retain independent source identities", nil)
+	foreign := &dnsv1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "foreign-project-endpoint", Namespace: a.Namespace}, Spec: dnsv1.DNSRecordContributionSpec{RegistrationRef: objectRef(&pb.registration), RecordSets: recordSets("common", "10.42.0.99", "")}}
 	if err := a.product.Create(s.ctx, foreign); !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
 		return fmt.Errorf("another project's publication references must be rejected by admission: %v", err)
 	}

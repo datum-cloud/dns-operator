@@ -20,86 +20,14 @@ import (
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-func TestContributionAuthenticatedWriter(t *testing.T) {
-	producer := "system:serviceaccount:compute-system:dns-publisher"
-	registration := &dnsv1alpha1.DNSRegistration{
-		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "project", UID: "reg-uid", Generation: 3},
-		Spec:       dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "private"}, RecordTypes: []dnsv1alpha1.RRType{"AAAA"}},
-	}
-	grant := &dnsv1alpha1.DNSContributionGrant{
-		ObjectMeta: metav1.ObjectMeta{Name: "compute", Namespace: "project", UID: "grant-uid"},
-		Spec: dnsv1alpha1.DNSContributionGrantSpec{
-			RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "api", UID: "reg-uid"},
-			Principal:       dnsv1alpha1.DNSProducerPrincipal{Subject: producer},
-			RecordTypes:     []dnsv1alpha1.RRType{"AAAA"},
-		},
-		Status: dnsv1alpha1.DNSContributionGrantStatus{ActiveWriterEpoch: 8, ObservedRegistrationGeneration: 3},
-	}
-	contribution := dnsv1alpha1.DNSRecordContribution{
-		ObjectMeta: metav1.ObjectMeta{Name: "api-east", Namespace: "project", UID: "contribution-uid", Generation: 2},
-		Spec: dnsv1alpha1.DNSRecordContributionSpec{
-			RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "api", UID: "reg-uid", Generation: 3},
-			GrantRef:        dnsv1alpha1.DNSObjectReference{Name: "compute", UID: "grant-uid"},
-		},
-		Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 2, WriterEpoch: 8, Sequence: 18, Eligible: true},
-	}
-	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
-	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(registration, grant, &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}).Build()}
-	cases := []struct {
-		name    string
-		user    string
-		mutate  func(*dnsv1alpha1.DNSRecordContribution)
-		allowed bool
-	}{
-		{"scoped fresh producer", producer, nil, true},
-		{"another producer", "system:serviceaccount:connector-system:dns-publisher", nil, false},
-		{"controller binds issued epoch", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) {
-			c.Status.Conditions = []metav1.Condition{{Type: "AuthorityBound", Status: metav1.ConditionTrue}}
-		}, true},
-		{"controller cannot bind another epoch", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.WriterEpoch = 99 }, false},
-		{"epoch binding cannot assert health", "rbac-authorized-controller", func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Eligible = true }, false},
-
-		{"retired epoch", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.WriterEpoch = 7 }, false},
-		{"unchanged observation", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 17 }, true},
-		{"decreasing sequence", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.Sequence = 16 }, false},
-		{"stale generation", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.ObservedGeneration = 1 }, false},
-		{"forged grant UID", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Spec.GrantRef.UID = "other-grant" }, false},
-		{"retired registration UID", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Spec.RegistrationRef.UID = "old-reg" }, false},
-		{"publication fields", producer, func(c *dnsv1alpha1.DNSRecordContribution) { c.Status.PublishedRevision = 1000 }, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c := contribution.DeepCopy()
-			old := contribution.DeepCopy()
-			old.Status.Sequence = 17
-			if tc.name == "controller binds issued epoch" || tc.name == "controller cannot bind another epoch" || tc.name == "epoch binding cannot assert health" {
-				old.Status = dnsv1alpha1.DNSRecordContributionStatus{}
-				c.Status = dnsv1alpha1.DNSRecordContributionStatus{WriterEpoch: 8}
-			}
-			if tc.mutate != nil {
-				tc.mutate(c)
-			}
-			req := request("dnsrecordcontributions", tc.user, c, old)
-			req.SubResource = "status"
-			res := h.Handle(context.Background(), req)
-			if res.Allowed != tc.allowed {
-				t.Fatalf("allowed=%v want=%v: %v", res.Allowed, tc.allowed, res.Result)
-			}
-		})
-	}
-}
-
 func TestResourceAccessUsesAPIServerAuthorization(t *testing.T) {
 	h := Handler{}
 	for _, resource := range []string{"dnsresolvercontexts", "dnsresolverbindings", "dnspublicationmanifests", "dnspublicationchunks", "dnstransportoutboxes", "dnspublicationownerships"} {
 		if !h.Handle(context.Background(), request(resource, "authorized-user", map[string]any{}, nil)).Allowed {
-			t.Fatalf("admission duplicates resource authorization for %s", resource)
+			t.Fatalf("admission duplicates reaccess version for %s", resource)
 		}
 	}
-	req := request("dnscontributiongrants", "authorized-user", map[string]any{}, nil)
+	req := request("dnsrecordcontributions", "authorized-user", map[string]any{}, nil)
 	req.SubResource = "status"
 	if !h.Handle(context.Background(), req).Allowed {
 		t.Fatal("admission duplicates status authorization")
@@ -143,11 +71,11 @@ func TestInternalAdmissionPreservesPublicZoneControllerStatus(t *testing.T) {
 	}
 }
 
-func TestRetiredProductIntentCanBeDeletedWithoutLiveGrant(t *testing.T) {
+func TestProductIntentCanBeDeletedWithoutLiveReferences(t *testing.T) {
 	h := Handler{}
 	req := kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Operation: admissionv1.Delete, Resource: metav1.GroupVersionResource{Group: dnsv1alpha1.GroupVersion.Group, Version: "v1alpha1", Resource: "dnsrecordcontributions"}, UserInfo: authenticationv1.UserInfo{Username: "system:serviceaccount:compute:publisher"}}}
 	if !h.Handle(context.Background(), req).Allowed {
-		t.Fatal("retired contribution cleanup required a live deleted grant")
+		t.Fatal("contribution cleanup required live references")
 	}
 	req.Resource.Resource = "dnspublicationownerships"
 	if !h.Handle(context.Background(), req).Allowed {
@@ -161,12 +89,12 @@ func TestResolverAccessRequiresCurrentContext(t *testing.T) {
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}, Status: dnsv1alpha1.DNSResolverContextStatus{AccessWriterEpoch: 3}}
+	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}, Status: dnsv1alpha1.DNSResolverContextStatus{AccessEpoch: 3}}
 	setAdmissionCondition(&resolverContext.Status.Conditions, "Ready", metav1.ConditionTrue, 1, now)
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext).Build()}
-	old := &dnsv1alpha1.DNSResolverAccessBinding{Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "ctx-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 9}}}
+	old := &dnsv1alpha1.DNSResolverAccessBinding{Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "ctx-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 3, Sequence: 9}}}
 	current := old.DeepCopy()
-	current.Spec.Authorization.Sequence = 10
+	current.Spec.Version.Sequence = 10
 	req := request("dnsresolveraccessbindings", "system:serviceaccount:network-system:integration", current, old)
 	if res := h.Handle(context.Background(), req); !res.Allowed {
 		t.Fatalf("current integration update denied: %v", res.Result)
@@ -276,7 +204,7 @@ func TestRegistrationRequiresCurrentZone(t *testing.T) {
 
 func TestPublicationStatusDoesNotChangePublisherObservation(t *testing.T) {
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()}
-	old := &dnsv1alpha1.DNSRecordContribution{Status: dnsv1alpha1.DNSRecordContributionStatus{WriterEpoch: 4, Sequence: 10, Eligible: true}}
+	old := &dnsv1alpha1.DNSRecordContribution{Status: dnsv1alpha1.DNSRecordContributionStatus{Sequence: 10, Eligible: true}}
 	current := old.DeepCopy()
 	current.Status.PublishedRevision = 12
 	current.Status.Conditions = []metav1.Condition{{Type: "Published", Status: metav1.ConditionTrue}}
@@ -290,5 +218,25 @@ func TestPublicationStatusDoesNotChangePublisherObservation(t *testing.T) {
 	req.SubResource = "status"
 	if h.Handle(context.Background(), req).Allowed {
 		t.Fatal("publication update changed the producer observation without a grant")
+	}
+}
+
+func TestContributionValidatesReferencesForRBACAuthorizedCallers(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "web", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+	handler := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).Build()}
+	contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: registration.Name, UID: registration.UID, Generation: registration.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web", A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
+	for _, caller := range []string{"compute-publisher", "connect-publisher"} {
+		if result := handler.Handle(context.Background(), request("dnsrecordcontributions", caller, contribution, nil)); !result.Allowed {
+			t.Fatalf("valid contribution rejected for %s: %v", caller, result.Result)
+		}
+	}
+	contribution.Spec.RegistrationRef.UID = "replacement"
+	if result := handler.Handle(context.Background(), request("dnsrecordcontributions", "compute-publisher", contribution, nil)); result.Allowed {
+		t.Fatal("contribution accepted a mismatched registration lifetime")
 	}
 }

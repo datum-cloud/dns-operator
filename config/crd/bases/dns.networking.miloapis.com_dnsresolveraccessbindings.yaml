@@ -38,20 +38,6 @@ spec:
             type: object
           spec:
             properties:
-              authorization:
-                properties:
-                  sequence:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  writerEpoch:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                required:
-                - sequence
-                - writerEpoch
-                type: object
               contextRef:
                 description: |-
                   DNSObjectReference pins a namespaced object by API-assigned UID. Generation
@@ -107,13 +93,27 @@ spec:
                 minItems: 2
                 type: array
                 x-kubernetes-list-type: set
+              version:
+                properties:
+                  epoch:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  sequence:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - epoch
+                - sequence
+                type: object
             required:
-            - authorization
             - contextRef
             - port
             - queryIdentity
             - region
             - transports
+            - version
             type: object
             x-kubernetes-validations:
             - message: contextRef requires name and UID
@@ -124,11 +124,10 @@ spec:
             - message: access identity and transport are immutable
               rule: self.region == oldSelf.region && self.queryIdentity == oldSelf.queryIdentity
                 && self.port == oldSelf.port && self.transports == oldSelf.transports
-            - message: writerEpoch is immutable for an access binding
-              rule: self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
-            - message: authorization changes require an increasing sequence
-              rule: self.authorization == oldSelf.authorization || self.authorization.sequence
-                > oldSelf.authorization.sequence
+            - message: epoch is immutable for an access binding
+              rule: self.version.epoch == oldSelf.version.epoch
+            - message: version changes require an increasing sequence
+              rule: self.version == oldSelf.version || self.version.sequence > oldSelf.version.sequence
           status:
             properties:
               conditions:

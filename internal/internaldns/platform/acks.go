@@ -36,6 +36,7 @@ type AckSink struct {
 	Namespace          string
 	ProjectNamespaces  []string
 	Projects           []ProjectScope
+	ProjectScopes      func() []ProjectScope
 	PublicationMembers []model.Member
 	PublicationRegions map[string][]model.Member
 	Region             string
@@ -182,6 +183,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 
 func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
 	projects := append([]ProjectScope(nil), s.Projects...)
+	if s.ProjectScopes != nil {
+		projects = append(projects, s.ProjectScopes()...)
+	}
 	for _, ns := range s.ProjectNamespaces {
 		projects = append(projects, ProjectScope{Client: s.Client, Namespace: ns})
 	}
@@ -230,7 +234,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				}
 			}
 			var regs dnsv1alpha1.DNSRegistrationList
-			if err := projectClient.List(ctx, &regs, client.InNamespace(ns)); err != nil {
+			if err := projectClient.List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
 				projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s list registrations: %w", ns, err))
 				continue
 			}

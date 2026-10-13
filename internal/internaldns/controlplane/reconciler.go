@@ -104,7 +104,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if ns == "" {
 		ns = req.Namespace
 	}
-	if ns == "" || ns == r.Options.PlatformNamespace {
+	if ns == "" {
 		return ctrl.Result{}, nil
 	}
 	return r.reconcileProject(ctx, ns)

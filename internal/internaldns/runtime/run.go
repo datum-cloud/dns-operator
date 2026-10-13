@@ -21,7 +21,6 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
-	"go.miloapis.com/dns-operator/internal/internaldns/watchdog"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,7 +39,7 @@ import (
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
 // Run starts one of the deliberately separate production roles. Agent and
-// watchdog never load Kubernetes credentials.
+// readiness never load Kubernetes credentials.
 func Run(ctx context.Context, role string, cfg Config, kubeconfig string) error {
 	if err := cfg.Validate(role); err != nil {
 		return err
@@ -50,8 +49,10 @@ func Run(ctx context.Context, role string, cfg Config, kubeconfig string) error 
 		return runControlPlane(ctx, cfg, kubeconfig)
 	case roleAgent:
 		return runAgent(ctx, cfg)
-	case roleWatchdog:
-		return (&watchdog.Watchdog{Config: cfg.Watchdog}).Start(ctx)
+	case roleReadiness:
+		return serving.Readiness(ctx, cfg.Agent)
+	case roleServing:
+		return serving.RunDaemons(ctx, cfg.Agent)
 	default:
 		return fmt.Errorf("unsupported role %q", role)
 	}

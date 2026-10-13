@@ -431,7 +431,7 @@ func (a *Agent) consume(ctx context.Context, source EventSource) error {
 		err = a.Handle(ctx, msg.Envelope())
 		if err != nil {
 			env := msg.Envelope()
-			a.report(fmt.Errorf("apply %s %s at epoch %d revision %d: %w", env.Kind, env.ResourceUID, env.Epoch, env.Revision, err))
+			a.report(fmt.Errorf("apply %s %s at generation %d revision %d: %w", env.Kind, env.ResourceUID, env.Epoch, env.Revision, err))
 			_ = msg.Retry(retry)
 			continue
 		}
@@ -1435,25 +1435,21 @@ func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {
 		if !ok {
 			continue
 		}
-		comparison := model.Compare(observation.WriterEpoch, observation.Sequence, current.Epoch, current.Sequence)
+		comparison := model.Compare(observation.Generation, observation.Sequence, current.Generation, current.Sequence)
 		if comparison < 0 {
-			return fmt.Errorf("contribution %q regressed from epoch %d sequence %d", observation.ContributionUID, current.Epoch, current.Sequence)
+			return fmt.Errorf("contribution %q regressed from epoch %d sequence %d", observation.ContributionUID, current.Generation, current.Sequence)
 		}
-		if comparison == 0 {
-			if current.GrantUID != "" && current.GrantUID != observation.GrantUID {
-				return fmt.Errorf("contribution %q changed the grant of an existing fence", observation.ContributionUID)
-			}
-		}
+
 	}
 	return nil
 }
 
 func (a *Agent) commitContributionFences(plan model.PublicationPlan) {
 	for _, observation := range plan.ObservationFences {
-		next := contributionFence{GrantUID: observation.GrantUID, Epoch: observation.WriterEpoch, Sequence: observation.Sequence}
+		next := contributionFence{Generation: observation.Generation, Sequence: observation.Sequence}
 		current := a.state.ContributionFences[observation.ContributionUID]
-		comparison := model.Compare(next.Epoch, next.Sequence, current.Epoch, current.Sequence)
-		if comparison > 0 || (comparison == 0 && current.GrantUID == "") {
+		comparison := model.Compare(next.Generation, next.Sequence, current.Generation, current.Sequence)
+		if comparison > 0 {
 			a.state.ContributionFences[observation.ContributionUID] = next
 		}
 	}

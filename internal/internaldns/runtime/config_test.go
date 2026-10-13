@@ -163,7 +163,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot := model.ServingSnapshot{Region: "central", Shard: "one", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: time.Now(), Bindings: []model.Binding{{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::1", ClusterAddress: "fd53::2", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}}}
+	snapshot := model.ServingSnapshot{Region: "central", Shard: "one", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: time.Now(), Bindings: []model.Binding{{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::1", ClusterAddress: "fd53::2", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
 	env, err := model.NewEnvelope(model.KindServingSnapshot, "initial", "central", "one", "shard", 1, 1, time.Now(), snapshot)
 	if err != nil {
 		t.Fatal(err)

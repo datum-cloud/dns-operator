@@ -14,7 +14,7 @@ type bindingFence struct {
 	Identity                string              `json:"identity"`
 	ConfigurationGeneration uint64              `json:"configurationGeneration"`
 	ConfigurationRevision   uint64              `json:"configurationRevision"`
-	Authorization           model.Authorization `json:"authorization"`
+	Version                 model.AccessVersion `json:"version"`
 	Tombstone               bool                `json:"tombstone"`
 }
 
@@ -30,7 +30,7 @@ func bindingIdentity(b model.Binding) string {
 }
 
 func bindingFenceFor(b model.Binding) bindingFence {
-	return bindingFence{Identity: bindingIdentity(b), ConfigurationGeneration: b.BindingGeneration, ConfigurationRevision: b.ConfigurationRevision, Authorization: b.Authorization, Tombstone: b.Tombstone}
+	return bindingFence{Identity: bindingIdentity(b), ConfigurationGeneration: b.BindingGeneration, ConfigurationRevision: b.ConfigurationRevision, Version: b.Version, Tombstone: b.Tombstone}
 }
 
 func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingSnapshot) (map[string]bindingFence, error) {
@@ -49,12 +49,12 @@ func advanceBindingFences(prior map[string]bindingFence, snapshot model.ServingS
 			if candidate.ConfigurationGeneration < old.ConfigurationGeneration || candidate.ConfigurationRevision < old.ConfigurationRevision {
 				return nil, fmt.Errorf("binding %s configuration regressed", b.BindingUID)
 			}
-			cmp := model.Compare(candidate.Authorization.IssuerEpoch, candidate.Authorization.Revision, old.Authorization.IssuerEpoch, old.Authorization.Revision)
+			cmp := model.Compare(candidate.Version.Epoch, candidate.Version.Sequence, old.Version.Epoch, old.Version.Sequence)
 			if cmp < 0 {
-				return nil, fmt.Errorf("binding %s source authorization regressed", b.BindingUID)
+				return nil, fmt.Errorf("binding %s access version regressed", b.BindingUID)
 			}
 			if old.Tombstone && !candidate.Tombstone && cmp <= 0 {
-				return nil, fmt.Errorf("binding %s reactivation requires a newer source authorization", b.BindingUID)
+				return nil, fmt.Errorf("binding %s reactivation requires a newer access version", b.BindingUID)
 			}
 			if old.Tombstone != candidate.Tombstone && candidate.ConfigurationRevision <= old.ConfigurationRevision {
 				return nil, fmt.Errorf("binding %s withdrawal or reactivation requires a newer configuration revision", b.BindingUID)

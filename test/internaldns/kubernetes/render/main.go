@@ -150,7 +150,7 @@ func bootstrap() {
 		users = append(users, object{"user": name, "password": password, "permissions": object{"publish": object{"allow": allow}, "subscribe": object{"allow": subscribe}}})
 	}
 	tls := object{"cert_file": "/tls/tls.crt", "key_file": "/tls/tls.key", "ca_file": "/tls/ca.crt", "verify": true}
-	cfg := object{"port": 4222, "http_port": 8222, "jetstream": object{"store_dir": "/data"}, "tls": tls, "authorization": object{"users": users}, "cluster": object{"name": "internal-dns-e2e", "port": 6222, "tls": tls, "routes": []string{"nats-route://internal-dns-nats-0.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-1.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-2.internal-dns-nats." + ns + ".svc.cluster.local:6222"}}}
+	cfg := object{"port": 4222, "http_port": 8222, "jetstream": object{"store_dir": "/data"}, "tls": tls, "version": object{"users": users}, "cluster": object{"name": "internal-dns-e2e", "port": 6222, "tls": tls, "routes": []string{"nats-route://internal-dns-nats-0.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-1.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-2.internal-dns-nats." + ns + ".svc.cluster.local:6222"}}}
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	// NATS accepts JSON-style configuration but not JSON's HTML Unicode escapes.
@@ -258,31 +258,31 @@ func sourceObjects(project string) []object {
 		filtered = append(filtered, item)
 	}
 	items = filtered
-	worker := obj("rbac.authorization.k8s.io/v1", "RoleBinding", "internal-dns-source-worker", projectNS)
-	worker["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
+	worker := obj("rbac.version.k8s.io/v1", "RoleBinding", "internal-dns-source-worker", projectNS)
+	worker["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
 	worker["subjects"] = []object{{"kind": "ServiceAccount", "name": "internal-dns-control-plane", "namespace": ns}}
 	items = append(items, worker)
-	accounts := []struct{ name, namespace, role string }{{"dns-customer", projectNS, "internal-dns-customer"}, {"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-grant-issuer", "compute-system", "internal-dns-grant-issuer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
+	accounts := []struct{ name, namespace, role string }{{"dns-customer", projectNS, "internal-dns-customer"}, {"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
 	for _, account := range accounts {
 		if account.role != "" {
 			items = append(items, obj("v1", "ServiceAccount", account.name, account.namespace))
-			rb := obj("rbac.authorization.k8s.io/v1", "RoleBinding", account.name, projectNS)
-			rb["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account.role}
+			rb := obj("rbac.version.k8s.io/v1", "RoleBinding", account.name, projectNS)
+			rb["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "Role", "name": account.role}
 			rb["subjects"] = []object{{"kind": "ServiceAccount", "name": account.name, "namespace": account.namespace}}
 			items = append(items, rb)
 		}
 		// Project identity in Kind is scoped to impersonation of the same
 		// service account and this fixed project parent.
-		r := obj("rbac.authorization.k8s.io/v1", "ClusterRole", account.name+"-parent", "")
+		r := obj("rbac.version.k8s.io/v1", "ClusterRole", account.name+"-parent", "")
 		r["rules"] = []object{{"apiGroups": []string{"authentication.k8s.io"}, "resources": []string{"userextras/iam.miloapis.com/parent-name"}, "resourceNames": []string{project}, "verbs": []string{"impersonate"}}}
-		rb := obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", account.name+"-parent", "")
-		rb["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": account.name + "-parent"}
+		rb := obj("rbac.version.k8s.io/v1", "ClusterRoleBinding", account.name+"-parent", "")
+		rb["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "ClusterRole", "name": account.name + "-parent"}
 		rb["subjects"] = []object{{"kind": "ServiceAccount", "name": account.name, "namespace": account.namespace}}
 		items = append(items, r, rb)
-		self := obj("rbac.authorization.k8s.io/v1", "Role", account.name+"-self", account.namespace)
+		self := obj("rbac.version.k8s.io/v1", "Role", account.name+"-self", account.namespace)
 		self["rules"] = []object{{"apiGroups": []string{""}, "resources": []string{"serviceaccounts"}, "resourceNames": []string{account.name}, "verbs": []string{"impersonate"}}}
-		binding := obj("rbac.authorization.k8s.io/v1", "RoleBinding", account.name+"-self", account.namespace)
-		binding["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account.name + "-self"}
+		binding := obj("rbac.version.k8s.io/v1", "RoleBinding", account.name+"-self", account.namespace)
+		binding["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "Role", "name": account.name + "-self"}
 		binding["subjects"] = rb["subjects"]
 		items = append(items, self, binding)
 	}
@@ -382,9 +382,8 @@ func configure() {
 		sourceData[project+".json"] = string(tokenConfig(admin, internal, project, "internal-dns-control-plane", ns, "worker"))
 		tokenConfig(admin, "", project, "dns-customer", projectNS, "customer")
 		tokenConfig(admin, "", project, "dns-publisher", "compute-system", "product")
-		tokenConfig(admin, "", project, "dns-grant-issuer", "compute-system", "issuer")
 		tokenConfig(admin, "", project, "dns-vpc-integration", "network-system", "integration")
-		projectRows = append(projectRows, object{"name": project, "projectUID": project + "-uid", "namespace": projectNS, "customerKubeconfig": filepath.Join(out, project+"-customer.kubeconfig"), "productKubeconfig": filepath.Join(out, project+"-product.kubeconfig"), "issuerKubeconfig": filepath.Join(out, project+"-issuer.kubeconfig"), "integrationKubeconfig": filepath.Join(out, project+"-integration.kubeconfig"), "publisherSubject": "system:serviceaccount:compute-system:dns-publisher", "consumerAddress": []string{"fd53::a", "fd53::b"}[i]})
+		projectRows = append(projectRows, object{"name": project, "projectUID": project + "-uid", "namespace": projectNS, "customerKubeconfig": filepath.Join(out, project+"-customer.kubeconfig"), "productKubeconfig": filepath.Join(out, project+"-product.kubeconfig"), "integrationKubeconfig": filepath.Join(out, project+"-integration.kubeconfig"), "consumerAddress": []string{"fd53::a", "fd53::b"}[i]})
 	}
 	sources["stringData"] = sourceData
 	items := make([]object, 0, 8)

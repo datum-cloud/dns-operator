@@ -37,11 +37,10 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
 	var regs dnsv1alpha1.DNSRegistrationList
-	var grants dnsv1alpha1.DNSContributionGrantList
 	var contributions dnsv1alpha1.DNSRecordContributionList
 	var records dnsv1alpha1.DNSRecordSetList
 	var policies dnsv1alpha1.DNSNamingPolicyList
-	for _, item := range []client.ObjectList{&zones, &assocs, &regs, &grants, &contributions, &records, &policies} {
+	for _, item := range []client.ObjectList{&zones, &assocs, &regs, &contributions, &records, &policies} {
 		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -56,12 +55,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	}
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
-	}
-	if changed, err := r.issueGrants(ctx, grants.Items, regs.Items, now); err != nil || changed {
-		return ctrl.Result{Requeue: changed}, err
-	}
-	if changed, err := r.bindContributionEpochs(ctx, contributions.Items, grants.Items, now); err != nil || changed {
-		return ctrl.Result{Requeue: changed}, err
 	}
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
@@ -80,7 +73,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 			return ctrl.Result{Requeue: true}, nil
 		}
-		result, next, err := r.compileZone(ctx, z, assocs.Items, regs.Items, grants.Items, contributions.Items, records.Items, now)
+		result, next, err := r.compileZone(ctx, z, assocs.Items, regs.Items, contributions.Items, records.Items, now)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -188,72 +181,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 	return nil
 }
 
-func (r *Reconciler) issueGrants(ctx context.Context, grants []dnsv1alpha1.DNSContributionGrant, regs []dnsv1alpha1.DNSRegistration, now time.Time) (bool, error) {
-	byUID := map[types.UID]*dnsv1alpha1.DNSRegistration{}
-	for i := range regs {
-		if regs[i].DeletionTimestamp.IsZero() {
-			byUID[regs[i].UID] = &regs[i]
-		}
-	}
-	for i := range grants {
-		g := &grants[i]
-		reg := byUID[g.Spec.RegistrationRef.UID]
-		valid := g.DeletionTimestamp.IsZero() && reg != nil && g.Spec.RegistrationRef.Name == reg.Name && g.Spec.RegistrationRef.Generation == reg.Generation
-		base := g.DeepCopy()
-		if valid && (g.Status.ActiveWriterEpoch == 0 || g.Status.ObservedGrantGeneration != g.Generation || g.Status.ObservedRegistrationGeneration != reg.Generation) {
-			g.Status.ActiveWriterEpoch++
-			if g.Status.ActiveWriterEpoch == 0 {
-				g.Status.ActiveWriterEpoch = 1
-			}
-			g.Status.ObservedGrantGeneration = g.Generation
-			g.Status.ObservedRegistrationGeneration = reg.Generation
-		}
-		status := metav1.ConditionFalse
-		reason, msg := dnsValueStaleRegistrationGeneration, "grant registration reference is stale"
-		if valid {
-			status = metav1.ConditionTrue
-			reason = "Active"
-			msg = "writer epoch is active"
-		}
-		setCondition(&g.Status.Conditions, "Active", status, reason, msg, g.Generation, now)
-		if !statusEqualGrant(base, g) {
-			if err := r.Status().Patch(ctx, g, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (r *Reconciler) bindContributionEpochs(ctx context.Context, cs []dnsv1alpha1.DNSRecordContribution, gs []dnsv1alpha1.DNSContributionGrant, now time.Time) (bool, error) {
-	byUID := map[types.UID]*dnsv1alpha1.DNSContributionGrant{}
-	for i := range gs {
-		active := apimeta.FindStatusCondition(gs[i].Status.Conditions, "Active")
-		if gs[i].DeletionTimestamp.IsZero() && active != nil && active.Status == metav1.ConditionTrue {
-			byUID[gs[i].UID] = &gs[i]
-		}
-	}
-	for i := range cs {
-		c := &cs[i]
-		g := byUID[c.Spec.GrantRef.UID]
-		if !c.DeletionTimestamp.IsZero() || g == nil || g.Status.ActiveWriterEpoch == 0 {
-			continue
-		}
-		if c.Status.WriterEpoch == 0 {
-			base := c.DeepCopy()
-			c.Status.WriterEpoch = g.Status.ActiveWriterEpoch
-			setCondition(&c.Status.Conditions, "AuthorityBound", metav1.ConditionTrue, "WriterEpochIssued", "DNS bound the contribution to its grant epoch", c.Generation, now)
-			if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, grants []dnsv1alpha1.DNSContributionGrant, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, time.Time, error) {
+func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, time.Time, error) {
 	own, err := r.acquireOwnership(ctx, z, now)
 	if err != nil {
 		return false, time.Time{}, err
@@ -265,7 +193,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Grants: grants, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
+	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -430,7 +358,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	}
 	apiFences := make([]dnsv1alpha1.DNSContributionFence, 0, len(fences))
 	for _, f := range fences {
-		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, GrantUID: f.GrantUID, Epoch: f.Epoch, Sequence: f.Sequence})
+		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, Generation: f.Generation, Sequence: f.Sequence})
 	}
 	apiRegistrations := make([]dnsv1alpha1.DNSRegistrationFence, 0, len(registrations))
 	for _, f := range registrations {
@@ -548,7 +476,7 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	// fields may lose fractional seconds during API round trips, so rebuilding
 	// from manifest metadata can make an unchanged observation appear mutated.
 	for _, f := range wire.ObservationFences {
-		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), GrantUID: types.UID(f.GrantUID), Epoch: int64(f.WriterEpoch), Sequence: int64(f.Sequence)})
+		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence)})
 	}
 	return p, nil
 }
@@ -651,12 +579,6 @@ func (r *Reconciler) createImmutable(ctx context.Context, desired client.Object)
 		return fmt.Errorf("immutable create is unsupported for %T", desired)
 	}
 	return nil
-}
-
-func statusEqualGrant(a, b *dnsv1alpha1.DNSContributionGrant) bool {
-	x, _ := json.Marshal(a.Status)
-	y, _ := json.Marshal(b.Status)
-	return string(x) == string(y)
 }
 
 func artifactName(prefix string, uid types.UID, epoch, rev int64) string {

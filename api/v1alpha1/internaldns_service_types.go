@@ -9,15 +9,15 @@ import (
 
 // DNSResolverBinding is the DNS-service projection of a consumer context and access binding.
 // +kubebuilder:validation:XValidation:rule="self.configuration.generation >= oldSelf.configuration.generation && self.configuration.revision >= oldSelf.configuration.revision",message="configuration fences must not decrease"
-// +kubebuilder:validation:XValidation:rule="self.authorization.writerEpoch > oldSelf.authorization.writerEpoch || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch && self.authorization.sequence >= oldSelf.authorization.sequence)",message="authorization fences must not decrease"
+// +kubebuilder:validation:XValidation:rule="self.version.epoch > oldSelf.version.epoch || (self.version.epoch == oldSelf.version.epoch && self.version.sequence >= oldSelf.version.sequence)",message="access versions must not decrease"
 // +kubebuilder:validation:XValidation:rule="self.configuration.zoneRefs == oldSelf.configuration.zoneRefs || (self.configuration.generation > oldSelf.configuration.generation && self.configuration.revision > oldSelf.configuration.revision)",message="zone membership changes require a new cache generation and configuration revision"
 // +kubebuilder:validation:XValidation:rule="(has(self.tombstone) && self.tombstone) == (has(oldSelf.tombstone) && oldSelf.tombstone) || self.configuration.revision > oldSelf.configuration.revision",message="changing withdrawal state requires a new configuration revision"
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.tombstone) || !oldSelf.tombstone || (has(self.tombstone) && self.tombstone) || self.authorization.writerEpoch > oldSelf.authorization.writerEpoch || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch && self.authorization.sequence > oldSelf.authorization.sequence)",message="reactivating withdrawn access requires a new source authorization fence"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.tombstone) || !oldSelf.tombstone || (has(self.tombstone) && self.tombstone) || self.version.epoch > oldSelf.version.epoch || (self.version.epoch == oldSelf.version.epoch && self.version.sequence > oldSelf.version.sequence)",message="reactivating withdrawn access requires a new access version"
 type DNSResolverBindingSpec struct {
 	Source        DNSResolverBindingSource        `json:"source"`
 	Placement     DNSResolverBindingPlacement     `json:"placement"`
 	Configuration DNSResolverBindingConfiguration `json:"configuration"`
-	Authorization DNSResolverAccessAuthorization  `json:"authorization"`
+	Version       DNSResolverAccessVersion        `json:"version"`
 	Tombstone     bool                            `json:"tombstone,omitempty"`
 }
 
@@ -46,8 +46,8 @@ type DNSResolverBindingConfiguration struct {
 	// +kubebuilder:validation:Minimum=1
 	Generation int64 `json:"generation"`
 	// +kubebuilder:validation:Minimum=1
-	Revision  int64                       `json:"revision"`
-	Listeners DNSResolverBindingListeners `json:"listeners"`
+	Revision int64                   `json:"revision"`
+	Query    DNSResolverBindingQuery `json:"query"`
 	// +kubebuilder:validation:MaxItems=256
 	ZoneRefs []DNSObjectReference `json:"zoneRefs"`
 	// ZoneApices reserves each private namespace before publication is available.
@@ -55,18 +55,14 @@ type DNSResolverBindingConfiguration struct {
 	ZoneApices map[string]string `json:"zoneApices,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="listener identity is immutable for an access binding"
-type DNSResolverBindingListeners struct {
-	Node     DNSResolverBindingListener `json:"node"`
-	Regional DNSResolverBindingListener `json:"regional"`
-}
-
-type DNSResolverBindingListener struct {
+// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="query destinations and transports are immutable for an access binding"
+type DNSResolverBindingQuery struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Address string `json:"address"`
-	// +kubebuilder:validation:Enum=53
-	Port int32 `json:"port"`
+	NodeAddress string `json:"nodeAddress"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	RegionalAddress string `json:"regionalAddress"`
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
 	// +kubebuilder:validation:items:Enum=UDP;TCP
@@ -75,17 +71,17 @@ type DNSResolverBindingListener struct {
 }
 
 type DNSApplyAcknowledgement struct {
-	MemberID                 string       `json:"memberID"`
-	Phase                    string       `json:"phase"`
-	Revision                 int64        `json:"revision"`
-	WriterEpoch              int64        `json:"writerEpoch,omitempty"`
-	SnapshotRevision         int64        `json:"snapshotRevision,omitempty"`
-	AuthorizationIssuerEpoch int64        `json:"authorizationIssuerEpoch,omitempty"`
-	AuthorizationRevision    int64        `json:"authorizationRevision,omitempty"`
-	ObservedUnixNano         int64        `json:"observedUnixNano,omitempty"`
-	ObservedAt               metav1.Time  `json:"observedAt"`
-	ValidUntil               *metav1.Time `json:"validUntil,omitempty"`
-	Error                    string       `json:"error,omitempty"`
+	MemberID         string       `json:"memberID"`
+	Phase            string       `json:"phase"`
+	Revision         int64        `json:"revision"`
+	WriterEpoch      int64        `json:"writerEpoch,omitempty"`
+	SnapshotRevision int64        `json:"snapshotRevision,omitempty"`
+	AccessEpoch      int64        `json:"accessEpoch,omitempty"`
+	AccessSequence   int64        `json:"accessSequence,omitempty"`
+	ObservedUnixNano int64        `json:"observedUnixNano,omitempty"`
+	ObservedAt       metav1.Time  `json:"observedAt"`
+	ValidUntil       *metav1.Time `json:"validUntil,omitempty"`
+	Error            string       `json:"error,omitempty"`
 }
 
 type DNSResolverBindingStatus struct {
@@ -157,10 +153,9 @@ type DNSRegistrationFence struct {
 // DNSContributionFence persists an authenticated high-water sequence even
 // while its observation is unhealthy or withdrawn.
 type DNSContributionFence struct {
-	UID      types.UID `json:"uid"`
-	GrantUID types.UID `json:"grantUID"`
-	Epoch    int64     `json:"epoch"`
-	Sequence int64     `json:"sequence"`
+	UID        types.UID `json:"uid"`
+	Generation int64     `json:"generation"`
+	Sequence   int64     `json:"sequence"`
 }
 
 type DNSPublicationManifestStatus struct {

@@ -8,22 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
-const legacyObservationGrantUID = "legacy-checkpoint"
-
-// contributionFence persists the complete immutable observation identity.
-// The optional revision field supplies the sequence when the decoded fence omits it.
 type contributionFence struct {
-	GrantUID string `json:"grantUID,omitempty"`
-	Epoch    uint64 `json:"epoch"`
-	Sequence uint64 `json:"sequence,omitempty"`
-
-	LegacyRevision uint64 `json:"revision,omitempty"`
+	Generation uint64 `json:"generation"`
+	Sequence   uint64 `json:"sequence"`
 }
 
 type replicaAck struct {
@@ -33,7 +25,7 @@ type replicaAck struct {
 	ValidUntil time.Time `json:"validUntil"`
 }
 
-const checkpointFormatVersion = 5
+const checkpointFormatVersion = 6
 
 type checkpoint struct {
 	Active             *activeConfiguration                         `json:"active,omitempty"`
@@ -76,7 +68,7 @@ func (s stateStore) Load() (checkpoint, error) {
 		return state, errors.New("checkpoint lacks required binding authority history")
 	}
 	for uid, f := range state.BindingFences {
-		if uid == "" || f.Identity == "" || f.ConfigurationGeneration == 0 || f.ConfigurationRevision == 0 || f.Authorization.IssuerEpoch == 0 || f.Authorization.Revision == 0 {
+		if uid == "" || f.Identity == "" || f.ConfigurationGeneration == 0 || f.ConfigurationRevision == 0 || f.Version.Epoch == 0 || f.Version.Sequence == 0 {
 			return state, fmt.Errorf("checkpoint binding %s has incomplete authority history", uid)
 		}
 	}
@@ -100,6 +92,11 @@ func (s stateStore) Load() (checkpoint, error) {
 	if state.ContributionFences == nil {
 		state.ContributionFences = map[string]contributionFence{}
 	}
+	for uid, observation := range state.ContributionFences {
+		if uid == "" || observation.Generation == 0 || observation.Sequence == 0 {
+			return state, fmt.Errorf("invalid persisted contribution fence %q", uid)
+		}
+	}
 	if state.Snapshot != nil {
 		if err := state.Snapshot.Validate(); err != nil {
 			return state, fmt.Errorf("invalid persisted serving snapshot: %w", err)
@@ -107,75 +104,12 @@ func (s stateStore) Load() (checkpoint, error) {
 	}
 	for uid, p := range state.Publications {
 		if !p.Manifest.Tombstone {
-			var err error
-			p.Plan, err = migrateLegacyObservationFences(p.Plan)
-			if err != nil {
-				return state, fmt.Errorf("migrate persisted publication %s: %w", uid, err)
-			}
-			state.Publications[uid] = p
 			if err := p.Plan.Validate(); err != nil {
 				return state, fmt.Errorf("invalid persisted publication %s: %w", uid, err)
 			}
 		}
 	}
-	if err := migrateContributionHighWater(&state); err != nil {
-		return state, err
-	}
 	return state, nil
-}
-
-func migrateLegacyObservationFences(plan model.PublicationPlan) (model.PublicationPlan, error) {
-	if len(plan.ObservationFences) != 0 {
-		return plan, nil
-	}
-	byUID := map[string]model.ObservationFence{}
-	for _, rrset := range plan.RRSets {
-		for _, record := range rrset.Records {
-			if record.ContributionUID == "" {
-				continue
-			}
-			next := model.ObservationFence{ContributionUID: record.ContributionUID, GrantUID: legacyObservationGrantUID, WriterEpoch: record.WriterEpoch, Sequence: record.Sequence}
-			if old, ok := byUID[record.ContributionUID]; ok && (old.WriterEpoch != next.WriterEpoch || old.Sequence != next.Sequence) {
-				return plan, fmt.Errorf("legacy contribution %q has inconsistent record fences", record.ContributionUID)
-			}
-			byUID[record.ContributionUID] = next
-		}
-	}
-	for _, observation := range byUID {
-		plan.ObservationFences = append(plan.ObservationFences, observation)
-	}
-	sort.Slice(plan.ObservationFences, func(i, j int) bool {
-		return plan.ObservationFences[i].ContributionUID < plan.ObservationFences[j].ContributionUID
-	})
-	return plan, nil
-}
-
-func migrateContributionHighWater(state *checkpoint) error {
-	proofs := map[string]model.ObservationFence{}
-	for _, publication := range state.Publications {
-		for _, observation := range publication.Plan.ObservationFences {
-			old, ok := proofs[observation.ContributionUID]
-			if !ok || model.Compare(observation.WriterEpoch, observation.Sequence, old.WriterEpoch, old.Sequence) > 0 {
-				proofs[observation.ContributionUID] = observation
-			}
-		}
-	}
-	for uid, current := range state.ContributionFences {
-		if current.Sequence == 0 {
-			current.Sequence = current.LegacyRevision
-		}
-		current.LegacyRevision = 0
-		if proof, ok := proofs[uid]; ok && proof.WriterEpoch == current.Epoch && proof.Sequence == current.Sequence {
-			if current.GrantUID == "" && proof.GrantUID != legacyObservationGrantUID {
-				current.GrantUID = proof.GrantUID
-			}
-		}
-		if current.Epoch == 0 || current.Sequence == 0 {
-			return fmt.Errorf("invalid persisted contribution fence %q", uid)
-		}
-		state.ContributionFences[uid] = current
-	}
-	return nil
 }
 
 func (s stateStore) Save(state checkpoint) error {

@@ -79,15 +79,18 @@ Regional publication proof connects directly to that member's BIND listener,
 supplies the exact context destination in a protected PROXYv2 header over both
 UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
-network.
+network. Local health probes also require the BIND listener address in
+`proxyPeers` and loopback in dnsdist ACLs. These peers must remain inside the
+protected serving network.
 
 ## Transactions, health, and outage recovery
 
-An attached zone that has no active publication gates its context until the
-configuration is complete. Pending contexts deny queries, recursion, and cache
-answers while retaining the original access authorization. Configuration
-completion can restore service without renewing authorization; an actual access
-withdrawal still requires a newer source authorization to reactivate.
+Each attached private apex has independent readiness. A pending zone returns
+SERVFAIL while published zones continue serving. Its names cannot fall through
+to public recursion or cached answers. If the private apex is unknown, the
+context stays gated until its configuration is complete. Completing publication
+restores service without renewing authorization; explicit access withdrawal
+requires a newer source authorization to reactivate.
 
 The agent writes a complete candidate set into its stage directory. Regional
 zone files are siblings of `cluster-bind.conf`; validation rewrites file

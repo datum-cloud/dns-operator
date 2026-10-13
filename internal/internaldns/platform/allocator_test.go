@@ -110,8 +110,7 @@ func TestDestinationClaimConversionRequiresPinnedBinding(t *testing.T) {
 	binding.Spec.Source.ResolverContextRef.UID = "context"
 	binding.Spec.Source.AccessBindingRef.UID = "access"
 	binding.Spec.Placement.Region = "east"
-	binding.Spec.Configuration.Listeners.Node.Address = "fd70::53"
-	binding.Spec.Configuration.Listeners.Node.Port = 53
+	binding.Spec.Configuration.Query.NodeAddress = "fd70::53"
 	if err := cl.Create(ctx, binding); err != nil {
 		t.Fatal(err)
 	}

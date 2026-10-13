@@ -114,7 +114,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 		mname := fmt.Sprintf("manifest-%d", i)
 		objects = append(objects, &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken(string(zuid))[:20], Namespace: ns}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: zuid, WriterEpoch: 1, ActiveManifestName: mname}})
 		objects = append(objects, &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: mname, Namespace: ns}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: zuid}, ZoneApex: "prod.internal", WriterEpoch: 1, Revision: 1, ServingTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: region, Shard: shard}}}})
-		objects = append(objects, &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("binding-%d", i), Namespace: ns, UID: types.UID(fmt.Sprintf("binding-uid-%d", i)), Labels: map[string]string{"internal-dns.miloapis.com/region": region, "internal-dns.miloapis.com/shard": shard}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: types.UID(fmt.Sprintf("project-%d", i)), ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: string(vuid), UID: vuid}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: shard}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 1, Listeners: dnsv1alpha1.DNSResolverBindingListeners{Node: dnsv1alpha1.DNSResolverBindingListener{Address: fmt.Sprintf("fd53::%d", i), Port: 53, Transports: []string{"UDP", "TCP"}}, Regional: dnsv1alpha1.DNSResolverBindingListener{Address: fmt.Sprintf("fd54::%d", i), Port: 53, Transports: []string{"UDP", "TCP"}}}, ZoneRefs: zoneReferences([]types.UID{zuid})}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1}}})
+		objects = append(objects, &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("binding-%d", i), Namespace: ns, UID: types.UID(fmt.Sprintf("binding-uid-%d", i)), Labels: map[string]string{"internal-dns.miloapis.com/region": region, "internal-dns.miloapis.com/shard": shard}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: types.UID(fmt.Sprintf("project-%d", i)), ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: string(vuid), UID: vuid}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: shard}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 1, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: fmt.Sprintf("fd53::%d", i), RegionalAddress: fmt.Sprintf("fd54::%d", i), Transports: []string{"UDP", "TCP"}}, ZoneRefs: zoneReferences([]types.UID{zuid})}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}})
 	}
 	cl := testClient(t, objects...)
 	p := Planner{Client: cl, Allocator: &Allocator{Client: cl, Namespace: ns}, Config: PlannerConfig{Namespace: ns, Region: region, Shard: shard, Identity: "planner", ClusterBackends: []model.Backend{{MemberID: "cluster-1", Address: "fd00::20", Port: 5300}}}, Now: func() time.Time { return now }}
@@ -146,7 +146,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "binding-1"}, &changing); err != nil {
 		t.Fatal(err)
 	}
-	originalAuthorization := changing.Spec.Authorization
+	originalAuthorization := changing.Spec.Version
 	changing.Spec.Configuration.Revision++
 	changing.Spec.Configuration.ZoneRefs = append(changing.Spec.Configuration.ZoneRefs, dnsv1alpha1.DNSObjectReference{UID: "zone-extra"})
 	if err := cl.Update(context.Background(), &changing); err != nil {
@@ -159,7 +159,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 	if len(pending.Bindings) != 2 || !pending.Bindings[0].ConfigurationPending || pending.Bindings[0].Tombstone || len(pending.Bindings[0].Zones) != 0 || pending.Bindings[1].ConfigurationPending {
 		t.Fatal("incomplete zone addition withdrew authorization, exposed partial zones, or gated the healthy project")
 	}
-	if pending.Bindings[0].Authorization.Revision != uint64(originalAuthorization.Sequence) {
+	if pending.Bindings[0].Version.Sequence != uint64(originalAuthorization.Sequence) {
 		t.Fatal("pending configuration renewed the original authorization")
 	}
 	changing.Spec.Configuration.ZoneApices = map[string]string{"zone-extra": "apps.internal"}
@@ -185,7 +185,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready := latestPlannerSnapshot(t, &p)
-	if ready.Bindings[0].ConfigurationPending || len(ready.Bindings[0].Zones) != 2 || ready.Bindings[0].Authorization != pending.Bindings[0].Authorization {
+	if ready.Bindings[0].ConfigurationPending || len(ready.Bindings[0].Zones) != 2 || ready.Bindings[0].Version != pending.Bindings[0].Version {
 		t.Fatal("completed zone addition did not recover with the original authorization")
 	}
 	var untargeted dnsv1alpha1.DNSPublicationManifest
@@ -373,13 +373,13 @@ func TestReadinessCannotMixAuthorizationRenewals(t *testing.T) {
 	until := metav1.NewTime(now.Add(time.Minute))
 	s := AckSink{Members: []model.Member{{MemberID: "node", Role: "node"}, {MemberID: "cluster", Role: "cluster"}}}
 	rows := []dnsv1alpha1.DNSApplyAcknowledgement{
-		{MemberID: "node", WriterEpoch: 2, Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 5, Phase: string(model.AckVerified), ValidUntil: &until},
-		{MemberID: "cluster", WriterEpoch: 2, Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 4, Phase: string(model.AckVerified), ValidUntil: &until},
+		{MemberID: "node", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &until},
+		{MemberID: "cluster", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 4, Phase: string(model.AckVerified), ValidUntil: &until},
 	}
 	if s.verified(rows, now, "resolver", 7, 2, 3, 5) {
 		t.Fatal("old cluster authorization acknowledgement satisfied a renewed lease")
 	}
-	rows[1].AuthorizationRevision = 5
+	rows[1].AccessSequence = 5
 	if !s.verified(rows, now, "resolver", 7, 2, 3, 5) {
 		t.Fatal("fresh complete member set was not ready")
 	}
@@ -392,7 +392,7 @@ func TestReadinessCannotMixAuthorizationRenewals(t *testing.T) {
 func TestReadinessExpiresWithoutAnotherAck(t *testing.T) {
 	now := time.Now().UTC()
 	until := metav1.NewTime(now.Add(-time.Second))
-	b := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: "platform", Labels: map[string]string{"internal-dns.miloapis.com/region": "east", "internal-dns.miloapis.com/shard": "shared"}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 1}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1}}, Status: dnsv1alpha1.DNSResolverBindingStatus{Phase: "Serving", MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{MemberID: "resolver", WriterEpoch: 1, Revision: 1, AuthorizationIssuerEpoch: 1, AuthorizationRevision: 1, Phase: string(model.AckVerified), ValidUntil: &until}}}}
+	b := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: "platform", Labels: map[string]string{"internal-dns.miloapis.com/region": "east", "internal-dns.miloapis.com/shard": "shared"}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 1}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}, Status: dnsv1alpha1.DNSResolverBindingStatus{Phase: "Serving", MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{MemberID: "resolver", WriterEpoch: 1, Revision: 1, AccessEpoch: 1, AccessSequence: 1, Phase: string(model.AckVerified), ValidUntil: &until}}}}
 	cl := testClient(t, b)
 	s := AckSink{Client: cl, Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "resolver", Role: "resolver"}}, Now: func() time.Time { return now }}
 	if err := s.Refresh(context.Background()); err != nil {
@@ -466,13 +466,13 @@ func TestOutOfOrderAckDoesNotReplaceWithdrawalInSameSecond(t *testing.T) {
 func TestBindingReadinessRequiresCurrentCommittedSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	until := metav1.NewTime(now.Add(time.Minute))
-	b := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid"}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 7}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 5}}, Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{
-		{MemberID: "node", WriterEpoch: 2, SnapshotRevision: 8, Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 5, Phase: string(model.AckVerified), ValidUntil: &until},
-		{MemberID: "cluster", WriterEpoch: 2, SnapshotRevision: 8, Revision: 7, AuthorizationIssuerEpoch: 3, AuthorizationRevision: 5, Phase: string(model.AckVerified), ValidUntil: &until},
+	b := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid"}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 7}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 3, Sequence: 5}}, Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{
+		{MemberID: "node", WriterEpoch: 2, SnapshotRevision: 8, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &until},
+		{MemberID: "cluster", WriterEpoch: 2, SnapshotRevision: 8, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &until},
 	}}}
 	s := AckSink{Members: []model.Member{{MemberID: "node", Role: "node"}, {MemberID: "cluster", Role: "cluster"}}}
 	envelope := &model.Envelope{Epoch: 2, Revision: 9}
-	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 7, Authorization: model.Authorization{IssuerEpoch: 3, Revision: 5}}}}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 7, Version: model.AccessVersion{Epoch: 3, Sequence: 5}}}}
 	if s.bindingVerified(b, envelope, snapshot, now) {
 		t.Fatal("retired snapshot remained ready")
 	}
@@ -535,13 +535,13 @@ func TestServingAvailabilityDoesNotRequireEveryReplica(t *testing.T) {
 	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding"}}
 	binding.Spec.Configuration.Generation = 1
 	binding.Spec.Configuration.Revision = 1
-	binding.Spec.Authorization = dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1}
+	binding.Spec.Version = dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}
 	for _, member := range []string{"node-a", "regional-a"} {
-		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 1, SnapshotRevision: 1, Revision: 1, AuthorizationIssuerEpoch: 1, AuthorizationRevision: 1, Phase: string(model.AckVerified), ValidUntil: &until})
+		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 1, SnapshotRevision: 1, Revision: 1, AccessEpoch: 1, AccessSequence: 1, Phase: string(model.AckVerified), ValidUntil: &until})
 	}
 	sink := AckSink{Members: []model.Member{{MemberID: "node-a", Role: "node"}, {MemberID: "node-b", Role: "node"}, {MemberID: "regional-a", Role: "regional"}, {MemberID: "regional-b", Role: "regional"}}}
 	envelope := &model.Envelope{Epoch: 1, Revision: 1}
-	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding", BindingGeneration: 1, ConfigurationRevision: 1, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}}}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding", BindingGeneration: 1, ConfigurationRevision: 1, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}}}
 	if !sink.bindingVerified(binding, envelope, snapshot, now) {
 		t.Fatal("a missing replica report suppressed healthy capacity")
 	}

@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -20,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
+
+const subresourceStatus = "status"
 
 const contributionResource = "dnsrecordcontributions"
 
@@ -42,11 +43,11 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Operation == admissionv1.Delete {
 		return kubeadmission.Allowed("API server authorization applies")
 	}
-	if req.SubResource == "status" && req.Resource.Resource != contributionResource {
+	if req.SubResource == subresourceStatus {
 		return kubeadmission.Allowed("API server status authorization applies")
 	}
 	switch req.Resource.Resource {
-	case "dnsregistrations", contributionResource, "dnscontributiongrants", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
+	case "dnsregistrations", contributionResource, "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
 		// These resources require live references.
 	default:
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
@@ -70,8 +71,6 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		err = h.registration(ctx, cl, req)
 	case contributionResource:
 		err = h.contribution(ctx, cl, req)
-	case "dnscontributiongrants":
-		err = h.grant(ctx, cl, req)
 	case "dnszoneassociations":
 		err = h.association(ctx, cl, req)
 	case "dnsnamingpolicies":
@@ -82,7 +81,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if err != nil {
 		return kubeadmission.Denied(err.Error())
 	}
-	return kubeadmission.Allowed("authenticated and scoped DNS writer")
+	return kubeadmission.Allowed("DNS references are valid")
 }
 
 func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
@@ -97,7 +96,7 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	if resolverContext.UID != current.Spec.ContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("resolver context lifetime is not current")
 	}
-	if resolverContext.Status.AccessWriterEpoch < 1 || current.Spec.Authorization.WriterEpoch != resolverContext.Status.AccessWriterEpoch {
+	if resolverContext.Status.AccessEpoch < 1 || current.Spec.Version.Epoch != resolverContext.Status.AccessEpoch {
 		return fmt.Errorf("access writer epoch is retired or not issued")
 	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
@@ -108,105 +107,30 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 }
 
 func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
-	var c, old dnsv1alpha1.DNSRecordContribution
-	if err := decode(req, &c); err != nil {
+	var contribution dnsv1alpha1.DNSRecordContribution
+	if err := decode(req, &contribution); err != nil {
 		return err
 	}
-	if len(req.OldObject.Raw) > 0 {
-		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
-			return err
+	var registration dnsv1alpha1.DNSRegistration
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: contribution.Spec.RegistrationRef.Name}, &registration); err != nil {
+		return err
+	}
+	if registration.UID != contribution.Spec.RegistrationRef.UID || registration.Generation != contribution.Spec.RegistrationRef.Generation || !registration.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("registration lifetime or generation is not current")
+	}
+	zone, err := currentPrivateZone(ctx, cl, req.Namespace, registration.Spec.DNSZoneRef)
+	if err != nil {
+		return err
+	}
+	for _, set := range contribution.Spec.RecordSets {
+		if !containsType(registration.Spec.RecordTypes, set.RecordType) {
+			return fmt.Errorf("record type is outside the registration")
 		}
-	}
-	bindEpoch := false
-	if req.SubResource == "status" {
-		previous, current := old.Status, c.Status
-		previous.Conditions, current.Conditions = nil, nil
-		previous.PublishedRevision, current.PublishedRevision = 0, 0
-		if reflect.DeepEqual(previous, current) {
-			return nil
-		}
-		// Binding an issued epoch cannot introduce endpoint eligibility.
-		if previous.WriterEpoch == 0 && previous.ObservedGeneration == 0 && previous.Sequence == 0 && !previous.Eligible && current.WriterEpoch > 0 {
-			current.WriterEpoch = 0
-			bindEpoch = reflect.DeepEqual(previous, current)
-		}
-	}
-	var g dnsv1alpha1.DNSContributionGrant
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: c.Spec.GrantRef.Name}, &g); err != nil {
-		return fmt.Errorf("grant lookup: %w", err)
-	}
-	if g.UID != c.Spec.GrantRef.UID || !g.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("grant lifetime is not current")
-	}
-	if !bindEpoch && g.Spec.Principal.Subject != req.UserInfo.Username {
-		return fmt.Errorf("caller does not match the grant's authenticated producer principal")
-	}
-	if g.Spec.RegistrationRef.UID != c.Spec.RegistrationRef.UID || g.Spec.RegistrationRef.Name != c.Spec.RegistrationRef.Name {
-		return fmt.Errorf("grant belongs to another registration")
-	}
-	var r dnsv1alpha1.DNSRegistration
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: c.Spec.RegistrationRef.Name}, &r); err != nil {
-		return fmt.Errorf("registration lookup: %w", err)
-	}
-	if r.UID != c.Spec.RegistrationRef.UID || r.Generation != c.Spec.RegistrationRef.Generation || !r.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("registration lifetime or policy generation is not current")
-	}
-	if g.Status.ActiveWriterEpoch < 1 || g.Status.ObservedRegistrationGeneration != r.Generation || g.Status.ObservedGrantGeneration != g.Generation {
-		return fmt.Errorf("grant authority is not issued for the current registration generation")
-	}
-	var zone dnsv1alpha1.DNSZone
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: r.Spec.DNSZoneRef.Name}, &zone); err != nil {
-		return fmt.Errorf("private zone lookup: %w", err)
-	}
-	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
-		return fmt.Errorf("internal contributions require a private zone")
-	}
-	for _, rrset := range c.Spec.RecordSets {
-		for _, record := range rrset.Records {
-			if err := model.ValidatePrivateRecordOwner(record.Name, zone.Spec.DomainName, string(rrset.RecordType)); err != nil {
+		for _, record := range set.Records {
+			if err := model.ValidatePrivateRecordOwner(record.Name, zone.Spec.DomainName, string(set.RecordType)); err != nil {
 				return err
 			}
 		}
-		if !containsType(g.Spec.RecordTypes, rrset.RecordType) || !containsType(r.Spec.RecordTypes, rrset.RecordType) {
-			return fmt.Errorf("record type %s is outside the writer's scope", rrset.RecordType)
-		}
-	}
-	if bindEpoch {
-		if c.Status.WriterEpoch != g.Status.ActiveWriterEpoch {
-			return fmt.Errorf("writer epoch is retired or not issued")
-		}
-		return nil
-	}
-	if req.SubResource == "status" {
-		if !reflect.DeepEqual(old.Status.Conditions, c.Status.Conditions) || old.Status.PublishedRevision != c.Status.PublishedRevision {
-			return fmt.Errorf("publisher observations cannot change publication results")
-		}
-		if c.Status.WriterEpoch != g.Status.ActiveWriterEpoch {
-			return fmt.Errorf("writer epoch is retired or not issued")
-		}
-		if c.Status.Sequence <= old.Status.Sequence {
-			return fmt.Errorf("producer observation sequence must increase")
-		}
-		if c.Status.ObservedGeneration != c.Generation {
-			return fmt.Errorf("producer observation must match the contribution generation")
-		}
-	} else if req.Operation != admissionv1.Delete && !reflect.DeepEqual(old.Status, c.Status) && req.Operation != admissionv1.Create {
-		return fmt.Errorf("producer observations must use the status subresource")
-	}
-	return nil
-}
-
-func (h *Handler) grant(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
-	var g dnsv1alpha1.DNSContributionGrant
-	if err := decode(req, &g); err != nil {
-		return err
-	}
-	var r dnsv1alpha1.DNSRegistration
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: g.Spec.RegistrationRef.Name}, &r); err != nil {
-		return err
-	}
-	if r.UID != g.Spec.RegistrationRef.UID {
-		return fmt.Errorf("registration lifetime is not current")
 	}
 	return nil
 }

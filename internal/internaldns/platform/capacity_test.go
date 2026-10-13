@@ -15,7 +15,7 @@ import (
 )
 
 func capacityBinding(index int) model.Binding {
-	return model.Binding{BindingUID: fmt.Sprintf("binding-%d", index), ProjectUID: "project", ContextUID: fmt.Sprintf("context-%d", index), BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: fmt.Sprintf("fd53::%d", index), ClusterAddress: fmt.Sprintf("fd54::%d", index), Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}
+	return model.Binding{BindingUID: fmt.Sprintf("binding-%d", index), ProjectUID: "project", ContextUID: fmt.Sprintf("context-%d", index), BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: fmt.Sprintf("fd53::%d", index), ClusterAddress: fmt.Sprintf("fd54::%d", index), Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}
 }
 
 func TestCapacityOverflowDoesNotBlockWithdrawal(t *testing.T) {

@@ -168,7 +168,7 @@ Required deployment and consumer-path scenarios:
 - Overlapping zones, names, and endpoint addresses in two VPCs return distinct
   answers through private endpoints into the same producer DNS service VPC over
   UDP and TCP, including positive and negative cache isolation.
-- Unauthorized access, forged destinations and PROXYv2 headers, and an expired
+- Unauthorized access, forged destinations and PROXYv2 headers, and a withdrawn
   service route cannot return another VPC's records. Product credentials cannot
   configure resolver access.
 - Endpoint health withdrawal and recovery, deletion, source API loss, and

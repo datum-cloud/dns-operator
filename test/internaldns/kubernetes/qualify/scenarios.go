@@ -363,7 +363,7 @@ func (s *suite) offlineServing(a, b *project) (resultErr error) {
 				if err != nil {
 					return err
 				}
-				if answer.Error != "" || answer.Rcode != dns.RcodeSuccess || len(answer.Answers) != 1 || answer.Answers[0] != tenant.address {
+				if answer.Error != "" || answer.Rcode != dns.RcodeSuccess || len(answer.Addresses) != 1 || answer.Addresses[0] != tenant.address {
 					return fmt.Errorf("outage query for %s TCP=%t: %#v", tenant.project.Name, tcp, answer)
 				}
 			}

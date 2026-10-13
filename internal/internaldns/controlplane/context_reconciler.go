@@ -56,9 +56,6 @@ func (r *Reconciler) reconcileNamingPolicies(ctx context.Context, items []dnsv1a
 		ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
 		valid := contextCurrent && p.DeletionTimestamp.IsZero() && ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == resolverContext.Generation
 		p.Status.ResolvedResolverContextRef = contextPin
-		if contextCurrent {
-			p.Status.ResolvedVPCRef = dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: types.UID(resolverContext.Spec.ConsumerID)}
-		}
 
 		previousZones := map[string]dnsv1alpha1.DNSObjectReference{}
 		for _, rule := range base.Status.ResolvedAdditionalNames {
@@ -134,8 +131,8 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 	}
 	for i := range list.Items {
 		m := &list.Items[i]
-		if m.Spec.ProjectUID != r.Options.ProjectUID || m.Spec.VPCRef.UID == "" {
-			if err := r.patchCondition(ctx, m, dnsValueAccepted, metav1.ConditionFalse, "InvalidIdentity", "project and pinned VPC UID are required", now); err != nil {
+		if m.Spec.ProjectUID != r.Options.ProjectUID || m.Spec.ResolverContextRef.UID == "" {
+			if err := r.patchCondition(ctx, m, dnsValueAccepted, metav1.ConditionFalse, "InvalidIdentity", "project and pinned resolver context UID are required", now); err != nil {
 				return err
 			}
 			continue
@@ -156,11 +153,11 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 		if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
 			return err
 		}
-		assocName := zoneName + "-vpc"
+		assocName := zoneName + "-context"
 		assocSpec := dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Managed: true}
 
 		var contextObject dnsv1alpha1.DNSResolverContext
-		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: m.Spec.VPCRef.Name}, &contextObject); err != nil {
+		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: m.Spec.ResolverContextRef.Name}, &contextObject); err != nil {
 			return err
 		}
 		assocSpec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: contextObject.Name}
@@ -233,7 +230,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		if c.Spec.ManagedNamespace.Enabled && valid {
 			name := "context-" + model.OpaqueToken(string(c.UID))[:20]
-			m := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"internal-dns.miloapis.com/platform-owned": "true", "internal-dns.miloapis.com/context-uid": string(c.UID)}}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: r.Options.ProjectUID, VPCRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: types.UID(c.Spec.ConsumerID)}, DomainSuffix: c.Spec.ManagedNamespace.DomainSuffix, DNSZoneClassName: r.Options.PrivateZoneClassName}}
+			m := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: map[string]string{"internal-dns.miloapis.com/platform-owned": "true", "internal-dns.miloapis.com/context-uid": string(c.UID)}}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}, DomainSuffix: c.Spec.ManagedNamespace.DomainSuffix, DNSZoneClassName: r.Options.PrivateZoneClassName}}
 			if r.Scheme != nil {
 				if err := controllerutil.SetControllerReference(c, m, r.Scheme); err != nil {
 					return err
@@ -299,7 +296,6 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		contextPin, contextCurrent := pinNamedReference(a.Spec.ResolverContextRef.Name, a.Status.ResolvedResolverContextRef, currentContext)
 		a.Status.ResolvedDNSZoneRef = zonePin
 		a.Status.ResolvedResolverContextRef = contextPin
-		a.Status.ResolvedVPCRef = dnsv1alpha1.DNSObjectReference{}
 		status := metav1.ConditionTrue
 		reason, msg := dnsValueAccepted, "association accepted"
 		if !a.DeletionTimestamp.IsZero() || !zoneCurrent || !contextCurrent {
@@ -432,7 +428,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if r.Options.AddressAllocator == nil {
 				return errors.New("address allocator is required for context binding")
 			}
-			_, cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID)
+			cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID)
 			if err != nil {
 				return err
 			}
@@ -585,9 +581,9 @@ func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) b
 
 // selectServingTargets assigns one shared shard in each region. An existing
 // live assignment wins while its shard remains configured, so adding capacity
-// does not silently move established VPC listeners. Explicit migration is a
+// does not silently move established resolver listeners. Explicit migration is a
 // separate operation; only a missing/removed assignment invokes rendezvous.
-func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
+func (r *Reconciler) selectServingTargets(resolverContextUID types.UID, existing []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
 	byRegion := map[string][]ServingRegion{}
 	for _, target := range r.Options.servingRegions() {
 		byRegion[target.Region] = append(byRegion[target.Region], target)
@@ -603,7 +599,7 @@ func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.
 		sort.Slice(candidates, func(i, j int) bool { return candidates[i].Shard < candidates[j].Shard })
 		var preserved *ServingRegion
 		for _, binding := range existing {
-			if binding.Spec.Source.ProjectUID != r.Options.ProjectUID || binding.Spec.Source.ResolverContextRef.UID != vpc || binding.Spec.Placement.Region != region || binding.Spec.Tombstone || !binding.DeletionTimestamp.IsZero() {
+			if binding.Spec.Source.ProjectUID != r.Options.ProjectUID || binding.Spec.Source.ResolverContextRef.UID != resolverContextUID || binding.Spec.Placement.Region != region || binding.Spec.Tombstone || !binding.DeletionTimestamp.IsZero() {
 				continue
 			}
 			for _, candidate := range candidates {
@@ -622,7 +618,7 @@ func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.
 		best := candidates[0]
 		bestScore := ""
 		for _, candidate := range candidates {
-			sum := sha256.Sum256([]byte(string(r.Options.ProjectUID) + "/" + string(vpc) + "/" + region + "/" + candidate.Shard))
+			sum := sha256.Sum256([]byte(string(r.Options.ProjectUID) + "/" + string(resolverContextUID) + "/" + region + "/" + candidate.Shard))
 			score := string(sum[:])
 			if bestScore == "" || score > bestScore {
 				best, bestScore = candidate, score

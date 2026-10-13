@@ -26,7 +26,7 @@ type ResolvedName struct {
 // additive policy names after it. It never selects an arbitrary associated
 // customer zone.
 // Selectors match DNSRegistration metadata labels supplied by the publisher.
-func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID, vpcUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
+func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID, contextUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
 	label := dnsLabel(allocatedName)
 	if label == "" {
 		return nil, fmt.Errorf("allocated name %q has no DNS-safe label", allocatedName)
@@ -39,13 +39,13 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	for i := range managed.Items {
 		m := &managed.Items[i]
 		accepted := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted)
-		if m.Spec.ProjectUID == projectUID && m.Spec.VPCRef.UID == vpcUID && accepted != nil && accepted.Status == metav1.ConditionTrue {
+		if m.Spec.ProjectUID == projectUID && m.Spec.ResolverContextRef.UID == contextUID && accepted != nil && accepted.Status == metav1.ConditionTrue {
 			out = append(out, ResolvedName{DNSZoneRef: m.Status.DNSZoneRef, Name: label, Canonical: true})
 			break
 		}
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("managed DNS namespace for VPC %s is not ready", vpcUID)
+		return nil, fmt.Errorf("managed DNS namespace for resolver context %s is not ready", contextUID)
 	}
 	seen := map[string]bool{string(out[0].DNSZoneRef.UID) + "\x00" + out[0].Name: true}
 	var policies dnsv1alpha1.DNSNamingPolicyList
@@ -61,7 +61,7 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	for i := range policies.Items {
 		p := &policies.Items[i]
 		accepted := apimeta.FindStatusCondition(p.Status.Conditions, dnsValueAccepted)
-		if p.Status.ResolvedVPCRef.UID != vpcUID || !p.DeletionTimestamp.IsZero() || accepted == nil || accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != p.Generation {
+		if p.Status.ResolvedResolverContextRef.UID != contextUID || !p.DeletionTimestamp.IsZero() || accepted == nil || accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != p.Generation {
 			continue
 		}
 		for _, rule := range p.Status.ResolvedAdditionalNames {

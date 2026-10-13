@@ -220,7 +220,7 @@ func TestCustomerNamedReferencesValidateLiveResources(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", Generation: 1}}
 	setAdmissionCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, 1, time.Now())
-	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).Build(), ResolverContextsEnabled: true}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).Build()}
 	zoneRef, contextRef := dnsv1alpha1.DNSNameReference{Name: zone.Name}, dnsv1alpha1.DNSNameReference{Name: resolver.Name}
 	for resource, object := range map[string]any{
 		"dnszoneassociations": &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: zoneRef, ResolverContextRef: contextRef}},
@@ -229,7 +229,7 @@ func TestCustomerNamedReferencesValidateLiveResources(t *testing.T) {
 		if response := h.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)); !response.Allowed {
 			t.Fatalf("valid %s denied: %v", resource, response.Result)
 		}
-		missing := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), ResolverContextsEnabled: true}
+		missing := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 		if missing.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)).Allowed {
 			t.Fatalf("%s accepted missing references", resource)
 		}
@@ -241,7 +241,7 @@ func TestNamingPolicyRejectsMalformedSelectors(t *testing.T) {
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), ResolverContextsEnabled: true}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	for _, selector := range []*dnsv1alpha1.DNSRegistrationSelector{
 		{MatchLabels: map[string]string{"bad key": "value"}},
 		{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: "Unsupported"}}},

@@ -33,13 +33,12 @@ const Path = "/validate-internal-dns"
 // publisher. For project-aware deployments, ClientForRequest must resolve the
 // authenticated project context and return its immutable source cluster UID.
 type Handler struct {
-	Client                  client.Client
-	TrustedClusterUID       string
-	MaxContributionLease    time.Duration
-	MaxAccessLease          time.Duration
-	ResolverContextsEnabled bool
-	Now                     func() time.Time
-	ClientForRequest        func(context.Context, kubeadmission.Request) (client.Client, string, error)
+	Client               client.Client
+	TrustedClusterUID    string
+	MaxContributionLease time.Duration
+	MaxAccessLease       time.Duration
+	Now                  func() time.Time
+	ClientForRequest     func(context.Context, kubeadmission.Request) (client.Client, string, error)
 }
 
 var _ kubeadmission.Handler = (*Handler)(nil)
@@ -261,18 +260,13 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if err := validateNamedPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
 		return err
 	}
-	if err := validateConsumerSelector(a.Spec.VPCRef, a.Spec.ResolverContextRef, h.ResolverContextsEnabled); err != nil {
-		return err
+
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: a.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
+		return fmt.Errorf("resolver context lookup: %w", err)
 	}
-	if h.ResolverContextsEnabled {
-		var resolverContext dnsv1alpha1.DNSResolverContext
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: a.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
-			return fmt.Errorf("resolver context lookup: %w", err)
-		}
-		if !resolverContext.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("resolver context is being deleted")
-		}
-		return nil
+	if !resolverContext.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("resolver context is being deleted")
 	}
 	return nil
 }
@@ -282,9 +276,7 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 	if err := decode(req, &p); err != nil {
 		return err
 	}
-	if err := validateConsumerSelector(p.Spec.VPCRef, p.Spec.ResolverContextRef, h.ResolverContextsEnabled); err != nil {
-		return err
-	}
+
 	if p.Spec.DNSZoneRef.Name != "" {
 		if err := validateNamedPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
 			return err
@@ -298,29 +290,14 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 			return err
 		}
 	}
-	if h.ResolverContextsEnabled {
-		var resolverContext dnsv1alpha1.DNSResolverContext
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: p.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
-			return fmt.Errorf("resolver context lookup: %w", err)
-		}
-		ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
-		if !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
-			return fmt.Errorf("resolver context lifetime is not ready")
-		}
-		return nil
-	}
-	return nil
-}
 
-func validateConsumerSelector(vpcRef, contextRef dnsv1alpha1.DNSNameReference, contextMode bool) error {
-	hasVPC := vpcRef.Name != ""
-	hasContext := contextRef.Name != ""
-
-	if contextMode && !hasContext {
-		return fmt.Errorf("resolver context mode requires resolverContextRef")
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: p.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
+		return fmt.Errorf("resolver context lookup: %w", err)
 	}
-	if !contextMode && !hasVPC {
-		return fmt.Errorf("legacy networking mode requires vpcRef")
+	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
+	if !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
+		return fmt.Errorf("resolver context lifetime is not ready")
 	}
 	return nil
 }

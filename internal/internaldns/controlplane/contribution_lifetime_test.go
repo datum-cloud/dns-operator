@@ -2,17 +2,65 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+func TestContributionLifetimesSurvivePublicationTakeover(t *testing.T) {
+	input := fixture(time.Now())
+	contribution := input.Contributions[0]
+	contribution.Namespace = "project"
+	original := PublicationPlan{ZoneUID: input.Zone.UID, ZoneApex: input.Zone.Spec.DomainName, Contributions: []ContributionFence{
+		{UID: contribution.UID, Generation: contribution.Generation, Sequence: contribution.Generation, SourceName: contribution.Name},
+		{UID: "retired-endpoint", Generation: 1, Sequence: 1, SourceName: "deleted", Retired: true},
+	}}
+	wire, err := WirePlan(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: "committed-000", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: 1, Revision: 1, Index: 0, SHA256: model.Hash(payload), Payload: payload}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "committed", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: input.Zone.UID}, WriterEpoch: 1, Revision: 1, ContentHash: model.Hash(payload), Chunks: []dnsv1alpha1.DNSPublicationChunkReference{{Name: chunk.Name, SHA256: chunk.Spec.SHA256, Size: int32(len(payload))}}}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: input.Zone.UID, WriterEpoch: 2, ActiveManifestName: manifest.Name}}
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(chunk, manifest, owner, &contribution).Build()
+	r := &Reconciler{Client: cl, Options: ReconcilerOptions{PlatformNamespace: "platform"}}
+	restored, err := r.loadPrevious(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Contributions) != 2 || restored.Contributions[0].SourceName != contribution.Name || restored.Contributions[1].SourceName != "deleted" || !restored.Contributions[1].Retired {
+		t.Fatalf("lifetime metadata lost in committed snapshot: %#v", restored.Contributions)
+	}
+	confirmed, err := r.confirmContributions(context.Background(), "project", nil, restored)
+	if err != nil || len(confirmed) != 1 {
+		t.Fatalf("takeover could not confirm live source: %#v, %v", confirmed, err)
+	}
+	input.Previous, input.Contributions = restored, confirmed
+	compiled, err := Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compiled.Plan.RRsets) != 1 || len(compiled.Plan.Contributions) != 2 || !compiled.Plan.Contributions[1].Retired {
+		t.Fatalf("takeover lost live records or retirement: %#v", compiled.Plan)
+	}
+}
 
 func TestDeletedContributionCannotReturnThroughReplay(t *testing.T) {
 	in := fixture(time.Now())

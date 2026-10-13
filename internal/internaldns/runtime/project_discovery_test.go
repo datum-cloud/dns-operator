@@ -24,6 +24,13 @@ type discoveryFixtureClient struct {
 	unavailable bool
 }
 
+func (c *discoveryFixtureClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if c.unavailable {
+		return errors.New("discovery unavailable")
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
 func (c *discoveryFixtureClient) List(ctx context.Context, obj client.ObjectList, opts ...client.ListOption) error {
 	if c.unavailable {
 		return errors.New("discovery unavailable")
@@ -69,7 +76,13 @@ func TestProjectDiscoveryAddsSourcesAndPreservesThemDuringOutage(t *testing.T) {
 	if len(scopes) != 2 || scopes[0].Namespace != "" || scopes[1].Namespace != "" {
 		t.Fatalf("ACK scopes did not follow discovery: %#v", scopes)
 	}
+	if err := verifyProjectIdentity(ctx, core, first.Name, first.UID); err != nil {
+		t.Fatal(err)
+	}
 	core.unavailable = true
+	if err := verifyProjectIdentity(ctx, core, first.Name, first.UID); err == nil {
+		t.Fatal("unobserved source identity permitted compilation")
+	}
 	if err := d.step(ctx); err == nil {
 		t.Fatal("expected discovery error")
 	}
@@ -104,6 +117,9 @@ func TestProjectDiscoveryAddsSourcesAndPreservesThemDuringOutage(t *testing.T) {
 	recreated := readyDiscoveryProject(second.Name, "replacement-uid")
 	if err := core.Create(ctx, recreated); err != nil {
 		t.Fatal(err)
+	}
+	if err := verifyProjectIdentity(ctx, core, recreated.Name, second.UID); err == nil {
+		t.Fatal("recreated project used previous compilation identity")
 	}
 	if _, err := directory.selectProject(ctx, request); err == nil {
 		t.Fatal("recreated project used previous source")

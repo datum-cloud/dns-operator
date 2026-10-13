@@ -12,6 +12,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -178,4 +179,15 @@ func projectCache(namespace string) cache.Options {
 		return cache.Options{}
 	}
 	return cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}}
+}
+
+func verifyProjectIdentity(ctx context.Context, reader client.Reader, name string, expected types.UID) error {
+	var project resourcemanagerv1alpha1.Project
+	if err := reader.Get(ctx, client.ObjectKey{Name: name}, &project); err != nil {
+		return fmt.Errorf("observe source project identity: %w", err)
+	}
+	if project.UID != expected {
+		return errors.New("source project lifetime changed")
+	}
+	return nil
 }

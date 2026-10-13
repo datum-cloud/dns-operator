@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -212,7 +213,7 @@ func TestClusterRoleAutomaticallyVerifiesClusterVIP(t *testing.T) {
 	renderConfig.NodeBIND = BINDRenderConfig{}
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "cluster-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
 		UnsafeAllowNoFailClosed: true,
 	}, Dependencies{Runner: &recordingRunner{}})
 	if err != nil {
@@ -224,7 +225,7 @@ func TestClusterRoleAutomaticallyVerifiesClusterVIP(t *testing.T) {
 	}
 }
 
-func TestStartForceActivatesPersistedUnchangedConfigBeforeLease(t *testing.T) {
+func TestStartActivatesPersistedDesiredConfiguration(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	renderConfig, snapshot := renderFixture(t)
@@ -254,11 +255,10 @@ func TestStartForceActivatesPersistedUnchangedConfigBeforeLease(t *testing.T) {
 	if err := (stateStore{path: filepath.Join(stateDir, "checkpoint.json")}).Save(state); err != nil {
 		t.Fatal(err)
 	}
-	leasePath := filepath.Join(dir, "lease.json")
 	config := Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: stateDir, Mode: ModeResolver,
-		Render: renderConfig, UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true,
-		WatchdogLeasePath: leasePath, WatchdogLease: 5 * time.Second, ReconcileInterval: time.Hour,
+		Render: renderConfig, UnsafeAllowNoDNSVerify: true,
+		ReconcileInterval: time.Hour,
 		Transaction: TransactionConfig{
 			StageDir:   filepath.Join(dir, "stage"),
 			FailClosed: []Command{{Path: "gate"}},
@@ -282,13 +282,13 @@ func TestStartForceActivatesPersistedUnchangedConfigBeforeLease(t *testing.T) {
 	go func() { done <- agent.Start(ctx) }()
 	deadline := time.After(2 * time.Second)
 	for {
-		if _, err := os.Stat(leasePath); err == nil {
+		if state, err := agent.store.Load(); err == nil && state.Active != nil {
 			break
 		}
 		select {
 		case <-deadline:
 			cancel()
-			t.Fatal("startup did not activate unchanged config and write its lease")
+			t.Fatal("startup did not approve persisted desired configuration")
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
@@ -300,18 +300,16 @@ func TestStartForceActivatesPersistedUnchangedConfigBeforeLease(t *testing.T) {
 	for len(runner.calls) > 0 {
 		calls = append(calls, (<-runner.calls).Path)
 	}
-	wantPrefix := []string{"gate", "validate-dnsdist", "validate-bind", "reload-dnsdist", "reload-bind"}
-	if len(calls) < len(wantPrefix) {
-		t.Fatalf("startup calls = %#v", calls)
-	}
-	for i, want := range wantPrefix {
-		if calls[i] != want {
-			t.Fatalf("startup calls = %#v, want prefix %#v", calls, wantPrefix)
+	for _, required := range []string{"validate-dnsdist", "validate-bind", "reload-dnsdist", "reload-bind"} {
+		if !slices.Contains(calls, required) {
+			t.Fatalf("startup omitted %s: %#v", required, calls)
 		}
 	}
+	assertAppliedCheckpoint(t, agent)
+
 }
 
-func TestStepBoundsStalledAckPublishAndRenewsLocalLease(t *testing.T) {
+func TestStepBoundsStalledAckPublishAndRetainsAppliedConfiguration(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	renderConfig, snapshot := renderFixture(t)
@@ -321,13 +319,11 @@ func TestStepBoundsStalledAckPublishAndRenewsLocalLease(t *testing.T) {
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
 	renderConfig.ClusterBIND = BINDRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
-	leasePath := filepath.Join(dir, "lease.json")
 	var reported []error
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
-		UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true, WatchdogLeasePath: leasePath,
-		WatchdogLease: 5 * time.Second, AckPublishTimeout: 30 * time.Millisecond,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoDNSVerify: true, AckPublishTimeout: 30 * time.Millisecond,
 	}, Dependencies{Runner: &recordingRunner{}, OnError: func(err error) { reported = append(reported, err) }})
 	if err != nil {
 		t.Fatal(err)
@@ -351,13 +347,9 @@ func TestStepBoundsStalledAckPublishAndRenewsLocalLease(t *testing.T) {
 	if len(reported) == 0 || !strings.Contains(reported[0].Error(), "publish serving ACK") {
 		t.Fatalf("stalled ACK publish was not reported: %#v", reported)
 	}
-	if _, err := os.Stat(leasePath); err != nil {
-		t.Fatalf("locally healthy Step did not renew watchdog lease: %v", err)
-	}
+	assertAppliedCheckpoint(t, agent)
 }
 
-// Wait for the ACK boundary rather than imposing a startup SLA on durable
-// file staging. Production ACK and watchdog deadlines remain unchanged.
 func stepUntilBlockedAck(t *testing.T, agent *Agent, started <-chan struct{}, release chan struct{}) func() error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -396,7 +388,7 @@ func stepUntilBlockedAck(t *testing.T, agent *Agent, started <-chan struct{}, re
 	}
 }
 
-func TestResolverRenewsWatchdogBeforeBrokerAckCompletes(t *testing.T) {
+func TestResolverApprovesConfigurationBeforeBrokerAckCompletes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	renderConfig, snapshot := renderFixture(t)
@@ -406,14 +398,12 @@ func TestResolverRenewsWatchdogBeforeBrokerAckCompletes(t *testing.T) {
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
 	renderConfig.ClusterBIND = BINDRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
-	leasePath := filepath.Join(dir, "lease.json")
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
-		UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true, WatchdogLeasePath: leasePath,
-		WatchdogLease: 5 * time.Second, AckPublishTimeout: time.Second,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoDNSVerify: true, AckPublishTimeout: time.Second,
 	}, Dependencies{AckPublisher: blockingPublisher{started: started, release: release}, Runner: &recordingRunner{}})
 	if err != nil {
 		t.Fatal(err)
@@ -422,15 +412,13 @@ func TestResolverRenewsWatchdogBeforeBrokerAckCompletes(t *testing.T) {
 	agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
 	agent.state.ServingFence = fence{Epoch: 1, Revision: 1}
 	finish := stepUntilBlockedAck(t, agent, started, release)
-	if _, err := os.Stat(leasePath); err != nil {
-		t.Fatalf("resolver did not renew watchdog before blocked broker ACK: %v", err)
-	}
+	assertAppliedCheckpoint(t, agent)
 	if err := finish(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestResolverGatesFailedTenantButRenewsSharedLeaseForHealthyTenant(t *testing.T) {
+func TestResolverGatesFailedTenantAndRetainsHealthyTenant(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	renderConfig, snapshot := renderFixture(t)
@@ -448,14 +436,12 @@ func TestResolverGatesFailedTenantButRenewsSharedLeaseForHealthyTenant(t *testin
 	healthy.ConsumerAddress = "10.253.0.52"
 	healthy.ClusterAddress = "10.253.0.42"
 	snapshot.Bindings = append(snapshot.Bindings, healthy)
-	leasePath := filepath.Join(dir, "lease.json")
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		CacheFlush: []Command{{Path: "flush"}}, Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
-		UnsafeAllowNoFailClosed: true, ExternalWatchdog: true, WatchdogLeasePath: leasePath,
-		WatchdogLease: 5 * time.Second, AckPublishTimeout: time.Second,
+		CacheFlush: []Command{{Path: "flush"}}, Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, AckPublishTimeout: time.Second,
 	}, Dependencies{
 		AckPublisher: blockingPublisher{started: started, release: release}, Runner: &recordingRunner{},
 		Verifier: resolverVerifierFunc(func(_ context.Context, binding model.Binding) error {
@@ -482,15 +468,13 @@ func TestResolverGatesFailedTenantButRenewsSharedLeaseForHealthyTenant(t *testin
 	if !strings.Contains(string(config), healthy.ConsumerAddress) {
 		t.Fatal("healthy tenant was gated with failed tenant")
 	}
-	if _, err := os.Stat(leasePath); err != nil {
-		t.Fatalf("healthy tenant did not renew shared watchdog after failed tenant was gated: %v", err)
-	}
+	assertAppliedCheckpoint(t, agent)
 	if err := finish(); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.T) {
+func TestStartPreservesAppliedConfigurationWhileBrokerDisconnected(t *testing.T) {
 	dir := t.TempDir()
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
@@ -499,15 +483,13 @@ func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
 	renderConfig.ClusterBIND = BINDRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
-	leasePath := filepath.Join(dir, "lease.json")
 	publishStarted := make(chan struct{}, 1)
 	publishRelease := make(chan struct{})
 	publisher := &contextIgnoringPublisher{started: publishStarted, release: publishRelease}
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
-		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true,
-		WatchdogLeasePath: leasePath, WatchdogLease: 500 * time.Millisecond,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
 		ReconcileInterval: 20 * time.Millisecond, AckInterval: 50 * time.Millisecond,
 		AckPublishTimeout: 10 * time.Millisecond,
 	}, Dependencies{AckPublisher: publisher, Runner: &recordingRunner{}})
@@ -528,7 +510,7 @@ func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.
 			select {
 			case stopErr = <-done:
 			case <-time.After(time.Second):
-				stopErr = errors.New("resolver did not stop after continuous renewal test")
+				stopErr = errors.New("resolver did not stop after continuity test")
 			}
 		})
 	}
@@ -542,43 +524,15 @@ func TestStartContinuouslyRenewsResolverLeaseWhileBrokerDisconnected(t *testing.
 		t.Fatal("resolver did not enter context-ignoring broker publish")
 	}
 
-	initialDeadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := os.Stat(leasePath); err == nil {
-			break
-		}
-		if time.Now().After(initialDeadline) {
-			t.Fatal("resolver did not write its initial lease")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 	started := time.Now()
-	lastValidUntil := time.Time{}
 	var continuityErr error
 	for time.Since(started) < 1200*time.Millisecond {
-		payload, err := os.ReadFile(leasePath)
-		if err != nil {
-			continuityErr = fmt.Errorf("read continuously renewed lease: %w", err)
+		state, err := agent.store.Load()
+		if err != nil || state.Active == nil || !installedFilesMatch(state.Active.Files) || activationPending(agent.cfg.StateDir) {
+			continuityErr = fmt.Errorf("applied configuration lost during broker partition: %w", err)
 			break
-		}
-		var lease watchdogLease
-		if err := json.Unmarshal(payload, &lease); err != nil {
-			continuityErr = fmt.Errorf("decode continuously renewed lease: %w", err)
-			break
-		}
-		if !lease.ValidUntil.After(time.Now()) {
-			continuityErr = fmt.Errorf("resolver lease expired during broker partition at %s", lease.ValidUntil)
-			break
-		}
-		if lease.ValidUntil.After(lastValidUntil) {
-			lastValidUntil = lease.ValidUntil
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	if continuityErr == nil {
-		if remaining := time.Until(lastValidUntil); remaining < 250*time.Millisecond {
-			continuityErr = fmt.Errorf("resolver lease was not refreshed across multiple windows: remaining %s", remaining)
-		}
 	}
 	if calls := publisher.callCount(); calls != 1 {
 		continuityErr = fmt.Errorf("context-ignoring publisher calls = %d, want one bounded inflight call", calls)
@@ -654,7 +608,7 @@ func TestResolverVerificationHasOneSharedDeadline(t *testing.T) {
 	}
 }
 
-func TestAckEventRenewsWatchdogAfterSuccessfulReconcile(t *testing.T) {
+func TestAckEventPreservesAppliedConfigurationAfterReconcile(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	dir := t.TempDir()
@@ -665,12 +619,10 @@ func TestAckEventRenewsWatchdogAfterSuccessfulReconcile(t *testing.T) {
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
 	renderConfig.ClusterBIND = BINDRenderConfig{}
 	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
-	leasePath := filepath.Join(dir, "lease.json")
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage")},
-		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ExternalWatchdog: true,
-		WatchdogLeasePath: leasePath, WatchdogLease: 5 * time.Second,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
 	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
 	if err != nil {
 		t.Fatal(err)
@@ -678,25 +630,18 @@ func TestAckEventRenewsWatchdogAfterSuccessfulReconcile(t *testing.T) {
 	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(leasePath); err != nil {
-		t.Fatal(err)
-	}
 	ack := model.MemberAck{MemberID: "regional-0", ReplicaID: "regional-0", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
 	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(leasePath); err != nil {
-		t.Fatalf("successful ACK reconcile did not renew watchdog lease: %v", err)
-	}
+	assertAppliedCheckpoint(t, agent)
 }
 
-func TestExpiredKnownAckReplayDrainsWithoutStateOrLeaseChange(t *testing.T) {
+func TestExpiredKnownAckReplayDrainsWithoutStateChange(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
-	dir := t.TempDir()
-	leasePath := filepath.Join(dir, "lease.json")
 	agent := &Agent{
-		cfg:  Config{Region: "east", Shard: "s1", Mode: ModeResolver, WatchdogLeasePath: leasePath, WatchdogLease: 5 * time.Second},
+		cfg:  Config{Region: "east", Shard: "s1", Mode: ModeResolver},
 		deps: Dependencies{Clock: func() time.Time { return now }}, state: newCheckpoint(),
 		lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{},
 	}
@@ -710,8 +655,8 @@ func TestExpiredKnownAckReplayDrainsWithoutStateOrLeaseChange(t *testing.T) {
 	if len(agent.state.Acks) != 0 {
 		t.Fatalf("expired ACK changed readiness state: %#v", agent.state.Acks)
 	}
-	if _, err := os.Stat(leasePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expired ACK renewed watchdog lease: %v", err)
+	if agent.state.Active != nil {
+		t.Fatal("expired ACK changed applied configuration")
 	}
 	ack.MemberID = "unknown"
 	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err == nil {
@@ -721,5 +666,16 @@ func TestExpiredKnownAckReplayDrainsWithoutStateOrLeaseChange(t *testing.T) {
 	ack.ValidUntil = ack.ObservedAt.Add(2*time.Minute + time.Nanosecond)
 	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err == nil {
 		t.Fatal("overlong ACK lease was accepted")
+	}
+}
+
+func assertAppliedCheckpoint(t *testing.T, agent *Agent) {
+	t.Helper()
+	state, err := agent.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || !installedFilesMatch(state.Active.Files) || activationPending(agent.cfg.StateDir) {
+		t.Fatal("approved configuration is not durably active")
 	}
 }

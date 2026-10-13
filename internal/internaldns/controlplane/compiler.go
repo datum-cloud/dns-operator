@@ -16,9 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// PublicationPlan is serialized into DNSPublicationChunk payloads. It carries
-// original observation deadlines so a disconnected serving agent can expire an
-// endpoint without receiving a central deletion.
+// PublicationPlan is the canonical record configuration serialized into publication chunks.
 type PublicationPlan struct {
 	ZoneUID       types.UID           `json:"zoneUID"`
 	ZoneApex      string              `json:"zoneApex"`
@@ -42,15 +40,13 @@ type PublicationRRSet struct {
 	TTLSeconds       int32                     `json:"ttlSeconds"`
 	Records          []dnsv1alpha1.RecordEntry `json:"records"`
 	ContributionUIDs []types.UID               `json:"contributionUIDs,omitempty"`
-	ValidUntil       *time.Time                `json:"validUntil,omitempty"`
 }
 
 type ContributionFence struct {
-	UID        types.UID `json:"uid"`
-	GrantUID   types.UID `json:"grantUID"`
-	Epoch      int64     `json:"epoch"`
-	Sequence   int64     `json:"sequence"`
-	ValidUntil time.Time `json:"validUntil"`
+	UID      types.UID `json:"uid"`
+	GrantUID types.UID `json:"grantUID"`
+	Epoch    int64     `json:"epoch"`
+	Sequence int64     `json:"sequence"`
 }
 
 type RegistrationFence struct {
@@ -88,10 +84,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 		return CompileResult{}, err
 	}
 
-	now := in.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
 	result := CompileResult{Accepted: map[types.UID]bool{}, Reasons: map[types.UID]string{}, Sequences: map[types.UID]int64{}}
 	result.Plan.ZoneUID = in.Zone.UID
 	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
@@ -195,7 +187,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 	previousSeq := map[types.UID]ContributionFence{}
 	if in.Previous != nil {
 		for _, f := range in.Previous.Contributions {
-			f.ValidUntil = f.ValidUntil.UTC()
 			previousSeq[f.UID] = f
 		}
 	}
@@ -210,7 +201,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 		ttl     int32
 		records []dnsv1alpha1.RecordEntry
 		uids    []types.UID
-		until   *time.Time
 	}
 	aggregates := map[ownershipKey]*aggregate{}
 	for i := range in.Contributions {
@@ -222,11 +212,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 			result.Reasons[c.UID] = reason
 			continue
 		}
-		until := time.Time{}
-		if c.Status.ValidUntil != nil {
-			until = c.Status.ValidUntil.UTC()
-		}
-		currentFence := ContributionFence{UID: c.UID, GrantUID: grant.UID, Epoch: c.Status.WriterEpoch, Sequence: c.Status.Sequence, ValidUntil: until}
+		currentFence := ContributionFence{UID: c.UID, GrantUID: grant.UID, Epoch: c.Status.WriterEpoch, Sequence: c.Status.Sequence}
 		previousFence := previousSeq[c.UID]
 		if previousFence.UID == "" || currentFence.Epoch > previousFence.Epoch || currentFence.Sequence > previousFence.Sequence {
 			publicationFences[c.UID] = currentFence
@@ -238,10 +224,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 		}
 		if !c.Status.Eligible {
 			result.Reasons[c.UID] = "Ineligible"
-			continue
-		}
-		if c.Status.ValidUntil == nil || !c.Status.ValidUntil.After(now) {
-			result.Reasons[c.UID] = "Expired"
 			continue
 		}
 		validBundle := true
@@ -281,10 +263,6 @@ func Compile(in CompileInput) (CompileResult, error) {
 				record.Name = key.name
 				a.records = append(a.records, record)
 				a.uids = append(a.uids, c.UID)
-				if a.until == nil || until.Before(*a.until) {
-					u := until
-					a.until = &u
-				}
 			}
 		}
 	}
@@ -311,7 +289,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 	}
 	for key, a := range aggregates {
 		sortAggregate(a.records, a.uids)
-		result.Plan.RRsets = append(result.Plan.RRsets, PublicationRRSet{Name: key.name, RecordType: key.rrtype, TTLSeconds: a.ttl, Records: a.records, ContributionUIDs: a.uids, ValidUntil: a.until})
+		result.Plan.RRsets = append(result.Plan.RRsets, PublicationRRSet{Name: key.name, RecordType: key.rrtype, TTLSeconds: a.ttl, Records: a.records, ContributionUIDs: a.uids})
 	}
 	sort.Slice(result.Plan.RRsets, func(i, j int) bool {
 		if result.Plan.RRsets[i].Name == result.Plan.RRsets[j].Name {
@@ -342,9 +320,6 @@ func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1
 	if c.Status.Sequence <= 0 {
 		return "InvalidSequence"
 	}
-	if c.Status.ValidUntil == nil || c.Status.ValidUntil.IsZero() {
-		return "MissingValidityDeadline"
-	}
 	if previous.UID != "" {
 		if previous.GrantUID != "" && previous.GrantUID != grant.UID {
 			return "FenceIdentityMismatch"
@@ -355,9 +330,6 @@ func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1
 		if previous.Epoch == c.Status.WriterEpoch {
 			if c.Status.Sequence < previous.Sequence {
 				return dnsValueNonIncreasingSequence
-			}
-			if c.Status.Sequence == previous.Sequence && !c.Status.ValidUntil.Time.Equal(previous.ValidUntil) {
-				return "FenceDeadlineMismatch"
 			}
 		}
 	}

@@ -151,8 +151,8 @@ func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
 	if saved.Publications["zone-a"].Verified {
 		t.Fatal("failed publication acknowledged")
 	}
-	if runner.calls[len(runner.calls)-1].Path != "gate" {
-		t.Fatal("failed activation did not fail closed")
+	if runner.calls[len(runner.calls)-1].Path == "gate" || saved.Active == nil {
+		t.Fatal("rejected expansion discarded the active configuration")
 	}
 	runner.failAt = 0
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, m)); err != nil {

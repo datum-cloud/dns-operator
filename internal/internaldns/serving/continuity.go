@@ -23,7 +23,8 @@ type activeConfiguration struct {
 
 func (a *Agent) gateRejectedUpdate(ctx context.Context, err error) {
 	var preserved preservedTransactionError
-	if errors.As(err, &preserved) && a.canRetainActive() {
+	var uncertain uncertainTransactionError
+	if !errors.As(err, &uncertain) && a.canRetainActive() && (errors.As(err, &preserved) || !a.needsActivation && a.state.RenderedHash == hashFiles(a.state.Active.Files)) {
 		return
 	}
 	_ = a.failClosed(ctx)

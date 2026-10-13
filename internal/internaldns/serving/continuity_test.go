@@ -91,3 +91,63 @@ func TestPendingZoneIsIsolatedFromReadyZone(t *testing.T) {
 		t.Fatal("ready zone was not materialized")
 	}
 }
+
+type blockedValidationRunner struct {
+	recordingRunner
+	blocked bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockedValidationRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+	if command.Path == "validate" && r.blocked {
+		close(r.started)
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return r.recordingRunner.Run(ctx, command)
+}
+
+func TestActiveHealthDoesNotWaitForCandidateValidation(t *testing.T) {
+	now := time.Now().UTC()
+	runner := &blockedValidationRunner{started: make(chan struct{}), release: make(chan struct{})}
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	runner.blocked = true
+	candidate := *agent.state.Snapshot
+	candidate.ConfigurationRevision++
+	candidate.Bindings[0].ConfigurationRevision++
+	candidate.Bindings[0].Zones = append(candidate.Bindings[0].Zones, model.ZoneAttachment{ZoneUID: "pending", Apex: "pending.internal", Pending: true, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", candidate.ConfigurationEpoch, candidate.ConfigurationRevision, candidate))
+	}()
+	select {
+	case <-runner.started:
+	case <-ctx.Done():
+		t.Fatal("candidate validation did not start")
+	}
+	healthDone := make(chan error, 1)
+	go func() { healthDone <- agent.refreshActiveHealth(ctx) }()
+	select {
+	case err := <-healthDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("active health waited for the candidate transaction")
+	}
+	close(runner.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

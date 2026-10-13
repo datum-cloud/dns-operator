@@ -49,6 +49,10 @@ type preservedTransactionError struct{ error }
 
 func (e preservedTransactionError) Unwrap() error { return e.error }
 
+type uncertainTransactionError struct{ error }
+
+func (e uncertainTransactionError) Unwrap() error { return e.error }
+
 type oldFile struct {
 	data    []byte
 	mode    os.FileMode
@@ -66,7 +70,22 @@ func (t FileTransaction) ApplyForce(ctx context.Context, files map[string][]byte
 	return t.apply(ctx, files, true)
 }
 
-func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, force bool) error {
+func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, force bool) (resultErr error) {
+	mutating := false
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		var preserved preservedTransactionError
+		if errors.As(resultErr, &preserved) {
+			return
+		}
+		if mutating {
+			resultErr = uncertainTransactionError{resultErr}
+		} else {
+			resultErr = preservedTransactionError{resultErr}
+		}
+	}()
 	if t.Runner == nil {
 		t.Runner = ExecRunner{}
 	}
@@ -155,6 +174,7 @@ func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, for
 		return preservedTransactionError{fmt.Errorf("validate staged serving configuration: %w", err)}
 	}
 	installed := make([]string, 0, len(paths))
+	mutating = true
 	for _, path := range paths {
 		if !changed[path] {
 			continue

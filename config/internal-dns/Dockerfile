@@ -21,14 +21,14 @@ ENTRYPOINT ["/internal-dns"]
 
 FROM debian:trixie-slim AS serving
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    bind9 bind9-utils dnsdist iproute2 procps netcat-openbsd ca-certificates bash jq && \
+    bind9 bind9-utils dnsdist iproute2 procps netcat-openbsd ca-certificates bash && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/internal-dns /internal-dns
 COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532
-RUN for tool in bash jq date ip nc named named-checkconf named-checkzone dnsdist rndc; do \
+RUN for tool in bash ip nc named named-checkconf named-checkzone dnsdist rndc; do \
       command -v "$tool" >/dev/null || exit 1; \
-    done && jq --version && test -x /internal-dns
+    done && test -x /internal-dns
 RUN for helper in /usr/local/sbin/internal-dns-*; do \
       test -x "$helper" && bash -n "$helper" || exit 1; \
     done

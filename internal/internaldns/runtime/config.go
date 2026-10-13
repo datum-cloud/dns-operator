@@ -14,12 +14,12 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
-	"go.miloapis.com/dns-operator/internal/internaldns/watchdog"
 	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
-	roleWatchdog       = "watchdog"
+	roleReadiness      = "readiness"
+	roleServing        = "serving"
 	roleControlPlane   = "control-plane"
 	memberRoleRegional = "regional"
 	roleAgent          = "agent"
@@ -80,7 +80,6 @@ type Config struct {
 	ManagedDomainSuffix   string                    `json:"managedDomainSuffix,omitempty"`
 	PrivateZoneClassName  string                    `json:"privateZoneClassName,omitempty"`
 	Agent                 serving.Config            `json:"agent,omitempty"`
-	Watchdog              watchdog.Config           `json:"watchdog,omitempty"`
 	Shards                []platform.PlannerConfig  `json:"shards,omitempty"`
 }
 
@@ -165,12 +164,18 @@ func validateKubeAPI(name string, c KubeAPIClientConfig) error {
 func (c *Config) Validate(role string) error {
 	c.defaults()
 	switch role {
-	case roleControlPlane, roleAgent, roleWatchdog:
+	case roleControlPlane, roleAgent, roleReadiness, roleServing:
 	default:
 		return fmt.Errorf("unsupported role %q", role)
 	}
-	if role == roleWatchdog {
-		return c.Watchdog.Validate()
+	if role == roleReadiness || role == roleServing {
+		if c.Agent.Region == "" {
+			c.Agent.Region = c.Region
+		}
+		if c.Agent.Shard == "" {
+			c.Agent.Shard = c.Shard
+		}
+		return c.Agent.Validate()
 	}
 	if len(c.RegionalTransports) == 0 {
 		if err := validateTransportConfig(c.NATS, c.Stream, c.EnsureStream); err != nil {

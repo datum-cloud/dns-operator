@@ -32,7 +32,7 @@ these processes. They never create workloads per VPC or zone. The legacy
 used for the multi-member production layout.
 
 Each member needs a distinct member ID, NATS identity and durable consumers,
-checkpoint PVC, configuration PVC, and independent watchdog lease. Treat that
+checkpoint PVC, configuration PVC, and durable activation state. Treat that
 set as a single-writer unit. A rolling update must allocate a new member
 identity and storage; do not run two pods against one checkpoint.
 
@@ -135,18 +135,21 @@ from persistent checkpoints before waiting for messaging connectivity. New
 nodes require a complete configuration before accepting queries. Replay cannot
 regress writer or configuration versions or restore a withdrawn lifetime.
 
-The local watchdog lease is at most five seconds. An independent health loop
-checks local DNS daemons over UDP and TCP and renews the lease for the activated
-configuration. Staging and validation can continue while that configuration
-serves. A rejected expansion retains the activated configuration; a withdrawal
-that cannot be applied gates serving. The gate runs without Kubernetes or NATS.
+Readiness verifies the approved checkpoint and installed files, then queries
+local DNS daemons over UDP and TCP. Healthy daemons continue through normal
+agent stops and restarts. Staging and validation can continue while approved
+configuration serves. A rejected expansion retains that configuration; a
+withdrawal that cannot be applied gates serving. The serving supervisor accepts
+approved configuration independently of the agent. Incomplete installation
+keeps a durable activation marker; candidate verification requires a live
+transaction lock until the approved checkpoint is committed. Orphaned
+activation remains gated until recovery verifies the saved configuration.
+Readiness and activation gates use local state without Kubernetes or NATS.
 
 Mount the transaction stage, active BIND configuration, zone files, checkpoint,
-and watchdog lease on low-latency storage local to the serving host. Do not put
-the hot transaction or lease path on a desktop file-sharing mount or a remote
-filesystem whose fsync latency can consume the watchdog budget. Replication is
-provided by the durable publication stream and independent regional members;
-each member still has its own crash-safe checkpoint volume.
+and activation state on storage local to the serving host. Replication uses
+the durable publication stream and independent regional members; each member
+has its own crash-safe checkpoint volume.
 
 The regional BIND reload helper must reload existing primary zones, for
 example with `rndc reload`. `rndc reconfig` only guarantees configuration and
@@ -157,7 +160,7 @@ deployment's normal configuration reload because that BIND tier is recursive.
 ## Capacity and transport
 
 Set `maxBindings` from measured BIND view memory, validation/reload time,
-dnsdist rule cost, NATS payload size, and watchdog timing. The example caps a
+dnsdist rule cost, NATS payload size, and activation recovery time. The example caps a
 shard at 200 contexts and budgets 2 MiB per view. Add another fixed shard before
 raising those bounds.
 

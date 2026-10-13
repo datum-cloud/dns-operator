@@ -155,7 +155,7 @@ func TestConfigLoaderRejectsRemovedPrivateServingFields(t *testing.T) {
 
 func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	dir := t.TempDir()
-	cfg := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://127.0.0.1:1", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Agent: serving.Config{MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage")}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, WatchdogLeasePath: filepath.Join(dir, "lease.json"), ReconcileInterval: 10 * time.Millisecond}}
+	cfg := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://127.0.0.1:1", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Agent: serving.Config{MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage")}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ReconcileInterval: 10 * time.Millisecond}}
 	if err := cfg.Validate(roleAgent); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	if err := seed.Handle(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(cfg.Agent.WatchdogLeasePath); err != nil {
+	if err := os.Remove(cfg.Agent.Render.NodeDNSDist.Path); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -180,7 +180,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	go func() { done <- runAgent(ctx, cfg) }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		if _, err := os.Stat(cfg.Agent.WatchdogLeasePath); err == nil {
+		if _, err := os.Stat(cfg.Agent.Render.NodeDNSDist.Path); err == nil {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -223,5 +223,17 @@ func TestControlPlaneProjectDiscoveryValidation(t *testing.T) {
 	relative.ProjectDiscovery = &ProjectDiscoveryConfig{Kubeconfig: "relative"}
 	if err := relative.Validate(roleControlPlane); err == nil {
 		t.Fatal("relative discovery credential accepted")
+	}
+}
+
+func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {
+	for _, role := range []string{"serving", "readiness"} {
+		t.Run(role, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := Config{Region: "central", Shard: "one", Agent: serving.Config{MemberID: "node", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, CacheFlush: []serving.Command{{Path: "/bin/true"}}, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []serving.Command{{Path: "/bin/true"}}}}}
+			if err := cfg.Validate(role); err != nil {
+				t.Fatalf("local role required messaging or control-plane configuration: %v", err)
+			}
+		})
 	}
 }

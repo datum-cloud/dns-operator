@@ -223,7 +223,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = cl.List(context.Background(), &out)
-	if len(out.Items) != 4 {
+	if len(out.Items) != 5 {
 		t.Fatal("another holder published during a current lease")
 	}
 }

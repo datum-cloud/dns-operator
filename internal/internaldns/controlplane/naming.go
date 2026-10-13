@@ -22,7 +22,7 @@ type ResolvedName struct {
 	Canonical  bool
 }
 
-// ResolveNaming returns the stable platform namespace first and authorized
+// ResolveNaming returns the stable platform namespace first and configured
 // additive policy names after it. It never selects an arbitrary associated
 // customer zone.
 // Selectors match DNSRegistration metadata labels supplied by the publisher.

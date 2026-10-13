@@ -36,6 +36,36 @@ func TestBrokerConfigurationKeepsNATSWildcards(t *testing.T) {
 			continue
 		}
 		cfg := item["stringData"].(map[string]any)["nats.conf"].(string)
+		var broker struct {
+			Authorization struct {
+				Users []json.RawMessage `json:"users"`
+			} `json:"authorization"`
+		}
+		if err := json.Unmarshal([]byte(cfg), &broker); err != nil {
+			t.Fatal(err)
+		}
+		if len(broker.Authorization.Users) != 6 {
+			t.Fatal("broker requires credentials for both controllers and all serving members")
+		}
+		for _, raw := range broker.Authorization.Users {
+			var user struct {
+				User        string                     `json:"user"`
+				Permissions map[string]json.RawMessage `json:"permissions"`
+			}
+			if err := json.Unmarshal(raw, &user); err != nil {
+				t.Fatal(err)
+			}
+			if user.User == "" || user.Permissions["publish"] == nil || user.Permissions["subscribe"] == nil {
+				t.Fatal("broker users require scoped publish and subscribe permissions")
+			}
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cfg), &top); err != nil {
+			t.Fatal(err)
+		}
+		if top["version"] != nil {
+			t.Fatal("broker configuration contains an unsupported version option")
+		}
 		if strings.Contains(cfg, `\u003e`) || !strings.Contains(cfg, `dns.private.serving.>`) {
 			t.Fatal("broker configuration escaped NATS wildcard subjects")
 		}

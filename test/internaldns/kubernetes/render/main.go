@@ -391,7 +391,7 @@ func configure() {
 	cfg := exampleConfigs("control-plane.example.yaml")["internal-dns-control-plane-config"]
 	cfg.ClusterPrefix = "fd54::/64"
 	cfg.OwnershipLeaseSeconds = 10
-	cfg.Projects = []runtime.ProjectConfig{{Name: "project-a", ProjectUID: "project-a-uid", Namespace: projectNS, Kubeconfig: "/sources/project-a.json"}, {Name: "project-b", ProjectUID: "project-b-uid", Namespace: projectNS, Kubeconfig: "/sources/project-b.json"}}
+	configureProjectSources(&cfg)
 	cfg.NodeBackends = []model.Backend{{MemberID: "node-bind-0", Address: "127.0.0.1", Port: 5300}}
 	cfg.ClusterBackends = []model.Backend{{MemberID: memberNames[2], Address: bindIP[0], Port: 5300}, {MemberID: memberNames[3], Address: bindIP[1], Port: 5300}}
 	for _, name := range []string{"control-a", "control-b"} {
@@ -434,4 +434,9 @@ func configure() {
 	list("platform-configure.json", items)
 	// No tokens or certificate contents are included in the public contract.
 	write("environment.json", object{"platformKubeconfig": platform, "namespace": ns, "region": "us-central1", "shard": "shared-0", "probePod": "internal-dns-probe", "probeContainer": "probe", "probeBinary": "/dns-qualify", "controllerDeployments": []string{"control-a", "control-b"}, "brokerStatefulSet": "internal-dns-nats", "projects": projectRows, "regionalMembers": memberNames[2:], "members": memberNames, "limitations": []string{"Service-side route fixture, not Galactic VPC authorization", "Independent Kind project APIs, not Milo project discovery", "One host and one region, not independent regional failure"}})
+}
+
+func configureProjectSources(cfg *runtime.Config) {
+	cfg.ProjectDiscovery = nil
+	cfg.Projects = []runtime.ProjectConfig{{Name: "project-a", ProjectUID: "project-a-uid", Namespace: projectNS, Kubeconfig: "/sources/project-a.json"}, {Name: "project-b", ProjectUID: "project-b-uid", Namespace: projectNS, Kubeconfig: "/sources/project-b.json"}}
 }

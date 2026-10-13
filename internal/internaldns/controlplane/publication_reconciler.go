@@ -477,7 +477,7 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	// fields may lose fractional seconds during API round trips, so rebuilding
 	// from manifest metadata can make an unchanged observation appear mutated.
 	for _, f := range wire.ObservationFences {
-		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired})
+		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired, SourceName: f.SourceName})
 	}
 	return p, nil
 }

@@ -170,7 +170,7 @@ Required deployment and consumer-path scenarios:
   UDP and TCP, including positive and negative cache isolation.
 - Unauthorized access, forged destinations and PROXYv2 headers, and an expired
   service route cannot return another VPC's records. Product credentials cannot
-  issue grants or authorize network access.
+  configure resolver access.
 - Endpoint health withdrawal and recovery, deletion, source API loss, and
   stale-observation replay preserve current source fences and configured TTLs.
   Records remain available during control-plane outages until an explicit update

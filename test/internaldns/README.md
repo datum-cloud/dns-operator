@@ -63,7 +63,7 @@ cert-manager, Kyverno, and Envoy bootstrap. Private and public DNS use separate
 namespaces on this foundation.
 
 The manifest renderer reads the shipped runtime configuration and RBAC. Each
-controller uses scoped project worker credentials; product, grant issuer, and
+controller uses scoped project worker credentials; product and
 VPC integration credentials are separate. The simulated Compute publisher
 creates registrations and contributions through the project API. It discovers
 managed names from `DNSResolverContext.status.managedNamespace`.
@@ -111,7 +111,7 @@ into the separate DNS service VPC. Kind cannot establish physical fabric,
 microVM attachment, host-loss durability, regional independence, or production
 capacity.
 
-The suite uses wire version `v1alpha4` and persistent format 5 checkpoints.
+The suite uses wire version `v1alpha5` and persistent format 5 checkpoints.
 Compatible fleet upgrades retain those checkpoints and transport state. Roll out
 serving support before enabling new controller output; see the
 [rollout contract](../../config/internal-dns/README.md#rollout-and-recovery).

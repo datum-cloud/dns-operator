@@ -17,7 +17,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-const APIVersion = "internal.dns.networking.miloapis.com/v1alpha4"
+const APIVersion = "internal.dns.networking.miloapis.com/v1alpha5"
 
 type Kind string
 
@@ -77,9 +77,9 @@ const (
 	TransportTCP Transport = "TCP"
 )
 
-type Authorization struct {
-	IssuerEpoch uint64 `json:"issuerEpoch"`
-	Revision    uint64 `json:"revision"`
+type AccessVersion struct {
+	Epoch    uint64 `json:"epoch"`
+	Sequence uint64 `json:"sequence"`
 }
 
 type Backend struct {
@@ -110,10 +110,10 @@ type Binding struct {
 	Zones                 []ZoneAttachment `json:"zones"`
 	NodeBackends          []Backend        `json:"nodeBackends"`
 	ClusterBackends       []Backend        `json:"clusterBackends"`
-	Authorization         Authorization    `json:"authorization"`
+	Version               AccessVersion    `json:"version"`
 	Tombstone             bool             `json:"tombstone,omitempty"`
 	// ConfigurationPending gates queries while attached publications are absent.
-	// It does not revoke or advance the source authorization.
+	// It does not revoke or advance the access version.
 	ConfigurationPending bool `json:"configurationPending,omitempty"`
 }
 
@@ -192,8 +192,8 @@ func (s ServingSnapshot) Validate() error {
 			}
 			seenVIP[raw] = b.BindingUID
 		}
-		if b.Port == 0 || len(b.Transports) == 0 || b.Authorization.IssuerEpoch == 0 || b.Authorization.Revision == 0 {
-			return fmt.Errorf("binding %q has incomplete transport or authorization", b.BindingUID)
+		if b.Port == 0 || len(b.Transports) == 0 || b.Version.Epoch == 0 || b.Version.Sequence == 0 {
+			return fmt.Errorf("binding %q has incomplete transport or access version", b.BindingUID)
 		}
 		if b.ConfigurationPending && len(b.Zones) != 0 {
 			return fmt.Errorf("binding %q pending configuration must not expose partial zones", b.BindingUID)
@@ -325,7 +325,7 @@ func (c PublicationChunk) Validate() error {
 type RRRecord struct {
 	Content         string `json:"content"`
 	ContributionUID string `json:"contributionUID,omitempty"`
-	WriterEpoch     uint64 `json:"writerEpoch,omitempty"`
+	Generation      uint64 `json:"generation,omitempty"`
 	Sequence        uint64 `json:"sequence,omitempty"`
 	Eligible        bool   `json:"eligible"`
 }
@@ -354,8 +354,7 @@ type RegistrationFence struct {
 // ObservationFence carries the accepted high-water mark, including withdrawn observations.
 type ObservationFence struct {
 	ContributionUID string `json:"contributionUID"`
-	GrantUID        string `json:"grantUID"`
-	WriterEpoch     uint64 `json:"writerEpoch"`
+	Generation      uint64 `json:"generation"`
 	Sequence        uint64 `json:"sequence"`
 }
 
@@ -380,7 +379,7 @@ func (p PublicationPlan) Validate() error {
 	observationByUID := make(map[string]ObservationFence, len(p.ObservationFences))
 	previousContribution := ""
 	for _, observation := range p.ObservationFences {
-		if observation.ContributionUID == "" || observation.GrantUID == "" || observation.WriterEpoch == 0 || observation.Sequence == 0 {
+		if observation.ContributionUID == "" || observation.Generation == 0 || observation.Sequence == 0 {
 			return errors.New("publication observation fence is incomplete")
 		}
 		if previousContribution != "" && observation.ContributionUID <= previousContribution {
@@ -429,12 +428,12 @@ func (p PublicationPlan) Validate() error {
 				return fmt.Errorf("RRset %q contains an invalid record", key)
 			}
 			if rec.ContributionUID == "" {
-				if rec.WriterEpoch != 0 || rec.Sequence != 0 {
+				if rec.Generation != 0 || rec.Sequence != 0 {
 					return fmt.Errorf("RRset %q static record contains contribution fence data", key)
 				}
 			} else {
 				observation, ok := observationByUID[rec.ContributionUID]
-				if !ok || rec.WriterEpoch != observation.WriterEpoch || rec.Sequence != observation.Sequence {
+				if !ok || rec.Generation != observation.Generation || rec.Sequence != observation.Sequence {
 					return fmt.Errorf("RRset %q record fence does not match contribution observation %q", key, rec.ContributionUID)
 				}
 			}

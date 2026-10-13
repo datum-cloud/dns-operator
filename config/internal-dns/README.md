@@ -35,17 +35,14 @@ projection or publication for healthy sources.
 DNS always consumes `DNSResolverContext` and `DNSResolverAccessBinding` from
 the project API. It does not watch a networking API. A trusted integration
 principal bound to `internal-dns-vpc-integration` creates a context and writes
-regional access intent. RBAC separates integration, grant issuer,
-product publisher, and DNS controller permissions. Product publishers cannot
-issue grants or modify resolver authority.
-The context UID, access UID, writer epoch, and sequence are carried into the
+regional access intent. RBAC separates network integration, product publication, and DNS controller
+permissions. Product publishers cannot modify resolver access.
+The context UID, access UID, access epoch, and sequence are carried into the
 internal `DNSResolverBinding`. Access persists until an explicit withdrawal.
 
 The control plane allocates a managed namespace when the context requests one.
 Compute discovers the context status and publishes through
-`DNSRegistration` and `DNSRecordContribution` under a separately issued
-`DNSContributionGrant`; it does
-not choose a zone for the managed-name path and receives no NATS credentials.
+`DNSRegistration` and `DNSRecordContribution`. It does not choose a zone for the managed-name path and receives no NATS credentials.
 
 ## Serving identity and BIND views
 
@@ -161,18 +158,18 @@ The project API server authorizes DNS resource and status operations. Bind the
 roles in `rbac.yaml` to service principals in each project namespace. Customer
 access uses the protected resources and DNS roles in `config/iam`.
 
-The webhook validates live references and verifies that changes to a publisher's
-contribution and eligibility observation use that publisher's current grant.
-Grants identify the authenticated subject within the project API context.
-Publication-result updates cannot change a publisher's
-observation. Resource permissions do not depend on webhook principal lists.
+The webhook validates live resource relationships. Project RBAC controls who
+can publish; the compiler validates registration ownership, record types, and
+observation versions. Publishers preserve DNS-owned publication status during
+optimistically locked observation updates.
+
 ## Rollout and recovery
 
 Project APIs select zones by name and report names and readiness. DNS stores
 resolved ownership identities in reference ConfigMaps in the service project.
 The collector checks source resources before removing those records.
 
-The supported envelope version is `v1alpha4` and checkpoint format is 5. Keep
+The supported envelope version is `v1alpha5` and checkpoint format is 5. Keep
 reference records, transport state, and persistent checkpoints across compatible upgrades. Deploy
 serving agents before controllers that emit per-zone pending state. Enable the
 controller change after every serving member supports that contract; a matching

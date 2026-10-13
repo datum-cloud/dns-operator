@@ -40,7 +40,7 @@ func (a *Agent) canRetainActive() bool {
 	}
 	for _, binding := range old.Snapshot.Bindings {
 		candidate, ok := next[binding.BindingUID]
-		if !ok || candidate.Tombstone || candidate.ConfigurationPending || bindingIdentity(binding) != bindingIdentity(candidate) || binding.Authorization != candidate.Authorization {
+		if !ok || candidate.Tombstone || candidate.ConfigurationPending || bindingIdentity(binding) != bindingIdentity(candidate) || binding.Version != candidate.Version {
 			return false
 		}
 		for _, zone := range binding.Zones {

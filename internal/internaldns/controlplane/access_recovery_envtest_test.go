@@ -76,12 +76,12 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	readyContext := func(c *dnsv1alpha1.DNSResolverContext) {
 		t.Helper()
 		requireAccessTestSuccess(t, cl.Create(ctx, c))
-		c.Status.AccessWriterEpoch = 1
+		c.Status.AccessEpoch = 1
 		apimeta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: c.Generation, Reason: "Accepted", LastTransitionTime: metav1.NewTime(now)})
 		requireAccessTestSuccess(t, cl.Status().Update(ctx, c))
 	}
 	readyContext(resolverContext)
-	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 2}}}
+	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}}}
 	requireAccessTestSuccess(t, cl.Create(ctx, access))
 	r := &Reconciler{Client: cl, Scheme: scheme, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: &platform.Allocator{Client: cl, Namespace: "platform"}}}
 	reconcile := func(at time.Time) {
@@ -98,12 +98,12 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	key := client.ObjectKeyFromObject(&binding)
 	reconcile(now.Add(365 * 24 * time.Hour))
 	requireAccessTestSuccess(t, cl.Get(ctx, key, &binding))
-	if binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 2 || binding.Spec.Configuration.Revision != 1 {
+	if binding.Spec.Tombstone || binding.Spec.Version.Sequence != 2 || binding.Spec.Configuration.Revision != 1 {
 		t.Fatalf("elapsed time changed access: %#v", binding.Spec)
 	}
 	requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(access), access))
 	// Schema validation preserves listener identity and ordered source revisions.
-	for _, mutate := range []func(*dnsv1alpha1.DNSResolverAccessBinding){func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.QueryIdentity.Value = "fd70:100::20" }, func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.Authorization.Sequence = 1 }, func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.ContextRef.UID = "another-context" }} {
+	for _, mutate := range []func(*dnsv1alpha1.DNSResolverAccessBinding){func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.QueryIdentity.Value = "fd70:100::20" }, func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.Version.Sequence = 1 }, func(a *dnsv1alpha1.DNSResolverAccessBinding) { a.Spec.ContextRef.UID = "another-context" }} {
 		candidate := access.DeepCopy()
 		mutate(candidate)
 		if err := cl.Update(ctx, candidate); !apierrors.IsInvalid(err) {
@@ -120,7 +120,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	requireAccessTestSuccess(t, cl.Delete(ctx, resolverContext))
 	reconcile(now.Add(365 * 24 * time.Hour))
 	requireAccessTestSuccess(t, cl.Get(ctx, key, &binding))
-	if !binding.Spec.Tombstone || binding.Spec.Authorization.Sequence != 2 {
+	if !binding.Spec.Tombstone || binding.Spec.Version.Sequence != 2 {
 		t.Fatal("explicit context deletion did not withdraw access")
 	}
 	replacement := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: resolverContext.Name, Namespace: "project"}, Spec: resolverContext.Spec}
@@ -134,7 +134,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 	access = &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "replacement", Namespace: "project"}, Spec: access.Spec}
 	access.Spec.ContextRef.UID = replacement.UID
 	access.Spec.QueryIdentity.Value = "fd70:100::20"
-	access.Spec.Authorization.Sequence = 1
+	access.Spec.Version.Sequence = 1
 	requireAccessTestSuccess(t, cl.Create(ctx, access))
 	reconcile(now.Add(365 * 24 * time.Hour))
 	requireAccessTestSuccess(t, cl.List(ctx, &bindings, client.InNamespace("platform")))

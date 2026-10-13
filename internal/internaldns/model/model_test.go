@@ -42,7 +42,7 @@ func TestServingSnapshotRejectsSharedDestination(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
 	b := func(uid, vpc string) Binding {
-		return Binding{BindingUID: uid, ProjectUID: "project", ContextUID: vpc, BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "2001:db8::1", ClusterAddress: "2001:db8::2", Port: 53, Transports: []Transport{TransportUDP, TransportTCP}, Authorization: Authorization{IssuerEpoch: 1, Revision: 1}}
+		return Binding{BindingUID: uid, ProjectUID: "project", ContextUID: vpc, BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "2001:db8::1", ClusterAddress: "2001:db8::2", Port: 53, Transports: []Transport{TransportUDP, TransportTCP}, Version: AccessVersion{Epoch: 1, Sequence: 1}}
 	}
 	s := ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []Binding{b("one", "vpc-a"), b("two", "vpc-b")}}
 	if err := s.Validate(); err == nil {
@@ -94,7 +94,7 @@ func TestEnvelopeRejectsObsoleteWireVersion(t *testing.T) {
 
 func TestPendingConfigurationCannotExposePartialZoneAttachments(t *testing.T) {
 	now := time.Now().UTC()
-	binding := Binding{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::a", ClusterAddress: "fd54::a", Port: 53, Transports: []Transport{TransportUDP}, Authorization: Authorization{IssuerEpoch: 1, Revision: 1}, ConfigurationPending: true, Zones: []ZoneAttachment{{ZoneUID: "zone", Apex: "private.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1}}}
+	binding := Binding{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::a", ClusterAddress: "fd54::a", Port: 53, Transports: []Transport{TransportUDP}, Version: AccessVersion{Epoch: 1, Sequence: 1}, ConfigurationPending: true, Zones: []ZoneAttachment{{ZoneUID: "zone", Apex: "private.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1}}}
 	snapshot := ServingSnapshot{Region: "east", Shard: "shared", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []Binding{binding}}
 	if err := snapshot.Validate(); err == nil {
 		t.Fatal("partial pending context accepted")

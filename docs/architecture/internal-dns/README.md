@@ -323,7 +323,6 @@ spec:
   # Galactic maps verified VPC traffic to this service-side destination.
   # This differs from the well-known address exposed inside the VPC.
   destinationAddress: fd70:100::10
-
 ```
 
 Access reports `Accepted` after validation and `Ready` after required members
@@ -543,7 +542,6 @@ spec:
       nodeAddress: fd70:100::10
       # Node resolvers forward to this regional context destination.
       regionalAddress: fd70:200::10
-      # Both destinations use DNS port 53 and the same transports.
     # Reserve private apices even while their publication is pending.
     zoneApices:
       44444444-4444-4444-8444-444444444444: datum.internal
@@ -555,7 +553,7 @@ spec:
       - name: production
         uid: 88888888-8888-4888-8888-888888888888
   version:
-    # Copy the current access mapping version.
+    # DNS generates ordering fences for this mapping's lifetime.
     epoch: 3
     sequence: 27
 ```

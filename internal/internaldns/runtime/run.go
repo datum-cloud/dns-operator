@@ -116,7 +116,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			// to the source API so a partition cannot refresh access mappings from stale
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
-			reconciler := &controlplane.Reconciler{Client: routed, Scheme: scheme, Options: controlplane.ReconcilerOptions{
+			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
 				ProjectUID:       project.ProjectUID,
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,

@@ -41,7 +41,7 @@ func TestCompileDeterministicMultiVPCAggregation(t *testing.T) {
 		t.Fatalf("unexpected wire plan: %#v", wire)
 	}
 	record := wire.RRSets[0].Records[0]
-	if record.ContributionUID != "contribution-a" || record.Generation != 4 || record.Sequence != 18 || !record.Eligible {
+	if record.ContributionUID != "contribution-a" || record.Generation != 18 || record.Sequence != 18 || !record.Eligible {
 		t.Fatalf("missing contribution fence: %#v", record)
 	}
 }
@@ -81,8 +81,8 @@ func TestCompileWithdrawalAdvancesHighWaterAndRejectsRollback(t *testing.T) {
 	in := fixture(now)
 	previous := in.Contributions[0]
 	in.Previous = &PublicationPlan{Contributions: []ContributionFence{{UID: previous.UID, Generation: previous.Generation, Sequence: 18}}}
-	in.Contributions[0].Status.Sequence = 19
-	in.Contributions[0].Status.Eligible = false
+	in.Contributions[0].Generation = 19
+	in.Contributions[0].Spec.Eligible = false
 	got, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
@@ -91,14 +91,14 @@ func TestCompileWithdrawalAdvancesHighWaterAndRejectsRollback(t *testing.T) {
 		t.Fatalf("withdrawal fence incorrect: %#v", got)
 	}
 	in.Previous = &got.Plan
-	in.Contributions[0].Status.Sequence = 18
-	in.Contributions[0].Status.Eligible = true
+	in.Contributions[0].Generation = 18
+	in.Contributions[0].Spec.Eligible = true
 	rolled, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rolled.Reasons[previous.UID] != "NonIncreasingSequence" || len(rolled.Plan.RRsets) != 0 {
-		t.Fatalf("sequence rollback resurrected records: %#v", rolled)
+	if rolled.Reasons[previous.UID] != "StaleContributionGeneration" || len(rolled.Plan.RRsets) != 0 {
+		t.Fatalf("generation rollback resurrected records: %#v", rolled)
 	}
 }
 
@@ -115,12 +115,12 @@ func TestCompileRetainsHighWaterAcrossRejectedPublications(t *testing.T) {
 
 	rollbackInput := fixture(now)
 	rollbackInput.Previous = &first.Plan
-	rollbackInput.Contributions[0].Status.Sequence = 17
+	rollbackInput.Contributions[0].Generation = 17
 	rollback, err := Compile(rollbackInput)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rollback.Reasons["contribution-a"] != "NonIncreasingSequence" || len(rollback.Plan.RRsets) != 0 {
+	if rollback.Reasons["contribution-a"] != "StaleContributionGeneration" || len(rollback.Plan.RRsets) != 0 {
 		t.Fatalf("rollback was not rejected: %#v", rollback)
 	}
 	if len(rollback.Plan.Contributions) != 1 || rollback.Plan.Contributions[0].Sequence != 18 {
@@ -129,12 +129,12 @@ func TestCompileRetainsHighWaterAcrossRejectedPublications(t *testing.T) {
 
 	retryInput := fixture(now)
 	retryInput.Previous = &rollback.Plan
-	retryInput.Contributions[0].Status.Sequence = 17
+	retryInput.Contributions[0].Generation = 17
 	retry, err := Compile(retryInput)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if retry.Reasons["contribution-a"] != "NonIncreasingSequence" || len(retry.Plan.RRsets) != 0 || retry.Plan.Contributions[0].Sequence != 18 {
+	if retry.Reasons["contribution-a"] != "StaleContributionGeneration" || len(retry.Plan.RRsets) != 0 || retry.Plan.Contributions[0].Sequence != 18 {
 		t.Fatalf("second reconcile resurrected rolled-back data: %#v", retry)
 	}
 }
@@ -188,8 +188,8 @@ func fixture(now time.Time) CompileInput {
 	assoc := func(name string, vpc types.UID) dnsv1alpha1.DNSZoneAssociation {
 		return dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: name, UID: vpc}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: name, UID: vpc}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
 	}
-	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 30}}
-	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 4}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4, Sequence: 18, Eligible: true}}
+	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, TTLSeconds: 30}}
+	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 18}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}, Eligible: true}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4}}
 	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b", "vpc-b"), assoc("a", "vpc-a")}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
 }
 
@@ -307,8 +307,8 @@ func TestCompileRetainsHealthyRecordsUntilExplicitWithdrawal(t *testing.T) {
 	if string(beforeJSON) != string(afterJSON) {
 		t.Fatal("elapsed time changed the last reported endpoint state")
 	}
-	input.Contributions[0].Status.Eligible = false
-	input.Contributions[0].Status.Sequence++
+	input.Contributions[0].Spec.Eligible = false
+	input.Contributions[0].Generation++
 	withdrawn, err := Compile(input)
 	if err != nil {
 		t.Fatal(err)

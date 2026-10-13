@@ -37,12 +37,15 @@ the project API. It does not watch a networking API. A trusted integration
 principal bound to `internal-dns-vpc-integration` creates a context and writes
 regional access intent. RBAC separates network integration, product publication, and DNS controller
 permissions. Product publishers cannot modify resolver access.
-The context UID, access UID, access epoch, and sequence are carried into the
-internal `DNSResolverBinding`. Access persists until an explicit withdrawal.
+DNS pins the context and access lifetimes in the internal `DNSResolverBinding`
+and generates mapping versions. Access persists until an explicit withdrawal.
 
-The control plane allocates a managed namespace when the context requests one.
+The context directly owns its requested managed zone and association.
 Compute discovers the context status and publishes through
 `DNSRegistration` and `DNSRecordContribution`. It does not choose a zone for the managed-name path and receives no NATS credentials.
+Publishers write addresses and eligibility together in contribution spec using
+optimistic concurrency. DNS owns status and uses API-assigned generations to
+reject stale desired state across takeover and replay.
 
 ## Serving identity and BIND views
 

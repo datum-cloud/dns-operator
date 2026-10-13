@@ -25,7 +25,7 @@ rules:
   resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status]
   verbs: [get, list, watch]
 ---
-# Project products write declarations and their own freshness observations.
+# Project products atomically publish endpoint records and eligibility.
 # Product writers cannot modify resolver access or publication artifacts.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -39,9 +39,6 @@ rules:
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnsresolvercontexts, dnsnamingpolicies]
   verbs: [get, list, watch]
-- apiGroups: [dns.networking.miloapis.com]
-  resources: [dnsrecordcontributions/status]
-  verbs: [get, update, patch]
 ---
 # Customers configure private zones and naming within their project namespace.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -73,7 +70,7 @@ rules:
   - dnsresolvercontexts
   - dnsresolveraccessbindings
   verbs: [get, list, watch]
-# Managed namespace creation and the private-zone publication finalizer.
+# Managed zone creation and the private-zone publication finalizer.
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnszones, dnszoneassociations]
   verbs: [create, patch]
@@ -84,7 +81,6 @@ rules:
   - dnspublicationchunks
   - dnstransportoutboxes
   - dnspublicationownerships
-  - dnsmanagednamespaces
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
   resources:
@@ -92,7 +88,6 @@ rules:
   - dnspublicationmanifests/status
   - dnstransportoutboxes/status
   - dnspublicationownerships/status
-  - dnsmanagednamespaces/status
   - dnszones/status
   - dnszoneassociations/status
   - dnsnamingpolicies/status

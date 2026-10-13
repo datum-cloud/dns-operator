@@ -55,24 +55,12 @@ spec:
                         maxLength: 253
                         minLength: 1
                         type: string
-                      transports:
-                        items:
-                          enum:
-                          - UDP
-                          - TCP
-                          type: string
-                        maxItems: 2
-                        minItems: 1
-                        type: array
-                        x-kubernetes-list-type: set
                     required:
                     - nodeAddress
                     - regionalAddress
-                    - transports
                     type: object
                     x-kubernetes-validations:
-                    - message: query destinations and transports are immutable for
-                        an access binding
+                    - message: query destinations are immutable for an access binding
                       rule: oldSelf == self
                   revision:
                     format: int64

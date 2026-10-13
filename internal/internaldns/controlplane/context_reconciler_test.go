@@ -10,6 +10,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -316,7 +317,7 @@ func TestNamespaceReconciliationCannotWithdrawAnotherNamespace(t *testing.T) {
 		t.Run(fmt.Sprintf("namespace-label-%t", labeled), func(t *testing.T) {
 			ctx := context.Background()
 			scheme := runtime.NewScheme()
-			if err := addReferenceStateToScheme(scheme); err != nil {
+			if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 				t.Fatal(err)
 			}
 			access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "other", UID: "other-access"}}
@@ -342,12 +343,15 @@ func TestNamespaceReconciliationCannotWithdrawAnotherNamespace(t *testing.T) {
 func TestAllNamespaceReconcileIncludesPlatformNamedSourceNamespace(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
-	if err := addReferenceStateToScheme(scheme); err != nil {
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "platform", UID: "context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "network"}}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(contextObject).WithStatusSubresource(contextObject).Build()
 	r := &Reconciler{Client: cl, APIReader: cl, Options: ReconcilerOptions{ProjectUID: "project", PlatformNamespace: "platform"}}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(contextObject)}); err != nil {
 		t.Fatal(err)
 	}

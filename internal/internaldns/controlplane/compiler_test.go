@@ -41,7 +41,7 @@ func TestCompileDeterministicMultiVPCAggregation(t *testing.T) {
 		t.Fatalf("unexpected wire plan: %#v", wire)
 	}
 	record := wire.RRSets[0].Records[0]
-	if record.ContributionUID != "contribution-a" || record.WriterEpoch != 7 || record.Sequence != 18 || !record.Eligible {
+	if record.ContributionUID != "contribution-a" || record.Generation != 4 || record.Sequence != 18 || !record.Eligible {
 		t.Fatalf("missing contribution fence: %#v", record)
 	}
 }
@@ -67,11 +67,11 @@ func TestCompileRejectsStaleGenerationAndWholeInvalidBundle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Reasons["contribution-a"] != "NameOrTypeOutsideGrant" || len(got.Plan.RRsets) != 0 {
+		if got.Reasons["contribution-a"] != "NameOrTypeOutsideRegistration" || len(got.Plan.RRsets) != 0 {
 			t.Fatalf("partial invalid bundle published: %#v", got.Plan.RRsets)
 		}
 		if len(got.Plan.Contributions) != 1 || got.Plan.Contributions[0].Sequence != 18 {
-			t.Fatalf("authenticated rejected observation did not advance fence: %#v", got.Plan.Contributions)
+			t.Fatalf("rejected observation did not advance fence: %#v", got.Plan.Contributions)
 		}
 	})
 }
@@ -80,7 +80,7 @@ func TestCompileWithdrawalAdvancesHighWaterAndRejectsRollback(t *testing.T) {
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	in := fixture(now)
 	previous := in.Contributions[0]
-	in.Previous = &PublicationPlan{Contributions: []ContributionFence{{UID: previous.UID, GrantUID: previous.Spec.GrantRef.UID, Epoch: 7, Sequence: 18}}}
+	in.Previous = &PublicationPlan{Contributions: []ContributionFence{{UID: previous.UID, Generation: previous.Generation, Sequence: 18}}}
 	in.Contributions[0].Status.Sequence = 19
 	in.Contributions[0].Status.Eligible = false
 	got, err := Compile(in)
@@ -165,7 +165,6 @@ func TestCompileSRVTargetUsesAbsoluteZoneIdentity(t *testing.T) {
 	in.Registrations[0].Spec.Name = "_grpc._tcp.svc"
 	in.Registrations[0].Spec.ReservedDescendants = []string{"vm1.instances"}
 	in.Registrations[0].Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA, dnsv1alpha1.RRTypeSRV}
-	in.Grants[0].Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA, dnsv1alpha1.RRTypeSRV}
 	in.Contributions[0].Spec.RecordSets = []dnsv1alpha1.DNSContributionRecordSet{
 		{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "vm1.instances", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}},
 		{RecordType: dnsv1alpha1.RRTypeSRV, Records: []dnsv1alpha1.RecordEntry{{Name: "_grpc._tcp.svc", SRV: &dnsv1alpha1.SRVRecordSpec{Priority: 10, Weight: 20, Port: 8443, Target: "vm1.instances.corp.internal."}}}},
@@ -192,7 +191,7 @@ func fixture(now time.Time) CompileInput {
 	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 30}}
 	grant := dnsv1alpha1.DNSContributionGrant{ObjectMeta: metav1.ObjectMeta{Name: "compute", UID: "grant-a", Generation: 2}, Spec: dnsv1alpha1.DNSContributionGrantSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, ProducerID: "compute-east", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}}, Status: dnsv1alpha1.DNSContributionGrantStatus{ActiveWriterEpoch: 7, ObservedGrantGeneration: 2, ObservedRegistrationGeneration: 3}}
 	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 4}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, GrantRef: dnsv1alpha1.DNSObjectReference{Name: grant.Name, UID: grant.UID}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4, WriterEpoch: 7, Sequence: 18, Eligible: true}}
-	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b", "vpc-b"), assoc("a", "vpc-a")}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Grants: []dnsv1alpha1.DNSContributionGrant{grant}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
+	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b", "vpc-b"), assoc("a", "vpc-a")}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
 }
 
 func structLocal(name string) corev1.LocalObjectReference {
@@ -242,7 +241,6 @@ func TestStaticTTLPreservedAndConflictsRejected(t *testing.T) {
 	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 	in := fixture(now)
 	in.Registrations = nil
-	in.Grants = nil
 	in.Contributions = nil
 	ttl := int64(30)
 	in.StaticRecords = []dnsv1alpha1.DNSRecordSet{{ObjectMeta: metav1.ObjectMeta{Name: "static", UID: "static"}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: in.Zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "api", TTL: &ttl, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}}

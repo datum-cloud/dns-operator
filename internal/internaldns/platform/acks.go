@@ -153,7 +153,7 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 		}
 		for i := range bindings.Items {
 			binding := &bindings.Items[i]
-			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Authorization.Sequence != int64(b.Authorization.Revision) || binding.Spec.Authorization.WriterEpoch != int64(b.Authorization.IssuerEpoch) {
+			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Version.Sequence != int64(b.Version.Sequence) || binding.Spec.Version.Epoch != int64(b.Version.Epoch) {
 				continue
 			}
 			base := binding.DeepCopy()
@@ -161,8 +161,8 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			bindingRow.Revision = binding.Spec.Configuration.Revision
 			bindingRow.WriterEpoch = int64(a.Epoch)
 			bindingRow.SnapshotRevision = int64(a.Revision)
-			bindingRow.AuthorizationIssuerEpoch = binding.Spec.Authorization.WriterEpoch
-			bindingRow.AuthorizationRevision = binding.Spec.Authorization.Sequence
+			bindingRow.AccessEpoch = binding.Spec.Version.Epoch
+			bindingRow.AccessSequence = binding.Spec.Version.Sequence
 			binding.Status.MemberAcknowledgements = upsertAck(binding.Status.MemberAcknowledgements, bindingRow)
 			complete := s.bindingVerified(binding, e, snapshot, now)
 			if complete {
@@ -305,7 +305,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time, role string, revision, epoch, authEpoch, authRevision int64) bool {
 	matches := func(member model.Member) bool {
 		for _, row := range rows {
-			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != dnsValueResolver || row.AuthorizationIssuerEpoch == authEpoch && row.AuthorizationRevision == authRevision) && row.Phase == string(model.AckVerified) && row.ValidUntil != nil && row.ValidUntil.After(now) {
+			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != dnsValueResolver || row.AccessEpoch == authEpoch && row.AccessSequence == authRevision) && row.Phase == string(model.AckVerified) && row.ValidUntil != nil && row.ValidUntil.After(now) {
 				return true
 			}
 		}
@@ -535,7 +535,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 	}
 	present := false
 	for _, desired := range snapshot.Bindings {
-		if desired.BindingUID == string(b.UID) && !desired.Tombstone && int64(desired.BindingGeneration) == b.Spec.Configuration.Generation && int64(desired.ConfigurationRevision) == b.Spec.Configuration.Revision && int64(desired.Authorization.IssuerEpoch) == b.Spec.Authorization.WriterEpoch && int64(desired.Authorization.Revision) == b.Spec.Authorization.Sequence {
+		if desired.BindingUID == string(b.UID) && !desired.Tombstone && int64(desired.BindingGeneration) == b.Spec.Configuration.Generation && int64(desired.ConfigurationRevision) == b.Spec.Configuration.Revision && int64(desired.Version.Epoch) == b.Spec.Version.Epoch && int64(desired.Version.Sequence) == b.Spec.Version.Sequence {
 			present = true
 			break
 		}
@@ -550,7 +550,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		}
 	}
 	if all {
-		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 	}
 	tiers := map[string][]model.Member{}
 	for _, member := range s.Members {
@@ -567,7 +567,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		for _, member := range members {
 			scoped := *s
 			scoped.Members = []model.Member{member}
-			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Authorization.WriterEpoch, b.Spec.Authorization.Sequence)
+			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 		}
 		if !ready {
 			return false

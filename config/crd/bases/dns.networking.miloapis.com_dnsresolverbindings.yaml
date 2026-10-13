@@ -39,86 +39,40 @@ spec:
             description: DNSResolverBinding is the DNS-service projection of a consumer
               context and access binding.
             properties:
-              authorization:
-                properties:
-                  sequence:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  writerEpoch:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                required:
-                - sequence
-                - writerEpoch
-                type: object
               configuration:
                 properties:
                   generation:
                     format: int64
                     minimum: 1
                     type: integer
-                  listeners:
+                  query:
                     properties:
-                      node:
-                        properties:
-                          address:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          port:
-                            enum:
-                            - 53
-                            format: int32
-                            type: integer
-                          transports:
-                            items:
-                              enum:
-                              - UDP
-                              - TCP
-                              type: string
-                            maxItems: 2
-                            minItems: 1
-                            type: array
-                            x-kubernetes-list-type: set
-                        required:
-                        - address
-                        - port
-                        - transports
-                        type: object
-                      regional:
-                        properties:
-                          address:
-                            maxLength: 253
-                            minLength: 1
-                            type: string
-                          port:
-                            enum:
-                            - 53
-                            format: int32
-                            type: integer
-                          transports:
-                            items:
-                              enum:
-                              - UDP
-                              - TCP
-                              type: string
-                            maxItems: 2
-                            minItems: 1
-                            type: array
-                            x-kubernetes-list-type: set
-                        required:
-                        - address
-                        - port
-                        - transports
-                        type: object
+                      nodeAddress:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      regionalAddress:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      transports:
+                        items:
+                          enum:
+                          - UDP
+                          - TCP
+                          type: string
+                        maxItems: 2
+                        minItems: 1
+                        type: array
+                        x-kubernetes-list-type: set
                     required:
-                    - node
-                    - regional
+                    - nodeAddress
+                    - regionalAddress
+                    - transports
                     type: object
                     x-kubernetes-validations:
-                    - message: listener identity is immutable for an access binding
+                    - message: query destinations and transports are immutable for
+                        an access binding
                       rule: oldSelf == self
                   revision:
                     format: int64
@@ -158,7 +112,7 @@ spec:
                     type: array
                 required:
                 - generation
-                - listeners
+                - query
                 - revision
                 - zoneRefs
                 type: object
@@ -252,20 +206,33 @@ spec:
                     && self.accessBindingRef.uid.size() > 0
               tombstone:
                 type: boolean
+              version:
+                properties:
+                  epoch:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                  sequence:
+                    format: int64
+                    minimum: 1
+                    type: integer
+                required:
+                - epoch
+                - sequence
+                type: object
             required:
-            - authorization
             - configuration
             - placement
             - source
+            - version
             type: object
             x-kubernetes-validations:
             - message: configuration fences must not decrease
               rule: self.configuration.generation >= oldSelf.configuration.generation
                 && self.configuration.revision >= oldSelf.configuration.revision
-            - message: authorization fences must not decrease
-              rule: self.authorization.writerEpoch > oldSelf.authorization.writerEpoch
-                || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
-                && self.authorization.sequence >= oldSelf.authorization.sequence)
+            - message: access versions must not decrease
+              rule: self.version.epoch > oldSelf.version.epoch || (self.version.epoch
+                == oldSelf.version.epoch && self.version.sequence >= oldSelf.version.sequence)
             - message: zone membership changes require a new cache generation and
                 configuration revision
               rule: self.configuration.zoneRefs == oldSelf.configuration.zoneRefs
@@ -274,12 +241,11 @@ spec:
             - message: changing withdrawal state requires a new configuration revision
               rule: (has(self.tombstone) && self.tombstone) == (has(oldSelf.tombstone)
                 && oldSelf.tombstone) || self.configuration.revision > oldSelf.configuration.revision
-            - message: reactivating withdrawn access requires a new source authorization
-                fence
+            - message: reactivating withdrawn access requires a new access version
               rule: '!has(oldSelf.tombstone) || !oldSelf.tombstone || (has(self.tombstone)
-                && self.tombstone) || self.authorization.writerEpoch > oldSelf.authorization.writerEpoch
-                || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch
-                && self.authorization.sequence > oldSelf.authorization.sequence)'
+                && self.tombstone) || self.version.epoch > oldSelf.version.epoch ||
+                (self.version.epoch == oldSelf.version.epoch && self.version.sequence
+                > oldSelf.version.sequence)'
           status:
             properties:
               conditions:
@@ -341,10 +307,10 @@ spec:
               memberAcknowledgements:
                 items:
                   properties:
-                    authorizationIssuerEpoch:
+                    accessEpoch:
                       format: int64
                       type: integer
-                    authorizationRevision:
+                    accessSequence:
                       format: int64
                       type: integer
                     error:

@@ -141,11 +141,8 @@ func (p *Planner) Step(ctx context.Context) error {
 		if b.Placement.Region != c.Region || b.Placement.Shard != c.Shard || b.Tombstone || !obj.DeletionTimestamp.IsZero() {
 			continue
 		}
-		if b.Configuration.Listeners.Node.Port != 53 || b.Configuration.Listeners.Regional.Port != 53 || !reflect.DeepEqual(b.Configuration.Listeners.Node.Transports, b.Configuration.Listeners.Regional.Transports) {
-			return fmt.Errorf("binding %s requires matching DNS listener ports and transports", obj.Name)
-		}
-		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Listeners.Node.Address, ClusterAddress: b.Configuration.Listeners.Regional.Address, Port: uint16(b.Configuration.Listeners.Node.Port), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Authorization: model.Authorization{IssuerEpoch: uint64(b.Authorization.WriterEpoch), Revision: uint64(b.Authorization.Sequence)}}
-		for _, t := range b.Configuration.Listeners.Node.Transports {
+		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}}
+		for _, t := range b.Configuration.Query.Transports {
 			view.Transports = append(view.Transports, model.Transport(t))
 		}
 		complete := true
@@ -195,7 +192,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			view.Zones = append(view.Zones, attachment)
 		}
 		if !complete {
-			// Missing configuration is not a withdrawal of source authorization.
+			// Missing configuration is not a withdrawal of access version.
 			// Retain the identity but expose no partial or removed zone set. The
 			// pending snapshot can publish without waiting on this tenant's outbox.
 			view.ConfigurationPending = true

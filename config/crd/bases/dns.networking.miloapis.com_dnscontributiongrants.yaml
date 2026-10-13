@@ -44,14 +44,10 @@ spec:
                 type: array
               principal:
                 properties:
-                  clusterUID:
-                    minLength: 1
-                    type: string
                   subject:
                     minLength: 1
                     type: string
                 required:
-                - clusterUID
                 - subject
                 type: object
               producerID:

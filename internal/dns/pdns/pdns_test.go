@@ -23,6 +23,12 @@ const (
 	targetExampleNet = "target.example.net."
 )
 
+func newPDNSTestClient(server *httptest.Server, apiKey string) *Client {
+	client := NewClient(server.URL, apiKey)
+	client.HTTP.Transport = server.Client().Transport
+	return client
+}
+
 func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	t.Parallel()
 
@@ -80,7 +86,7 @@ func TestCreateGetDeleteZoneAndRRSets(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	c := NewClient(srv.URL, "sekret")
+	c := newPDNSTestClient(srv, "sekret")
 
 	// CreateZone should wrap inputs correctly (trailing dots on zone/ns) and set headers
 	if err := c.CreateZone(context.Background(), "example.com", []string{"ns1.example.com", "ns2.example.com."}); err != nil {
@@ -522,7 +528,7 @@ func TestReplaceRRSet_TracksUIDAndGeneration(t *testing.T) {
 	s := httptest.NewServer(mux)
 	defer s.Close()
 
-	c := NewClient(s.URL, "k")
+	c := newPDNSTestClient(s, "k")
 	if err := c.ReplaceRRSet(context.Background(), "example.com", "A", "www", 300, []string{"1.2.3.4"}, "default/rs", 1, "new-uid"); err != nil {
 		t.Fatalf("ReplaceRRSet error: %v", err)
 	}
@@ -579,7 +585,7 @@ func TestEnsureRecordSet_ReplacesWhenUIDChanges(t *testing.T) {
 	s := httptest.NewServer(mux)
 	defer s.Close()
 
-	c := NewClient(s.URL, "k")
+	c := newPDNSTestClient(s, "k")
 	rs := dnsv1alpha1.DNSRecordSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "rs", Namespace: "default", UID: "new-uid", Generation: 1},
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
@@ -632,7 +638,7 @@ func TestApplyRecordSetAuthoritative_PatchIncludesDeletes(t *testing.T) {
 	s := httptest.NewServer(mux)
 	defer s.Close()
 
-	c := NewClient(s.URL, "k")
+	c := newPDNSTestClient(s, "k")
 	ttl := int64(60)
 	// desired: A rrset for "new.example.com." only
 	rs := dnsv1alpha1.DNSRecordSet{
@@ -754,7 +760,7 @@ func TestApplyRecordSetAuthoritative_PathAndHeaders(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	c := NewClient(ts.URL, "k3y")
+	c := newPDNSTestClient(ts, "k3y")
 	rs := dnsv1alpha1.DNSRecordSet{
 		Spec: dnsv1alpha1.DNSRecordSetSpec{
 			RecordType: dnsv1alpha1.RRTypeA,
@@ -903,7 +909,7 @@ func newPDNSStub(t *testing.T, zone zoneResponse) (*pdnsStub, *Client) {
 	s := httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 
-	return stub, NewClient(s.URL, "k")
+	return stub, newPDNSTestClient(s, "k")
 }
 
 // aRecordSet builds the shape the incident is about: one object holding every A

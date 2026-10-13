@@ -89,7 +89,6 @@ type probeResult struct {
 type publication struct {
 	registration dnsv1.DNSRegistration
 	contribution dnsv1.DNSRecordContribution
-	sequence     int64
 }
 
 type suite struct {
@@ -335,11 +334,7 @@ func (s *suite) prepare(p *project) error {
 	if err := s.associate(p, &p.zone, "prod"); err != nil {
 		return err
 	}
-	p.access = dnsv1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "application-network-access", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverAccessBindingSpec{
-		ContextRef: objectRef(&p.resolverContext), Region: s.env.Region,
-		QueryIdentity: dnsv1.DNSResolverQueryIdentity{Type: dnsv1.DNSResolverQueryIdentityDestinationAddress, Value: p.ConsumerAddress}, Port: 53, Transports: []string{"UDP", "TCP"},
-		Version: dnsv1.DNSResolverAccessVersion{Epoch: p.resolverContext.Status.AccessEpoch, Sequence: 1},
-	}}
+	p.access = dnsv1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "application-network-access", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverAccessBindingSpec{ContextRef: objectRef(&p.resolverContext), Region: s.env.Region, DestinationAddress: p.ConsumerAddress}}
 	if err := p.integration.Create(s.ctx, &p.access); err != nil {
 		return err
 	}
@@ -383,7 +378,7 @@ func recordSets(name, address, ipv6 string) []dnsv1.DNSContributionRecordSet {
 }
 
 func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name, address, ipv6 string) (*publication, error) {
-	pub := &publication{registration: dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-registration", Namespace: p.Namespace}, Spec: dnsv1.DNSRegistrationSpec{DNSZoneRef: zone, Name: name, RecordTypes: []dnsv1.RRType{dnsv1.RRTypeA}, PublicationPolicy: dnsv1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 2}}}
+	pub := &publication{registration: dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-registration", Namespace: p.Namespace}, Spec: dnsv1.DNSRegistrationSpec{DNSZoneRef: zone, Name: name, RecordTypes: []dnsv1.RRType{dnsv1.RRTypeA}, TTLSeconds: 2}}}
 	if ipv6 != "" {
 		pub.registration.Spec.RecordTypes = append(pub.registration.Spec.RecordTypes, dnsv1.RRTypeAAAA)
 	}
@@ -405,15 +400,12 @@ func (s *suite) observe(p *project, pub *publication, eligible bool) error {
 		return err
 	}
 	before := pub.contribution.DeepCopy()
-	pub.sequence++
-	pub.contribution.Status.Sequence = pub.sequence
-	pub.contribution.Status.ObservedGeneration = pub.contribution.Generation
-	pub.contribution.Status.Eligible = eligible
-	pub.contribution.Status.Reason = "EndpointReady"
+	pub.contribution.Spec.Eligible = eligible
+	pub.contribution.Spec.Reason = "EndpointReady"
 	if !eligible {
-		pub.contribution.Status.Reason = "EndpointNotReady"
+		pub.contribution.Spec.Reason = "EndpointNotReady"
 	}
-	if err := p.product.Status().Patch(s.ctx, &pub.contribution, client.MergeFrom(before)); err != nil {
+	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
 	return s.waitPublication(pub)
@@ -428,7 +420,7 @@ func (s *suite) waitPublication(pub *publication) error {
 		for _, manifest := range publications.Items {
 			matched := false
 			for _, fence := range manifest.Spec.ContributionFences {
-				if fence.UID == pub.contribution.UID && fence.Sequence == pub.sequence {
+				if fence.UID == pub.contribution.UID && fence.Generation == pub.contribution.Generation {
 					matched = true
 				}
 			}
@@ -445,7 +437,7 @@ func (s *suite) waitPublication(pub *publication) error {
 				return true, nil
 			}
 		}
-		return false, fmt.Errorf("no fresh proof from both regional members for contribution %s sequence %d", pub.contribution.UID, pub.sequence)
+		return false, fmt.Errorf("no fresh proof from both regional members for contribution %s generation %d", pub.contribution.UID, pub.contribution.Generation)
 	})
 }
 

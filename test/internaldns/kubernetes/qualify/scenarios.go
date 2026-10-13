@@ -120,6 +120,7 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.expect(b, "common.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
 		return err
 	}
+	stale := pa.contribution.DeepCopy()
 	if err := s.observe(a, pa, false); err != nil {
 		return err
 	}
@@ -138,14 +139,10 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := a.product.Get(s.ctx, client.ObjectKeyFromObject(&pa.contribution), &pa.contribution); err != nil {
 		return err
 	}
-	stale := pa.contribution.DeepCopy()
-	stale.Status.Sequence--
-	if err := a.product.Status().Patch(s.ctx, stale, client.MergeFrom(&pa.contribution)); err == nil {
-		return fmt.Errorf("stale producer sequence was accepted")
-	} else if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
-		return fmt.Errorf("stale producer sequence failed for an unrelated reason: %w", err)
+	if err := a.product.Update(s.ctx, stale); !apierrors.IsConflict(err) {
+		return fmt.Errorf("stale producer write was not rejected: %w", err)
 	}
-	s.pass("admission rejects a stale producer observation", nil)
+	s.pass("optimistic concurrency rejects a stale producer update", nil)
 	if err := s.takeover(a, pa); err != nil {
 		return err
 	}
@@ -185,10 +182,12 @@ func (s *suite) update(p *project, pub *publication, address, ipv6 string) error
 	}
 	before := pub.contribution.DeepCopy()
 	pub.contribution.Spec.RecordSets = recordSets(pub.registration.Spec.Name, address, ipv6)
-	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFrom(before)); err != nil {
+	pub.contribution.Spec.Eligible = true
+	pub.contribution.Spec.Reason = "EndpointReady"
+	if err := p.product.Patch(s.ctx, &pub.contribution, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
-	return s.observe(p, pub, true)
+	return s.waitPublication(pub)
 }
 
 func (s *suite) owner(zoneUID string) (dnsv1.DNSPublicationOwnership, error) {

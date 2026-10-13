@@ -67,6 +67,8 @@ controller uses scoped project worker credentials; product and
 VPC integration credentials are separate. The simulated Compute publisher
 creates registrations and contributions through the project API. It discovers
 managed names from `DNSResolverContext.status.managedNamespace`.
+Contribution writes publish records and eligibility atomically. Qualification
+checks health withdrawal, stale-write conflicts, and DNS-owned status permissions.
 
 The fleet contains one node member, one regional frontend, and two regional
 BIND members, each with independent persistent state. Agents validate and
@@ -111,7 +113,7 @@ into the separate DNS service VPC. Kind cannot establish physical fabric,
 microVM attachment, host-loss durability, regional independence, or production
 capacity.
 
-The suite uses wire version `v1alpha5` and persistent format 5 checkpoints.
+The suite uses wire version `v1alpha6` and persistent format 7 checkpoints.
 Compatible fleet upgrades retain those checkpoints and transport state. Roll out
 serving support before enabling new controller output; see the
 [rollout contract](../../config/internal-dns/README.md#rollout-and-recovery).

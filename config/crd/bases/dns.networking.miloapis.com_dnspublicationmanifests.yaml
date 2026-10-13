@@ -69,16 +69,19 @@ spec:
                 type: array
               contributionFences:
                 items:
-                  description: |-
-                    DNSContributionFence persists an authenticated high-water sequence even
-                    while its observation is unhealthy or withdrawn.
+                  description: DNSContributionFence retains desired-state generations
+                    and retired lifetimes.
                   properties:
                     generation:
                       format: int64
                       type: integer
+                    retired:
+                      type: boolean
                     sequence:
                       format: int64
                       type: integer
+                    sourceName:
+                      type: string
                     uid:
                       description: |-
                         UID is a type that holds unique ID values, including UUIDs.  Because we

@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"testing"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"testing"
 )
 
 func TestActivationOwnershipGatesAbandonedUpdatesWithoutHeartbeat(t *testing.T) {
@@ -63,7 +63,7 @@ func TestPublicationActivationRemainsOwnedUntilDNSProof(t *testing.T) {
 	}
 	approved := agent.state.Active
 	verified := false
-	agent.deps.PublicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+	agent.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
 		verified = true
 		if !activationPending(cfg.StateDir) {
 			t.Fatal("activation committed before DNS proof")

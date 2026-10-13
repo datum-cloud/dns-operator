@@ -111,5 +111,7 @@ into the separate DNS service VPC. Kind cannot establish physical fabric,
 microVM attachment, host-loss durability, regional independence, or production
 capacity.
 
-The suite requires internal wire version `v1alpha4`, fresh format 5 checkpoints,
-and matching controller and fleet versions.
+The suite uses wire version `v1alpha4` and persistent format 5 checkpoints.
+Compatible fleet upgrades retain those checkpoints and transport state. Roll out
+serving support before enabling new controller output; see the
+[rollout contract](../../config/internal-dns/README.md#rollout-and-recovery).

@@ -45,8 +45,7 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	if f := a.state.BindingFences["binding-a"]; !f.Tombstone || f.Version.Sequence != 2 {
 		t.Fatal("withdrawal fabricated access version")
 	}
-	// Source2 -> Source3 is the next legitimate renewal; DNS must not have
-	// consumed sequence3 itself while withdrawing the withdrawn authorization.
+	// Withdrawal preserves the source sequence so a newer access version can reactivate.
 	renewed := withdrawn
 	renewed.Bindings = append([]model.Binding(nil), withdrawn.Bindings...)
 	renewed.ConfigurationRevision = 3

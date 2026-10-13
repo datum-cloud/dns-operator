@@ -135,7 +135,7 @@ func (v PublicationDNSVerifier) VerifyPublication(ctx context.Context, plan mode
 		return errors.New("regional BIND probe server is required")
 	}
 	if len(views) == 0 {
-		return errors.New("publication is not installed in any authorized context")
+		return errors.New("publication is not installed in any configured context")
 	}
 	timeout := v.Config.Timeout
 	if timeout <= 0 {

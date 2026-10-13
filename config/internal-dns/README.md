@@ -87,9 +87,9 @@ Each attached private apex has independent readiness. A pending zone returns
 SERVFAIL while published zones continue serving. Its names cannot fall through
 to public recursion or cached answers. If the private apex is unknown, the
 context stays gated until its configuration is complete. Completing publication
-restores service without renewing authorization. Resolver access readiness
+restores service with the same access mapping. Resolver access readiness
 reports the applied path independently of each zone's publication status. Explicit access withdrawal
-requires a newer source authorization to reactivate.
+requires a newer access version to reactivate.
 
 The agent writes a complete candidate set into its stage directory. Regional
 zone files are siblings of `cluster-bind.conf`; validation rewrites file

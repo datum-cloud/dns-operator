@@ -69,7 +69,7 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 				b := binding.Spec
 				if b.Source.ProjectUID == projectUID && b.Source.ResolverContextRef.UID == contextUID &&
 					b.Source.AccessBindingRef.UID != "" && existing.Data["owner"] == string(projectUID)+"/"+string(b.Source.AccessBindingRef.UID) &&
-					b.Placement.Region == region && b.Configuration.Query.NodeAddress == address && 53 == port &&
+					b.Placement.Region == region && b.Configuration.Query.NodeAddress == address && port == 53 &&
 					existing.Data["region"] == region && existing.Data["address"] == address && existing.Data["port"] == fmt.Sprint(port) {
 					base := existing.DeepCopy()
 					existing.Data["owner"] = owner

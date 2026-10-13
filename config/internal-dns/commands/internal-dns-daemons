@@ -1,0 +1,30 @@
+#!/bin/sh
+# One member's daemon supervisor. Only its local agent can enable a listener.
+set -eu
+role=$1
+supervise() {
+  daemon=$1
+  config=$2
+  shift 2
+  while :; do
+    if [ -f "/run/internal-dns/allow-$daemon" ] && [ -s "$config" ]; then
+      "$@" || true
+    fi
+    sleep 0.05
+  done
+}
+trap 'pkill -TERM -x named || true; pkill -TERM -x dnsdist || true; exit 0' INT TERM
+case "$role" in
+  node)
+    supervise named /etc/internal-dns/node-bind.conf named -g -c /etc/internal-dns/node-bind.conf -n 2 &
+    supervise dnsdist /etc/internal-dns/node-dnsdist.conf dnsdist --supervised -C /etc/internal-dns/node-dnsdist.conf &
+    ;;
+  regional-dnsdist)
+    supervise dnsdist /etc/internal-dns/cluster-dnsdist.conf dnsdist --supervised -C /etc/internal-dns/cluster-dnsdist.conf &
+    ;;
+  regional-bind)
+    supervise named /etc/internal-dns/cluster-bind.conf named -g -c /etc/internal-dns/cluster-bind.conf -n 2 &
+    ;;
+  *) exit 2 ;;
+esac
+wait

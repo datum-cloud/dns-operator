@@ -14,11 +14,16 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -tags netgo,osusergo -ldflags='-s -w' \
     -o /out/internal-dns ./cmd/internal-dns
 
-# This is the control-plane image and the binary artifact used by serving
-# images. Node, regional-frontend, and regional-BIND images must also contain
-# the validation, reload, cache-flush, and fail-closed commands declared in
-# their serving configuration.
-FROM scratch
+FROM scratch AS runtime
 COPY --from=build /out/internal-dns /internal-dns
+USER 65532:65532
+ENTRYPOINT ["/internal-dns"]
+
+FROM debian:trixie-slim AS serving
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    bind9 bind9-utils dnsdist iproute2 procps netcat-openbsd ca-certificates bash && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/internal-dns /internal-dns
+COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532
 ENTRYPOINT ["/internal-dns"]

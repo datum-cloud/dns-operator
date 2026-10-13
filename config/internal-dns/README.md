@@ -4,6 +4,18 @@ These manifests show the process boundaries for one shared regional shard.
 Replace the example images, addresses, certificates, storage classes, admission
 CA injection, and site command wrappers before deployment.
 
+CI publishes `ghcr.io/datum-cloud/internal-dns` for the control plane and
+`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents, BIND, and dnsdist.
+The serving image includes the validation, reload, cache-flush, and gating
+commands in `config/internal-dns/commands`. The Kubernetes qualification
+environment uses the same commands.
+
+After both images and the API bundle publish, CI publishes
+`oci://ghcr.io/datum-cloud/internal-dns-builds` with the same version tag.
+This Flux artifact contains the `internal-dns-images` ConfigMap with both
+image manifest digests and the source revision. Staging selects timestamped
+feature-branch tags and uses these immutable image references.
+
 The fixed fleet has three roles:
 
 - A `node` resolver agent owns the shared node dnsdist/BIND pair.

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Clearing enable files before stopping processes prevents automatic restart.
+set -eu
+rm -f /run/internal-dns/allow-named /run/internal-dns/allow-dnsdist
+pkill -TERM -x named || true
+pkill -TERM -x dnsdist || true

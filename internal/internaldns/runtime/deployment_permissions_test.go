@@ -275,8 +275,8 @@ func verifyProjectReferenceSchemas(t *testing.T, ctx context.Context, cl client.
 		{"registration-ttl31", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: ref, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 31, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, false},
 		{"association-valid", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: ref, ResolverContextRef: contextRef}}, true},
 		{"association-unpinned", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, ResolverContextRef: contextRef}}, false},
-		{"naming-valid", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{RegistrationClass: dnsv1alpha1.DNSRegistrationClassServiceDiscovery, DNSZoneRef: ref, NamePrefix: "services"}}}}, true},
-		{"naming-unpinned", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{RegistrationClass: dnsv1alpha1.DNSRegistrationClassServiceDiscovery, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, NamePrefix: "services"}}}}, false},
+		{"naming-valid", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: ref, NamePrefix: "services"}}}}, true},
+		{"naming-unpinned", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, NamePrefix: "services"}}}}, false},
 	}
 	for _, tc := range cases {
 		tc.object.SetName(tc.name)

@@ -77,6 +77,19 @@ func TestProjectDiscoveryAddsSourcesAndPreservesThemDuringOutage(t *testing.T) {
 		t.Fatal("discovery outage discarded existing sources")
 	}
 	core.unavailable = false
+	if err := core.Get(ctx, client.ObjectKeyFromObject(first), first); err != nil {
+		t.Fatal(err)
+	}
+	first.Status.Conditions[0].Status = metav1.ConditionFalse
+	if err := core.Update(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(directory.scopes()) != 2 {
+		t.Fatal("unavailable project discarded its existing source")
+	}
 	request := kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Namespace: "internal-dns-platform", UserInfo: authenticationv1.UserInfo{Extra: map[string]authenticationv1.ExtraValue{parentNameExtra: {second.Name}}}}}
 	selected, err := directory.selectProject(ctx, request)
 	if err != nil || selected != scopes[1].Client {

@@ -92,7 +92,7 @@ func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Cli
 	})
 	s := httptest.NewServer(mux)
 	t.Cleanup(s.Close)
-	return fake, NewClient(s.URL, "k")
+	return fake, newPDNSTestClient(s, "k")
 }
 
 func (f *coexistencePDNS) has(name, typ string) bool {

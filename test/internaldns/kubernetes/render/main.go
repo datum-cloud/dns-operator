@@ -258,31 +258,31 @@ func sourceObjects(project string) []object {
 		filtered = append(filtered, item)
 	}
 	items = filtered
-	worker := obj("rbac.version.k8s.io/v1", "RoleBinding", "internal-dns-source-worker", projectNS)
-	worker["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
+	worker := obj("rbac.authorization.k8s.io/v1", "RoleBinding", "internal-dns-source-worker", projectNS)
+	worker["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "internal-dns-control-plane"}
 	worker["subjects"] = []object{{"kind": "ServiceAccount", "name": "internal-dns-control-plane", "namespace": ns}}
 	items = append(items, worker)
 	accounts := []struct{ name, namespace, role string }{{"dns-customer", projectNS, "internal-dns-customer"}, {"dns-publisher", "compute-system", "internal-dns-product-writer"}, {"dns-vpc-integration", "network-system", "internal-dns-vpc-integration"}, {"internal-dns-control-plane", ns, ""}}
 	for _, account := range accounts {
 		if account.role != "" {
 			items = append(items, obj("v1", "ServiceAccount", account.name, account.namespace))
-			rb := obj("rbac.version.k8s.io/v1", "RoleBinding", account.name, projectNS)
-			rb["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "Role", "name": account.role}
+			rb := obj("rbac.authorization.k8s.io/v1", "RoleBinding", account.name, projectNS)
+			rb["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account.role}
 			rb["subjects"] = []object{{"kind": "ServiceAccount", "name": account.name, "namespace": account.namespace}}
 			items = append(items, rb)
 		}
 		// Project identity in Kind is scoped to impersonation of the same
 		// service account and this fixed project parent.
-		r := obj("rbac.version.k8s.io/v1", "ClusterRole", account.name+"-parent", "")
+		r := obj("rbac.authorization.k8s.io/v1", "ClusterRole", account.name+"-parent", "")
 		r["rules"] = []object{{"apiGroups": []string{"authentication.k8s.io"}, "resources": []string{"userextras/iam.miloapis.com/parent-name"}, "resourceNames": []string{project}, "verbs": []string{"impersonate"}}}
-		rb := obj("rbac.version.k8s.io/v1", "ClusterRoleBinding", account.name+"-parent", "")
-		rb["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "ClusterRole", "name": account.name + "-parent"}
+		rb := obj("rbac.authorization.k8s.io/v1", "ClusterRoleBinding", account.name+"-parent", "")
+		rb["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": account.name + "-parent"}
 		rb["subjects"] = []object{{"kind": "ServiceAccount", "name": account.name, "namespace": account.namespace}}
 		items = append(items, r, rb)
-		self := obj("rbac.version.k8s.io/v1", "Role", account.name+"-self", account.namespace)
+		self := obj("rbac.authorization.k8s.io/v1", "Role", account.name+"-self", account.namespace)
 		self["rules"] = []object{{"apiGroups": []string{""}, "resources": []string{"serviceaccounts"}, "resourceNames": []string{account.name}, "verbs": []string{"impersonate"}}}
-		binding := obj("rbac.version.k8s.io/v1", "RoleBinding", account.name+"-self", account.namespace)
-		binding["roleRef"] = object{"apiGroup": "rbac.version.k8s.io", "kind": "Role", "name": account.name + "-self"}
+		binding := obj("rbac.authorization.k8s.io/v1", "RoleBinding", account.name+"-self", account.namespace)
+		binding["roleRef"] = object{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": account.name + "-self"}
 		binding["subjects"] = rb["subjects"]
 		items = append(items, self, binding)
 	}

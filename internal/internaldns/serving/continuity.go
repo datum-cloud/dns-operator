@@ -110,6 +110,10 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 	if !activationPending(a.cfg.StateDir) && installedFilesMatch(files) {
 		if err := a.probeLocalDaemons(ctx); err == nil {
 			a.needsActivation = false
+			if actual := hashFiles(files); a.state.RenderedHash != actual {
+				a.state.RenderedHash = actual
+				return a.store.Save(a.state)
+			}
 			return nil
 		} else if ctx.Err() != nil {
 			return ctx.Err()

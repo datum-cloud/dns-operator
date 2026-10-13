@@ -334,7 +334,8 @@ spec:
 ```
 
 Access reports `Accepted` after validation and `Ready` after required members
-apply current authorization and configuration. Context, region, query identity,
+apply current authorization and configuration. Zone publication readiness is
+reported separately; a pending zone does not block resolver access. Context, region, query identity,
 port, transports, and authorization epoch are immutable per access lifetime.
 Updates advance the sequence; destinations are unique within their routing
 scope. Galactic owns the consumer frontend and network authorization.

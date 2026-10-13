@@ -90,7 +90,7 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	reg.Namespace = "project"
 	contribution := input.Contributions[0].DeepCopy()
 	contribution.Namespace = "project"
-	contribution.Status.Sequence = 1
+	contribution.Generation = 1
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contribution).
 		WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
 	options := ReconcilerOptions{
@@ -151,7 +151,7 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 	if err := dnsv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(model.PublicationPlan{ZoneUID: "zone-a", Apex: "corp.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contribution-a", Sequence: 19, Generation: 7}}, RRSets: []model.RRSet{}})
+	payload, err := json.Marshal(model.PublicationPlan{ZoneUID: "zone-a", Apex: "corp.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contribution-a", Sequence: 19, Generation: 19}}, RRSets: []model.RRSet{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,14 +192,12 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 	}
 	in := fixture(now)
 	in.Previous = previous
-	in.Contributions[0].Generation = 7
-	in.Contributions[0].Status.ObservedGeneration = 7
-	in.Contributions[0].Status.Sequence = 18
+	in.Contributions[0].Generation = 18
 	compiled, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compiled.Reasons["contribution-a"] != "NonIncreasingSequence" || len(compiled.Plan.RRsets) != 0 {
+	if compiled.Reasons["contribution-a"] != "StaleContributionGeneration" || len(compiled.Plan.RRsets) != 0 {
 		t.Fatalf("ownership takeover replayed a stale contribution: %#v", compiled)
 	}
 }
@@ -289,13 +287,13 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 	reg.Namespace = "project"
 	contrib := fixture(now).Contributions[0].DeepCopy()
 	contrib.Namespace = "project"
-	contrib.Status.Sequence = 1
-	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd53::11"}, Port: 53, Transports: []string{"UDP", "TCP"}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}}
+	contrib.Generation = 1
+	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", DestinationAddress: "fd53::11"}}
 	accessWest := accessEast.DeepCopy()
 	accessWest.Name = "prod-west"
 	accessWest.UID = "access-west"
 	accessWest.Spec.Region = "west"
-	accessWest.Spec.QueryIdentity.Value = "fd53::12"
+	accessWest.Spec.DestinationAddress = "fd53::12"
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contrib, accessEast, accessWest).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
 	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s2"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
 	for i := 0; i < 8; i++ {

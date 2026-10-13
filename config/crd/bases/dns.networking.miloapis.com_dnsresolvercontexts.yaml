@@ -58,9 +58,6 @@ spec:
               rule: oldSelf.consumerID == self.consumerID
           status:
             properties:
-              accessEpoch:
-                format: int64
-                type: integer
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

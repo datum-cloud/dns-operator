@@ -47,12 +47,13 @@ const (
 )
 
 type RenderConfig struct {
-	ReadyMembers   map[string]map[string]bool `json:"-"`
-	Role           RenderRole                 `json:"role"`
-	NodeDNSDist    DNSDistRenderConfig        `json:"nodeDNSDist,omitempty"`
-	ClusterDNSDist DNSDistRenderConfig        `json:"clusterDNSDist,omitempty"`
-	NodeBIND       BINDRenderConfig           `json:"nodeBIND,omitempty"`
-	ClusterBIND    BINDRenderConfig           `json:"clusterBIND,omitempty"`
+	ReadyZoneMembers map[string]map[string]map[string]bool `json:"-"`
+	ReadyMembers     map[string]map[string]bool            `json:"-"`
+	Role             RenderRole                            `json:"role"`
+	NodeDNSDist      DNSDistRenderConfig                   `json:"nodeDNSDist,omitempty"`
+	ClusterDNSDist   DNSDistRenderConfig                   `json:"clusterDNSDist,omitempty"`
+	NodeBIND         BINDRenderConfig                      `json:"nodeBIND,omitempty"`
+	ClusterBIND      BINDRenderConfig                      `json:"clusterBIND,omitempty"`
 }
 
 type Rendered struct{ Files map[string][]byte }
@@ -90,11 +91,11 @@ func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active m
 		role = RenderBoth
 	}
 	if role == RenderNode || role == RenderBoth {
-		files[c.NodeDNSDist.Path] = renderDNSDist(c.NodeDNSDist, nodeBackends, bindings, active, false, nil)
+		files[c.NodeDNSDist.Path] = renderDNSDist(c.NodeDNSDist, nodeBackends, bindings, active, false, nil, c.ReadyZoneMembers)
 		files[c.NodeBIND.Path] = renderNodeBIND(c.NodeBIND, bindings)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
-		files[c.ClusterDNSDist.Path] = renderDNSDist(c.ClusterDNSDist, clusterBackends, bindings, active, true, c.ReadyMembers)
+		files[c.ClusterDNSDist.Path] = renderDNSDist(c.ClusterDNSDist, clusterBackends, bindings, active, true, c.ReadyMembers, c.ReadyZoneMembers)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
 		cluster, err := renderClusterBIND(c.ClusterBIND, bindings, publications, files)
@@ -218,7 +219,7 @@ func collectBackends(bindings []model.Binding, get func(model.Binding) []model.B
 	return out
 }
 
-func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool) []byte {
+func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "setLocal(%q)\n", c.ListenAddress)
 	fmt.Fprint(&out, "setACL({")
@@ -233,7 +234,12 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "local server = newServer({address=%q, name=%q, pool=%q, useProxyProtocol=true, checkName=\".\", checkType=\"SOA\", mustResolve=false})\n", net.JoinHostPort(b.Address, strconv.Itoa(int(b.Port))), "b_"+model.OpaqueToken(b.MemberID), c.PoolName)
 		if cluster {
 			for _, binding := range bindings {
-				if active[binding.BindingUID] && (eligible == nil || eligible[binding.BindingUID][b.MemberID]) {
+				for _, zone := range binding.Zones {
+					if zones != nil && active[binding.BindingUID] && zones[binding.BindingUID][zone.ZoneUID][b.MemberID] {
+						fmt.Fprintf(&out, "server:addPool(%q)\n", binding.ViewName()+"_"+model.OpaqueToken(zone.ZoneUID))
+					}
+				}
+				if !binding.ConfigurationPending && active[binding.BindingUID] && (eligible == nil || eligible[binding.BindingUID][b.MemberID]) {
 					fmt.Fprintf(&out, "server:addPool(%q)\n", binding.ViewName())
 				}
 			}
@@ -245,11 +251,24 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		if cluster {
 			addr = b.ClusterAddress
 		}
-		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), active[b.BindingUID])
+		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), !b.ConfigurationPending && active[b.BindingUID])
 	}
 	fmt.Fprint(&out, "}\n\nfunction classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
 	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyContext))\n")
 	fmt.Fprint(&out, "addAction(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
+	for _, binding := range bindings {
+		attached := append([]model.ZoneAttachment(nil), binding.Zones...)
+		sort.Slice(attached, func(i, j int) bool { return len(attached[i].Apex) > len(attached[j].Apex) })
+		for _, zone := range attached {
+			rule := fmt.Sprintf("AndRule({TagRule(\"dns-context\",%q),QNameSuffixRule(%q)})", binding.ViewName(), model.AbsoluteName(zone.Apex))
+			if zone.Pending || zones != nil && len(zones[binding.BindingUID][zone.ZoneUID]) == 0 {
+				fmt.Fprintf(&out, "addAction(%s,RCodeAction(DNSRCode.SERVFAIL))\n", rule)
+			} else if cluster && zones != nil {
+				pool := binding.ViewName() + "_" + model.OpaqueToken(zone.ZoneUID)
+				fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({%s,NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\naddAction(%s,PoolAction(%q))\n", pool, rule, pool, rule, pool)
+			}
+		}
+	}
 	if cluster {
 		for _, binding := range bindings {
 			fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({TagRule(\"dns-context\",%q),NotRule(PoolAvailableRule(%q))}), RCodeAction(DNSRCode.SERVFAIL))\naddAction(TagRule(\"dns-context\",%q),PoolAction(%q))\n", binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName())
@@ -315,7 +334,7 @@ func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publication
 		renderViewStart(&out, b, b.ClusterAddress, c.DefaultCacheSize, maxNegativeCacheTTL(c))
 		for _, z := range b.Zones {
 			p, ok := publications[z.ZoneUID]
-			if !ok || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
+			if z.Pending || !ok || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
 				// Never recurse toward the public namespace when a private apex is missing.
 				// The front gate returns immediate SERVFAIL; direct BIND queries fail too.
 				fmt.Fprintf(&out, "  zone %q { type forward; forward only; forwarders { 127.0.0.1 port 9; }; };\n", strings.TrimSuffix(model.AbsoluteName(z.Apex), "."))
@@ -336,6 +355,10 @@ func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publication
 }
 
 func renderViewStart(out *bytes.Buffer, b model.Binding, dest, defaultCache string, maxNegativeCacheTTL uint32) {
+	if b.ConfigurationPending {
+		fmt.Fprintf(out, "view %q {\n  match-clients { any; };\n  match-destinations { %s; };\n  recursion no;\n  allow-query { none; };\n  allow-recursion { none; };\n  allow-query-cache { none; };\n", b.ViewName(), dest)
+		return
+	}
 	cache := defaultCache
 	if cache == "" {
 		cache = "16M"

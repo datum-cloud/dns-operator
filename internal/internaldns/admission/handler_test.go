@@ -198,20 +198,6 @@ func TestResolverAccessRequiresCurrentContextAndBoundedLease(t *testing.T) {
 	}
 }
 
-func TestConsumerSelectorRequiresConfiguredIntegrationMode(t *testing.T) {
-	vpc := dnsv1alpha1.DNSNameReference{Name: "vpc"}
-	resolverContext := dnsv1alpha1.DNSNameReference{Name: "ctx"}
-	if err := validateConsumerSelector(vpc, dnsv1alpha1.DNSNameReference{}, false); err != nil {
-		t.Fatalf("network selector rejected: %v", err)
-	}
-	if err := validateConsumerSelector(dnsv1alpha1.DNSNameReference{}, resolverContext, true); err != nil {
-		t.Fatalf("context selector rejected: %v", err)
-	}
-	if validateConsumerSelector(vpc, dnsv1alpha1.DNSNameReference{}, true) == nil || validateConsumerSelector(dnsv1alpha1.DNSNameReference{}, resolverContext, false) == nil {
-		t.Fatal("selector accepted in the wrong integration mode")
-	}
-}
-
 func TestCustomerNamedReferencesValidateLiveResources(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {

@@ -285,6 +285,20 @@ func (r *activationBoundaryRunner) Run(_ context.Context, command Command) ([]by
 	return nil, nil
 }
 
+type blockedInstallRunner struct {
+	recordingRunner
+	block func() error
+}
+
+func (r *blockedInstallRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+	if command.Path == "gate" && r.block != nil {
+		if err := r.block(); err != nil {
+			return nil, err
+		}
+	}
+	return r.recordingRunner.Run(ctx, command)
+}
+
 func TestInterruptedInstallationRequiresLocalRecovery(t *testing.T) {
 	cfg := regionalTestConfig(t)
 	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
@@ -294,9 +308,9 @@ func TestInterruptedInstallationRequiresLocalRecovery(t *testing.T) {
 	installTestPublication(t, agent, time.Now().UTC())
 	approved := agent.state.Active.Files
 	badParent := filepath.Join(cfg.StateDir, "not-a-directory")
-	if err := os.WriteFile(badParent, []byte("blocked"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	agent.tx.Runner = &blockedInstallRunner{block: func() error {
+		return os.WriteFile(badParent, []byte("blocked"), 0o644)
+	}}
 	files := map[string][]byte{filepath.Join(badParent, "later.conf"): []byte("candidate")}
 	for path := range approved {
 		files[path] = []byte("candidate")

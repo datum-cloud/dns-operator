@@ -390,7 +390,6 @@ func configure() {
 	items := make([]object, 0, 8)
 	items = append(items, sources)
 	cfg := exampleConfigs("control-plane.example.yaml")["internal-dns-control-plane-config"]
-	cfg.ConsumerPrefix = "fd53::/64"
 	cfg.ClusterPrefix = "fd54::/64"
 	cfg.ManagedDomainSuffix = "managed.internal"
 	cfg.OwnershipLeaseSeconds = 10

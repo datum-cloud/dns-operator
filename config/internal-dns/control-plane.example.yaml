@@ -10,14 +10,11 @@ data:
       "shard": "shared-0",
       "platformNamespace": "internal-dns-system",
       "platformKubeAPI": {"qps":50,"burst":100,"requestTimeoutSeconds":10},
-      "projects": [
-        {
-          "name": "example-project",
-          "projectUID": "00000000-0000-0000-0000-000000000001",
-          "namespace": "example-project",
-          "kubeAPI": {"qps":20,"burst":40,"requestTimeoutSeconds":10}
-        }
-      ],
+      "projectDiscovery": {
+        "kubeconfig": "/var/run/internal-dns/discovery/kubeconfig",
+        "intervalSeconds": 10,
+        "kubeAPI": {"qps":20,"burst":40,"requestTimeoutSeconds":10}
+      },
       "nodeBackends": [
         {"memberID":"node-bind-0","address":"fd70:10::10","port":5300}
       ],
@@ -83,7 +80,7 @@ spec:
       containers:
       - name: control-plane
         image: example.invalid/dns-operator/internal-dns:VERSION
-        args: ["--role=control-plane","--config=/etc/internal-dns/config.json"]
+        args: ["--role=control-plane","--config=/etc/internal-dns/config.json","--kubeconfig=/var/run/internal-dns/platform/kubeconfig"]
         ports:
         - {name: admission, containerPort: 9443}
         securityContext:
@@ -92,10 +89,20 @@ spec:
           runAsNonRoot: true
           capabilities: {drop: [ALL]}
         volumeMounts:
+        - {name: discovery, mountPath: /var/run/internal-dns/discovery, readOnly: true}
+        - {name: platform, mountPath: /var/run/internal-dns/platform, readOnly: true}
         - {name: config, mountPath: /etc/internal-dns, readOnly: true}
         - {name: nats, mountPath: /var/run/internal-dns/nats, readOnly: true}
         - {name: admission, mountPath: /var/run/internal-dns/admission, readOnly: true}
       volumes:
+      - name: discovery
+        secret:
+          secretName: internal-dns-discovery-kubeconfig
+          items: [{key: value, path: kubeconfig}]
+      - name: platform
+        secret:
+          secretName: internal-dns-service-kubeconfig
+          items: [{key: value, path: kubeconfig}]
       - name: config
         configMap: {name: internal-dns-control-plane-config}
       - name: nats

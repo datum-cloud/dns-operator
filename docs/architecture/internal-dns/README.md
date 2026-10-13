@@ -119,8 +119,11 @@ flowchart TB
   as desired state; DNS publications use their own delivery path.
 - **Edge:** Owns local networking, shared serving workloads, and checkpoints.
 
-DNS uses authenticated project clients. VPC integration and product publishers
-translate their resources into DNS intent; DNS does not watch their APIs.
+DNS discovers ready Milo projects and watches every namespace through
+authenticated project clients. Discovery outages retain existing sources and
+applied serving state. Admission uses the authenticated project parent identity
+for live reference validation. VPC integration and product publishers translate
+their resources into DNS intent; DNS does not watch their APIs.
 
 ### Contexts and regional access
 

@@ -252,11 +252,14 @@ from local checkpoints without contacting the control plane.
 
 Agents retain desired version fences and an activated configuration separately.
 A rejected expansion retains that configuration; a rejected withdrawal gates
-serving. An independent watchdog probes local daemons while updates are staged
-and validated. DNS query probes and backend health checks isolate serving
-failures from update delivery. Retained tombstones and writer fences prevent replay from
-restoring withdrawn records or access. A new serving node requires a complete
-configuration before accepting queries.
+serving. Healthy DNS continues through normal agent stops and restarts.
+Readiness verifies durable activation state, the active checkpoint, and local
+DNS daemons over UDP and TCP without contacting the broker or project APIs.
+Incomplete or uncertain activation keeps serving gated until recovery verifies
+the saved configuration. DNS query probes and backend health checks isolate
+serving failures from update delivery. Retained tombstones and writer fences
+prevent replay from restoring withdrawn records or access. A new serving node
+requires a complete configuration before accepting queries.
 
 A reserved name without eligible addresses returns NODATA. A pending private zone returns SERVFAIL only beneath its own apex; other zones
 and public recursion continue. Missing required

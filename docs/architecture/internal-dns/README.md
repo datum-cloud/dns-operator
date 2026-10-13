@@ -69,6 +69,11 @@ namespace, accepts explicit custom zone associations,
 and compiles product publications into private serving state. Consumers use a
 stable resolver address in their VPC while the platform selects shared capacity.
 
+DNS APIs reference resolver contexts and zones. Network services owns the mapping
+from a network to its DNS context and the consumer-facing resolver address. DNS
+reserves service-side listener addresses and accepts registrations from any
+authorized publisher; naming rules match registration labels.
+
 ### Risks and mitigations
 
 - Tenant leakage: authorize network identity before cache lookup, isolate

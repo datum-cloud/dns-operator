@@ -203,6 +203,18 @@ func structLocal(name string) corev1.LocalObjectReference {
 	return corev1.LocalObjectReference{Name: name}
 }
 
+func TestCompileRejectsReplacementBehindANameOnlyReference(t *testing.T) {
+	in := fixture(time.Now().UTC())
+	in.Zone.UID = "replacement-zone"
+	result, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted[in.Registrations[0].UID] || result.Reasons[in.Registrations[0].UID] != "InvalidReference" || len(result.Plan.RRsets) != 0 {
+		t.Fatalf("replacement reused a registration's private reference: %#v", result)
+	}
+}
+
 func TestCompileRejectsPrivateAuthorityOverridesWithoutBlockingHealthyRecords(t *testing.T) {
 	for _, tt := range []struct {
 		name       string

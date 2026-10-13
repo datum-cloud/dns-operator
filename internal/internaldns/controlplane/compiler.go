@@ -108,11 +108,15 @@ func Compile(in CompileInput) (CompileResult, error) {
 			result.Reasons[reg.UID] = "InvalidTTL"
 			continue
 		}
-		if reg.Spec.DNSZoneRef.Name != in.Zone.Name || !refMatches(in.RegistrationZoneReferences[reg.UID], in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
+		if reg.Spec.DNSZoneRef.Name != in.Zone.Name {
 			continue
 		}
 		if reg.UID == "" {
 			result.Reasons[reg.UID] = "MissingUID"
+			continue
+		}
+		if !refMatches(in.RegistrationZoneReferences[reg.UID], in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
+			result.Reasons[reg.UID] = "InvalidReference"
 			continue
 		}
 		name := zoneOwner(reg.Spec.Name, result.Plan.ZoneApex)

@@ -167,7 +167,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 	}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, z.Name, z.UID, z.Generation) || registrationFences[reg.UID] != reg.Generation {
+		if reg.Spec.DNSZoneRef.Name != z.Name || registrationFences[reg.UID] != reg.Generation {
 			continue
 		}
 		regUIDs[reg.UID] = true
@@ -590,7 +590,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 	relevant := map[types.UID]bool{}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, zone.Name, zone.UID, zone.Generation) {
+		if reg.Spec.DNSZoneRef.Name != zone.Name {
 			continue
 		}
 		relevant[reg.UID] = true
@@ -601,6 +601,12 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		base := reg.DeepCopy()
 		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
+		if !accepted {
+			reg.Status.CanonicalFQDN = ""
+			reg.Status.PublicationWriterEpoch = 0
+			reg.Status.PublicationRevision = 0
+			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
+		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, reg.Generation, now)
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {

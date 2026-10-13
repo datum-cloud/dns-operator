@@ -108,7 +108,7 @@ flowchart TB
 - **Consumer project:** Owns contexts, access bindings, zones, naming policy, and
   publications. VPC integration writes access intent; product services publish
   records and eligibility; DNS reports serving status.
-- **DNS service project:** Owns writer leases, snapshots, outboxes, fleet plans,
+- **DNS service project:** Owns internal reference records, writer leases, snapshots, outboxes, fleet plans,
   and the service's network intent.
 - **Karmada:** Places network and workload intent. Guest resolver settings travel
   as desired state; DNS publications use their own delivery path.
@@ -266,7 +266,8 @@ are not fields consumers submit when creating resources.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS
-resolves these references and retains their UIDs in controller-owned status.
+resolves these references and stores ownership identities in internal reference
+records in the DNS service project. Project status exposes names and conditions.
 Internal publication and access contracts pin UIDs and policy generations.
 The project API server authenticates callers and uses RBAC to authorize resource
 and status operations. Separate roles govern product publication, grant issuance,
@@ -298,7 +299,6 @@ status:
   managedNamespace:
     dnsZoneRef:
       name: managed-application
-      uid: 44444444-4444-4444-8444-444444444444
     suffix: datum.internal
   # DNS-owned fencing epoch for trusted access authorization.
   accessWriterEpoch: 3

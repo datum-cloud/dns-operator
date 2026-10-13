@@ -201,7 +201,7 @@ unmatched destinations before lookup.
 
 A registration reserves a name and record types. An RBAC-authorized product
 service publishes records and explicit endpoint eligibility through a contribution.
-DNS validates ownership and observation versions, then compiles a zone snapshot.
+DNS validates ownership and resource generations, then compiles a zone snapshot.
 
 ```mermaid
 sequenceDiagram
@@ -211,8 +211,8 @@ sequenceDiagram
   participant Store as DNS service project API
   participant Transport as Regional NATS
   participant Agent as Serving agent
-  Product->>Project: Records and eligibility observation
-  DNS->>Project: Validate references and observation versions
+  Product->>Project: Atomically update records and eligibility
+  DNS->>Project: Validate references and resource generation
   DNS->>Store: Stage immutable chunks and manifest
   DNS->>Store: Commit active snapshot under writer lease
   Store->>Transport: Export committed update through durable outbox
@@ -220,7 +220,7 @@ sequenceDiagram
   Agent->>Agent: Verify and apply local configuration
   Agent->>Store: Acknowledge applied snapshot
   DNS->>Project: Report serving status
-  Product->>Project: Higher-sequence ineligible observation
+  Product->>Project: Update contribution with eligible=false
   DNS->>Store: Commit snapshot that withdraws the endpoint
 ```
 
@@ -307,8 +307,6 @@ status:
     dnsZoneRef:
       name: managed-application
     suffix: datum.internal
-  # DNS-owned epoch for ordering access mapping updates.
-  accessEpoch: 3
   # Regional assignments do not move this object out of the project API.
   servingTargets:
     - region: central
@@ -325,26 +323,16 @@ spec:
     uid: 33333333-3333-4333-8333-333333333333
   # Select the serving region, not a separate project control plane.
   region: central
-  queryIdentity:
-    # Galactic maps verified VPC traffic to this service-side destination.
-    type: DestinationAddress
-    # This is distinct from the well-known address exposed inside the VPC.
-    value: fd70:100::10
-  # Serve DNS at this destination over both transports.
-  port: 53
-  transports: [UDP, TCP]
-  version:
-    # Match the context epoch to reject stale mapping updates.
-    epoch: 3
-    # Order updates monotonically within this access-binding lifetime.
-    sequence: 27
+  # Galactic maps verified VPC traffic to this service-side destination.
+  # This differs from the well-known address exposed inside the VPC.
+  destinationAddress: fd70:100::10
 ```
 
 Access reports `Accepted` after validation and `Ready` after required members
 apply the current access mapping and configuration. Zone publication readiness is
-reported separately; a pending zone does not block resolver access. Context, region, query identity,
-port, transports, and access epoch are immutable per access lifetime.
-Updates advance the sequence; destinations are unique within their routing
+reported separately; a pending zone does not block resolver access. Context, region,
+and destination are immutable per access lifetime. DNS serves UDP and TCP on port 53
+and generates internal mapping versions. Destinations are unique within their routing
 scope. Galactic enforces network access to each destination. Project RBAC controls
 who can manage the DNS mappings.
 
@@ -406,8 +394,8 @@ independent zones with the same apex. Static records have no health lease.
 
 #### Automatic naming and additional names
 
-DNS allocates the requested managed zone and exposes its zone reference and
-suffix in context status. Product publishers use these outputs. A naming policy
+The context directly owns its managed zone and association. DNS allocates the
+requested zone and exposes its reference and suffix in context status. Product publishers use these outputs. A naming policy
 adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml
@@ -464,8 +452,6 @@ spec:
   name: web-01
   # Constrain which record types contributions can populate.
   recordTypes: [A, AAAA]
-  # Publish only contributions with a current eligible observation.
-  publicationPolicy: EligibleContributions
   # Bound client caching after a record update or withdrawal.
   ttlSeconds: 30
   # Optional descendant reservations must not overlap other owners.
@@ -484,6 +470,10 @@ spec:
     name: instance-web-01
     uid: 55555555-5555-4555-8555-555555555555
     generation: 1
+  # Publish eligibility and addresses together in one desired-state update.
+  eligible: true
+  # Product policy determines eligibility for this name's purpose.
+  reason: NetworkInterfaceProgrammed
   # Reuse the existing typed record representation.
   recordSets:
     - recordType: A
@@ -499,22 +489,18 @@ spec:
           aaaa:
             content: fd20::10
 status:
-  # Producer-owned: this observation covers the current contribution spec.
+  # DNS-owned: the desired generation processed by DNS.
   observedGeneration: 1
-  # Producer-owned: increase for each eligibility observation.
-  sequence: 18
-  # Producer-owned: product policy determines readiness for this name's purpose.
-  eligible: true
-  reason: NetworkInterfaceProgrammed
   # DNS-owned: the publication revision that included this contribution.
   publishedRevision: 12
 ```
 
-Publishers preserve DNS-owned status fields and observe the current contribution
-generation. An ineligible endpoint gets a higher-sequence observation with
-`eligible: false`; recovery requires a newer eligible observation. Publisher
-unavailability leaves the last reported state in place. The compiler rejects stale
-generations, sequence rollback, and records outside the registration.
+Publishers update records and eligibility atomically with optimistic concurrency.
+An explicit update with `eligible: false` withdraws the endpoint; recovery sets it
+to true. Kubernetes assigns a new generation to each desired-state change. DNS
+retains UID and generation fences across controller takeover and replay. Status
+belongs to DNS. Publisher unavailability leaves the last desired state in place.
+The compiler rejects stale generations and records outside the registration.
 
 #### DNS service project contracts
 
@@ -559,8 +545,6 @@ spec:
       nodeAddress: fd70:100::10
       # Node resolvers forward to this regional context destination.
       regionalAddress: fd70:200::10
-      # Both destinations use DNS port 53 and the same transports.
-      transports: [UDP, TCP]
     # Reserve private apices even while their publication is pending.
     zoneApices:
       44444444-4444-4444-8444-444444444444: datum.internal
@@ -572,7 +556,7 @@ spec:
       - name: production
         uid: 88888888-8888-4888-8888-888888888888
   version:
-    # Copy the current access mapping version.
+    # DNS generates ordering fences for this mapping's lifetime.
     epoch: 3
     sequence: 27
 ```
@@ -582,7 +566,7 @@ namespace. Source identity is immutable. The region and node listener match the
 access binding; DNS allocates the regional listener.
 
 Configuration generation fences plan replacement; revision orders its updates.
-Authorization copies the accepted access epoch and sequence. Serving
+DNS generates private access versions and advances them for withdrawal and recovery. Serving
 acknowledgments identify the binding UID and both version sets; readiness
 requires current proof from available capacity in each serving tier.
 `FullyReplicated` reports whether every assigned member has applied the plan;
@@ -621,7 +605,7 @@ before release.
 
 Define separate alpha controls for publication and serving. Public visibility
 remains the default. Revoke access before draining private capacity; dependent
-workloads lose resolution. Reenabling requires a newer access version and current observations.
+workloads lose resolution. Reenabling requires current access intent and verified serving state.
 
 ### Rollout, Upgrade and Rollback Planning
 

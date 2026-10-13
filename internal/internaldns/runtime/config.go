@@ -63,7 +63,6 @@ type Config struct {
 	NodeBackends          []model.Backend           `json:"nodeBackends,omitempty"`
 	ClusterBackends       []model.Backend           `json:"clusterBackends,omitempty"`
 	Members               []model.Member            `json:"members,omitempty"`
-	ConsumerPrefix        string                    `json:"consumerPrefix,omitempty"`
 	ClusterPrefix         string                    `json:"clusterPrefix,omitempty"`
 	NATS                  transport.Config          `json:"nats"`
 	Stream                transport.StreamConfig    `json:"stream"`

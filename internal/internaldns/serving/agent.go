@@ -993,7 +993,7 @@ type resolverProbeResult struct {
 }
 
 // verifyResolverBindings probes a shard in a bounded worker pool. All probes
-// share one deadline so adding VPCs cannot make reconciliation grow by one
+// share one deadline so adding resolver contexts cannot make reconciliation grow by one
 // complete probe timeout per binding.
 func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Binding, active map[string]bool) bool {
 	if a.deps.Verifier == nil {

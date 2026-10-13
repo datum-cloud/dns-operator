@@ -56,16 +56,15 @@ func validateNamingAPISchemas(t *testing.T, cl client.Client) {
 		}
 	})
 	for _, tc := range []struct {
-		name         string
-		vpc, context DNSNameReference
-		allowed      bool
+		name    string
+		context DNSNameReference
+		allowed bool
 	}{
-		{"one-context", DNSNameReference{}, DNSNameReference{Name: "context"}, true},
-		{"no-consumer", DNSNameReference{}, DNSNameReference{}, false},
-		{"both-consumers", DNSNameReference{Name: "vpc"}, DNSNameReference{Name: "context"}, false},
+		{"one-context", DNSNameReference{Name: "context"}, true},
+		{"no-consumer", DNSNameReference{}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := &DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: "validation"}, Spec: DNSZoneAssociationSpec{DNSZoneRef: DNSNameReference{Name: "zone"}, VPCRef: tc.vpc, ResolverContextRef: tc.context}}
+			a := &DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: tc.name, Namespace: "validation"}, Spec: DNSZoneAssociationSpec{DNSZoneRef: DNSNameReference{Name: "zone"}, ResolverContextRef: tc.context}}
 			err := cl.Create(ctx, a)
 			if tc.allowed {
 				if err != nil {

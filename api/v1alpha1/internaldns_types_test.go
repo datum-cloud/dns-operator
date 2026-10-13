@@ -5,12 +5,10 @@ import (
 	"testing"
 )
 
-// Value-typed references with omitempty encode their unselected peer as {}.
-// The CRD CEL tests a nonempty selected name so Go clients can omit its peer.
-func TestConsumerSelectorJSONUsesEmptyUnselectedReference(t *testing.T) {
+func TestDNSPoliciesSelectResolverContexts(t *testing.T) {
 	for name, value := range map[string]any{
 		"association context": DNSZoneAssociationSpec{ResolverContextRef: DNSNameReference{Name: "ctx"}},
-		"naming legacy":       DNSNamingPolicySpec{VPCRef: DNSNameReference{Name: "vpc"}},
+		"naming context":      DNSNamingPolicySpec{ResolverContextRef: DNSNameReference{Name: "ctx"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(value)
@@ -21,8 +19,8 @@ func TestConsumerSelectorJSONUsesEmptyUnselectedReference(t *testing.T) {
 			if err := json.Unmarshal(data, &object); err != nil {
 				t.Fatal(err)
 			}
-			if _, hasVPC := object["vpcRef"]; !hasVPC {
-				t.Fatal("expected value-typed vpcRef property")
+			if _, hasVPC := object["vpcRef"]; hasVPC {
+				t.Fatal("DNS policies must not expose VPC references")
 			}
 			if _, hasContext := object["resolverContextRef"]; !hasContext {
 				t.Fatal("expected value-typed resolverContextRef property")

@@ -45,8 +45,8 @@ func (c *accessListSnapshotClient) List(ctx context.Context, list client.ObjectL
 	return c.Client.List(ctx, list, opts...)
 }
 
-func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, string, error) {
-	return "fd53::10", "fd54::10", nil
+func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, error) {
+	return "fd54::10", nil
 }
 
 func (testAllocator) ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error {
@@ -249,7 +249,7 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	if accepted == nil || accepted.Status != metav1.ConditionTrue || len(policy.Status.ResolvedAdditionalNames) != 2 {
 		t.Fatalf("context naming policy not resolved: %#v", policy.Status)
 	}
-	if policy.Status.ResolvedResolverContextRef.UID != resolverContext.UID || policy.Status.ResolvedVPCRef.UID != "consumer-uid" {
+	if policy.Status.ResolvedResolverContextRef.UID != resolverContext.UID {
 		t.Fatalf("identity projection incorrect: %#v", policy.Status)
 	}
 }

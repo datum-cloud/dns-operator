@@ -321,7 +321,18 @@ func TestZeroZoneContextProvesRecursionOverUDPAndTCP(t *testing.T) {
 	if err := (DNSVerifier{Config: DNSVerifierConfig{Timeout: time.Second}}).Verify(context.Background(), binding); err != nil {
 		t.Fatal(err)
 	}
-	if len(seen) != 2 {
-		t.Fatalf("probe count=%d", len(seen))
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	transports := make(map[string]bool, 2)
+	for range 2 {
+		select {
+		case transport := <-seen:
+			transports[transport] = true
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for UDP and TCP probes: %v", transports)
+		}
+	}
+	if !transports[networkUDP] || !transports[networkTCP] {
+		t.Fatalf("probe transports = %v, want UDP and TCP", transports)
 	}
 }

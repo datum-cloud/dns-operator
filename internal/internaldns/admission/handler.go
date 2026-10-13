@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package admission validates live DNS references and publisher grant relationships.
-// Compiler validation remains necessary, but cannot infer a Kubernetes caller
-// from a stored object's spec. Install this webhook with failurePolicy: Fail.
+// Package admission validates live references between private DNS resources.
 package admission
 
 import (
@@ -97,7 +95,7 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 		return fmt.Errorf("resolver context lifetime is not current")
 	}
 	if resolverContext.Status.AccessEpoch < 1 || current.Spec.Version.Epoch != resolverContext.Status.AccessEpoch {
-		return fmt.Errorf("access writer epoch is retired or not issued")
+		return fmt.Errorf("access version does not match the current context epoch")
 	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {

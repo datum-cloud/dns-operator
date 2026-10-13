@@ -167,7 +167,7 @@ func (r *Reconciler) reconcileManagedNamespaces(ctx context.Context, ns string, 
 		if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
 			return err
 		}
-		assocName := zoneName + "-vpc"
+		assocName := zoneName + "-context"
 		assocSpec := dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Managed: true}
 
 		assocSpec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: contextObject.Name}
@@ -454,7 +454,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if r.Options.AddressAllocator == nil {
 				return errors.New("address allocator is required for context binding")
 			}
-			_, cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID)
+			cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID)
 			if err != nil {
 				return err
 			}
@@ -612,9 +612,9 @@ func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) b
 
 // selectServingTargets assigns one shared shard in each region. An existing
 // live assignment wins while its shard remains configured, so adding capacity
-// does not silently move established VPC listeners. Explicit migration is a
+// does not silently move established resolver listeners. Explicit migration is a
 // separate operation; only a missing/removed assignment invokes rendezvous.
-func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
+func (r *Reconciler) selectServingTargets(resolverContextUID types.UID, existing []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
 	byRegion := map[string][]ServingRegion{}
 	for _, target := range r.Options.servingRegions() {
 		byRegion[target.Region] = append(byRegion[target.Region], target)
@@ -630,7 +630,7 @@ func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.
 		sort.Slice(candidates, func(i, j int) bool { return candidates[i].Shard < candidates[j].Shard })
 		var preserved *ServingRegion
 		for _, binding := range existing {
-			if binding.Spec.Source.ProjectUID != r.Options.ProjectUID || binding.Spec.Source.ResolverContextRef.UID != vpc || binding.Spec.Placement.Region != region || binding.Spec.Tombstone || !binding.DeletionTimestamp.IsZero() {
+			if binding.Spec.Source.ProjectUID != r.Options.ProjectUID || binding.Spec.Source.ResolverContextRef.UID != resolverContextUID || binding.Spec.Placement.Region != region || binding.Spec.Tombstone || !binding.DeletionTimestamp.IsZero() {
 				continue
 			}
 			for _, candidate := range candidates {
@@ -649,7 +649,7 @@ func (r *Reconciler) selectServingTargets(vpc types.UID, existing []dnsv1alpha1.
 		best := candidates[0]
 		bestScore := ""
 		for _, candidate := range candidates {
-			sum := sha256.Sum256([]byte(string(r.Options.ProjectUID) + "/" + string(vpc) + "/" + region + "/" + candidate.Shard))
+			sum := sha256.Sum256([]byte(string(r.Options.ProjectUID) + "/" + string(resolverContextUID) + "/" + region + "/" + candidate.Shard))
 			score := string(sum[:])
 			if bestScore == "" || score > bestScore {
 				best, bestScore = candidate, score

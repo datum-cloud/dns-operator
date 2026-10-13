@@ -36,10 +36,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              DNSManagedNamespace is the DNS-owned lookup and lifecycle record for the
-              canonical private namespace of a VPC. Product controllers read its status;
-              only the DNS platform controller writes the object.
+            description: DNSManagedNamespace tracks a resolver context's canonical
+              private namespace.
             properties:
               dnsZoneClassName:
                 type: string

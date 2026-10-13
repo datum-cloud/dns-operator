@@ -491,20 +491,20 @@ func sortAggregate(records []dnsv1alpha1.RecordEntry, uids []types.UID) {
 }
 
 func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1.DNSZoneAssociation, references map[types.UID]associationReferences) []types.UID {
-	vpcs := map[types.UID]struct{}{}
+	contextsByUID := map[types.UID]struct{}{}
 	for i := range associations {
 		a := &associations[i]
 		refs := references[a.UID]
 		consumerUID := refs.Context.UID
 		if associationMatchesZone(a, zone, refs) && consumerUID != "" {
-			vpcs[consumerUID] = struct{}{}
+			contextsByUID[consumerUID] = struct{}{}
 		}
 	}
-	if len(vpcs) == 0 {
+	if len(contextsByUID) == 0 {
 		return nil
 	}
-	contexts := make([]types.UID, 0, len(vpcs))
-	for uid := range vpcs {
+	contexts := make([]types.UID, 0, len(contextsByUID))
+	for uid := range contextsByUID {
 		contexts = append(contexts, uid)
 	}
 	sort.Slice(contexts, func(i, j int) bool { return contexts[i] < contexts[j] })

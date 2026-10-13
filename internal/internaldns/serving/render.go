@@ -253,14 +253,14 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		}
 		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), !b.ConfigurationPending && active[b.BindingUID])
 	}
-	fmt.Fprint(&out, "}\n\nfunction classifyVPC(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"vpc-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
-	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyVPC))\n")
+	fmt.Fprint(&out, "}\n\nfunction classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
+	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyContext))\n")
 	fmt.Fprint(&out, "addAction(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
 	for _, binding := range bindings {
 		attached := append([]model.ZoneAttachment(nil), binding.Zones...)
 		sort.Slice(attached, func(i, j int) bool { return len(attached[i].Apex) > len(attached[j].Apex) })
 		for _, zone := range attached {
-			rule := fmt.Sprintf("AndRule({TagRule(\"vpc-context\",%q),QNameSuffixRule(%q)})", binding.ViewName(), model.AbsoluteName(zone.Apex))
+			rule := fmt.Sprintf("AndRule({TagRule(\"dns-context\",%q),QNameSuffixRule(%q)})", binding.ViewName(), model.AbsoluteName(zone.Apex))
 			if zone.Pending || zones != nil && len(zones[binding.BindingUID][zone.ZoneUID]) == 0 {
 				fmt.Fprintf(&out, "addAction(%s,RCodeAction(DNSRCode.SERVFAIL))\n", rule)
 			} else if cluster && zones != nil {
@@ -271,7 +271,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	if cluster {
 		for _, binding := range bindings {
-			fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({TagRule(\"vpc-context\",%q),NotRule(PoolAvailableRule(%q))}), RCodeAction(DNSRCode.SERVFAIL))\naddAction(TagRule(\"vpc-context\",%q),PoolAction(%q))\n", binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName())
+			fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({TagRule(\"dns-context\",%q),NotRule(PoolAvailableRule(%q))}), RCodeAction(DNSRCode.SERVFAIL))\naddAction(TagRule(\"dns-context\",%q),PoolAction(%q))\n", binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName())
 		}
 		fmt.Fprint(&out, "addAction(AllRule(),RCodeAction(DNSRCode.SERVFAIL))\n")
 	} else {

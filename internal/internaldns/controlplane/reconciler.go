@@ -42,7 +42,7 @@ type ServingRegion struct {
 // implementation must retain quarantine state after release; a pure hash is
 // only a candidate and is never sufficient proof of uniqueness.
 type AddressAllocator interface {
-	Allocate(context.Context, types.UID, types.UID) (consumer, cluster string, err error)
+	Allocate(context.Context, types.UID, types.UID) (cluster string, err error)
 	ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error
 }
 

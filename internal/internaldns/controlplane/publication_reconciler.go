@@ -395,14 +395,14 @@ func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPub
 	return manifest.Spec.Revision, nil
 }
 
-func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, vpcs []types.UID, includePrevious bool) ([]ServingRegion, error) {
+func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
 	var bindings dnsv1alpha1.DNSResolverBindingList
 	if err := r.List(ctx, &bindings, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
 		return nil, err
 	}
 	byKey := map[string]ServingRegion{}
-	for _, vpc := range vpcs {
-		for _, target := range r.selectServingTargets(vpc, bindings.Items) {
+	for _, resolverContextUID := range contextsByUID {
+		for _, target := range r.selectServingTargets(resolverContextUID, bindings.Items) {
 			byKey[target.Region+"\x00"+target.Shard] = target
 		}
 	}
@@ -429,8 +429,8 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	return result, nil
 }
 
-func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, vpcUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
-	vpcUIDs = append([]types.UID{}, vpcUIDs...)
+func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, contextUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
+	contextUIDs = append([]types.UID{}, contextUIDs...)
 	refs := []dnsv1alpha1.DNSPublicationChunkReference{}
 	depsByRegion := map[string][]string{}
 	wireRefs := []model.ChunkRef{}
@@ -473,7 +473,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	for _, target := range servingTargets {
 		apiTargets = append(apiTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: vpcUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
 	if err := r.createImmutable(ctx, m); err != nil {
 		return nil, err
 	}

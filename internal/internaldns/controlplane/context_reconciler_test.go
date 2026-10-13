@@ -45,8 +45,8 @@ func (c *accessListSnapshotClient) List(ctx context.Context, list client.ObjectL
 	return c.Client.List(ctx, list, opts...)
 }
 
-func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, string, error) {
-	return "fd53::10", "fd54::10", nil
+func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, error) {
+	return "fd54::10", nil
 }
 
 func (testAllocator) ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error {

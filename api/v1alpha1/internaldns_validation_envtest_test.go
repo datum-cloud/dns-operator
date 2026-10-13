@@ -47,6 +47,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 	if err := cl.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "validation"}}); err != nil {
 		t.Fatal(err)
 	}
+	validateResolverContextBoundaries(t, cl)
 	requireInvalid := func(t *testing.T, err error) {
 		t.Helper()
 		if !apierrors.IsInvalid(err) {

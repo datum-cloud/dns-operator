@@ -31,7 +31,6 @@ data:
         {"memberID":"regional-bind-us-central1-0","replicaID":"regional-bind-us-central1-0","role":"regional"},
         {"memberID":"regional-bind-us-central1-1","replicaID":"regional-bind-us-central1-1","role":"regional"}
       ],
-      "consumerPrefix": "fd70:100::/48",
       "clusterPrefix": "fd70:200::/48",
       "privateZoneClassName": "private-bind",
       "ownershipLeaseSeconds": 30,

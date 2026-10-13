@@ -100,3 +100,27 @@ func TestSourceWorkerBindingIsProjectScoped(t *testing.T) {
 		t.Fatal("source worker requires project-scoped permissions")
 	}
 }
+
+func TestFixtureSourcesUseIndependentProjectAPIs(t *testing.T) {
+	root, err := filepath.Abs("../../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	cfg := exampleConfigs("control-plane.example.yaml")["internal-dns-control-plane-config"]
+	if cfg.ProjectDiscovery == nil {
+		t.Fatal("deployment example must exercise project discovery")
+	}
+	configureProjectSources(&cfg)
+	if cfg.ProjectDiscovery != nil || len(cfg.Projects) != 2 {
+		t.Fatal("fixture source selection mixes discovery and direct APIs")
+	}
+	for _, project := range cfg.Projects {
+		if project.Kubeconfig == "" || project.Namespace != projectNS {
+			t.Fatalf("fixture source scope missing: %#v", project)
+		}
+	}
+	if err := cfg.Validate("control-plane"); err != nil {
+		t.Fatalf("fixture source config rejected: %v", err)
+	}
+}

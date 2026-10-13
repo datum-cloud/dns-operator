@@ -44,7 +44,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
   > "$evidence_dir/help.log" 2>&1
 # Confirm this is the internal DNS entry point rather than an image that only
 # happens to exit successfully.
-grep -q 'Process role: control-plane, agent, or watchdog' "$evidence_dir/help.log"
+grep -q 'Process role: control-plane, agent, serving, or readiness' "$evidence_dir/help.log"
 git rev-parse HEAD > "$evidence_dir/source.commit"
 git status --porcelain > "$evidence_dir/source.status"
 printf 'Internal DNS package qualification passed; evidence: %s\n' "$evidence_dir"

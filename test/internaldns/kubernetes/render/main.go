@@ -220,12 +220,12 @@ func fleetPod(name, member, role string) object {
 	o["metadata"].(object)["labels"] = object{"internal-dns-role": role, "internal-dns-member": member}
 	mounts := []object{mount("config", "/config", true), mount("nats", "/var/run/internal-dns/nats", true), mount("state", "/var/lib/internal-dns", false), mount("daemon-config", "/etc/internal-dns", false), mount("lease", "/run/internal-dns", false), mount("runtime", "/tmp", false), mount("rndc", "/etc/bind", true)}
 	containers := make([]object, 0, 3)
-	for _, process := range []string{"agent", "watchdog"} {
+	for _, process := range []string{"agent"} {
 		containers = append(containers, object{"name": process, "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=" + process + " --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
 	}
 	sec := security()
 	sec["capabilities"] = object{"drop": []string{"ALL"}, "add": []string{"NET_BIND_SERVICE"}}
-	containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/usr/local/sbin/internal-dns-daemons", role}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
+	containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/internal-dns", "--role=serving", "--config=/config/config.json"}, "readinessProbe": object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
 	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}, {"name": "rndc", "secret": object{"secretName": "internal-dns-rndc"}}}
 	// The aliases model the service-side destination contract only. The separate
 	// probe has no ability to write routes or send trusted PROXY traffic.
@@ -405,7 +405,6 @@ func configure() {
 	configs := exampleConfigs("fleet.example.yaml")
 	for i, key := range []string{"internal-dns-node-0-config", "internal-dns-regional-front-0-config", "internal-dns-regional-bind-0-config", "internal-dns-regional-bind-1-config"} {
 		c := configs[key]
-		c.Watchdog.StartupGraceSeconds = 30
 		if i == 0 {
 			c.Agent.Render.NodeDNSDist.Backends = cfg.NodeBackends
 			c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
@@ -422,7 +421,7 @@ func configure() {
 			c.Agent.PublicationDNSProbe.Server = "[" + bindIP[i-2] + "]:5300"
 		}
 		must(c.Validate("agent"))
-		must(c.Validate("watchdog"))
+		must(c.Validate("readiness"))
 		items = append(items, configMap(podNames[i]+"-config", c))
 	}
 	routes := obj("v1", "Pod", "internal-dns-network-fixture", ns)

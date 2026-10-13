@@ -72,7 +72,7 @@ checks health withdrawal, stale-write conflicts, and DNS-owned status permission
 
 The fleet contains one node member, one regional frontend, and two regional
 BIND members, each with independent persistent state. Agents validate and
-activate configuration, prove UDP/TCP publication, and renew watchdog leases.
+activate configuration and prove UDP/TCP publication. Local readiness verifies\napproved files and live daemons while healthy DNS survives agent restarts.
 The broker uses three persistent replicas, client and route TLS, and scoped
 subject permissions. cert-manager issues broker, client, and admission
 certificates. ACK timing matches the shipped 30-second interval and 90-second

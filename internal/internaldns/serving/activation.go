@@ -112,7 +112,7 @@ func daemonPermission(stateDir string) (start, retain bool, release func()) {
 		return false, false, release
 	}
 	upgradeErr := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-	data, readErr := os.ReadFile(marker)
+	_, readErr := os.ReadFile(marker)
 	if errors.Is(readErr, os.ErrNotExist) {
 		return true, true, release
 	}
@@ -128,7 +128,7 @@ func daemonPermission(stateDir string) (start, retain bool, release func()) {
 	if err := unix.Flock(int(lock.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
 		return false, true, release
 	}
-	data, readErr = os.ReadFile(marker)
+	data, readErr := os.ReadFile(marker)
 	if errors.Is(readErr, os.ErrNotExist) {
 		return true, true, release
 	}

@@ -218,20 +218,12 @@ func (r *Reconciler) reconcileBindings(ctx context.Context, ns string, assocs []
 
 func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, assocs []dnsv1alpha1.DNSZoneAssociation, zones map[string]*dnsv1alpha1.DNSZone, now time.Time) error {
 	var accesses dnsv1alpha1.DNSResolverAccessBindingList
-	var contexts dnsv1alpha1.DNSResolverContextList
 	var existing dnsv1alpha1.DNSResolverBindingList
 	if err := r.List(ctx, &accesses, client.InNamespace(ns)); err != nil {
 		return err
 	}
-	if err := r.List(ctx, &contexts, client.InNamespace(ns)); err != nil {
-		return err
-	}
 	if err := r.List(ctx, &existing, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
 		return err
-	}
-	contextByUID := map[types.UID]*dnsv1alpha1.DNSResolverContext{}
-	for i := range contexts.Items {
-		contextByUID[contexts.Items[i].UID] = &contexts.Items[i]
 	}
 	zonesByContext := map[types.UID][]types.UID{}
 	for _, a := range assocs {
@@ -258,7 +250,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			continue
 		}
 		spec := a.Spec
-		contextObject := contextByUID[spec.ContextRef.UID]
+		var contextObject *dnsv1alpha1.DNSResolverContext
 		var currentContext dnsv1alpha1.DNSResolverContext
 		if err := r.sourceReader().Get(ctx, client.ObjectKey{Namespace: ns, Name: spec.ContextRef.Name}, &currentContext); err != nil {
 			if !apierrors.IsNotFound(err) {
@@ -527,8 +519,8 @@ func (r *Reconciler) createIfAbsent(ctx context.Context, o client.Object) error 
 	return err
 }
 
-func setCondition(cs *[]metav1.Condition, t string, status metav1.ConditionStatus, reason, msg string, generation int64, now time.Time) bool {
-	return apimeta.SetStatusCondition(cs, metav1.Condition{Type: t, Status: status, Reason: reason, Message: msg, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
+func setCondition(cs *[]metav1.Condition, t string, status metav1.ConditionStatus, reason, msg string, generation int64, now time.Time) {
+	apimeta.SetStatusCondition(cs, metav1.Condition{Type: t, Status: status, Reason: reason, Message: msg, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
 }
 
 // BindingAddressCandidates supplies stable IPv6 candidates to a durable global

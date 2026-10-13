@@ -21,6 +21,6 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/internal-dns /internal-dns
 COPY --from=build /out/dns-qualify /dns-qualify
-COPY test/internaldns/kubernetes/commands/ /usr/local/sbin/
+COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532
 ENTRYPOINT ["/internal-dns"]

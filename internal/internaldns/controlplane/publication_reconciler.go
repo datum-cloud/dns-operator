@@ -568,6 +568,12 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		base := reg.DeepCopy()
 		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
+		if !accepted {
+			reg.Status.CanonicalFQDN = ""
+			reg.Status.PublicationWriterEpoch = 0
+			reg.Status.PublicationRevision = 0
+			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
+		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, reg.Generation, now)
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {

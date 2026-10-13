@@ -83,8 +83,8 @@ The Go qualifier covers overlapping tenant names over UDP and TCP, A/AAAA and
 negative-cache isolation, multiple zones, managed name discovery, scoped
 publication and admission denial, record updates and deletion, health
 withdrawal and recovery, fixed fleet size, regional publication proof,
-controller takeover, local record/access expiry while controllers and the
-broker are stopped, and publication after broker/controller restoration using
+controller takeover, continued tenant-isolated UDP/TCP resolution while controllers
+and the broker are stopped, and publication after broker/controller restoration using
 the retained broker PVCs. Each assertion records its result; skipped scenarios do
 not count as passes.
 
@@ -111,5 +111,5 @@ into the separate DNS service VPC. Kind cannot establish physical fabric,
 microVM attachment, host-loss durability, regional independence, or production
 capacity.
 
-The suite requires internal wire version `v1alpha3`, fresh format 4 checkpoints,
+The suite requires internal wire version `v1alpha4`, fresh format 5 checkpoints,
 and matching controller and fleet versions.

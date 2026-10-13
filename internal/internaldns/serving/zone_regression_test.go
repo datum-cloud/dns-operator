@@ -3,7 +3,6 @@ package serving
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/miekg/dns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -23,10 +22,9 @@ func parseRenderedZone(t *testing.T, zone []byte) []dns.RR {
 }
 
 func TestNODATAOwnershipDoesNotGrowNamesOrCollideWithTenantCNAME(t *testing.T) {
-	now := time.Now()
 	owner := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 45) + ".x.internal."
 	plan := model.PublicationPlan{ZoneUID: "zone", Apex: "x.internal", Owners: []string{owner, "api.x.internal"}, RRSets: []model.RRSet{{Name: "_dns-ownership.api.x.internal", Type: "CNAME", TTL: 5, Records: []model.RRRecord{{Content: "target.example.", Eligible: true}}}}}
-	data, err := renderZone(publicationState{Plan: plan}, now)
+	data, err := renderZone(publicationState{Plan: plan})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +39,7 @@ func TestNODATAOwnershipDoesNotGrowNamesOrCollideWithTenantCNAME(t *testing.T) {
 		t.Fatalf("missing ownership metadata: %v", markers)
 	}
 	plan.RRSets = append(plan.RRSets, model.RRSet{Name: "api.x.internal", Type: "CNAME", TTL: 5, Records: []model.RRRecord{{Content: "healthy.example.", Eligible: true}}})
-	data, err = renderZone(publicationState{Plan: plan}, now)
+	data, err = renderZone(publicationState{Plan: plan})
 	if err != nil {
 		t.Fatal(err)
 	}

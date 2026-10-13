@@ -22,7 +22,7 @@ func WirePlan(plan PublicationPlan) (model.PublicationPlan, error) {
 	for _, contribution := range plan.Contributions {
 		out.ObservationFences = append(out.ObservationFences, model.ObservationFence{
 			ContributionUID: string(contribution.UID), GrantUID: string(contribution.GrantUID),
-			WriterEpoch: uint64(contribution.Epoch), Sequence: uint64(contribution.Sequence), ValidUntil: contribution.ValidUntil,
+			WriterEpoch: uint64(contribution.Epoch), Sequence: uint64(contribution.Sequence),
 		})
 	}
 	sort.Slice(out.ObservationFences, func(i, j int) bool {
@@ -56,7 +56,6 @@ func WirePlan(plan PublicationPlan) (model.PublicationPlan, error) {
 					if f.UID == uid {
 						record.WriterEpoch = uint64(f.Epoch)
 						record.Sequence = uint64(f.Sequence)
-						record.ValidUntil = f.ValidUntil
 						break
 					}
 				}

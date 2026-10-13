@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -57,7 +56,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 	}
 	newAccess := func(name string) *DNSResolverAccessBinding {
 		return &DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "validation"}, Spec: DNSResolverAccessBindingSpec{
-			ContextRef: DNSObjectReference{Name: "context", UID: "context-uid"}, Region: "central", QueryIdentity: DNSResolverQueryIdentity{Type: DNSResolverQueryIdentityDestinationAddress, Value: "fd53::1"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1, ValidUntil: metav1.NewTime(time.Now().Add(time.Minute))},
+			ContextRef: DNSObjectReference{Name: "context", UID: "context-uid"}, Region: "central", QueryIdentity: DNSResolverQueryIdentity{Type: DNSResolverQueryIdentityDestinationAddress, Value: "fd53::1"}, Port: 53, Transports: []string{"UDP", "TCP"}, Authorization: DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1},
 		}}
 	}
 	for _, tc := range []struct {
@@ -86,9 +85,6 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		{"change-region", func(a *DNSResolverAccessBinding) { a.Spec.Region = "east" }},
 		{"change-address", func(a *DNSResolverAccessBinding) { a.Spec.QueryIdentity.Value = "fd53::2" }},
 		{"change-epoch", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.WriterEpoch++ }},
-		{"extend-without-sequence", func(a *DNSResolverAccessBinding) {
-			a.Spec.Authorization.ValidUntil = metav1.NewTime(a.Spec.Authorization.ValidUntil.Add(time.Minute))
-		}},
 		{"decrease-sequence", func(a *DNSResolverAccessBinding) { a.Spec.Authorization.Sequence = 1 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -101,13 +97,12 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 			requireInvalid(t, cl.Update(ctx, a))
 		})
 	}
-	t.Run("renewal-and-status", func(t *testing.T) {
+	t.Run("sequence-and-status", func(t *testing.T) {
 		a := newAccess("renewal")
 		if err := cl.Create(ctx, a); err != nil {
 			t.Fatal(err)
 		}
 		a.Spec.Authorization.Sequence++
-		a.Spec.Authorization.ValidUntil = metav1.NewTime(a.Spec.Authorization.ValidUntil.Add(time.Minute))
 		if err := cl.Update(ctx, a); err != nil {
 			t.Fatal(err)
 		}

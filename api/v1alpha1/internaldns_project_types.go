@@ -3,9 +3,6 @@
 package v1alpha1
 
 import (
-	"encoding/json"
-	"time"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
@@ -115,24 +112,7 @@ type DNSResolverAccessAuthorization struct {
 	// +kubebuilder:validation:Minimum=1
 	WriterEpoch int64 `json:"writerEpoch"`
 	// +kubebuilder:validation:Minimum=1
-	Sequence   int64       `json:"sequence"`
-	ValidUntil metav1.Time `json:"validUntil"`
-}
-
-// MarshalJSON preserves the source authorization deadline exactly. metav1.Time
-// accepts fractional seconds on input but its default JSON encoder drops them,
-// which would mutate a same-fence deadline when projecting an access binding.
-func (a DNSResolverAccessAuthorization) MarshalJSON() ([]byte, error) {
-	var deadline *time.Time
-	if !a.ValidUntil.IsZero() {
-		instant := a.ValidUntil.UTC()
-		deadline = &instant
-	}
-	return json.Marshal(struct {
-		WriterEpoch int64      `json:"writerEpoch"`
-		Sequence    int64      `json:"sequence"`
-		ValidUntil  *time.Time `json:"validUntil"`
-	}{WriterEpoch: a.WriterEpoch, Sequence: a.Sequence, ValidUntil: deadline})
+	Sequence int64 `json:"sequence"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.contextRef.name.size() > 0 && has(self.contextRef.uid) && self.contextRef.uid.size() > 0",message="contextRef requires name and UID"
@@ -246,8 +226,6 @@ type DNSRegistrationList struct {
 
 type DNSProducerPrincipal struct {
 	// +kubebuilder:validation:MinLength=1
-	ClusterUID string `json:"clusterUID"`
-	// +kubebuilder:validation:MinLength=1
 	Subject string `json:"subject"`
 }
 
@@ -304,7 +282,6 @@ type DNSRecordContributionStatus struct {
 	Sequence           int64              `json:"sequence,omitempty"`
 	Eligible           bool               `json:"eligible,omitempty"`
 	Reason             string             `json:"reason,omitempty"`
-	ValidUntil         *metav1.Time       `json:"validUntil,omitempty"`
 	PublishedRevision  int64              `json:"publishedRevision,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }

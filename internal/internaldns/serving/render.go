@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -59,10 +58,10 @@ type RenderConfig struct {
 type Rendered struct{ Files map[string][]byte }
 
 func Render(c RenderConfig, snapshot model.ServingSnapshot, active map[string]bool) (Rendered, error) {
-	return renderPublications(c, snapshot, active, nil, time.Now())
+	return renderPublications(c, snapshot, active, nil)
 }
 
-func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active map[string]bool, publications map[string]publicationState, now time.Time) (Rendered, error) {
+func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active map[string]bool, publications map[string]publicationState) (Rendered, error) {
 	if err := snapshot.Validate(); err != nil {
 		return Rendered{}, err
 	}
@@ -98,7 +97,7 @@ func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active m
 		files[c.ClusterDNSDist.Path] = renderDNSDist(c.ClusterDNSDist, clusterBackends, bindings, active, true, c.ReadyMembers)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
-		cluster, err := renderClusterBIND(c.ClusterBIND, bindings, publications, now, files)
+		cluster, err := renderClusterBIND(c.ClusterBIND, bindings, publications, files)
 		if err != nil {
 			return Rendered{}, err
 		}
@@ -246,9 +245,9 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		if cluster {
 			addr = b.ClusterAddress
 		}
-		fmt.Fprintf(&out, "  [%q] = {context=%q, validUntil=%d, ready=%t},\n", addr, b.ViewName(), b.Authorization.ValidUntil.Unix(), !b.ConfigurationPending && active[b.BindingUID])
+		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), !b.ConfigurationPending && active[b.BindingUID])
 	}
-	fmt.Fprint(&out, "}\n\nfunction classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil or os.time() >= binding.validUntil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
+	fmt.Fprint(&out, "}\n\nfunction classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
 	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyContext))\n")
 	fmt.Fprint(&out, "addAction(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
 	if cluster {
@@ -309,7 +308,7 @@ func renderNodeBIND(c BINDRenderConfig, bindings []model.Binding) []byte {
 	return out.Bytes()
 }
 
-func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publications map[string]publicationState, now time.Time, files map[string][]byte) ([]byte, error) {
+func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publications map[string]publicationState, files map[string][]byte) ([]byte, error) {
 	var out bytes.Buffer
 	renderOptions(&out, c)
 	for _, b := range bindings {
@@ -322,7 +321,7 @@ func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publication
 				fmt.Fprintf(&out, "  zone %q { type forward; forward only; forwarders { 127.0.0.1 port 9; }; };\n", strings.TrimSuffix(model.AbsoluteName(z.Apex), "."))
 				continue
 			}
-			data, err := renderZone(p, now)
+			data, err := renderZone(p)
 			if err != nil {
 				return nil, err
 			}

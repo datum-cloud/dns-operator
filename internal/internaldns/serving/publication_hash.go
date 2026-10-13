@@ -5,16 +5,15 @@ package serving
 import (
 	"sort"
 	"strings"
-	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
-func effectivePlanHash(plan model.PublicationPlan, now time.Time) string {
+func effectivePlanHash(plan model.PublicationPlan) string {
 	var values []string
 	for _, rr := range plan.RRSets {
 		for _, r := range rr.Records {
-			if !r.Eligible || (r.ContributionUID != "" && !now.Before(r.ValidUntil)) {
+			if !r.Eligible {
 				continue
 			}
 			values = append(values, model.AbsoluteName(rr.Name)+"\x00"+strings.ToUpper(rr.Type)+"\x00"+r.Content)

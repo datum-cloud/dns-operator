@@ -27,12 +27,12 @@ const (
 )
 
 type ProjectConfig struct {
-	Name             string              `json:"name,omitempty"`
-	ProjectUID       types.UID           `json:"projectUID"`
-	SourceClusterUID string              `json:"sourceClusterUID"`
-	Namespace        string              `json:"namespace"`
-	Kubeconfig       string              `json:"kubeconfig,omitempty"`
-	KubeAPI          KubeAPIClientConfig `json:"kubeAPI,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	ProjectUID types.UID `json:"projectUID"`
+
+	Namespace  string              `json:"namespace"`
+	Kubeconfig string              `json:"kubeconfig,omitempty"`
+	KubeAPI    KubeAPIClientConfig `json:"kubeAPI,omitempty"`
 }
 
 type KubeAPIClientConfig struct {
@@ -42,11 +42,9 @@ type KubeAPIClientConfig struct {
 }
 
 type AdmissionConfig struct {
-	Enabled                     bool   `json:"enabled"`
-	Port                        int    `json:"port,omitempty"`
-	CertDir                     string `json:"certDir,omitempty"`
-	MaxContributionLeaseSeconds int64  `json:"maxContributionLeaseSeconds,omitempty"`
-	MaxAccessLeaseSeconds       int64  `json:"maxAccessLeaseSeconds,omitempty"`
+	Enabled bool   `json:"enabled"`
+	Port    int    `json:"port,omitempty"`
+	CertDir string `json:"certDir,omitempty"`
 }
 
 type RegionalTransportConfig struct {
@@ -115,13 +113,6 @@ func (c *Config) defaults() {
 	if c.Admission.Port == 0 {
 		c.Admission.Port = 9443
 	}
-	if c.Admission.MaxContributionLeaseSeconds <= 0 {
-		c.Admission.MaxContributionLeaseSeconds = 90
-	}
-	if c.Admission.MaxAccessLeaseSeconds <= 0 {
-		c.Admission.MaxAccessLeaseSeconds = 300
-	}
-
 	if c.NATS.Name == "" {
 		c.NATS.Name = "internal-dns"
 	}
@@ -209,8 +200,8 @@ func (c *Config) Validate(role string) error {
 	uids := map[types.UID]bool{}
 	namespaces := map[string]bool{}
 	for i, p := range c.Projects {
-		if p.ProjectUID == "" || p.SourceClusterUID == "" || p.Namespace == "" {
-			return fmt.Errorf("project %d requires projectUID, sourceClusterUID, and namespace", i)
+		if p.ProjectUID == "" || p.Namespace == "" {
+			return fmt.Errorf("project %d requires projectUID and namespace", i)
 		}
 		if p.Namespace == c.PlatformNamespace {
 			return fmt.Errorf("project %d namespace collides with platformNamespace", i)
@@ -272,10 +263,6 @@ func (c *Config) Validate(role string) error {
 		}
 	}
 	return nil
-}
-
-func (c AdmissionConfig) maxAccessLease() time.Duration {
-	return time.Duration(c.MaxAccessLeaseSeconds) * time.Second
 }
 
 func validateTransportConfig(nats transport.Config, stream transport.StreamConfig, ensure bool) error {
@@ -340,7 +327,4 @@ func (c KubeAPIClientConfig) requestTimeout() time.Duration {
 }
 func (c Config) ownershipLease() time.Duration {
 	return time.Duration(c.OwnershipLeaseSeconds) * time.Second
-}
-func (c AdmissionConfig) maxLease() time.Duration {
-	return time.Duration(c.MaxContributionLeaseSeconds) * time.Second
 }

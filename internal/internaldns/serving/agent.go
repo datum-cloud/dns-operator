@@ -37,12 +37,11 @@ type Config struct {
 	Render                    RenderConfig                 `json:"render"`
 	Transaction               TransactionConfig            `json:"transaction"`
 	CacheFlush                []Command                    `json:"cacheFlush,omitempty"`
-	ExpiryInterval            time.Duration                `json:"expiryInterval,omitempty"`
+	ReconcileInterval         time.Duration                `json:"reconcileInterval,omitempty"`
 	RetryDelay                time.Duration                `json:"retryDelay,omitempty"`
 	AckInterval               time.Duration                `json:"ackInterval,omitempty"`
 	AckLease                  time.Duration                `json:"ackLease,omitempty"`
 	AckPublishTimeout         time.Duration                `json:"ackPublishTimeout,omitempty"`
-	LocalServingLease         time.Duration                `json:"localServingLease,omitempty"`
 	MaxBindings               int                          `json:"maxBindings,omitempty"`
 	WatchdogLeasePath         string                       `json:"watchdogLeasePath,omitempty"`
 	WatchdogLease             time.Duration                `json:"watchdogLease,omitempty"`
@@ -201,8 +200,7 @@ type Agent struct {
 	installedPublications map[string]installedPublication
 }
 
-// This identity describes the exact files successfully activated, not a
-// fingerprint recomputed later when an observation deadline may have passed.
+// installedPublication identifies the exact files activated by a validated transaction.
 type installedPublication struct {
 	Identity      string
 	EffectiveHash string
@@ -255,13 +253,12 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 }
 
 func (a *Agent) Start(ctx context.Context) error {
-	defer func() { _ = a.tx.FailClosed(context.Background()) }()
-	// A restarted regional materialization must enforce deadlines persisted in its local
-	// checkpoint before waiting on any remote service. The watchdog lease is not
-	// renewed here, so an inconsistent or unavailable bootstrap stays gated.
-	if err := a.expirePersisted(ctx); err != nil {
-		a.report(fmt.Errorf("enforce persisted expiry at startup: %w", err))
-	}
+	defer func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		_ = a.failClosed(context.Background())
+	}()
+	// Verify the persisted configuration locally before serving after restart.
 	if !a.gateUntilClosed(ctx) {
 		return nil
 	}
@@ -280,9 +277,6 @@ func (a *Agent) Start(ctx context.Context) error {
 			return nil
 		}
 		a.report(err)
-		if !a.gateUntilClosed(ctx) {
-			return nil
-		}
 		retry := a.cfg.RetryDelay
 		if retry <= 0 {
 			retry = time.Second
@@ -303,7 +297,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	if a.cfg.Mode == ModeResolver || a.cfg.Mode == ModeCombined {
 		start(a.deps.AckSource)
 	}
-	interval := a.cfg.ExpiryInterval
+	interval := a.cfg.ReconcileInterval
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -341,7 +335,10 @@ func (a *Agent) gateUntilClosed(ctx context.Context) bool {
 		retry = time.Second
 	}
 	for {
-		if err := a.failClosed(ctx); err == nil {
+		a.mu.Lock()
+		err := a.failClosed(ctx)
+		a.mu.Unlock()
+		if err == nil {
 			return true
 		} else {
 			a.report(fmt.Errorf("gate serving during startup: %w", err))
@@ -352,46 +349,59 @@ func (a *Agent) gateUntilClosed(ctx context.Context) bool {
 	}
 }
 
-func (a *Agent) expirePersisted(ctx context.Context) error {
-	if a.cfg.Mode != ModeCombined {
-		return nil
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.expireRecords(ctx)
-}
-
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {
 	if a.deps.Bootstrap != nil {
-		envs, err := a.deps.Bootstrap.Load(ctx)
-		if err != nil {
-			return fmt.Errorf("load bootstrap snapshot: %w", err)
-		}
-		sort.SliceStable(envs, func(i, j int) bool {
-			order := func(k model.Kind) int {
-				switch k {
-				case model.KindPublicationChunk:
-					return 0
-				case model.KindServingSnapshot:
-					// Context destination mappings are required to query-proof a
-					// publication before its manifest can be acknowledged.
-					return 1
-				default:
-					return 2
-				}
-			}
-			return order(envs[i].Kind) < order(envs[j].Kind)
-		})
-		for _, env := range envs {
-			if err := a.Handle(ctx, env); err != nil {
-				return fmt.Errorf("apply bootstrap %s: %w", env.Kind, err)
-			}
+		if err := a.loadBootstrap(ctx, a.deps.Bootstrap); err != nil {
+			return err
 		}
 	}
 	if err := a.Step(ctx); err != nil {
 		return fmt.Errorf("initial serving reconciliation: %w", err)
 	}
 	return nil
+}
+
+func (a *Agent) loadBootstrap(ctx context.Context, loader BootstrapSource) error {
+	envs, err := loader.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("load bootstrap snapshot: %w", err)
+	}
+	order := func(k model.Kind) int {
+		switch k {
+		case model.KindPublicationChunk:
+			return 0
+		case model.KindServingSnapshot:
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(envs, func(i, j int) bool { return order(envs[i].Kind) < order(envs[j].Kind) })
+	for _, env := range envs {
+		if err := a.Handle(ctx, env); err != nil {
+			return fmt.Errorf("apply bootstrap %s: %w", env.Kind, err)
+		}
+	}
+	return nil
+}
+
+// RunTransport synchronizes desired state independently of local DNS serving.
+func (a *Agent) RunTransport(ctx context.Context, loader BootstrapSource, sources ...EventSource) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := a.loadBootstrap(ctx, loader); err != nil {
+		return err
+	}
+	results := make(chan error, len(sources))
+	for _, source := range sources {
+		go func() { results <- a.consume(ctx, source) }()
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-results:
+		return err
+	}
 }
 
 func (a *Agent) consume(ctx context.Context, source EventSource) error {
@@ -454,6 +464,9 @@ func (a *Agent) Handle(ctx context.Context, env model.Envelope) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch env.Kind {
 	case model.KindServingSnapshot:
 		return a.handleServing(ctx, env)
@@ -609,7 +622,7 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 			return errors.New("conflicting publication manifest at the same epoch and revision")
 		}
 		if err := a.verifyPublication(ctx, old); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, time.Time{}, err.Error())
+			_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
 			return err
 		}
 		for _, name := range publicationNames(old.Plan) {
@@ -660,7 +673,7 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 	if err := a.store.Save(a.state); err != nil {
 		return err
 	}
-	next := publicationState{Fence: fence{m.WriterEpoch, m.Revision}, Manifest: m, Plan: plan, EffectiveHash: effectivePlanHash(plan, a.deps.Clock())}
+	next := publicationState{Fence: fence{m.WriterEpoch, m.Revision}, Manifest: m, Plan: plan, EffectiveHash: effectivePlanHash(plan)}
 	if a.cfg.Mode == ModeResolver {
 		return a.recordResolverPublication(ctx, m.ZoneUID, next, old)
 	}
@@ -781,7 +794,7 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		if cmp < 0 || (cmp == 0 && !ack.ObservedAt.After(old.ObservedAt)) {
 			return nil
 		}
-		a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ObservedAt: ack.ObservedAt}
+		a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ObservedAt: ack.ObservedAt, Rejected: true}
 		if err := a.store.Save(a.state); err != nil {
 			return err
 		}
@@ -829,22 +842,17 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 func (a *Agent) Step(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.state.Snapshot == nil {
+		return errors.New("no verified serving configuration is available")
+	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
-		if err := a.expireResolverCache(ctx); err != nil {
 			_ = a.failClosed(ctx)
 			return err
 		}
 	}
 	if a.cfg.Mode == ModeCombined {
 		if err := a.retryPendingPublications(ctx); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
-		if err := a.expireRecords(ctx); err != nil {
 			_ = a.failClosed(ctx)
 			return err
 		}
@@ -860,12 +868,6 @@ func (a *Agent) Step(ctx context.Context) error {
 	if err := a.reconcile(ctx); err != nil {
 		return err
 	}
-	if a.cfg.Mode == ModeCombined {
-		if err := a.expireRecords(ctx); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
-	}
 	return a.renewSafeWatchdogLease(ctx)
 }
 
@@ -874,17 +876,7 @@ func (a *Agent) Step(ctx context.Context) error {
 // lease. This matters when a sustained JetStream backlog repeatedly acquires
 // the agent lock and delays the ticker.
 func (a *Agent) finishEvent(ctx context.Context) error {
-	if a.cfg.Mode == ModeResolver {
-		if err := a.expireResolverCache(ctx); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
-	}
 	if a.cfg.Mode == ModeCombined {
-		if err := a.expireRecords(ctx); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
 		if err := a.heartbeatPublications(ctx); err != nil {
 			return err
 		}
@@ -897,29 +889,15 @@ func (a *Agent) reconcile(ctx context.Context) error {
 		return nil
 	}
 
-	now := a.deps.Clock()
 	active := map[string]bool{}
 	filtered := *a.state.Snapshot
 	filtered.Bindings = nil
 	for _, b := range a.state.Snapshot.Bindings {
-		eligible := !b.Tombstone && now.Before(b.Authorization.ValidUntil) && a.publicationsReady(b)
+		eligible := !b.Tombstone && a.publicationsReady(b)
 		if eligible {
 			active[b.BindingUID] = true
 		}
-		if !b.Tombstone && now.Before(b.Authorization.ValidUntil) {
-			lease := a.cfg.LocalServingLease
-			if lease <= 0 {
-				lease = 90 * time.Second
-			}
-			horizon := now.Add(lease)
-			quantum := a.cfg.AckInterval
-			if quantum <= 0 {
-				quantum = 30 * time.Second
-			}
-			horizon = horizon.Truncate(quantum).Add(quantum)
-			if horizon.Before(b.Authorization.ValidUntil) {
-				b.Authorization.ValidUntil = horizon
-			}
+		if !b.Tombstone {
 			filtered.Bindings = append(filtered.Bindings, b)
 		}
 	}
@@ -928,7 +906,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	for _, binding := range filtered.Bindings {
 		renderConfig.ReadyMembers[binding.BindingUID] = a.eligibleRegionalMembers(binding)
 	}
-	rendered, err := renderPublications(renderConfig, filtered, active, a.state.Publications, now)
+	rendered, err := renderPublications(renderConfig, filtered, active, a.state.Publications)
 	if err != nil {
 		return err
 	}
@@ -953,7 +931,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	if a.cfg.Mode == ModeCombined {
 		installed := map[string]installedPublication{}
 		for uid, p := range a.state.Publications {
-			installed[uid] = installedPublication{Identity: publicationIdentity(p), EffectiveHash: effectivePlanHash(p.Plan, now), Views: a.publicationViewsAt(p, now)}
+			installed[uid] = installedPublication{Identity: publicationIdentity(p), EffectiveHash: effectivePlanHash(p.Plan), Views: a.publicationViewsAt(p)}
 		}
 		a.installedPublications = installed
 		for _, p := range a.state.Publications {
@@ -970,7 +948,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	// Any binding that fails either UDP or TCP is immediately removed again.
 	probeFailed := a.verifyResolverBindings(ctx, filtered.Bindings, active)
 	if probeFailed {
-		gated, err := renderPublications(renderConfig, filtered, active, a.state.Publications, now)
+		gated, err := renderPublications(renderConfig, filtered, active, a.state.Publications)
 		if err != nil {
 			return err
 		}
@@ -986,13 +964,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			}
 		}
 	}
-	// Resolver health is a local safety decision. Once every eligible binding
-	// has passed its end-to-end proof (and every failed binding has been
-	// durably re-rendered gated), renew the independent watchdog before any
-	// best-effort broker ACK. A NATS partition must expire remote readiness
-	// leases, but it must not consume the local five-second watchdog window for
-	// a dataplane that has just been proved healthy. Combined mode renews later,
-	// after its regional materialization expiry and health checks also complete.
+	// Local DNS proof renews the watchdog independently of broker acknowledgements.
 	if a.cfg.Mode == ModeResolver {
 		if err := a.renewSafeWatchdogLease(ctx); err != nil {
 			return err
@@ -1005,9 +977,6 @@ func (a *Agent) reconcile(ctx context.Context) error {
 		p := model.AckVerified
 		if !active[b.BindingUID] {
 			p = model.AckApplied
-			if !now.Before(b.Authorization.ValidUntil) {
-				p = model.AckExpired
-			}
 		}
 		if err := a.emitServingAck(ctx, b, p); err != nil {
 			a.report(fmt.Errorf("publish serving ACK %s: %w", b.BindingUID, err))
@@ -1150,7 +1119,7 @@ func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 				}
 			}
 			proof := a.state.Acks[z.ZoneUID][member.MemberID+"/"+member.ReplicaID]
-			if !a.deps.Clock().Before(proof.ValidUntil) || proof.Fence != p.Fence {
+			if proof.Rejected || proof.ObservedAt.IsZero() || proof.Fence != p.Fence {
 				ready = false
 				break
 			}
@@ -1180,21 +1149,21 @@ func (a *Agent) verifyPublication(ctx context.Context, p publicationState) error
 }
 
 func (a *Agent) publicationViews(p publicationState) []PublicationView {
-	return a.publicationViewsAt(p, a.deps.Clock())
+	return a.publicationViewsAt(p)
 }
 
-func (a *Agent) publicationViewsAt(p publicationState, now time.Time) []PublicationView {
+func (a *Agent) publicationViewsAt(p publicationState) []PublicationView {
 	if a.state.Snapshot == nil {
 		return nil
 	}
 	var out []PublicationView
 	for _, b := range a.state.Snapshot.Bindings {
-		if b.Tombstone || b.ConfigurationPending || !now.Before(b.Authorization.ValidUntil) {
+		if b.Tombstone || b.ConfigurationPending {
 			continue
 		}
 		for _, z := range b.Zones {
 			if z.ZoneUID == p.Plan.ZoneUID && model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) >= 0 {
-				out = append(out, PublicationView{View: b.ViewName(), DestinationAddress: b.ClusterAddress, DestinationPort: b.Port, Serial: publicationSerial(p, now), FingerprintMailbox: publicationMailbox(p, now)})
+				out = append(out, PublicationView{View: b.ViewName(), DestinationAddress: b.ClusterAddress, DestinationPort: b.Port, Serial: publicationSerial(p), FingerprintMailbox: publicationMailbox(p)})
 			}
 		}
 	}
@@ -1227,83 +1196,10 @@ func (a *Agent) retryPendingPublications(ctx context.Context) error {
 			}
 		}
 		p.Verified = true
-		p.EffectiveHash = effectivePlanHash(p.Plan, a.deps.Clock())
+		p.EffectiveHash = effectivePlanHash(p.Plan)
 		a.state.Publications[uid] = p
 		if err := a.store.Save(a.state); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-// A node retains the publication deadlines so a broker outage cannot leave
-// healthy records in its positive cache after the regional member withdraws.
-func (a *Agent) expireResolverCache(ctx context.Context) error {
-	now := a.deps.Clock()
-	for uid, p := range a.state.Publications {
-		if p.Manifest.Tombstone {
-			continue
-		}
-		hash := effectivePlanHash(p.Plan, now)
-		if hash == p.EffectiveHash {
-			continue
-		}
-		for _, name := range publicationNames(p.Plan) {
-			if err := a.flushName(ctx, name); err != nil {
-				return err
-			}
-		}
-		p.EffectiveHash = hash
-		p.LocalRevision++
-		a.state.Publications[uid] = p
-		if err := a.store.Save(a.state); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *Agent) expireRecords(ctx context.Context) error {
-	now := a.deps.Clock()
-	for uid, p := range a.state.Publications {
-		if !p.Verified || p.Manifest.Tombstone {
-			continue
-		}
-		hash := effectivePlanHash(p.Plan, now)
-		if hash == p.EffectiveHash {
-			continue
-		}
-		p.LocalRevision++
-		p.EffectiveHash = hash
-		p.Verified = false
-		a.state.Publications[uid] = p
-		if err := a.store.Save(a.state); err != nil {
-			return err
-		}
-		if err := a.reconcile(ctx); err != nil {
-			return err
-		}
-		if len(a.publicationViews(p)) == 0 {
-			continue
-		}
-		if err := a.verifyPublication(ctx, p); err != nil {
-			return err
-		}
-		for _, name := range publicationNames(p.Plan) {
-			if err := a.flushName(ctx, name); err != nil {
-				return err
-			}
-		}
-		p.Verified = true
-		a.state.Publications[uid] = p
-		if err := a.store.Save(a.state); err != nil {
-			return err
-		}
-		if err := a.reconcile(ctx); err != nil {
-			return err
-		}
-		if err := a.emitAck(ctx, model.KindPublicationManifest, uid, p.Fence.Epoch, p.Fence.Revision, model.AckExpired, time.Time{}, ""); err != nil {
-			a.report(err)
 		}
 	}
 	return nil
@@ -1341,7 +1237,7 @@ func (a *Agent) flushPublicationZone(ctx context.Context, zoneUID string) error 
 	return nil
 }
 
-func (a *Agent) emitAck(ctx context.Context, kind model.Kind, uid string, epoch, revision uint64, phase model.AckPhase, validUntil time.Time, message string) error {
+func (a *Agent) emitAck(ctx context.Context, kind model.Kind, uid string, epoch, revision uint64, phase model.AckPhase, message string) error {
 	if a.deps.AckPublisher == nil {
 		return nil
 	}
@@ -1351,9 +1247,6 @@ func (a *Agent) emitAck(ctx context.Context, kind model.Kind, uid string, epoch,
 		lease = 90 * time.Second
 	}
 	leaseUntil := now.Add(lease)
-	if !validUntil.IsZero() && validUntil.Before(leaseUntil) {
-		leaseUntil = validUntil
-	}
 	ack := model.MemberAck{MemberID: a.cfg.MemberID, ReplicaID: a.cfg.ReplicaID, ResourceUID: uid, Kind: kind, Epoch: epoch, Revision: revision, Phase: phase, ObservedAt: now, ValidUntil: leaseUntil, Error: message}
 	eventID := fmt.Sprintf("ack-%s-%s-%d-%d-%s-%d", model.OpaqueToken(a.cfg.MemberID+"/"+a.cfg.ReplicaID), model.OpaqueToken(uid), epoch, revision, phase, now.UnixNano())
 	env, err := model.NewEnvelope(model.KindMemberAck, eventID, a.cfg.Region, a.cfg.Shard, uid, epoch, revision, a.deps.Clock(), ack)
@@ -1371,13 +1264,11 @@ func (a *Agent) emitAck(ctx context.Context, kind model.Kind, uid string, epoch,
 }
 
 func (a *Agent) emitVerifiedPublicationAck(ctx context.Context, uid string, epoch, revision uint64) error {
-	// The file transaction, proof and original-deadline enforcement are local
-	// safety gates. Broker delivery is independent: renew only a safe installed
-	// state first, then let remote readiness expire if ACK transport is down.
+	// Renew local readiness before best-effort acknowledgement delivery.
 	if err := a.renewSafeWatchdogLease(ctx); err != nil {
 		return err
 	}
-	if err := a.emitAck(ctx, model.KindPublicationManifest, uid, epoch, revision, model.AckVerified, time.Time{}, ""); err != nil {
+	if err := a.emitAck(ctx, model.KindPublicationManifest, uid, epoch, revision, model.AckVerified, ""); err != nil {
 		a.report(fmt.Errorf("publish verified publication ACK %s: %w", uid, err))
 		return nil
 	}
@@ -1398,7 +1289,7 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 	if last.phase == phase && now.Sub(last.at) < interval {
 		return nil
 	}
-	if err := a.emitAck(ctx, model.KindServingSnapshot, b.BindingUID, a.state.ServingFence.Epoch, a.state.ServingFence.Revision, phase, b.Authorization.ValidUntil, ""); err != nil {
+	if err := a.emitAck(ctx, model.KindServingSnapshot, b.BindingUID, a.state.ServingFence.Epoch, a.state.ServingFence.Revision, phase, ""); err != nil {
 		return err
 	}
 	a.lastServingAck[b.BindingUID] = servingAckState{phase: phase, at: now}
@@ -1424,18 +1315,15 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			continue
 		}
 		if err := a.verifyPublication(ctx, p); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, time.Time{}, err.Error())
+			_ = a.emitAck(ctx, model.KindPublicationManifest, uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, err.Error())
 			return fmt.Errorf("reverify publication %s before ACK renewal: %w", uid, err)
 		}
 		due = append(due, duePublication{uid: uid, p: p})
 	}
-	// Local watchdog eligibility depends on the complete local verification
-	// above, not broker availability. Stop after the first stalled publish so a
-	// partition consumes at most one bounded publish timeout per Step. Missing
-	// remote ACK leases still expire independently and gate resolver eligibility.
+	// Publish acknowledgements within a bounded budget after local DNS verification.
 	for _, publication := range due {
 		p := publication.p
-		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, time.Time{}, ""); err != nil {
+		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, ""); err != nil {
 			a.report(fmt.Errorf("publish verified publication ACK %s: %w", publication.uid, err))
 			break
 		}
@@ -1506,9 +1394,6 @@ func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {
 			return fmt.Errorf("contribution %q regressed from epoch %d sequence %d", observation.ContributionUID, current.Epoch, current.Sequence)
 		}
 		if comparison == 0 {
-			if current.ValidUntil.IsZero() || !current.ValidUntil.Equal(observation.ValidUntil) {
-				return fmt.Errorf("contribution %q changed the deadline of an existing fence", observation.ContributionUID)
-			}
 			if current.GrantUID != "" && current.GrantUID != observation.GrantUID {
 				return fmt.Errorf("contribution %q changed the grant of an existing fence", observation.ContributionUID)
 			}
@@ -1519,10 +1404,10 @@ func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {
 
 func (a *Agent) commitContributionFences(plan model.PublicationPlan) {
 	for _, observation := range plan.ObservationFences {
-		next := contributionFence{GrantUID: observation.GrantUID, Epoch: observation.WriterEpoch, Sequence: observation.Sequence, ValidUntil: observation.ValidUntil}
+		next := contributionFence{GrantUID: observation.GrantUID, Epoch: observation.WriterEpoch, Sequence: observation.Sequence}
 		current := a.state.ContributionFences[observation.ContributionUID]
 		comparison := model.Compare(next.Epoch, next.Sequence, current.Epoch, current.Sequence)
-		if comparison > 0 || (comparison == 0 && current.GrantUID == "" && !current.ValidUntil.IsZero() && current.ValidUntil.Equal(next.ValidUntil)) {
+		if comparison > 0 || (comparison == 0 && current.GrantUID == "") {
 			a.state.ContributionFences[observation.ContributionUID] = next
 		}
 	}
@@ -1535,59 +1420,24 @@ type watchdogLease struct {
 }
 
 func (a *Agent) watchdogPublicationError() error {
-	now := a.deps.Clock()
 	for uid, p := range a.state.Publications {
 		if p.Manifest.Tombstone {
 			continue
 		}
-		current := effectivePlanHash(p.Plan, now)
+		current := effectivePlanHash(p.Plan)
 		if a.cfg.Mode == ModeCombined {
-			if len(a.publicationViewsAt(p, now)) == 0 {
+			if len(a.publicationViewsAt(p)) == 0 {
 				continue
 			}
 			installed, ok := a.installedPublications[uid]
 			if !ok || installed.Identity != publicationIdentity(p) || installed.EffectiveHash != current {
-				return fmt.Errorf("publication %s deadline changed after activation; refusing watchdog renewal", uid)
+				return fmt.Errorf("publication %s configuration differs from activation; refusing watchdog renewal", uid)
 			}
 		} else if p.EffectiveHash != current {
-			return fmt.Errorf("publication %s deadline changed after cache withdrawal; refusing watchdog renewal", uid)
+			return fmt.Errorf("publication %s configuration differs from the applied checkpoint; refusing watchdog renewal", uid)
 		}
 	}
 	return nil
-}
-
-// A deadline can cross during reload or DNS proof. Settle that transition
-// locally before renewing readiness, under one budget across every retry.
-func (a *Agent) renewSafeWatchdogLease(ctx context.Context) error {
-	timeout := a.cfg.PublicationDNSProbe.Timeout
-	if a.cfg.Mode == ModeResolver {
-		timeout = a.cfg.ResolverDNSProbe.Timeout
-	}
-	if timeout <= 0 {
-		timeout = 3 * time.Second
-	}
-	settleCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	for {
-		if err := settleCtx.Err(); err != nil {
-			return errors.Join(fmt.Errorf("settle local publication deadlines: %w", err), a.failClosed(ctx))
-		}
-		var err error
-		if a.cfg.Mode == ModeCombined {
-			err = a.expireRecords(settleCtx)
-		} else {
-			err = a.expireResolverCache(settleCtx)
-		}
-		if err != nil {
-			return errors.Join(err, a.failClosed(ctx))
-		}
-		if a.watchdogPublicationError() == nil {
-			return a.renewWatchdogLease(settleCtx)
-		}
-		if err := a.reconcile(settleCtx); err != nil {
-			return errors.Join(err, a.failClosed(ctx))
-		}
-	}
 }
 
 func (a *Agent) renewWatchdogLease(ctx context.Context) error {
@@ -1609,4 +1459,12 @@ func (a *Agent) renewWatchdogLease(ctx context.Context) error {
 		return err
 	}
 	return writeAtomicLease(a.cfg.WatchdogLeasePath, b, 0o600)
+}
+
+// Renew the local watchdog only when the activated publication matches its checkpoint.
+func (a *Agent) renewSafeWatchdogLease(ctx context.Context) error {
+	if err := a.watchdogPublicationError(); err != nil {
+		return errors.Join(err, a.failClosed(ctx))
+	}
+	return a.renewWatchdogLease(ctx)
 }

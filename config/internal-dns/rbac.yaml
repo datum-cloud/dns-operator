@@ -22,7 +22,7 @@ rules:
   resources: [dnsresolvercontexts, dnsresolveraccessbindings]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
-  resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status, dnsmanagednamespaces, dnsmanagednamespaces/status]
+  resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status]
   verbs: [get, list, watch]
 ---
 # Project products write declarations and their own freshness observations.
@@ -37,7 +37,7 @@ rules:
   resources: [dnsregistrations, dnsrecordcontributions]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
-  resources: [dnscontributiongrants, dnsresolvercontexts, dnsmanagednamespaces, dnsnamingpolicies]
+  resources: [dnscontributiongrants, dnsresolvercontexts, dnsnamingpolicies]
   verbs: [get, list, watch]
 - apiGroups: [dns.networking.miloapis.com]
   resources: [dnsrecordcontributions/status]
@@ -54,7 +54,7 @@ rules:
   resources: [dnszones, dnsrecordsets, dnszoneassociations, dnsnamingpolicies, dnsregistrations]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [dns.networking.miloapis.com]
-  resources: [dnsresolvercontexts, dnsmanagednamespaces]
+  resources: [dnsresolvercontexts]
   verbs: [get, list, watch]
 ---
 # Bind only to a trusted issuer that applies the product's registration policy.
@@ -122,7 +122,7 @@ rules:
   verbs: [get, list, watch, create, update, patch]
 - apiGroups: [""]
   resources: [configmaps]
-  verbs: [get, list, watch, create, update, patch]
+  verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

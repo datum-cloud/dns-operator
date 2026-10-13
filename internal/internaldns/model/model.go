@@ -89,6 +89,7 @@ type Backend struct {
 }
 
 type ZoneAttachment struct {
+	Pending                     bool   `json:"pending,omitempty"`
 	ZoneUID                     string `json:"zoneUID"`
 	Apex                        string `json:"apex"`
 	RequiredPublicationEpoch    uint64 `json:"requiredPublicationEpoch"`

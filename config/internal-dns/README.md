@@ -172,7 +172,7 @@ Project APIs select zones by name and report names and readiness. DNS stores
 resolved ownership identities in reference ConfigMaps in the service project.
 The collector checks source resources before removing those records.
 
-The supported envelope version is `v1alpha5` and checkpoint format is 5. Keep
+The supported envelope version is `v1alpha6` and checkpoint format is 7. Keep
 reference records, transport state, and persistent checkpoints across compatible upgrades. Deploy
 serving agents before controllers that emit per-zone pending state. Enable the
 controller change after every serving member supports that contract; a matching

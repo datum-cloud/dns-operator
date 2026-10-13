@@ -50,6 +50,9 @@ type DNSResolverBindingConfiguration struct {
 	Listeners DNSResolverBindingListeners `json:"listeners"`
 	// +kubebuilder:validation:MaxItems=256
 	ZoneRefs []DNSObjectReference `json:"zoneRefs"`
+	// ZoneApices reserves each private namespace before publication is available.
+	// +kubebuilder:validation:MaxProperties=256
+	ZoneApices map[string]string `json:"zoneApices,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="oldSelf == self",message="listener identity is immutable for an access binding"

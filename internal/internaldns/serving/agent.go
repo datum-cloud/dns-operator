@@ -939,6 +939,15 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			}
 		}
 	}
+	// Keep activation owned until every materialized publication has query proof
+	// and its affected names have been flushed from resolver caches.
+	if a.cfg.Mode == ModeCombined {
+		for _, p := range a.state.Publications {
+			if !p.Verified && (p.Manifest.Tombstone || len(a.publicationViews(p)) > 0) {
+				return nil
+			}
+		}
+	}
 	if err := a.approveConfiguration(rendered.Files); err != nil {
 		return err
 	}

@@ -180,6 +180,17 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		if !regUIDs[c.Spec.RegistrationRef.UID] || fenced[c.UID] != c.Generation {
 			continue
 		}
+		var current dnsv1alpha1.DNSRecordContribution
+		if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(c), &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return err
+		}
+		if current.UID != c.UID || current.Generation != c.Generation {
+			continue
+		}
+		c = &current
 		base := c.DeepCopy()
 		status := metav1.ConditionFalse
 		reason, msg := "PendingReplicaVerification", "publication awaits required replica verification"

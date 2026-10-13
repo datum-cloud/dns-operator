@@ -351,7 +351,7 @@ func (s *suite) prepare(p *project) error {
 	if err := s.waitAccess(p); err != nil {
 		return err
 	}
-	s.pass(p.Name+" authorized destination becomes ready through shared Kubernetes members", p.ConsumerAddress)
+	s.pass(p.Name+" programmed destination becomes ready through shared Kubernetes members", p.ConsumerAddress)
 	return nil
 }
 

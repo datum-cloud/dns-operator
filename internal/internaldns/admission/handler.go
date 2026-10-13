@@ -94,9 +94,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	if resolverContext.UID != current.Spec.ContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("resolver context lifetime is not current")
 	}
-	if resolverContext.Status.AccessEpoch < 1 || current.Spec.Version.Epoch != resolverContext.Status.AccessEpoch {
-		return fmt.Errorf("access version does not match the current context epoch")
-	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
 		return fmt.Errorf("resolver context is not ready for its current generation")

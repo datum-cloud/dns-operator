@@ -60,60 +60,21 @@ spec:
                 required:
                 - name
                 type: object
-              port:
-                enum:
-                - 53
-                format: int32
-                type: integer
-              queryIdentity:
-                properties:
-                  type:
-                    enum:
-                    - DestinationAddress
-                    type: string
-                  value:
-                    maxLength: 253
-                    minLength: 1
-                    type: string
-                required:
-                - type
-                - value
-                type: object
+              destinationAddress:
+                maxLength: 253
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: destinationAddress must be an IP address
+                  rule: isIP(self)
               region:
                 maxLength: 253
                 minLength: 1
                 type: string
-              transports:
-                items:
-                  enum:
-                  - UDP
-                  - TCP
-                  type: string
-                maxItems: 2
-                minItems: 2
-                type: array
-                x-kubernetes-list-type: set
-              version:
-                properties:
-                  epoch:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                  sequence:
-                    format: int64
-                    minimum: 1
-                    type: integer
-                required:
-                - epoch
-                - sequence
-                type: object
             required:
             - contextRef
-            - port
-            - queryIdentity
+            - destinationAddress
             - region
-            - transports
-            - version
             type: object
             x-kubernetes-validations:
             - message: contextRef requires name and UID
@@ -121,13 +82,8 @@ spec:
                 self.contextRef.uid.size() > 0
             - message: contextRef is immutable
               rule: self.contextRef == oldSelf.contextRef
-            - message: access identity and transport are immutable
-              rule: self.region == oldSelf.region && self.queryIdentity == oldSelf.queryIdentity
-                && self.port == oldSelf.port && self.transports == oldSelf.transports
-            - message: epoch is immutable for an access binding
-              rule: self.version.epoch == oldSelf.version.epoch
-            - message: version changes require an increasing sequence
-              rule: self.version == oldSelf.version || self.version.sequence > oldSelf.version.sequence
+            - message: access destination is immutable
+              rule: self.region == oldSelf.region && self.destinationAddress == oldSelf.destinationAddress
           status:
             properties:
               bindingRef:

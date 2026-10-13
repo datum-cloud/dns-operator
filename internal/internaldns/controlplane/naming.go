@@ -26,21 +26,21 @@ type ResolvedName struct {
 // additive policy names after it. It never selects an arbitrary associated
 // customer zone.
 // Selectors match DNSRegistration metadata labels supplied by the publisher.
-func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID, contextUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
+func ResolveNaming(ctx context.Context, c client.Client, namespace string, _ types.UID, contextUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
 	label := dnsLabel(allocatedName)
 	if label == "" {
 		return nil, fmt.Errorf("allocated name %q has no DNS-safe label", allocatedName)
 	}
-	var managed dnsv1alpha1.DNSManagedNamespaceList
+	var managed dnsv1alpha1.DNSResolverContextList
 	if err := c.List(ctx, &managed, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
 	var out []ResolvedName
 	for i := range managed.Items {
 		m := &managed.Items[i]
-		accepted := apimeta.FindStatusCondition(m.Status.Conditions, dnsValueAccepted)
-		if m.Spec.ProjectUID == projectUID && m.Spec.ResolverContextRef.UID == contextUID && accepted != nil && accepted.Status == metav1.ConditionTrue {
-			out = append(out, ResolvedName{DNSZoneRef: m.Status.DNSZoneRef, Name: label, Canonical: true})
+		accepted := apimeta.FindStatusCondition(m.Status.Conditions, "Ready")
+		if m.UID == contextUID && m.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue {
+			out = append(out, ResolvedName{DNSZoneRef: m.Status.ManagedNamespace.DNSZoneRef, Name: label, Canonical: true})
 			break
 		}
 	}

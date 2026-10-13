@@ -46,6 +46,8 @@ type ContributionFence struct {
 	UID        types.UID `json:"uid"`
 	Generation int64     `json:"generation"`
 	Sequence   int64     `json:"sequence"`
+	Retired    bool      `json:"retired,omitempty"`
+	SourceName string    `json:"sourceName,omitempty"`
 }
 
 type RegistrationFence struct {
@@ -64,10 +66,9 @@ type CompileInput struct {
 }
 
 type CompileResult struct {
-	Plan      PublicationPlan
-	Accepted  map[types.UID]bool
-	Reasons   map[types.UID]string
-	Sequences map[types.UID]int64
+	Plan     PublicationPlan
+	Accepted map[types.UID]bool
+	Reasons  map[types.UID]string
 }
 
 type ownershipKey struct {
@@ -82,7 +83,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 		return CompileResult{}, err
 	}
 
-	result := CompileResult{Accepted: map[types.UID]bool{}, Reasons: map[types.UID]string{}, Sequences: map[types.UID]int64{}}
+	result := CompileResult{Accepted: map[types.UID]bool{}, Reasons: map[types.UID]string{}}
 	result.Plan.ZoneUID = in.Zone.UID
 	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
 
@@ -172,7 +173,14 @@ func Compile(in CompileInput) (CompileResult, error) {
 	// retired, invalid, and rolled-back observations so a later reconcile or
 	// controller takeover cannot resurrect an older contribution.
 	publicationFences := make(map[types.UID]ContributionFence, len(previousSeq))
+	currentContributions := map[types.UID]bool{}
+	for _, c := range in.Contributions {
+		currentContributions[c.UID] = true
+	}
 	for uid, fence := range previousSeq {
+		if !currentContributions[uid] {
+			fence.Retired = true
+		}
 		publicationFences[uid] = fence
 	}
 	type aggregate struct {
@@ -189,17 +197,16 @@ func Compile(in CompileInput) (CompileResult, error) {
 			result.Reasons[c.UID] = reason
 			continue
 		}
-		currentFence := ContributionFence{UID: c.UID, Generation: c.Generation, Sequence: c.Status.Sequence}
+		currentFence := ContributionFence{UID: c.UID, Generation: c.Generation, Sequence: c.Generation, Retired: !c.DeletionTimestamp.IsZero(), SourceName: c.Name}
 		previousFence := previousSeq[c.UID]
-		if previousFence.UID == "" || currentFence.Generation > previousFence.Generation || currentFence.Sequence > previousFence.Sequence {
+		if previousFence.UID == "" || currentFence.Generation > previousFence.Generation || currentFence.Retired {
 			publicationFences[c.UID] = currentFence
 		}
-		result.Sequences[c.UID] = c.Status.Sequence
 		if !c.DeletionTimestamp.IsZero() {
 			result.Reasons[c.UID] = dnsValueTerminating
 			continue
 		}
-		if !c.Status.Eligible {
+		if !c.Spec.Eligible {
 			result.Reasons[c.UID] = "Ineligible"
 			continue
 		}
@@ -285,18 +292,15 @@ func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1
 	if reg == nil || c.Spec.RegistrationRef.Name != reg.Name || c.Spec.RegistrationRef.Generation != reg.Generation {
 		return dnsValueStaleRegistrationGeneration
 	}
-	if c.Status.ObservedGeneration != c.Generation {
-		return "ObservationGenerationMismatch"
+	if previous.Retired {
+		return "RetiredContribution"
 	}
-	if c.Status.Sequence <= 0 {
-		return "InvalidSequence"
+	if c.Generation < 1 {
+		return "InvalidContributionGeneration"
 	}
 	if previous.UID != "" {
 		if c.Generation < previous.Generation {
 			return "StaleContributionGeneration"
-		}
-		if c.Generation == previous.Generation && c.Status.Sequence < previous.Sequence {
-			return dnsValueNonIncreasingSequence
 		}
 	}
 	return ""

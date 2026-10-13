@@ -117,13 +117,12 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, SourceClusterUID: project.SourceClusterUID,
+				ProjectUID:       project.ProjectUID,
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
 				LeaseDuration:    cfg.ownershipLease(),
 				AddressAllocator: allocator, ManagedDomainSuffix: cfg.ManagedDomainSuffix,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
-				MaxAccessLease: cfg.Admission.maxAccessLease(),
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
@@ -146,9 +145,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			MaxContributionLease: cfg.Admission.maxLease(),
-			MaxAccessLease:       cfg.Admission.maxAccessLease(),
-			ClientForRequest:     projectSelector(projects),
+			ClientForRequest: projectSelector(projects),
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 	}
@@ -218,7 +215,7 @@ func runProjectSource(ctx context.Context, project projectRuntime) {
 			err = errors.New("source manager stopped unexpectedly")
 		}
 		log.Error(err, "source manager unavailable; rebuilding and retrying")
-		if !waitForRetry(ctx, time.Second) {
+		if !waitForRetry(ctx) {
 			return
 		}
 	}
@@ -246,7 +243,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 				return nil
 			}
 			log.Error(err, "regional transport setup failed; retrying")
-			if !waitForRetry(ctx, time.Second) {
+			if !waitForRetry(ctx) {
 				return nil
 			}
 			continue
@@ -274,7 +271,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		}
 		if setupFailed {
 			regional.Close()
-			if !waitForRetry(ctx, time.Second) {
+			if !waitForRetry(ctx) {
 				return nil
 			}
 			continue
@@ -294,8 +291,8 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 	return nil
 }
 
-func waitForRetry(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
+func waitForRetry(ctx context.Context) bool {
+	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -306,6 +303,59 @@ func waitForRetry(ctx context.Context, delay time.Duration) bool {
 }
 
 func runAgent(ctx context.Context, cfg Config) error {
+	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-agent")
+	publisher := &agentPublisher{}
+	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{AckPublisher: publisher, OnError: func(err error) { log.Error(err, "serving agent operation failed; retrying") }})
+	if err != nil {
+		return err
+	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.Start(workerCtx) }()
+	go func() {
+		for workerCtx.Err() == nil {
+			err := runAgentTransport(workerCtx, cfg, agent, publisher)
+			if workerCtx.Err() != nil {
+				return
+			}
+			if err != nil {
+				log.Error(err, "DNS state delivery unavailable; retrying")
+			}
+			if !waitForRetry(workerCtx) {
+				return
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return <-done
+	case err := <-done:
+		return err
+	}
+}
+
+// agentPublisher does not block local activation while the transport connects.
+type agentPublisher struct {
+	mu       sync.RWMutex
+	delegate transport.ExportPublisher
+}
+
+func (p *agentPublisher) set(delegate transport.ExportPublisher) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.delegate = delegate
+}
+func (p *agentPublisher) Publish(ctx context.Context, subject string, env model.Envelope) (transport.PublishAck, error) {
+	p.mu.RLock()
+	delegate := p.delegate
+	p.mu.RUnlock()
+	if delegate == nil {
+		return transport.PublishAck{}, errors.New("DNS state transport unavailable")
+	}
+	return delegate.Publish(ctx, subject, env)
+}
+func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, publisher *agentPublisher) error {
 	regional, err := connectRegional(ctx, cfg, []string{cfg.Agent.Region})
 	if err != nil {
 		return err
@@ -313,38 +363,19 @@ func runAgent(ctx context.Context, cfg Config) error {
 	defer regional.Close()
 	route, _ := regional.route(cfg.Agent.Region)
 	consumer := func(suffix string, filters ...string) (*transport.Consumer, error) {
-		return route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name,
-			Durable: durable(cfg.Agent.MemberID, suffix), FilterSubjects: filters,
-			AckWait: 30 * time.Second, MaxAckPending: 64})
+		return route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, suffix), FilterSubjects: filters, AckWait: 30 * time.Second, MaxAckPending: 64})
 	}
-	servingSource, err := consumer("serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard))
-	if err != nil {
-		return err
-	}
-	var recordSource, ackSource *transport.Consumer
-	if cfg.Agent.Mode == serving.ModeResolver || cfg.Agent.Mode == serving.ModeCombined {
-		recordSource, err = consumer("records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard))
+	var sources []serving.EventSource
+	for _, feed := range []struct{ suffix, filter string }{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard)}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard)}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard)}} {
+		source, err := consumer(feed.suffix, feed.filter)
 		if err != nil {
 			return err
 		}
+		sources = append(sources, source)
 	}
-	if cfg.Agent.Mode == serving.ModeResolver || cfg.Agent.Mode == serving.ModeCombined {
-		ackSource, err = consumer("acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard))
-		if err != nil {
-			return err
-		}
-	}
-	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-agent")
-	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{
-		ServingSource: servingSource, RecordSource: recordSource, AckSource: ackSource,
-		Bootstrap:    serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard},
-		AckPublisher: route.bus,
-		OnError:      func(err error) { log.Error(err, "serving agent operation failed; retrying") },
-	})
-	if err != nil {
-		return err
-	}
-	return agent.Start(ctx)
+	publisher.set(route.bus)
+	defer publisher.set(nil)
+	return agent.RunTransport(ctx, serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard}, sources...)
 }
 
 func newScheme() (*runtime.Scheme, error) {
@@ -437,25 +468,25 @@ func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform
 	}
 }
 
-func projectSelector(projects []projectRuntime) func(context.Context, kubeadmission.Request) (client.Client, string, error) {
-	return func(_ context.Context, req kubeadmission.Request) (client.Client, string, error) {
+func projectSelector(projects []projectRuntime) func(context.Context, kubeadmission.Request) (client.Client, error) {
+	return func(_ context.Context, req kubeadmission.Request) (client.Client, error) {
 		parents := req.UserInfo.Extra[parentNameExtra]
 		if len(parents) == 0 && len(projects) == 1 {
 			p := projects[0]
 			if req.Namespace != p.config.Namespace {
-				return nil, "", fmt.Errorf("request namespace is outside the configured project")
+				return nil, fmt.Errorf("request namespace is outside the configured project")
 			}
-			return p.direct, p.config.SourceClusterUID, nil
+			return p.direct, nil
 		}
 		if len(parents) != 1 {
-			return nil, "", fmt.Errorf("authenticated project parent is missing or ambiguous")
+			return nil, fmt.Errorf("authenticated project parent is missing or ambiguous")
 		}
 		for _, p := range projects {
 			if p.config.Name == parents[0] && req.Namespace == p.config.Namespace {
-				return p.direct, p.config.SourceClusterUID, nil
+				return p.direct, nil
 			}
 		}
-		return nil, "", fmt.Errorf("authenticated project parent is not configured for this namespace")
+		return nil, fmt.Errorf("authenticated project parent is not configured for this namespace")
 	}
 }
 

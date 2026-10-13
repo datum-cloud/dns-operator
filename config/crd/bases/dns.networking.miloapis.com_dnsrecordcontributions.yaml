@@ -412,9 +412,6 @@ spec:
               sequence:
                 format: int64
                 type: integer
-              validUntil:
-                format: date-time
-                type: string
               writerEpoch:
                 format: int64
                 type: integer

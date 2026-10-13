@@ -11,7 +11,7 @@ import (
 func renderFixture(t *testing.T) (RenderConfig, model.ServingSnapshot) {
 	t.Helper()
 	now := time.Now()
-	b := model.Binding{BindingUID: "bind-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 3, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 2}}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 2, ValidUntil: now.Add(time.Minute)}}
+	b := model.Binding{BindingUID: "bind-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 3, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 2}}, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 2}}
 	c := RenderConfig{NodeDNSDist: DNSDistRenderConfig{Path: "/tmp/node-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "node-shared", Backends: []model.Backend{{MemberID: "node-bind-0", Address: "10.253.0.30", Port: 5300}}}, ClusterDNSDist: DNSDistRenderConfig{Path: "/tmp/cluster-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "cluster-shared", Backends: []model.Backend{{MemberID: "cluster-bind-0", Address: "10.253.0.20", Port: 5300}}}, NodeBIND: BINDRenderConfig{Path: "/tmp/node-bind.conf", ListenAddress: "10.253.0.30", Port: 5300, ProxyPeers: []string{"10.253.0.50"}, DefaultCacheSize: "16M"}, ClusterBIND: BINDRenderConfig{Path: "/tmp/cluster-bind.conf", ListenAddress: "10.253.0.20", Port: 5300, ProxyPeers: []string{"10.253.0.40"}, DefaultCacheSize: "16M"}}
 	s := model.ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 3, GeneratedAt: now, Bindings: []model.Binding{b}}
 	return c, s
@@ -134,7 +134,7 @@ func TestRenderRoleOwnsOnlyItsTier(t *testing.T) {
 	}
 }
 
-func TestDNSDistIncludesDeadlineAndBackendHealthCheck(t *testing.T) {
+func TestDNSDistUsesPersistentIdentityAndBackendHealthCheck(t *testing.T) {
 	t.Parallel()
 	c, s := renderFixture(t)
 	r, err := Render(c, s, map[string]bool{"bind-a": true})
@@ -142,7 +142,10 @@ func TestDNSDistIncludesDeadlineAndBackendHealthCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := string(r.Files[c.NodeDNSDist.Path])
-	for _, required := range []string{"validUntil=", "os.time() >= binding.validUntil", "checkName=\".\"", "useProxyProtocol=true"} {
+	if strings.Contains(conf, "validUntil") || strings.Contains(conf, "os.time()") {
+		t.Fatal("resolver access depends on a deadline")
+	}
+	for _, required := range []string{"checkName=\".\"", "useProxyProtocol=true"} {
 		if !strings.Contains(conf, required) {
 			t.Fatalf("dnsdist config missing %q:\n%s", required, conf)
 		}

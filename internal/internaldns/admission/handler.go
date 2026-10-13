@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -26,17 +25,11 @@ const contributionResource = "dnsrecordcontributions"
 
 const Path = "/validate-internal-dns"
 
-// Handler uses an uncached project client for grant and registration lookups.
-// TrustedClusterUID is supplied by the server configuration, never by a record
-// publisher. For project-aware deployments, ClientForRequest must resolve the
-// authenticated project context and return its immutable source cluster UID.
+// Handler uses an uncached client selected by authenticated project context.
 type Handler struct {
-	Client               client.Client
-	TrustedClusterUID    string
-	MaxContributionLease time.Duration
-	MaxAccessLease       time.Duration
-	Now                  func() time.Time
-	ClientForRequest     func(context.Context, kubeadmission.Request) (client.Client, string, error)
+	Client client.Client
+
+	ClientForRequest func(context.Context, kubeadmission.Request) (client.Client, error)
 }
 
 var _ kubeadmission.Handler = (*Handler)(nil)
@@ -54,14 +47,14 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	}
 	switch req.Resource.Resource {
 	case "dnsregistrations", contributionResource, "dnscontributiongrants", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
-		// These resources require live references or bounded freshness checks.
+		// These resources require live references.
 	default:
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
 	}
-	cl, clusterUID := h.Client, h.TrustedClusterUID
+	cl := h.Client
 	if h.ClientForRequest != nil {
 		var err error
-		cl, clusterUID, err = h.ClientForRequest(ctx, req)
+		cl, err = h.ClientForRequest(ctx, req)
 		if err != nil {
 			return kubeadmission.Errored(http.StatusServiceUnavailable, err)
 		}
@@ -76,7 +69,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	case "dnsregistrations":
 		err = h.registration(ctx, cl, req)
 	case contributionResource:
-		err = h.contribution(ctx, cl, clusterUID, req)
+		err = h.contribution(ctx, cl, req)
 	case "dnscontributiongrants":
 		err = h.grant(ctx, cl, req)
 	case "dnszoneassociations":
@@ -97,7 +90,6 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	if err := decode(req, &current); err != nil {
 		return err
 	}
-	a := current.Spec.Authorization
 	var resolverContext dnsv1alpha1.DNSResolverContext
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: current.Spec.ContextRef.Name}, &resolverContext); err != nil {
 		return fmt.Errorf("resolver context lookup: %w", err)
@@ -112,24 +104,10 @@ func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kube
 	if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
 		return fmt.Errorf("resolver context is not ready for its current generation")
 	}
-	max := h.MaxAccessLease
-	if max <= 0 {
-		max = 5 * time.Minute
-	}
-	now := time.Now()
-	if h.Now != nil {
-		now = h.Now()
-	}
-	if !a.ValidUntil.After(now) {
-		return fmt.Errorf("access deadline is already expired")
-	}
-	if a.ValidUntil.After(now.Add(max)) {
-		return fmt.Errorf("access deadline exceeds platform lease limit")
-	}
 	return nil
 }
 
-func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID string, req kubeadmission.Request) error {
+func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
 	var c, old dnsv1alpha1.DNSRecordContribution
 	if err := decode(req, &c); err != nil {
 		return err
@@ -147,8 +125,8 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		if reflect.DeepEqual(previous, current) {
 			return nil
 		}
-		// Binding an issued epoch cannot introduce or renew endpoint eligibility.
-		if previous.WriterEpoch == 0 && previous.ObservedGeneration == 0 && previous.Sequence == 0 && !previous.Eligible && previous.ValidUntil == nil && current.WriterEpoch > 0 {
+		// Binding an issued epoch cannot introduce endpoint eligibility.
+		if previous.WriterEpoch == 0 && previous.ObservedGeneration == 0 && previous.Sequence == 0 && !previous.Eligible && current.WriterEpoch > 0 {
 			current.WriterEpoch = 0
 			bindEpoch = reflect.DeepEqual(previous, current)
 		}
@@ -160,7 +138,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 	if g.UID != c.Spec.GrantRef.UID || !g.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("grant lifetime is not current")
 	}
-	if clusterUID == "" || g.Spec.Principal.ClusterUID != clusterUID || (!bindEpoch && g.Spec.Principal.Subject != req.UserInfo.Username) {
+	if !bindEpoch && g.Spec.Principal.Subject != req.UserInfo.Username {
 		return fmt.Errorf("caller does not match the grant's authenticated producer principal")
 	}
 	if g.Spec.RegistrationRef.UID != c.Spec.RegistrationRef.UID || g.Spec.RegistrationRef.Name != c.Spec.RegistrationRef.Name {
@@ -211,23 +189,6 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, clusterUID
 		}
 		if c.Status.ObservedGeneration != c.Generation {
 			return fmt.Errorf("producer observation must match the contribution generation")
-		}
-		if c.Status.ValidUntil == nil {
-			return fmt.Errorf("producer observation requires an original freshness deadline")
-		}
-		now := time.Now()
-		if h.Now != nil {
-			now = h.Now()
-		}
-		maxLease := h.MaxContributionLease
-		if maxLease <= 0 {
-			maxLease = 90 * time.Second
-		}
-		if c.Status.ValidUntil.After(now.Add(maxLease)) {
-			return fmt.Errorf("freshness deadline exceeds platform lease limit")
-		}
-		if c.Status.Eligible && !c.Status.ValidUntil.After(now) {
-			return fmt.Errorf("eligible observation is already expired")
 		}
 	} else if req.Operation != admissionv1.Delete && !reflect.DeepEqual(old.Status, c.Status) && req.Operation != admissionv1.Create {
 		return fmt.Errorf("producer observations must use the status subresource")

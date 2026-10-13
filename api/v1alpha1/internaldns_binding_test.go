@@ -5,8 +5,6 @@ package v1alpha1
 import (
 	"encoding/json"
 	"testing"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestResolverBindingUsesNestedContractAndIndependentCopies(t *testing.T) {
@@ -14,7 +12,7 @@ func TestResolverBindingUsesNestedContractAndIndependentCopies(t *testing.T) {
 		Source:        DNSResolverBindingSource{ProjectUID: "project", ResolverContextRef: DNSObjectReference{Name: "context", UID: "context-uid"}, AccessBindingRef: DNSObjectReference{Name: "access", UID: "access-uid"}},
 		Placement:     DNSResolverBindingPlacement{Region: "central", Shard: "shared"},
 		Configuration: DNSResolverBindingConfiguration{Generation: 1, Revision: 2, Listeners: DNSResolverBindingListeners{Node: DNSResolverBindingListener{Address: "fd53::1", Port: 53, Transports: []string{"UDP", "TCP"}}, Regional: DNSResolverBindingListener{Address: "fd54::1", Port: 53, Transports: []string{"UDP", "TCP"}}}, ZoneRefs: []DNSObjectReference{{Name: "private", UID: "zone-uid"}}},
-		Authorization: DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 4, ValidUntil: metav1.Now()},
+		Authorization: DNSResolverAccessAuthorization{WriterEpoch: 3, Sequence: 4},
 	}}
 	copy := original.DeepCopy()
 	copy.Spec.Configuration.ZoneRefs[0].Name = "changed"

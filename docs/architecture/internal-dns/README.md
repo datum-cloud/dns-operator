@@ -255,8 +255,9 @@ A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
 DNS daemons over UDP and TCP without contacting the broker or project APIs.
-Incomplete or uncertain activation keeps serving gated until recovery verifies
-the saved configuration. DNS query probes and backend health checks isolate
+The serving supervisor retains approved configuration independently of the
+agent. A transaction lock owns candidate verification; incomplete or orphaned
+activation stays gated until recovery verifies the saved configuration. DNS query probes and backend health checks isolate
 serving failures from update delivery. Retained tombstones and writer fences
 prevent replay from restoring withdrawn records or access. A new serving node
 requires a complete configuration before accepting queries.

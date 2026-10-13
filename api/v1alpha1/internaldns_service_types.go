@@ -55,7 +55,7 @@ type DNSResolverBindingConfiguration struct {
 	ZoneApices map[string]string `json:"zoneApices,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="query destinations and transports are immutable for an access binding"
+// +kubebuilder:validation:XValidation:rule="oldSelf == self",message="query destinations are immutable for an access binding"
 type DNSResolverBindingQuery struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
@@ -63,11 +63,6 @@ type DNSResolverBindingQuery struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	RegionalAddress string `json:"regionalAddress"`
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=2
-	// +kubebuilder:validation:items:Enum=UDP;TCP
-	// +listType=set
-	Transports []string `json:"transports"`
 }
 
 type DNSApplyAcknowledgement struct {
@@ -150,12 +145,13 @@ type DNSRegistrationFence struct {
 	Generation int64     `json:"generation"`
 }
 
-// DNSContributionFence persists an authenticated high-water sequence even
-// while its observation is unhealthy or withdrawn.
+// DNSContributionFence retains desired-state generations and retired lifetimes.
 type DNSContributionFence struct {
 	UID        types.UID `json:"uid"`
 	Generation int64     `json:"generation"`
 	Sequence   int64     `json:"sequence"`
+	Retired    bool      `json:"retired,omitempty"`
+	SourceName string    `json:"sourceName,omitempty"`
 }
 
 type DNSPublicationManifestStatus struct {

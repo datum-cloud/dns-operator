@@ -36,6 +36,7 @@ type replicaAck struct {
 const checkpointFormatVersion = 5
 
 type checkpoint struct {
+	Active             *activeConfiguration                         `json:"active,omitempty"`
 	FormatVersion      int                                          `json:"formatVersion"`
 	ServingFence       fence                                        `json:"servingFence"`
 	Snapshot           *model.ServingSnapshot                       `json:"snapshot,omitempty"`

@@ -18,13 +18,15 @@ import (
 
 func TestNamingSelectorsMatchRegistrationLabelsWithinContext(t *testing.T) {
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+	if err := addReferenceStateToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	managed := &dnsv1alpha1.DNSManagedNamespace{ObjectMeta: metav1.ObjectMeta{Name: "managed", Namespace: "project"}, Spec: dnsv1alpha1.DNSManagedNamespaceSpec{ProjectUID: "project-a", ResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}}, Status: dnsv1alpha1.DNSManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "canonical-zone"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
-	zone := dnsv1alpha1.DNSObjectReference{Name: "custom", UID: "custom-zone"}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "consumer-a", Namespace: "project", UID: "context-a"}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "canonical"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}}}
+	canonical := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "canonical", Namespace: "project", UID: "canonical-zone"}}
+	custom := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: "project", UID: "custom-zone"}}
+	zone := dnsv1alpha1.DNSNameReference{Name: custom.Name}
 	storefront := &metav1.LabelSelector{MatchLabels: map[string]string{"app": "storefront"}}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", Generation: 1}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: "consumer-a"}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "names-uid", Generation: 1}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue, ObservedGeneration: 1}}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{
 		{DNSZoneRef: zone, NamePrefix: "all"},
 		{Selector: &metav1.LabelSelector{}, DNSZoneRef: zone, NamePrefix: "empty"},
 		{Selector: storefront, DNSZoneRef: zone, NamePrefix: "storefront"},
@@ -33,7 +35,7 @@ func TestNamingSelectorsMatchRegistrationLabelsWithinContext(t *testing.T) {
 	}}}
 	other := policy.DeepCopy()
 	other.Name = "other-context"
-	other.Status.ResolvedResolverContextRef.UID = "consumer-b"
+	other.Status.ResolvedResolverContextRef.Name = "consumer-b"
 	other.Status.ResolvedAdditionalNames = []dnsv1alpha1.DNSResolvedAdditionalNameRule{{DNSZoneRef: zone, NamePrefix: "other-context"}}
 	stale := policy.DeepCopy()
 	stale.Name = "stale-policy"
@@ -43,7 +45,9 @@ func TestNamingSelectorsMatchRegistrationLabelsWithinContext(t *testing.T) {
 	foreign.Name = "other-namespace"
 	foreign.Namespace = "other-project"
 	foreign.Status.ResolvedAdditionalNames = []dnsv1alpha1.DNSResolvedAdditionalNameRule{{DNSZoneRef: zone, NamePrefix: "foreign"}}
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(managed, policy, other, stale, foreign).Build()
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver, canonical, custom, policy, other, stale, foreign).Build()
+	r := &Reconciler{Client: cl, Options: Options{ProjectUID: "project-a"}}
+	seedReferenceState(t, r, policy, map[string]dnsv1alpha1.DNSObjectReference{"context": {Name: resolver.Name, UID: resolver.UID}, "zone/custom": {Name: custom.Name, UID: custom.UID}})
 	for _, tc := range []struct {
 		name   string
 		labels map[string]string
@@ -92,13 +96,13 @@ func TestNamingPolicyValidatesSelectorsAndDuplicateRules(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+	if err := addReferenceStateToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "context", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer"}}
 	setCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 1, now)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", UID: "zone-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	association := dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{UID: zone.UID}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: resolver.UID}}}
+	association := dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "association", Namespace: "project", UID: "association-uid", Generation: 1}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	for _, tc := range []struct {
 		name      string
@@ -121,6 +125,7 @@ func TestNamingPolicyValidatesSelectorsAndDuplicateRules(t *testing.T) {
 			}
 			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver, policy).WithStatusSubresource(policy).Build()
 			r := &Reconciler{Client: cl}
+			seedReferenceState(t, r, &association, map[string]dnsv1alpha1.DNSObjectReference{"context": {Name: resolver.Name, UID: resolver.UID}, "zone": {Name: zone.Name, UID: zone.UID, Generation: zone.Generation}})
 			if err := r.reconcileNamingPolicies(ctx, []dnsv1alpha1.DNSNamingPolicy{*policy}, []dnsv1alpha1.DNSZoneAssociation{association}, map[string]*dnsv1alpha1.DNSZone{zone.Name: zone}, now); err != nil {
 				t.Fatal(err)
 			}
@@ -131,7 +136,8 @@ func TestNamingPolicyValidatesSelectorsAndDuplicateRules(t *testing.T) {
 			if condition == nil || (condition.Status == metav1.ConditionTrue) != tc.valid {
 				t.Fatalf("accepted=%v want %v", condition, tc.valid)
 			}
-			if policy.Status.ResolvedAdditionalNames[0].DNSZoneRef.UID != zone.UID {
+			pins, err := r.readReferences(ctx, policy)
+			if err != nil || pins["zone/"+zone.Name].UID != zone.UID {
 				t.Fatal("selector validation lost the zone lifetime pin")
 			}
 		})

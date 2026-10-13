@@ -52,7 +52,7 @@ func TestProjectPublicationContinuesAfterSourceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "healthy", Namespace: "healthy-project", UID: "zone-healthy", Generation: 4}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "healthy.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: zone.Namespace, UID: "registration-healthy", Generation: 2}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Name: "api"}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: zone.Namespace, UID: "registration-healthy", Generation: 2}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api"}}
 	healthy := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).WithStatusSubresource(&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}).Build()
 	blocked := &blockingListClient{Client: healthy, started: make(chan struct{})}
 	sink := AckSink{Client: testClient(t, chunk), Namespace: "platform", Projects: []ProjectScope{{Client: blocked, Namespace: "offline-project", RequestTimeout: 200 * time.Millisecond}, {Client: healthy, Namespace: zone.Namespace}}}
@@ -162,6 +162,17 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 	if pending.Bindings[0].Authorization.Revision != uint64(originalAuthorization.Sequence) {
 		t.Fatal("pending configuration renewed the original authorization")
 	}
+	changing.Spec.Configuration.ZoneApices = map[string]string{"zone-extra": "apps.internal"}
+	if err := cl.Update(context.Background(), &changing); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	isolated := latestPlannerSnapshot(t, &p)
+	if isolated.Bindings[0].ConfigurationPending || len(isolated.Bindings[0].Zones) != 2 || !isolated.Bindings[0].Zones[1].Pending {
+		t.Fatalf("a known pending apex suppressed the ready zone: %#v", isolated.Bindings[0])
+	}
 	for _, obj := range []client.Object{
 		&dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone-extra")[:20], Namespace: ns}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone-extra", ActiveManifestName: "manifest-extra"}},
 		&dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest-extra", Namespace: ns}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone-extra"}, ZoneApex: "apps.internal", WriterEpoch: 1, Revision: 1, ServingTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: region, Shard: shard}}}},
@@ -189,7 +200,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = cl.List(context.Background(), &out)
-	if len(out.Items) != 4 {
+	if len(out.Items) != 5 {
 		t.Fatal("regional export removal did not change the shared snapshot")
 	}
 	var updatedOwner corev1.ConfigMap
@@ -212,7 +223,7 @@ func TestSharedPlannerPreservesOtherProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = cl.List(context.Background(), &out)
-	if len(out.Items) != 4 {
+	if len(out.Items) != 5 {
 		t.Fatal("another holder published during a current lease")
 	}
 }
@@ -515,5 +526,32 @@ func TestZeroTargetTombstoneNeedsNoReplicaACK(t *testing.T) {
 	manifest.Spec.ServingTargets = []dnsv1alpha1.DNSPublicationTarget{{Region: "retired-region", Shard: "retired-shard"}}
 	if sink.publicationVerified(manifest, time.Now()) {
 		t.Fatal("prior-target withdrawal must await its ACKs")
+	}
+}
+
+func TestServingAvailabilityDoesNotRequireEveryReplica(t *testing.T) {
+	now := time.Now().UTC()
+	until := metav1.NewTime(now.Add(time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding"}}
+	binding.Spec.Configuration.Generation = 1
+	binding.Spec.Configuration.Revision = 1
+	binding.Spec.Authorization = dnsv1alpha1.DNSResolverAccessAuthorization{WriterEpoch: 1, Sequence: 1}
+	for _, member := range []string{"node-a", "regional-a"} {
+		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 1, SnapshotRevision: 1, Revision: 1, AuthorizationIssuerEpoch: 1, AuthorizationRevision: 1, Phase: string(model.AckVerified), ValidUntil: &until})
+	}
+	sink := AckSink{Members: []model.Member{{MemberID: "node-a", Role: "node"}, {MemberID: "node-b", Role: "node"}, {MemberID: "regional-a", Role: "regional"}, {MemberID: "regional-b", Role: "regional"}}}
+	envelope := &model.Envelope{Epoch: 1, Revision: 1}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding", BindingGeneration: 1, ConfigurationRevision: 1, Authorization: model.Authorization{IssuerEpoch: 1, Revision: 1}}}}
+	if !sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("a missing replica report suppressed healthy capacity")
+	}
+	sink.bindingConditions(binding, envelope, snapshot, now, true)
+	if apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated") {
+		t.Fatal("degraded replication was reported complete")
+	}
+	binding.Status.ObservedConfigurationRevision = 1
+	sink.bindingConditions(binding, envelope, snapshot, now.Add(2*time.Minute), false)
+	if c := apimeta.FindStatusCondition(binding.Status.Conditions, "Serving"); c == nil || c.Status != metav1.ConditionUnknown {
+		t.Fatal("stale observations claimed a serving outage")
 	}
 }

@@ -24,7 +24,7 @@ func TestContributionAuthenticatedWriter(t *testing.T) {
 	producer := "system:serviceaccount:compute-system:dns-publisher"
 	registration := &dnsv1alpha1.DNSRegistration{
 		ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "project", UID: "reg-uid", Generation: 3},
-		Spec:       dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "private"}, RecordTypes: []dnsv1alpha1.RRType{"AAAA"}},
+		Spec:       dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "private"}, RecordTypes: []dnsv1alpha1.RRType{"AAAA"}},
 	}
 	grant := &dnsv1alpha1.DNSContributionGrant{
 		ObjectMeta: metav1.ObjectMeta{Name: "compute", Namespace: "project", UID: "grant-uid"},
@@ -245,7 +245,7 @@ func TestPrivateRegistrationRejectsAuthorityOverrides(t *testing.T) {
 		rt      dnsv1alpha1.RRType
 		allowed bool
 	}{{"api", dnsv1alpha1.RRTypeA, true}, {"api", dnsv1alpha1.RRTypeCNAME, true}, {"@", dnsv1alpha1.RRTypeCNAME, false}, {"CORP.INTERNAL.", dnsv1alpha1.RRTypeCNAME, false}, {"@", dnsv1alpha1.RRTypeSOA, false}} {
-		registration := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, TTLSeconds: 5, Name: tt.owner, RecordTypes: []dnsv1alpha1.RRType{tt.rt}}}
+		registration := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, TTLSeconds: 5, Name: tt.owner, RecordTypes: []dnsv1alpha1.RRType{tt.rt}}}
 		response := h.Handle(context.Background(), request("dnsregistrations", "tenant", registration, nil))
 		if response.Allowed != tt.allowed {
 			t.Fatalf("owner %s type %s allowed=%v expected=%v", tt.owner, tt.rt, response.Allowed, tt.allowed)
@@ -261,15 +261,15 @@ func TestRegistrationRequiresCurrentZone(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "current"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone).Build()}
 	for _, tt := range []struct {
-		uid     types.UID
+		name    string
 		ttl     int32
 		allowed bool
 	}{
-		{"current", 1, true}, {"current", 30, true}, {"", 5, false}, {"retired", 5, false},
+		{zone.Name, 1, true}, {zone.Name, 30, true}, {"", 5, false}, {"missing", 5, false},
 	} {
-		reg := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: tt.uid}, TTLSeconds: tt.ttl, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+		reg := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: tt.name}, TTLSeconds: tt.ttl, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
 		if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); got.Allowed != tt.allowed {
-			t.Errorf("UID=%q TTL=%d: allowed=%v: %v", tt.uid, tt.ttl, got.Allowed, got.Result)
+			t.Errorf("name=%q TTL=%d: allowed=%v: %v", tt.name, tt.ttl, got.Allowed, got.Result)
 		}
 	}
 }

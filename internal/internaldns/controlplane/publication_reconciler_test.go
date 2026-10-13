@@ -23,7 +23,7 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-a"}}
@@ -73,7 +73,7 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	network := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-a"}}
@@ -152,7 +152,7 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal(model.PublicationPlan{ZoneUID: "zone-a", Apex: "corp.internal", ObservationFences: []model.ObservationFence{{ContributionUID: "contribution-a", GrantUID: "grant-a", WriterEpoch: 7, Sequence: 19}}, RRSets: []model.RRSet{}})
@@ -209,7 +209,7 @@ func TestOwnershipTakeoverLoadsOldEpochHighWater(t *testing.T) {
 func TestLoadPreviousFailsWhenActiveChunkIsMissing(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	manifest := &dnsv1alpha1.DNSPublicationManifest{
@@ -230,7 +230,7 @@ func TestLoadPreviousFailsWhenActiveChunkIsMissing(t *testing.T) {
 func TestLoadPreviousRejectsHashValidMalformedPayload(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	payload := []byte(`{"zoneUID":`)
@@ -249,7 +249,7 @@ func TestLoadPreviousRejectsHashValidMalformedPayload(t *testing.T) {
 func TestEmptyPublicationUsesJSONArraysForRequiredSlices(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(s).Build()
@@ -275,7 +275,7 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	network := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-a"}}

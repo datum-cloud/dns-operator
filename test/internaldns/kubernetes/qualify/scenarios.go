@@ -24,11 +24,11 @@ func (s *suite) scenarios(a, b *project) error {
 			return err
 		}
 	}
-	pa, err := s.publish(a, objectRef(&a.zone), "common", "common", "10.42.0.10", "fd42::10")
+	pa, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "common", "common", "10.42.0.10", "fd42::10")
 	if err != nil {
 		return err
 	}
-	pb, err := s.publish(b, objectRef(&b.zone), "common", "common", "10.42.0.20", "fd42::20")
+	pb, err := s.publish(b, dnsv1.DNSNameReference{Name: b.zone.Name}, "common", "common", "10.42.0.20", "fd42::20")
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("an unbound destination cannot resolve either tenant's private records", nil)
-	if _, err := s.publish(a, objectRef(&a.zone), "only-a", "only-a", "10.42.0.20", ""); err != nil {
+	if _, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "only-a", "only-a", "10.42.0.20", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "only-a.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
@@ -114,7 +114,7 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.associate(a, apps, "apps"); err != nil {
 		return err
 	}
-	if _, err := s.publish(a, objectRef(apps), "apps", "api", "10.42.0.12", ""); err != nil {
+	if _, err := s.publish(a, dnsv1.DNSNameReference{Name: apps.Name}, "apps", "api", "10.42.0.12", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "api.apps.internal", "A", true, dns.RcodeSuccess, "10.42.0.12"); err != nil {
@@ -165,7 +165,7 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.observe(b, pb, true); err != nil {
 		return err
 	}
-	deleted, err := s.publish(a, objectRef(&a.zone), "deleted", "deleted", "10.42.0.14", "")
+	deleted, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "deleted", "deleted", "10.42.0.14", "")
 	if err != nil {
 		return err
 	}
@@ -352,7 +352,7 @@ func (s *suite) offlineServing(a, b *project) (resultErr error) {
 		return err
 	}
 	// The outage spans multiple DNS cache and fleet acknowledgement intervals.
-	until := time.Now().Add(2 * time.Minute)
+	until := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(until) {
 		for _, tcp := range []bool{false, true} {
 			for _, tenant := range []struct {

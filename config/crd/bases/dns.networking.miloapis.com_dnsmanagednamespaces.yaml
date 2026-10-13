@@ -43,30 +43,13 @@ spec:
                 type: string
               domainSuffix:
                 type: string
-              projectUID:
-                description: |-
-                  UID is a type that holds unique ID values, including UUIDs.  Because we
-                  don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                  intent and helps make sure that UIDs and names do not get conflated.
-                type: string
               resolverContextRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
                     maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name
@@ -74,33 +57,10 @@ spec:
             required:
             - dnsZoneClassName
             - domainSuffix
-            - projectUID
             - resolverContextRef
             type: object
           status:
             properties:
-              associationRef:
-                description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
-                properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
-                  name:
-                    maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
-                    type: string
-                required:
-                - name
-                type: object
               canonicalSuffix:
                 type: string
               conditions:
@@ -161,22 +121,11 @@ spec:
                 type: array
               dnsZoneRef:
                 description: |-
-                  DNSObjectReference pins a namespaced object by API-assigned UID. Generation
-                  is used where a writer must also be fenced against policy changes.
+                  DNSNameReference selects a resource in the same project namespace.
+                  DNS records its resolved lifetime in controller-owned status.
                 properties:
-                  generation:
-                    format: int64
-                    minimum: 0
-                    type: integer
                   name:
                     maxLength: 253
-                    type: string
-                  uid:
-                    description: |-
-                      UID is a type that holds unique ID values, including UUIDs.  Because we
-                      don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                      intent and helps make sure that UIDs and names do not get conflated.
-                    maxLength: 128
                     type: string
                 required:
                 - name

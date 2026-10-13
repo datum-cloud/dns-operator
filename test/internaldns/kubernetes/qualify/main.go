@@ -288,7 +288,7 @@ func (s *suite) run(path string) error {
 		}
 	}
 	a, b := &s.env.Projects[0], &s.env.Projects[1]
-	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.DNSZoneRef.UID == b.resolverContext.Status.ManagedNamespace.DNSZoneRef.UID {
+	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name == b.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name {
 		return errors.New("source projects lost their distinct context, zone, or managed namespace identity")
 	}
 	for _, p := range []*project{a, b} {
@@ -335,7 +335,7 @@ func (s *suite) prepare(p *project) error {
 	}
 	if err := s.wait(p.Name+" managed namespace", 120*time.Second, func() (bool, error) {
 		err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&p.resolverContext), &p.resolverContext)
-		return condition(p.resolverContext.Status.Conditions, "Ready", p.resolverContext.Generation) && p.resolverContext.Status.ManagedNamespace.DNSZoneRef.UID != "", err
+		return condition(p.resolverContext.Status.Conditions, "Ready", p.resolverContext.Generation) && p.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name != "", err
 	}); err != nil {
 		return err
 	}
@@ -394,7 +394,7 @@ func recordSets(name, address, ipv6 string) []dnsv1.DNSContributionRecordSet {
 	return sets
 }
 
-func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name, address, ipv6 string) (*publication, error) {
+func (s *suite) publish(p *project, zone dnsv1.DNSNameReference, prefix, name, address, ipv6 string) (*publication, error) {
 	pub := &publication{registration: dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-registration", Namespace: p.Namespace}, Spec: dnsv1.DNSRegistrationSpec{DNSZoneRef: zone, Name: name, RecordTypes: []dnsv1.RRType{dnsv1.RRTypeA}, PublicationPolicy: dnsv1.DNSPublicationPolicyEligibleContributions, TTLSeconds: 2}}}
 	if ipv6 != "" {
 		pub.registration.Spec.RecordTypes = append(pub.registration.Spec.RecordTypes, dnsv1.RRTypeAAAA)

@@ -21,16 +21,24 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now().UTC()
 			scheme := runtime.NewScheme()
-			if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+			if err := addReferenceStateToScheme(scheme); err != nil {
 				t.Fatal(err)
 			}
 			resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", UID: "context-original", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer"}}
 			setCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", resolver.Generation, now)
 			zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", UID: "zone-original", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "prod.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-			association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
-			policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, NamePrefix: "hosts"}}}}
+			association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", UID: "source-original", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
+			policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project", UID: "source-original", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, NamePrefix: "hosts"}}}}
 			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver, zone, association, policy).WithStatusSubresource(association, policy).Build()
 			r := &Reconciler{Client: cl}
+			references := func(source client.Object) map[string]dnsv1alpha1.DNSObjectReference {
+				t.Helper()
+				refs, err := r.readReferences(ctx, source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return refs
+			}
 			zones := map[string]*dnsv1alpha1.DNSZone{zone.Name: zone}
 			reconcile := func() {
 				t.Helper()
@@ -65,13 +73,13 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 			}
 			reconcile()
 			assertAccepted(true)
-			if association.Status.ResolvedDNSZoneRef.UID != zone.UID || policy.Status.ResolvedResolverContextRef.UID != resolver.UID {
+			if references(association)["zone"].UID != zone.UID || references(policy)["context"].UID != resolver.UID {
 				t.Fatal("name-only references did not pin lifetimes")
 			}
 			zone.Generation++
 			reconcile()
 			assertAccepted(true)
-			if association.Status.ResolvedDNSZoneRef.Generation != zone.Generation || policy.Status.ResolvedAdditionalNames[0].DNSZoneRef.Generation != zone.Generation {
+			if references(association)["zone"].Generation != zone.Generation || references(policy)["zone/"+zone.Name].Generation != zone.Generation {
 				t.Fatal("resolved generations were not persisted for the same zone lifetime")
 			}
 			originalZoneUID := zone.UID
@@ -88,7 +96,7 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 			}
 			reconcile()
 			assertAccepted(false)
-			if association.Status.ResolvedDNSZoneRef.UID != originalZoneUID || policy.Status.ResolvedResolverContextRef.UID != originalContextUID {
+			if references(association)["zone"].UID != originalZoneUID || references(policy)["context"].UID != originalContextUID {
 				t.Fatal("deletion cleared lifetime pins")
 			}
 			replaced.SetResourceVersion("")
@@ -101,7 +109,7 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 			}
 			reconcile()
 			assertAccepted(false)
-			if association.Status.ResolvedDNSZoneRef.UID != originalZoneUID || policy.Status.ResolvedAdditionalNames[0].DNSZoneRef.UID != originalZoneUID || policy.Status.ResolvedResolverContextRef.UID != originalContextUID {
+			if references(association)["zone"].UID != originalZoneUID || references(policy)["zone/"+zone.Name].UID != originalZoneUID || references(policy)["context"].UID != originalContextUID {
 				t.Fatal("replacement inherited lifetime pins")
 			}
 			// Recreate both customer resources to explicitly attach the replacement.
@@ -109,6 +117,7 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 				t.Fatal(err)
 			}
 			association.ResourceVersion = ""
+			association.UID = "association-recreated"
 			association.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
 			if err := cl.Create(ctx, association); err != nil {
 				t.Fatal(err)
@@ -121,6 +130,7 @@ func TestNamedReferencesPreserveLifetimesAcrossReplacement(t *testing.T) {
 				t.Fatal(err)
 			}
 			policy.ResourceVersion = ""
+			policy.UID = "policy-recreated"
 			policy.Status = dnsv1alpha1.DNSNamingPolicyStatus{}
 			if err := cl.Create(ctx, policy); err != nil {
 				t.Fatal(err)

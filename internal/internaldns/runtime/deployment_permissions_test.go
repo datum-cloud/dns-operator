@@ -110,8 +110,8 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 		{"internal-dns-control-plane", "dnspublicationmanifests", "", "create", true},
 		{"product", "dnsresolvercontexts", "", "get", true},
 		{"product", "dnsresolvercontexts", "", "list", true},
-		{"product", "dnsmanagednamespaces", "", "get", true},
-		{"product", "dnsmanagednamespaces", "", "list", true},
+		{"product", "dnsmanagednamespaces", "", "get", false},
+		{"product", "dnsmanagednamespaces", "", "list", false},
 		{"product", "dnsmanagednamespaces", "", "patch", false},
 		{"product", "dnsmanagednamespaces", "status", "patch", false},
 		{"product", "dnsnamingpolicies", "", "get", true},
@@ -130,7 +130,7 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 		{"customer", "dnszoneassociations", "", "create", true},
 		{"customer", "dnsnamingpolicies", "", "create", true},
 		{"customer", "dnsresolvercontexts", "", "get", true},
-		{"customer", "dnsmanagednamespaces", "", "get", true},
+		{"customer", "dnsmanagednamespaces", "", "get", false},
 		{"customer", "dnsresolvercontexts", "", "patch", false},
 		{"customer", "dnscontributiongrants", "", "create", false},
 		{"customer", "dnscontributiongrants", "status", "patch", false},
@@ -282,9 +282,9 @@ func verifyProjectReferenceSchemas(t *testing.T, ctx context.Context, cl client.
 		object client.Object
 		valid  bool
 	}{
-		{"registration-valid", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: ref, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, true},
-		{"registration-unpinned", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, false},
-		{"registration-ttl31", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: ref, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 31, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, false},
+		{"registration-name-only", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, true},
+		{"registration-empty-zone", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, false},
+		{"registration-ttl31", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 31, PublicationPolicy: dnsv1alpha1.DNSPublicationPolicyEligibleContributions}}, false},
 		{"association-valid", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}}}, true},
 		{"association-empty-zone", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}}}, false},
 		{"naming-valid", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, NamePrefix: "services"}}}}, true},

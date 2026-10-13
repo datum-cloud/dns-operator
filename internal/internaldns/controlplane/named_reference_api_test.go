@@ -27,7 +27,7 @@ func verifyNamedReferencesWithAPI(t *testing.T, cl client.Client) {
 	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "named-policy", Namespace: "project"}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: &dnsv1alpha1.DNSRegistrationSelector{MatchLabels: map[string]string{"app": "storefront"}}, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, NamePrefix: "hosts"}}}}
 	requireAccessTestSuccess(t, cl.Create(ctx, association))
 	requireAccessTestSuccess(t, cl.Create(ctx, policy))
-	r := &Reconciler{Client: cl}
+	r := &Reconciler{Client: cl, Options: Options{PlatformNamespace: "platform"}}
 	reconcile := func(want metav1.ConditionStatus) {
 		t.Helper()
 		requireAccessTestSuccess(t, cl.Get(ctx, client.ObjectKeyFromObject(association), association))
@@ -56,7 +56,11 @@ func verifyNamedReferencesWithAPI(t *testing.T, cl client.Client) {
 		t.Fatal("replacement did not receive a new API-assigned UID")
 	}
 	reconcile(metav1.ConditionFalse)
-	if association.Status.ResolvedDNSZoneRef.UID != originalUID || policy.Status.ResolvedAdditionalNames[0].DNSZoneRef.UID != originalUID {
+	associationPins, err := r.readReferences(ctx, association)
+	requireAccessTestSuccess(t, err)
+	policyPins, err := r.readReferences(ctx, policy)
+	requireAccessTestSuccess(t, err)
+	if associationPins["zone"].UID != originalUID || policyPins["zone/"+zone.Name].UID != originalUID {
 		t.Fatal("API-backed replacement transferred lifetime pins")
 	}
 }

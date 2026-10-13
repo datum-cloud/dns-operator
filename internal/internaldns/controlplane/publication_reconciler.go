@@ -57,6 +57,27 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	var sources []client.Object
+	for i := range assocs.Items {
+		sources = append(sources, &assocs.Items[i])
+	}
+	for i := range policies.Items {
+		sources = append(sources, &policies.Items[i])
+	}
+	for i := range regs.Items {
+		registration := &regs.Items[i]
+		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
+		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+			ref.UID, ref.Generation = zone.UID, zone.Generation
+		}
+		if _, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref}); err != nil {
+			return ctrl.Result{}, err
+		}
+		sources = append(sources, registration)
+	}
+	if err := r.collectReferenceStates(ctx, sources); err != nil {
+		return ctrl.Result{}, err
+	}
 	if changed, err := r.issueGrants(ctx, grants.Items, regs.Items, now); err != nil || changed {
 		return ctrl.Result{Requeue: changed}, err
 	}
@@ -146,7 +167,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 	}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, z.Name, z.UID, z.Generation) || registrationFences[reg.UID] != reg.Generation {
+		if reg.Spec.DNSZoneRef.Name != z.Name || registrationFences[reg.UID] != reg.Generation {
 			continue
 		}
 		regUIDs[reg.UID] = true
@@ -266,6 +287,18 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		return false, time.Time{}, err
 	}
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Grants: grants, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
+	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
+	for i := range regs {
+		refs, err := r.readReferences(ctx, &regs[i])
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
+	}
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -557,7 +590,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 	relevant := map[types.UID]bool{}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, zone.Name, zone.UID, zone.Generation) {
+		if reg.Spec.DNSZoneRef.Name != zone.Name {
 			continue
 		}
 		relevant[reg.UID] = true
@@ -568,6 +601,12 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		base := reg.DeepCopy()
 		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
+		if !accepted {
+			reg.Status.CanonicalFQDN = ""
+			reg.Status.PublicationWriterEpoch = 0
+			reg.Status.PublicationRevision = 0
+			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
+		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, reg.Generation, now)
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {

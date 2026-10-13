@@ -53,14 +53,16 @@ type RegistrationFence struct {
 }
 
 type CompileInput struct {
-	Zone          *dnsv1alpha1.DNSZone
-	Associations  []dnsv1alpha1.DNSZoneAssociation
-	Registrations []dnsv1alpha1.DNSRegistration
-	Grants        []dnsv1alpha1.DNSContributionGrant
-	Contributions []dnsv1alpha1.DNSRecordContribution
-	StaticRecords []dnsv1alpha1.DNSRecordSet
-	Previous      *PublicationPlan
-	Now           time.Time
+	Zone                       *dnsv1alpha1.DNSZone
+	Associations               []dnsv1alpha1.DNSZoneAssociation
+	AssociationReferences      map[types.UID]associationReferences
+	RegistrationZoneReferences map[types.UID]dnsv1alpha1.DNSObjectReference
+	Registrations              []dnsv1alpha1.DNSRegistration
+	Grants                     []dnsv1alpha1.DNSContributionGrant
+	Contributions              []dnsv1alpha1.DNSRecordContribution
+	StaticRecords              []dnsv1alpha1.DNSRecordSet
+	Previous                   *PublicationPlan
+	Now                        time.Time
 }
 
 type CompileResult struct {
@@ -86,7 +88,7 @@ func Compile(in CompileInput) (CompileResult, error) {
 	result.Plan.ZoneUID = in.Zone.UID
 	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
 
-	result.Plan.ContextUIDs = associatedContextUIDs(in.Zone, in.Associations)
+	result.Plan.ContextUIDs = associatedContextUIDs(in.Zone, in.Associations, in.AssociationReferences)
 
 	claims := map[ownershipKey]types.UID{}
 	staticClaim := map[ownershipKey]types.UID{}
@@ -106,11 +108,15 @@ func Compile(in CompileInput) (CompileResult, error) {
 			result.Reasons[reg.UID] = "InvalidTTL"
 			continue
 		}
-		if !refMatches(reg.Spec.DNSZoneRef, in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
+		if reg.Spec.DNSZoneRef.Name != in.Zone.Name {
 			continue
 		}
 		if reg.UID == "" {
 			result.Reasons[reg.UID] = "MissingUID"
+			continue
+		}
+		if !refMatches(in.RegistrationZoneReferences[reg.UID], in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
+			result.Reasons[reg.UID] = "InvalidReference"
 			continue
 		}
 		name := zoneOwner(reg.Spec.Name, result.Plan.ZoneApex)
@@ -484,12 +490,13 @@ func sortAggregate(records []dnsv1alpha1.RecordEntry, uids []types.UID) {
 	}
 }
 
-func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1.DNSZoneAssociation) []types.UID {
+func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1.DNSZoneAssociation, references map[types.UID]associationReferences) []types.UID {
 	contextsByUID := map[types.UID]struct{}{}
 	for i := range associations {
 		a := &associations[i]
-		consumerUID := a.Status.ResolvedResolverContextRef.UID
-		if associationMatchesZone(a, zone) && consumerUID != "" {
+		refs := references[a.UID]
+		consumerUID := refs.Context.UID
+		if associationMatchesZone(a, zone, refs) && consumerUID != "" {
 			contextsByUID[consumerUID] = struct{}{}
 		}
 	}

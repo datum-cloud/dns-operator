@@ -48,7 +48,7 @@ type AddressAllocator interface {
 
 func (o *ReconcilerOptions) defaults() {
 	if o.PlatformNamespace == "" {
-		o.PlatformNamespace = "internal-dns-system"
+		o.PlatformNamespace = defaultPlatformNamespace
 	}
 	if o.Region == "" {
 		o.Region = "default"

@@ -83,8 +83,16 @@ type Options = ReconcilerOptions
 // Reconciler compiles records within a configured project scope.
 type Reconciler struct {
 	client.Client
-	Scheme  *runtime.Scheme
-	Options ReconcilerOptions
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Options   ReconcilerOptions
+}
+
+func (r *Reconciler) sourceReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -104,14 +112,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Options.defaults()
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 	enqueue := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
 		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: "project"}}}
 	})
 	controllerName := "internal-dns-control-plane-" + model.OpaqueToken(string(r.Options.ProjectUID))[:12]
 	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).For(&dnsv1alpha1.DNSRecordContribution{}, builder.WithPredicates()).
 		Watches(&dnsv1alpha1.DNSZone{}, enqueue).Watches(&dnsv1alpha1.DNSZoneAssociation{}, enqueue).
-		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue).
-		Watches(&dnsv1alpha1.DNSManagedNamespace{}, enqueue)
+		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue)
 
 	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 

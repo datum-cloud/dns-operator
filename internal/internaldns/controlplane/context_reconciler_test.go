@@ -60,12 +60,12 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}, Status: dnsv1alpha1.DNSResolverContextStatus{AccessEpoch: 4}}
+	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}, Status: dnsv1alpha1.DNSResolverContextStatus{}}
 	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 1, now)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "zone"}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "ctx"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "zone"}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "ctx"}}}
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
-	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", QueryIdentity: dnsv1alpha1.DNSResolverQueryIdentity{Type: dnsv1alpha1.DNSResolverQueryIdentityDestinationAddress, Value: "fd70:100::10"}, Port: 53, Transports: []string{"UDP", "TCP"}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 4, Sequence: 12}}}
+	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", DestinationAddress: "fd70:100::10"}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject, zone, association, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverBinding{}).Build()
 	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: testAllocator{}}}
 	seedReferenceState(t, r, association, map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, "context": {Name: contextObject.Name, UID: contextObject.UID}})
@@ -80,7 +80,7 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 		t.Fatalf("got %d bindings", len(bindings.Items))
 	}
 	b := bindings.Items[0]
-	if b.Spec.Configuration.Query.NodeAddress != "fd70:100::10" || b.Spec.Source.ResolverContextRef.UID != "context-uid" || b.Spec.Version.Epoch != 4 || b.Spec.Version.Sequence != 12 {
+	if b.Spec.Configuration.Query.NodeAddress != "fd70:100::10" || b.Spec.Source.ResolverContextRef.UID != "context-uid" || b.Spec.Version.Epoch != 1 || b.Spec.Version.Sequence != 1 {
 		t.Fatalf("access projection drifted: %#v", b.Spec)
 	}
 	if b.Spec.Source.ProjectUID != "project-uid" || b.Spec.Source.ResolverContextRef.Name != "ctx" || b.Spec.Source.AccessBindingRef.Name != "access" || b.Spec.Source.AccessBindingRef.UID != "access-uid" || b.Spec.Configuration.ZoneRefs[0].Name != "zone" || b.Spec.Configuration.ZoneRefs[0].UID != "zone-uid" || b.Spec.Placement.Region != "central" {
@@ -89,8 +89,8 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
 		t.Fatal(err)
 	}
-	if access.Status.ObservedSequence != 12 {
-		t.Fatalf("sequence fence not persisted: %#v", access.Status)
+	if access.Status.ObservedGeneration != 1 {
+		t.Fatalf("source generation not observed: %#v", access.Status)
 	}
 	extraZone := zone.DeepCopy()
 	extraZone.Name = "extra"
@@ -111,7 +111,7 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 		t.Fatalf("zone membership change reused configuration fences: %#v", b.Spec.Configuration)
 	}
 
-	contextObject.Status.AccessEpoch++
+	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionFalse, "InvalidIdentity", "", contextObject.Generation, now)
 	if err := c.Status().Update(ctx, contextObject); err != nil {
 		t.Fatal(err)
 	}
@@ -121,8 +121,8 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(&b), &b); err != nil {
 		t.Fatal(err)
 	}
-	if !b.Spec.Tombstone || b.Spec.Version.Sequence != 12 || b.Spec.Configuration.Revision != 3 {
-		t.Fatalf("withdrawal changed integration authority or failed to advance configuration: %#v", b.Spec)
+	if !b.Spec.Tombstone || b.Spec.Version.Sequence != 2 || b.Spec.Configuration.Revision != 3 {
+		t.Fatalf("withdrawal failed to advance private fencing: %#v", b.Spec)
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
 		t.Fatal(err)
@@ -147,8 +147,10 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
 		t.Fatal(err)
 	}
-	access.Spec.Version.Epoch = contextObject.Status.AccessEpoch
-	access.Spec.Version.Sequence++
+	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", contextObject.Generation, now)
+	if err := c.Status().Update(ctx, contextObject); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.Update(ctx, access); err != nil {
 		t.Fatal(err)
 	}
@@ -158,8 +160,8 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(&b), &b); err != nil {
 		t.Fatal(err)
 	}
-	if b.Spec.Tombstone || b.Spec.Version.Sequence != 13 || b.Spec.Configuration.Revision != 4 {
-		t.Fatalf("ordinary next source sequence failed to renew access: %#v", b.Spec)
+	if b.Spec.Tombstone || b.Spec.Version.Sequence != 3 || b.Spec.Configuration.Revision != 4 {
+		t.Fatalf("current context did not restore access: %#v", b.Spec)
 	}
 	for _, snapshot := range [][]dnsv1alpha1.DNSResolverAccessBinding{{staleAccess}, nil} {
 		staleController := &Reconciler{Client: &accessListSnapshotClient{Client: c, accesses: snapshot}, Scheme: s, Options: r.Options}
@@ -169,7 +171,7 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(&b), &b); err != nil {
 			t.Fatal(err)
 		}
-		if b.Spec.Tombstone || b.Spec.Configuration.Revision != 4 || b.Spec.Version.Sequence != 13 {
+		if b.Spec.Tombstone || b.Spec.Configuration.Revision != 4 || b.Spec.Version.Sequence != 3 {
 			t.Fatalf("stale source snapshot withdrew renewed binding: %#v", b.Spec)
 		}
 	}
@@ -182,7 +184,7 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 			t.Fatal(err)
 		}
 		if b.Spec.Tombstone || b.Spec.Configuration.Revision != 4 {
-			t.Fatalf("%s read uncertainty revoked authorization", kind)
+			t.Fatalf("%s read uncertainty withdrew access", kind)
 		}
 	}
 	if err := c.Get(ctx, client.ObjectKeyFromObject(contextObject), contextObject); err != nil {

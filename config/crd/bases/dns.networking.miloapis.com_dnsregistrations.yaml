@@ -51,11 +51,6 @@ spec:
                 type: object
               name:
                 type: string
-              publicationPolicy:
-                enum:
-                - EligibleContributions
-                - Persistent
-                type: string
               recordTypes:
                 items:
                   enum:
@@ -89,7 +84,6 @@ spec:
             required:
             - dnsZoneRef
             - name
-            - publicationPolicy
             - recordTypes
             - ttlSeconds
             type: object

@@ -12,7 +12,7 @@ for file in platform project-a project-b; do
   if [[ $file == platform ]]; then namespace=internal-dns-system; fi
   "${cli[@]}" -n "$namespace" get pods,deployments,statefulsets,pvc,services,configmaps -o yaml > "$evidence/$file-deployment.yaml" 2>&1 || true
   "${cli[@]}" -n "$namespace" get events -o yaml > "$evidence/$file-events.yaml" 2>&1 || true
-  "${cli[@]}" -n "$namespace" get dnszones,dnszoneassociations,dnsresolvercontexts,dnsresolveraccessbindings,dnsnamingpolicies,dnsmanagednamespaces,dnsregistrations,dnsrecordcontributions,dnsresolverbindings,dnspublicationmanifests,dnspublicationchunks,dnspublicationownerships,dnstransportoutboxes -o yaml > "$evidence/$file-dns.yaml" 2>&1 || true
+  "${cli[@]}" -n "$namespace" get dnszones,dnszoneassociations,dnsresolvercontexts,dnsresolveraccessbindings,dnsnamingpolicies,dnsregistrations,dnsrecordcontributions,dnsresolverbindings,dnspublicationmanifests,dnspublicationchunks,dnspublicationownerships,dnstransportoutboxes -o yaml > "$evidence/$file-dns.yaml" 2>&1 || true
   while IFS= read -r pod; do
     [[ -z $pod ]] || "${cli[@]}" -n "$namespace" logs "$pod" --all-containers --prefix --tail=1000 > "$evidence/$file-${pod#pod/}.log" 2>&1 || true
   done < <("${cli[@]}" -n "$namespace" get pods -o name 2>/dev/null)

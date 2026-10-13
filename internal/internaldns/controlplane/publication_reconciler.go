@@ -31,9 +31,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileManagedNamespaces(ctx, ns, now); err != nil {
-		return ctrl.Result{}, err
-	}
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
 	var regs dnsv1alpha1.DNSRegistrationList
@@ -174,13 +171,13 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 			}
 		}
 	}
-	fenced := map[types.UID]bool{}
+	fenced := map[types.UID]int64{}
 	for _, f := range manifest.Spec.ContributionFences {
-		fenced[f.UID] = true
+		fenced[f.UID] = f.Generation
 	}
 	for i := range cs {
 		c := &cs[i]
-		if !regUIDs[c.Spec.RegistrationRef.UID] || !fenced[c.UID] {
+		if !regUIDs[c.Spec.RegistrationRef.UID] || fenced[c.UID] != c.Generation {
 			continue
 		}
 		base := c.DeepCopy()
@@ -194,7 +191,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		}
 		setCondition(&c.Status.Conditions, "Published", status, reason, msg, c.Generation, now)
 		if !jsonEqual(base.Status, c.Status) {
-			if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil {
+			if err := r.Status().Patch(ctx, c, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
 		}
@@ -211,6 +208,10 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		return false, now.Add(100 * time.Millisecond), nil
 	}
 	previous, err := r.loadPrevious(ctx, own)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 	if err != nil {
 		return false, time.Time{}, err
 	}
@@ -391,7 +392,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	}
 	apiFences := make([]dnsv1alpha1.DNSContributionFence, 0, len(fences))
 	for _, f := range fences {
-		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, Generation: f.Generation, Sequence: f.Sequence})
+		apiFences = append(apiFences, dnsv1alpha1.DNSContributionFence{UID: f.UID, Generation: f.Generation, Sequence: f.Sequence, Retired: f.Retired, SourceName: f.SourceName})
 	}
 	apiRegistrations := make([]dnsv1alpha1.DNSRegistrationFence, 0, len(registrations))
 	for _, f := range registrations {
@@ -509,7 +510,7 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	// fields may lose fractional seconds during API round trips, so rebuilding
 	// from manifest metadata can make an unchanged observation appear mutated.
 	for _, f := range wire.ObservationFences {
-		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence)})
+		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired})
 	}
 	return p, nil
 }
@@ -552,6 +553,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			reason = "Accepted"
 		}
 		base := c.DeepCopy()
+		c.Status.ObservedGeneration = c.Generation
 		setCondition(&c.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, c.Generation, now)
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
@@ -632,4 +634,34 @@ func chunk(b []byte, size int) [][]byte {
 		b = b[n:]
 	}
 	return out
+}
+
+func (r *Reconciler) confirmContributions(ctx context.Context, namespace string, listed []dnsv1alpha1.DNSRecordContribution, previous *PublicationPlan) ([]dnsv1alpha1.DNSRecordContribution, error) {
+	reader := r.sourceReader()
+	names := map[string]bool{}
+	for _, c := range listed {
+		names[c.Name] = true
+	}
+	if previous != nil {
+		for _, fence := range previous.Contributions {
+			if !fence.Retired {
+				if fence.SourceName == "" {
+					return nil, fmt.Errorf("contribution %s has no source identity for lifetime confirmation", fence.UID)
+				}
+				names[fence.SourceName] = true
+			}
+		}
+	}
+	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(names))
+	for name := range names {
+		var current dnsv1alpha1.DNSRecordContribution
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		confirmed = append(confirmed, current)
+	}
+	return confirmed, nil
 }

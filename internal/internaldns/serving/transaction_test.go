@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunner struct {
@@ -75,39 +76,6 @@ func TestFileTransactionConfigIsReadableByServiceUID(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o644 {
 		t.Fatalf("installed mode = %#o, want 0644", info.Mode().Perm())
-	}
-}
-
-func TestAtomicLeaseWriteReplacesCompleteFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "lease.json")
-	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeAtomicLease(path, []byte(`{"memberID":"node-0"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(contents) != `{"memberID":"node-0"}` {
-		t.Fatalf("atomic durable contents = %q", contents)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("atomic durable mode = %#o", info.Mode().Perm())
-	}
-	temporary, err := filepath.Glob(filepath.Join(dir, ".lease.json.tmp-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(temporary) != 0 {
-		t.Fatalf("temporary lease files remain: %#v", temporary)
 	}
 }
 
@@ -258,5 +226,126 @@ func TestFileTransactionValidatesFreshStagedZoneReferences(t *testing.T) {
 	}
 	if !bytes.Equal(installed, original) {
 		t.Fatal("installed config retains temporary staging paths")
+	}
+}
+
+func TestActivationGuardsStructuralChangesBeforeInstallingFiles(t *testing.T) {
+	dir := t.TempDir()
+	bind := filepath.Join(dir, "bind.conf")
+	router := filepath.Join(dir, "dnsdist.conf")
+	for _, path := range []string{bind, router} {
+		if err := os.WriteFile(path, []byte("approved"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := activationMarkerPath(dir)
+	runner := &activationBoundaryRunner{t: t, marker: marker, paths: []string{bind, router}}
+	tx := FileTransaction{MarkerPath: marker, Runner: runner, Config: TransactionConfig{
+		StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}},
+		Reload: []Command{{Path: "reload-bind", WhenChanged: []string{bind}}, {Path: "reload-dnsdist", WhenChanged: []string{router}}},
+	}}
+	if err := tx.Apply(context.Background(), map[string][]byte{bind: []byte("approved"), router: []byte("candidate")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commitActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(runner.calls, ",") != "gate,reload-bind,reload-dnsdist" {
+		t.Fatalf("owned daemons were not restarted together: %#v", runner.calls)
+	}
+}
+
+type activationBoundaryRunner struct {
+	t      *testing.T
+	marker string
+	paths  []string
+	calls  []string
+}
+
+func (r *activationBoundaryRunner) Run(_ context.Context, command Command) ([]byte, error) {
+	r.calls = append(r.calls, command.Path)
+	_, markerErr := os.Stat(r.marker)
+	if command.Path == "gate" {
+		if markerErr != nil {
+			r.t.Fatal("structural gate ran without durable installation guard")
+		}
+		for _, path := range r.paths {
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != "approved" {
+				r.t.Fatal("files changed before DNS was gated")
+			}
+		}
+	} else {
+		start, retain, release := daemonPermission(filepath.Dir(r.marker))
+		defer release()
+		if !start || !retain {
+			r.t.Fatal("complete files could not start for validation")
+		}
+	}
+	return nil, nil
+}
+
+func TestInterruptedInstallationRequiresLocalRecovery(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+	approved := agent.state.Active.Files
+	badParent := filepath.Join(cfg.StateDir, "not-a-directory")
+	if err := os.WriteFile(badParent, []byte("blocked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{filepath.Join(badParent, "later.conf"): []byte("candidate")}
+	for path := range approved {
+		files[path] = []byte("candidate")
+	}
+	if err := agent.tx.Apply(context.Background(), files); err == nil {
+		t.Fatal("interrupted installation succeeded")
+	}
+	if !activationPending(cfg.StateDir) {
+		t.Fatal("interrupted installation lost its durable guard")
+	}
+	if err := agent.tx.abandonActivation(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if activationPending(cfg.StateDir) || !installedFilesMatch(approved) {
+		t.Fatal("approved configuration could not recover without a broker")
+	}
+}
+
+func TestRecordUpdateReloadsImmutableZoneWithoutStoppingDNS(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "bind.conf")
+	zoneToken := "0123456789abcdef01234567"
+	before := []byte(`view "tenant-a" { zone "prod.internal" { file "` + dir + `/zone-` + zoneToken + `-0123456789abcdef.db"; }; };`)
+	after := []byte(`view "tenant-a" { zone "prod.internal" { file "` + dir + `/zone-` + zoneToken + `-abcdef0123456789.db"; }; };`)
+	if err := os.WriteFile(configPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	tx := FileTransaction{MarkerPath: activationMarkerPath(dir), Runner: runner, Config: TransactionConfig{
+		StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}, Reload: []Command{{Path: "reload-bind"}},
+	}}
+	if err := tx.Apply(context.Background(), map[string][]byte{configPath: after}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commitActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0].Path != "reload-bind" {
+		t.Fatalf("record update stopped healthy DNS: %#v", runner.calls)
+	}
+	newTenant := bytes.ReplaceAll(after, []byte("tenant-a"), []byte("tenant-b"))
+	if !routingConfigurationChanged(configPath, after, newTenant) {
+		t.Fatal("tenant routing change did not require a gate")
 	}
 }

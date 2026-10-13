@@ -3,10 +3,8 @@
 package serving
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
@@ -31,26 +29,18 @@ func TestRejectedExpansionPreservesServingAndRestarts(t *testing.T) {
 	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", candidate.ConfigurationEpoch, candidate.ConfigurationRevision, candidate)); err == nil {
 		t.Fatal("invalid expansion was accepted")
 	}
-	if agent.state.RenderedHash != activeHash || agent.state.Active == nil || !agent.healthEnabled {
+	if agent.state.RenderedHash != activeHash || agent.state.Active == nil {
 		t.Fatal("invalid expansion interrupted the active configuration")
 	}
 	now = now.Add(time.Hour)
-	if err := agent.refreshActiveHealth(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(cfg.WatchdogLeasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var lease watchdogLease
-	if err := json.Unmarshal(data, &lease); err != nil || !lease.ValidUntil.After(now) {
-		t.Fatalf("active health stopped during rejected update: %v", err)
+	if !installedFilesMatch(agent.state.Active.Files) {
+		t.Fatal("rejected update changed the approved files")
 	}
 	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.restoreActive(context.Background()); err != nil || !restarted.healthEnabled {
+	if err := restarted.restoreActive(context.Background()); err != nil {
 		t.Fatalf("restart could not recover active configuration: %v", err)
 	}
 	withdrawn := candidate
@@ -60,7 +50,7 @@ func TestRejectedExpansionPreservesServingAndRestarts(t *testing.T) {
 	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", withdrawn.ConfigurationEpoch, withdrawn.ConfigurationRevision, withdrawn)); err == nil {
 		t.Fatal("failed withdrawal was accepted")
 	}
-	if agent.state.Active != nil || agent.healthEnabled {
+	if agent.state.Active != nil {
 		t.Fatal("failed withdrawal retained revoked access")
 	}
 }
@@ -128,7 +118,7 @@ func (r *blockedValidationRunner) Run(ctx context.Context, command Command) ([]b
 	return r.recordingRunner.Run(ctx, command)
 }
 
-func TestActiveHealthDoesNotWaitForCandidateValidation(t *testing.T) {
+func TestApprovedConfigurationRemainsInstalledDuringCandidateValidation(t *testing.T) {
 	now := time.Now().UTC()
 	runner := &blockedValidationRunner{started: make(chan struct{}), release: make(chan struct{})}
 	cfg := regionalTestConfig(t)
@@ -153,51 +143,11 @@ func TestActiveHealthDoesNotWaitForCandidateValidation(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("candidate validation did not start")
 	}
-	healthDone := make(chan error, 1)
-	go func() { healthDone <- agent.refreshActiveHealth(ctx) }()
-	select {
-	case err := <-healthDone:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("active health waited for the candidate transaction")
+	if !installedFilesMatch(agent.state.Active.Files) || activationPending(cfg.StateDir) {
+		t.Fatal("candidate validation interrupted the approved configuration")
 	}
 	close(runner.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
-	}
-}
-
-func TestWithdrawalTransactionRetainsOnlyExistingWatchdogDeadline(t *testing.T) {
-	now := time.Now().UTC()
-	cfg := regionalTestConfig(t)
-	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, agent, now)
-	before, err := os.ReadFile(cfg.WatchdogLeasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent.suspendActiveHealth()
-	now = now.Add(time.Hour)
-	if err := agent.refreshActiveHealth(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	after, err := os.ReadFile(cfg.WatchdogLeasePath)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatal("transaction changed the existing watchdog deadline")
-	}
-	var lease watchdogLease
-	if err := json.Unmarshal(after, &lease); err != nil || lease.ValidUntil.After(now) {
-		t.Fatal("suspended health extended serving authority")
-	}
-	if err := agent.failClosed(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(cfg.WatchdogLeasePath); !os.IsNotExist(err) {
-		t.Fatal("failed withdrawal retained watchdog readiness")
 	}
 }

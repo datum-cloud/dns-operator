@@ -6,10 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
-	"strconv"
-	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -93,113 +89,39 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 		return err
 	}
 	if a.state.Active != nil && equalJSON(*a.state.Active, active) {
-		a.healthMu.Lock()
-		a.healthEnabled = true
-		a.healthMu.Unlock()
-		return nil
+		return a.tx.commitActivation()
 	}
+	previous := a.state.Active
 	a.state.Active = &active
+	if err := a.store.Save(a.state); err != nil {
+		a.state.Active = previous
+		return err
+	}
+	return a.tx.commitActivation()
+}
+
+// restoreActive preserves running daemons when their installed configuration
+// matches the approved checkpoint. Incomplete installation requires recovery.
+func (a *Agent) restoreActive(ctx context.Context) error {
+	if !a.canRetainActive() {
+		return a.failClosed(ctx)
+	}
+	files := a.state.Active.Files
+	if !activationPending(a.cfg.StateDir) && installedFilesMatch(files) {
+		if err := a.probeLocalDaemons(ctx); err == nil {
+			a.needsActivation = false
+			return nil
+		} else if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	if err := a.tx.ApplyForce(ctx, files); err != nil {
+		return err
+	}
+	a.state.RenderedHash = hashFiles(files)
+	a.needsActivation = false
 	if err := a.store.Save(a.state); err != nil {
 		return err
 	}
-	a.healthMu.Lock()
-	a.healthEnabled = true
-	a.healthMu.Unlock()
-	return nil
-}
-
-func (a *Agent) suspendActiveHealth() {
-	a.healthMu.Lock()
-	defer a.healthMu.Unlock()
-	a.healthEnabled = false
-
-}
-
-func (a *Agent) restoreActive(ctx context.Context) error {
-	if !a.canRetainActive() {
-		return nil
-	}
-	if err := a.tx.ApplyForce(ctx, a.state.Active.Files); err != nil {
-		return err
-	}
-	a.healthMu.Lock()
-	a.healthEnabled = true
-	a.healthMu.Unlock()
-	return nil
-}
-
-func (a *Agent) runActiveHealth(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := a.refreshActiveHealth(ctx); err != nil {
-				a.report(err)
-			}
-		}
-	}
-}
-
-func (a *Agent) refreshActiveHealth(ctx context.Context) error {
-	a.healthMu.Lock()
-	enabled := a.healthEnabled
-	a.healthMu.Unlock()
-	if !enabled || a.cfg.WatchdogLeasePath == "" {
-		return nil
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	if err := a.probeLocalDaemons(probeCtx); err != nil {
-		return err
-	}
-	a.healthMu.Lock()
-	defer a.healthMu.Unlock()
-	if !a.healthEnabled {
-		return nil
-	}
-	return a.writeWatchdogLease()
-}
-
-func (a *Agent) probeLocalDaemons(ctx context.Context) error {
-	if a.cfg.UnsafeAllowNoDNSVerify {
-		return nil
-	}
-	role := a.cfg.Render.Role
-	if role == "" {
-		role = RenderBoth
-	}
-	var binds []BINDRenderConfig
-	var dists []DNSDistRenderConfig
-	if role == RenderNode || role == RenderBoth {
-		binds = append(binds, a.cfg.Render.NodeBIND)
-		dists = append(dists, a.cfg.Render.NodeDNSDist)
-	}
-	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
-		binds = append(binds, a.cfg.Render.ClusterBIND)
-	}
-	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
-		dists = append(dists, a.cfg.Render.ClusterDNSDist)
-	}
-	for _, bind := range binds {
-		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
-		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
-		for _, network := range []string{networkUDP, networkTCP} {
-			answer, err := exchangePublication(ctx, network, server, ".", view, 200*time.Millisecond)
-			if err != nil || answer == nil || !answer.Response {
-				return fmt.Errorf("local BIND health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
-			}
-		}
-	}
-	for _, dist := range dists {
-		for _, network := range []string{networkUDP, networkTCP} {
-			answer, err := exchangeResolverSOA(ctx, network, dist.ListenAddress, ".", 200*time.Millisecond)
-			if err != nil || answer == nil || !answer.Response {
-				return fmt.Errorf("local dnsdist health %s: %w", dist.ListenAddress, errors.Join(err, errors.New("DNS response required")))
-			}
-		}
-	}
-	return nil
+	return a.tx.commitActivation()
 }

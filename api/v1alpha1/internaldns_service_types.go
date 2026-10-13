@@ -10,7 +10,6 @@ import (
 // DNSResolverBinding is the DNS-service projection of a consumer context and access binding.
 // +kubebuilder:validation:XValidation:rule="self.configuration.generation >= oldSelf.configuration.generation && self.configuration.revision >= oldSelf.configuration.revision",message="configuration fences must not decrease"
 // +kubebuilder:validation:XValidation:rule="self.authorization.writerEpoch > oldSelf.authorization.writerEpoch || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch && self.authorization.sequence >= oldSelf.authorization.sequence)",message="authorization fences must not decrease"
-// +kubebuilder:validation:XValidation:rule="self.authorization.writerEpoch != oldSelf.authorization.writerEpoch || self.authorization.sequence != oldSelf.authorization.sequence || self.authorization.validUntil == oldSelf.authorization.validUntil",message="changing an authorization deadline requires a new fence"
 // +kubebuilder:validation:XValidation:rule="self.configuration.zoneRefs == oldSelf.configuration.zoneRefs || (self.configuration.generation > oldSelf.configuration.generation && self.configuration.revision > oldSelf.configuration.revision)",message="zone membership changes require a new cache generation and configuration revision"
 // +kubebuilder:validation:XValidation:rule="(has(self.tombstone) && self.tombstone) == (has(oldSelf.tombstone) && oldSelf.tombstone) || self.configuration.revision > oldSelf.configuration.revision",message="changing withdrawal state requires a new configuration revision"
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.tombstone) || !oldSelf.tombstone || (has(self.tombstone) && self.tombstone) || self.authorization.writerEpoch > oldSelf.authorization.writerEpoch || (self.authorization.writerEpoch == oldSelf.authorization.writerEpoch && self.authorization.sequence > oldSelf.authorization.sequence)",message="reactivating withdrawn access requires a new source authorization fence"
@@ -153,13 +152,12 @@ type DNSRegistrationFence struct {
 }
 
 // DNSContributionFence persists an authenticated high-water sequence even
-// while its observation is unhealthy, rejected, or expired.
+// while its observation is unhealthy or withdrawn.
 type DNSContributionFence struct {
-	UID        types.UID   `json:"uid"`
-	GrantUID   types.UID   `json:"grantUID"`
-	Epoch      int64       `json:"epoch"`
-	Sequence   int64       `json:"sequence"`
-	ValidUntil metav1.Time `json:"validUntil,omitempty"`
+	UID      types.UID `json:"uid"`
+	GrantUID types.UID `json:"grantUID"`
+	Epoch    int64     `json:"epoch"`
+	Sequence int64     `json:"sequence"`
 }
 
 type DNSPublicationManifestStatus struct {

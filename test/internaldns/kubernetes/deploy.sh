@@ -54,6 +54,9 @@ go run ./test/internaldns/kubernetes/render --phase configure --out "$work" \
 for controller in control-a control-b; do
   "${platform[@]}" -n internal-dns-system rollout status "deployment/$controller" --timeout=180s
 done
+for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-bind-0 internal-dns-regional-bind-1; do
+  "${platform[@]}" -n internal-dns-system wait --for=condition=Ready "pod/$pod" --timeout=180s
+done
 
 # The source API servers reach a real TLS admission Service over the isolated
 # Kind network.

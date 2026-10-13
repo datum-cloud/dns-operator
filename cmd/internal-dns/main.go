@@ -15,12 +15,12 @@ import (
 
 func main() {
 	var role, configPath, kubeconfig string
-	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, or watchdog")
+	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, or readiness")
 	flag.StringVar(&configPath, "config", "", "Absolute path to the internal DNS JSON configuration")
 	// controller-runtime/client-go may install this standard flag from an init
 	// hook. Reuse it when present so the command keeps one stable contract.
 	if flag.Lookup("kubeconfig") == nil {
-		flag.StringVar(&kubeconfig, "kubeconfig", "", "Control-plane Kubernetes configuration; ignored by agent and watchdog")
+		flag.StringVar(&kubeconfig, "kubeconfig", "", "Control-plane Kubernetes configuration; ignored by serving processes")
 	}
 	logOptions := zap.Options{Development: false}
 	logOptions.BindFlags(flag.CommandLine)

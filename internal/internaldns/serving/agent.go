@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -43,9 +42,6 @@ type Config struct {
 	AckLease                  time.Duration                `json:"ackLease,omitempty"`
 	AckPublishTimeout         time.Duration                `json:"ackPublishTimeout,omitempty"`
 	MaxBindings               int                          `json:"maxBindings,omitempty"`
-	WatchdogLeasePath         string                       `json:"watchdogLeasePath,omitempty"`
-	WatchdogLease             time.Duration                `json:"watchdogLease,omitempty"`
-	ExternalWatchdog          bool                         `json:"externalWatchdog,omitempty"`
 	UnsafeAllowNoFailClosed   bool                         `json:"unsafeAllowNoFailClosed,omitempty"`
 	PublicationDNSProbe       PublicationDNSVerifierConfig `json:"publicationDNSProbe,omitempty"`
 	ResolverDNSProbe          DNSVerifierConfig            `json:"resolverDNSProbe,omitempty"`
@@ -85,17 +81,8 @@ func (c Config) Validate() error {
 	if c.ResolverVerifyConcurrency < 0 || c.ResolverVerifyConcurrency > 64 {
 		return errors.New("resolver verification concurrency must be between zero and 64")
 	}
-	if !c.UnsafeAllowNoFailClosed && !c.ExternalWatchdog && len(c.Transaction.FailClosed) == 0 {
+	if !c.UnsafeAllowNoFailClosed && len(c.Transaction.FailClosed) == 0 {
 		return errors.New("failClosed command is required; use unsafeAllowNoFailClosed only in tests")
-	}
-	if c.WatchdogLeasePath != "" && !filepath.IsAbs(c.WatchdogLeasePath) {
-		return errors.New("watchdog lease path must be absolute")
-	}
-	if c.ExternalWatchdog && c.WatchdogLeasePath == "" {
-		return errors.New("external watchdog requires watchdogLeasePath")
-	}
-	if c.WatchdogLease > 5*time.Second {
-		return errors.New("watchdog lease may not exceed five seconds")
 	}
 	if c.Mode == ModeCombined {
 		if c.Render.Role != RenderCluster && c.Render.Role != RenderBoth && c.Render.Role != RenderRegionalBIND && c.Render.Role != "" {
@@ -193,8 +180,6 @@ type Agent struct {
 	tx                    FileTransaction
 	publicationVerifier   PublicationVerifier
 	mu                    sync.Mutex
-	healthMu              sync.Mutex
-	healthEnabled         bool
 	state                 checkpoint
 	needsActivation       bool
 	lastServingAck        map[string]servingAckState
@@ -249,31 +234,20 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 	store := stateStore{path: filepath.Join(c.StateDir, "checkpoint.json")}
 	state, err := store.Load()
 	if err != nil {
-		return nil, err
+		gateErr := (FileTransaction{Config: c.Transaction, Runner: d.Runner}).FailClosed(context.Background())
+		return nil, errors.Join(err, gateErr)
 	}
-	return &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}}, nil
+	return &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner, MarkerPath: activationMarkerPath(c.StateDir)}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}}, nil
 }
 
 func (a *Agent) Start(ctx context.Context) error {
-	defer func() {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		_ = a.failClosed(context.Background())
-	}()
-	// Verify the persisted configuration locally before serving after restart.
-	if !a.gateUntilClosed(ctx) {
-		return nil
-	}
-	// FailClosed may stop or firewall the DNS daemon. A persisted content hash
-	// proves only what was installed before restart, not that the live process
-	// still serves it, so force one validated apply before renewing the lease.
+	defer func() { _ = a.tx.abandonActivation() }()
+	// Restore locally validated configuration without depending on state delivery.
 	a.mu.Lock()
-	a.needsActivation = true
 	if err := a.restoreActive(ctx); err != nil {
 		a.report(err)
 	}
 	a.mu.Unlock()
-	go a.runActiveHealth(ctx)
 	for {
 		err := a.bootstrapAndStep(ctx)
 		if err == nil {
@@ -326,34 +300,10 @@ func (a *Agent) Start(ctx context.Context) error {
 }
 
 func (a *Agent) failClosed(ctx context.Context) error {
-	a.suspendActiveHealth()
 	a.needsActivation = true
-	// Invalidate independent watchdog readiness immediately, even if the daemon
-	// gate command itself fails. It must never inherit a prior healthy lease.
-	if a.cfg.WatchdogLeasePath != "" {
-		_ = os.Remove(a.cfg.WatchdogLeasePath)
-	}
-	return a.tx.FailClosed(ctx)
-}
-
-func (a *Agent) gateUntilClosed(ctx context.Context) bool {
-	retry := a.cfg.RetryDelay
-	if retry <= 0 {
-		retry = time.Second
-	}
-	for {
-		a.mu.Lock()
-		err := a.failClosed(ctx)
-		a.mu.Unlock()
-		if err == nil {
-			return true
-		} else {
-			a.report(fmt.Errorf("gate serving during startup: %w", err))
-		}
-		if !waitRetry(ctx, retry) {
-			return false
-		}
-	}
+	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return errors.Join(a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
 }
 
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {
@@ -538,7 +488,6 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		a.state.Snapshot = &snapshot
 		if !a.canRetainActive() {
 			a.state.Active = nil
-			a.suspendActiveHealth()
 		}
 		if err := a.store.Save(a.state); err != nil {
 			_ = a.failClosed(ctx)
@@ -777,7 +726,7 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		return fmt.Errorf("ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID)
 	}
 	// A durable ACK consumer can legitimately replay a once-valid lease after a
-	// backlog. Drain it without changing readiness or renewing the local lease;
+	// backlog. Drain it without changing applied readiness;
 	// retrying an already expired ACK can otherwise create a permanent NACK loop.
 	if !a.deps.Clock().Before(ack.ValidUntil) {
 		return nil
@@ -881,20 +830,17 @@ func (a *Agent) Step(ctx context.Context) error {
 	if err := a.reconcile(ctx); err != nil {
 		return err
 	}
-	return a.renewSafeWatchdogLease(ctx)
+	return a.verifyAppliedConfiguration(ctx)
 }
 
-// finishEvent gives event-driven reconciliation the same regional materialization safety
-// gate as the periodic Step path before extending the independent watchdog
-// lease. This matters when a sustained JetStream backlog repeatedly acquires
-// the agent lock and delays the ticker.
+// finishEvent verifies regional materialization before acknowledging an update.
 func (a *Agent) finishEvent(ctx context.Context) error {
 	if a.cfg.Mode == ModeCombined {
 		if err := a.heartbeatPublications(ctx); err != nil {
 			return err
 		}
 	}
-	return a.renewSafeWatchdogLease(ctx)
+	return a.verifyAppliedConfiguration(ctx)
 }
 
 func (a *Agent) reconcile(ctx context.Context) error {
@@ -935,7 +881,6 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
 		if !a.canRetainActive() {
-			a.suspendActiveHealth()
 			a.state.Active = nil
 			if err := a.store.Save(a.state); err != nil {
 				return err
@@ -997,9 +942,9 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	if err := a.approveConfiguration(rendered.Files); err != nil {
 		return err
 	}
-	// Local DNS proof renews the watchdog independently of broker acknowledgements.
+	// Applied configuration remains independent of broker acknowledgements.
 	if a.cfg.Mode == ModeResolver {
-		if err := a.renewSafeWatchdogLease(ctx); err != nil {
+		if err := a.verifyAppliedConfiguration(ctx); err != nil {
 			return err
 		}
 	}
@@ -1310,8 +1255,8 @@ func (a *Agent) emitAck(ctx context.Context, kind model.Kind, uid string, epoch,
 }
 
 func (a *Agent) emitVerifiedPublicationAck(ctx context.Context, uid string, epoch, revision uint64) error {
-	// Renew local readiness before best-effort acknowledgement delivery.
-	if err := a.renewSafeWatchdogLease(ctx); err != nil {
+	// Validate local activation before best-effort acknowledgement delivery.
+	if err := a.verifyAppliedConfiguration(ctx); err != nil {
 		return err
 	}
 	if err := a.emitAck(ctx, model.KindPublicationManifest, uid, epoch, revision, model.AckVerified, ""); err != nil {
@@ -1458,13 +1403,7 @@ func (a *Agent) commitContributionFences(plan model.PublicationPlan) {
 	}
 }
 
-type watchdogLease struct {
-	MemberID   string    `json:"memberID"`
-	ReplicaID  string    `json:"replicaID,omitempty"`
-	ValidUntil time.Time `json:"validUntil"`
-}
-
-func (a *Agent) watchdogPublicationError() error {
+func (a *Agent) appliedPublicationError() error {
 	for uid, p := range a.state.Publications {
 		if p.Manifest.Tombstone {
 			continue
@@ -1476,44 +1415,21 @@ func (a *Agent) watchdogPublicationError() error {
 			}
 			installed, ok := a.installedPublications[uid]
 			if !ok || installed.Identity != publicationIdentity(p) || installed.EffectiveHash != current {
-				return fmt.Errorf("publication %s configuration differs from activation; refusing watchdog renewal", uid)
+				return fmt.Errorf("publication %s configuration differs from activation; refusing activation", uid)
 			}
 		} else if p.EffectiveHash != current {
-			return fmt.Errorf("publication %s configuration differs from the applied checkpoint; refusing watchdog renewal", uid)
+			return fmt.Errorf("publication %s configuration differs from the applied checkpoint; refusing activation", uid)
 		}
 	}
 	return nil
 }
 
-func (a *Agent) renewWatchdogLease(ctx context.Context) error {
+func (a *Agent) verifyAppliedConfiguration(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return errors.Join(err, a.failClosed(ctx))
-	}
-	if err := a.watchdogPublicationError(); err != nil {
-		return errors.Join(err, a.failClosed(ctx))
-	}
-	if a.cfg.WatchdogLeasePath == "" {
-		return nil
-	}
-	return a.writeWatchdogLease()
-}
-
-func (a *Agent) writeWatchdogLease() error {
-	lease := a.cfg.WatchdogLease
-	if lease <= 0 {
-		lease = 5 * time.Second
-	}
-	b, err := json.Marshal(watchdogLease{MemberID: a.cfg.MemberID, ReplicaID: a.cfg.ReplicaID, ValidUntil: a.deps.Clock().UTC().Add(lease)})
-	if err != nil {
 		return err
 	}
-	return writeAtomicLease(a.cfg.WatchdogLeasePath, b, 0o600)
-}
-
-// Renew the local watchdog only when the activated publication matches its checkpoint.
-func (a *Agent) renewSafeWatchdogLease(ctx context.Context) error {
-	if err := a.watchdogPublicationError(); err != nil {
+	if err := a.appliedPublicationError(); err != nil {
 		return errors.Join(err, a.failClosed(ctx))
 	}
-	return a.renewWatchdogLease(ctx)
+	return ctx.Err()
 }

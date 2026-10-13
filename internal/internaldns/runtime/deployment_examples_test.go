@@ -21,7 +21,7 @@ func TestDeploymentExampleConfigsValidate(t *testing.T) {
 		roles      []string
 	}{
 		{file: "control-plane.example.yaml", namePrefix: "internal-dns-control-plane-config", roles: []string{"control-plane"}},
-		{file: "fleet.example.yaml", namePrefix: "internal-dns-", roles: []string{"agent", "watchdog"}},
+		{file: "fleet.example.yaml", namePrefix: "internal-dns-", roles: []string{"agent", "readiness"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {

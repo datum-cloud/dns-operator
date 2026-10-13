@@ -120,7 +120,7 @@ cannot choose another tenant's destination or supply a trusted PROXYv2 header.
 
 Keep fleet size fixed when adding VPCs or zones. Two contexts must share the
 same node and regional workloads, with independent regional member storage and
-identities. Deploy controllers, agents, watchdogs, dnsdist, and BIND as real
+identities. Deploy controllers, agents, dnsdist, and BIND as real
 pods from the runtime package, with the same reload and fail-closed helpers
 intended for staging. Do not mount the Docker socket into those workloads.
 
@@ -187,5 +187,5 @@ Required deployment and consumer-path scenarios:
 
 Kind cannot qualify physical fabric, microVM attachment, disk durability across
 host loss, production scale, or independent regional failure. Staging-lab owns
-those checks. Capacity tests must measure reload/proof latency against the
-five-second watchdog budget before increasing shard limits.
+those checks. Capacity tests must measure reload/proof latency, query continuity,
+and incomplete-activation recovery before increasing shard limits.

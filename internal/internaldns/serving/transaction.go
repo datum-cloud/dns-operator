@@ -1,12 +1,14 @@
 package serving
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,8 +43,10 @@ type TransactionConfig struct {
 }
 
 type FileTransaction struct {
-	Config TransactionConfig
-	Runner Runner
+	activationLock *os.File
+	MarkerPath     string
+	Config         TransactionConfig
+	Runner         Runner
 }
 
 type preservedTransactionError struct{ error }
@@ -59,18 +63,18 @@ type oldFile struct {
 	existed bool
 }
 
-func (t FileTransaction) Apply(ctx context.Context, files map[string][]byte) error {
+func (t *FileTransaction) Apply(ctx context.Context, files map[string][]byte) error {
 	return t.apply(ctx, files, false)
 }
 
 // ApplyForce validates and reloads every configured daemon even when the
 // installed bytes already match. It is used after fail-closed startup because
 // file equality cannot prove that a stopped or firewalled process is active.
-func (t FileTransaction) ApplyForce(ctx context.Context, files map[string][]byte) error {
+func (t *FileTransaction) ApplyForce(ctx context.Context, files map[string][]byte) error {
 	return t.apply(ctx, files, true)
 }
 
-func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, force bool) (resultErr error) {
+func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, force bool) (resultErr error) {
 	mutating := false
 	defer func() {
 		if resultErr == nil {
@@ -173,6 +177,22 @@ func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, for
 	if err := t.commandsForChanges(ctx, t.Config.Validate, map[string]string{"{stageDir}": commandStage}, commandChanges); err != nil {
 		return preservedTransactionError{fmt.Errorf("validate staged serving configuration: %w", err)}
 	}
+	if t.MarkerPath != "" {
+		structural := force
+		for _, path := range paths {
+			structural = structural || changed[path] && routingConfigurationChanged(path, old[path].data, files[path])
+		}
+		if err := t.beginActivation(); err != nil {
+			return err
+		}
+		if structural {
+			// Restart every owned daemon after changing routing or view configuration.
+			commandChanges = nil
+			if err := t.FailClosed(ctx); err != nil {
+				return uncertainTransactionError{err}
+			}
+		}
+	}
 	installed := make([]string, 0, len(paths))
 	mutating = true
 	for _, path := range paths {
@@ -198,10 +218,31 @@ func (t FileTransaction) apply(ctx context.Context, files map[string][]byte, for
 		rollbackErr := restoreFiles(installed, old)
 		return errors.Join(err, rollbackErr)
 	}
+	if err := t.filesInstalled(); err != nil {
+		return err
+	}
 	if err := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges); err != nil {
-		rollbackErr := restoreFiles(paths, old)
+		if t.MarkerPath != "" {
+			if guardErr := t.beginActivation(); guardErr != nil {
+				return errors.Join(err, guardErr)
+			}
+			commandChanges = nil
+			if guardErr := t.FailClosed(ctx); guardErr != nil {
+				return errors.Join(err, guardErr)
+			}
+		}
+		rollbackErr := errors.Join(restoreFiles(paths, old), syncDirs(paths))
+		if rollbackErr != nil {
+			return errors.Join(err, rollbackErr)
+		}
+		if guardErr := t.filesInstalled(); guardErr != nil {
+			return errors.Join(err, guardErr)
+		}
 		reloadErr := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges)
 		if rollbackErr == nil && reloadErr == nil {
+			if guardErr := t.commitActivation(); guardErr != nil {
+				return errors.Join(err, guardErr)
+			}
 			return preservedTransactionError{fmt.Errorf("reload serving configuration: %w", err)}
 		}
 		return errors.Join(fmt.Errorf("reload serving configuration: %w", err), rollbackErr, reloadErr)
@@ -272,40 +313,6 @@ func writeDurable(path string, data []byte, mode os.FileMode) error {
 	return f.Close()
 }
 
-// writeAtomicLease replaces the ephemeral watchdog lease through a unique
-// temporary sibling. The file is synced before rename so a reader never accepts
-// partially written JSON. The containing directory is deliberately not synced:
-// metadata fsync on a container bind mount can block longer than the lease, and
-// restart always gates before bootstrap so this lease never needs crash
-// survival.
-func writeAtomicLease(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	return nil
-}
 func syncDirs(paths []string) error {
 	seen := map[string]bool{}
 	for _, path := range paths {
@@ -349,4 +356,16 @@ func restoreFiles(paths []string, old map[string]oldFile) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+var immutableZoneFile = regexp.MustCompile(`file "([^"\n]*/zone-[a-f0-9]{24})-[a-f0-9]{16}\.db"`)
+
+// Content-addressed zone files change record data without changing view routing.
+func routingConfigurationChanged(path string, before, after []byte) bool {
+	if !strings.HasSuffix(path, ".conf") {
+		return false
+	}
+	before = immutableZoneFile.ReplaceAll(before, []byte(`file "${1}.db"`))
+	after = immutableZoneFile.ReplaceAll(after, []byte(`file "${1}.db"`))
+	return !bytes.Equal(before, after)
 }

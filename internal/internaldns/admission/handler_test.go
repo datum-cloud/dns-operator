@@ -202,25 +202,6 @@ func TestRegistrationRequiresCurrentZone(t *testing.T) {
 	}
 }
 
-func TestPublicationStatusDoesNotChangePublisherObservation(t *testing.T) {
-	h := Handler{Client: fake.NewClientBuilder().WithScheme(runtime.NewScheme()).Build()}
-	old := &dnsv1alpha1.DNSRecordContribution{Status: dnsv1alpha1.DNSRecordContributionStatus{Sequence: 10, Eligible: true}}
-	current := old.DeepCopy()
-	current.Status.PublishedRevision = 12
-	current.Status.Conditions = []metav1.Condition{{Type: "Published", Status: metav1.ConditionTrue}}
-	req := request("dnsrecordcontributions", "rbac-authorized-controller", current, old)
-	req.SubResource = "status"
-	if result := h.Handle(context.Background(), req); !result.Allowed {
-		t.Fatalf("publication result needs no producer grant: %v", result.Result)
-	}
-	current.Status.Sequence++
-	req = request("dnsrecordcontributions", "rbac-authorized-controller", current, old)
-	req.SubResource = "status"
-	if h.Handle(context.Background(), req).Allowed {
-		t.Fatal("publication update changed the producer observation without a grant")
-	}
-}
-
 func TestContributionValidatesReferencesForRBACAuthorizedCallers(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {

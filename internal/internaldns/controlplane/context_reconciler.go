@@ -98,7 +98,7 @@ func (r *Reconciler) reconcileNamingPolicies(ctx context.Context, items []dnsv1a
 		}
 		p.Status.ResolvedAdditionalNames = resolved
 		status := metav1.ConditionTrue
-		reason, msg := dnsValueAccepted, "naming policy is authorized"
+		reason, msg := dnsValueAccepted, "naming policy is valid"
 		if !valid {
 			status = metav1.ConditionFalse
 			reason = "InvalidPolicy"

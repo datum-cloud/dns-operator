@@ -55,24 +55,6 @@ spec:
 apiVersion: iam.miloapis.com/v1alpha1
 kind: ProtectedResource
 metadata:
-  name: dns.networking.miloapis.com-dnscontributiongrant
-spec:
-  serviceRef:
-    name: dns.networking.miloapis.com
-  kind: DNSContributionGrant
-  plural: dnscontributiongrants
-  singular: dnscontributiongrant
-  permissions: [list, get, watch, create, update, patch, delete]
-  subresources:
-    - name: status
-      permissions: [get, update, patch]
-  parentResources:
-    - apiGroup: resourcemanager.miloapis.com
-      kind: Project
----
-apiVersion: iam.miloapis.com/v1alpha1
-kind: ProtectedResource
-metadata:
   name: dns.networking.miloapis.com-dnsrecordcontribution
 spec:
   serviceRef:

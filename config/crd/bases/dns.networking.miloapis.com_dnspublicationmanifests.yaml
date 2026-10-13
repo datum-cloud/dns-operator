@@ -73,15 +73,9 @@ spec:
                     DNSContributionFence persists an authenticated high-water sequence even
                     while its observation is unhealthy or withdrawn.
                   properties:
-                    epoch:
+                    generation:
                       format: int64
                       type: integer
-                    grantUID:
-                      description: |-
-                        UID is a type that holds unique ID values, including UUIDs.  Because we
-                        don't ONLY use UUIDs, this is an alias to string.  Being a type captures
-                        intent and helps make sure that UIDs and names do not get conflated.
-                      type: string
                     sequence:
                       format: int64
                       type: integer
@@ -92,8 +86,7 @@ spec:
                         intent and helps make sure that UIDs and names do not get conflated.
                       type: string
                   required:
-                  - epoch
-                  - grantUID
+                  - generation
                   - sequence
                   - uid
                   type: object
@@ -260,10 +253,10 @@ spec:
               replicaAcknowledgements:
                 items:
                   properties:
-                    authorizationIssuerEpoch:
+                    accessEpoch:
                       format: int64
                       type: integer
-                    authorizationRevision:
+                    accessSequence:
                       format: int64
                       type: integer
                     error:

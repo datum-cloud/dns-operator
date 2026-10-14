@@ -128,8 +128,9 @@ type RecordRenderOutput struct {
 
 func registerRecordRenderTool(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolRecordRender,
-		Title: "Render a DNS record manifest",
+		Name:        ToolRecordRender,
+		Annotations: readOnly(),
+		Title:       "Render a DNS record manifest",
 		Description: "Turn a short description of a record — zone, owner name, type, value — into a " +
 			"complete DNSRecordSet manifest, and report what rendering found. Supports A, AAAA, CNAME, " +
 			"TXT, MX, SRV, CAA, and NS; any other type is refused. Writes nothing, but does read the " +

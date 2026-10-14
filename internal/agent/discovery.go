@@ -48,8 +48,9 @@ type ZoneDiscoveryGetOutput struct {
 
 func registerZoneDiscoveryTool(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolZoneDiscoveryGet,
-		Title: "Get a zone discovery snapshot",
+		Name:        ToolZoneDiscoveryGet,
+		Annotations: readOnly(),
+		Title:       "Get a zone discovery snapshot",
 		Description: "Get one DNSZoneDiscovery by name: the records a domain was observed serving at " +
 			"the time the snapshot was taken, grouped by type with each value's fields spelled out the " +
 			"same way dns_record_render's input does. This is a one-time snapshot, not a live query — " +

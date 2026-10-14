@@ -20,7 +20,10 @@ authorization {
       permissions: {
         publish: { allow: [
           "dns.private.serving.>", "dns.private.records.>",
-          "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$JS.API.>", "_INBOX.>"
+          "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$JS.API.>",
+          # Match the control-plane ACK durable for this region and shard.
+          "$JS.ACK.DNS_PRIVATE.control-plane-us-central1-shared-0-acks.>",
+          "_INBOX.>"
         ] }
         subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
       }
@@ -86,24 +89,24 @@ authorization {
       }
     },
     {
-      user: "regional-bind-us-central1-0"
-      password: $REGIONAL_BIND_0_PASSWORD
+      user: "regional-coredns-us-central1-0"
+      password: $REGIONAL_COREDNS_0_PASSWORD
       permissions: {
         publish: { allow: [
-          "dns.private.acks.us-central1.shared-0.b75afe155467f45fdab6d0a1",
+          "dns.private.acks.us-central1.shared-0.7c90d3973cc5ead390c680d8",
           "$JS.API.STREAM.INFO.DNS_PRIVATE",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-0-serving",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-0-records",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-0-acks",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-serving.>",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-records.>",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-0-acks.>",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-0-serving",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-0-records",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-0-acks",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-0-serving.>",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-0-records.>",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-0-acks.>",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-0-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-0-records",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-0-acks",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-records.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-0-acks.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-0-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-0-records",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-0-acks",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-0-serving.>",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-0-records.>",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-0-acks.>",
           "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
           "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
           "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",
@@ -116,24 +119,24 @@ authorization {
       }
     },
     {
-      user: "regional-bind-us-central1-1"
-      password: $REGIONAL_BIND_1_PASSWORD
+      user: "regional-coredns-us-central1-1"
+      password: $REGIONAL_COREDNS_1_PASSWORD
       permissions: {
         publish: { allow: [
-          "dns.private.acks.us-central1.shared-0.2600654ae9645c6e4439e8ac",
+          "dns.private.acks.us-central1.shared-0.f7f1afc061d6adfe80acb36b",
           "$JS.API.STREAM.INFO.DNS_PRIVATE",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-1-serving",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-1-records",
-          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-bind-us-central1-1-acks",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-serving.>",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-records.>",
-          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-bind-us-central1-1-acks.>",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-1-serving",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-1-records",
-          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-bind-us-central1-1-acks",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-1-serving.>",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-1-records.>",
-          "$JS.ACK.DNS_PRIVATE.regional-bind-us-central1-1-acks.>",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-1-serving",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-1-records",
+          "$JS.API.CONSUMER.INFO.DNS_PRIVATE.regional-coredns-us-central1-1-acks",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-serving", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-serving.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-records", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-records.>",
+          "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-acks", "$JS.API.CONSUMER.CREATE.DNS_PRIVATE.regional-coredns-us-central1-1-acks.>",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-1-serving",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-1-records",
+          "$JS.API.CONSUMER.MSG.NEXT.DNS_PRIVATE.regional-coredns-us-central1-1-acks",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-1-serving.>",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-1-records.>",
+          "$JS.ACK.DNS_PRIVATE.regional-coredns-us-central1-1-acks.>",
           "$JS.API.DIRECT.GET.KV_DNS_PRIVATE_SNAPSHOTS.>",
           "$JS.API.STREAM.INFO.KV_DNS_PRIVATE_SNAPSHOTS",
           "$JS.API.CONSUMER.CREATE.KV_DNS_PRIVATE_SNAPSHOTS.>",

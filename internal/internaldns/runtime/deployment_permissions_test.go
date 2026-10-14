@@ -161,7 +161,19 @@ func TestEveryMemberCanCreateAllRuntimeConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	contents := string(data)
-	for _, member := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-bind-us-central1-0", "regional-bind-us-central1-1"} {
+	start := strings.Index(contents, `user: "internal-dns-control-plane"`)
+	if start < 0 {
+		t.Fatal("missing control-plane broker identity")
+	}
+	controlPolicy := strings.SplitN(contents[start:], "\n    },", 2)[0]
+	controlACK := "$JS.ACK.DNS_PRIVATE." + durable(roleControlPlane, "us-central1", "shared-0", "acks") + ".>"
+	if !strings.Contains(controlPolicy, `"`+controlACK+`"`) {
+		t.Errorf("control plane cannot acknowledge its member-ACK consumer: %s", controlACK)
+	}
+	if strings.Contains(controlPolicy, `"$JS.ACK.DNS_PRIVATE.>"`) {
+		t.Error("control plane can acknowledge another serving member's consumers")
+	}
+	for _, member := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"} {
 		start := strings.Index(contents, `user: "`+member+`"`)
 		if start < 0 {
 			t.Fatalf("missing member %s", member)
@@ -189,7 +201,7 @@ func TestEveryMemberCanCreateAllRuntimeConsumers(t *testing.T) {
 	}
 }
 
-func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
+func TestReadOnlyServingImageHasWritableCoreDNSWorkingDirectory(t *testing.T) {
 	found := false
 	for _, object := range deploymentObjects(t, "fleet.example.yaml") {
 		if object.GetKind() != "Deployment" {
@@ -217,7 +229,7 @@ func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
 				}
 			}
 			if runtimeVolume == "" {
-				t.Fatal("read-only serving image lacks writable BIND /tmp mount")
+				t.Fatal("read-only serving image lacks writable CoreDNS /tmp mount")
 			}
 			volumes, _, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "volumes")
 			if err != nil {
@@ -231,7 +243,7 @@ func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
 				}
 			}
 			if !writable {
-				t.Fatal("BIND working-directory mount is not a per-member writable runtime volume")
+				t.Fatal("CoreDNS working-directory mount is not a per-member writable runtime volume")
 			}
 		}
 	}
@@ -253,13 +265,13 @@ func verifyProjectReferenceSchemas(t *testing.T, ctx context.Context, cl client.
 		object client.Object
 		valid  bool
 	}{
-		{"registration-valid", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: ref, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}, true},
-		{"registration-unpinned", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}, false},
-		{"registration-ttl31", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: ref, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 31}}, false},
-		{"association-valid", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: ref, ResolverContextRef: contextRef}}, true},
-		{"association-unpinned", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, ResolverContextRef: contextRef}}, false},
-		{"naming-valid", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: ref, NamePrefix: "services"}}}}, true},
-		{"naming-unpinned", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name}, NamePrefix: "services"}}}}, false},
+		{"registration-name-only", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}, true},
+		{"registration-empty-zone", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}, false},
+		{"registration-ttl31", &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 31}}, false},
+		{"association-valid", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}}}, true},
+		{"association-empty-zone", &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}}}, false},
+		{"naming-valid", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: ref.Name}, NamePrefix: "services"}}}}, true},
+		{"naming-empty-zone", &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextRef.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{}, NamePrefix: "services"}}}}, false},
 	}
 	for _, tc := range cases {
 		tc.object.SetName(tc.name)

@@ -5,8 +5,8 @@ Replace the example images, addresses, certificates, storage classes, admission
 CA injection, and site command wrappers before deployment.
 
 CI publishes `ghcr.io/datum-cloud/internal-dns` for the control plane and
-`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents, BIND, and dnsdist.
-The serving image includes the validation, reload, cache-flush, and gating
+`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents, CoreDNS, and dnsdist.
+The serving image includes the validation, activation, and gating
 commands in `config/internal-dns/commands`. The Kubernetes qualification
 environment uses the same commands.
 
@@ -18,18 +18,18 @@ feature-branch tags and uses these immutable image references.
 
 The fixed fleet has three roles:
 
-- A `node` resolver agent owns the shared node dnsdist/BIND pair.
+- A `node` resolver agent owns the shared node dnsdist/CoreDNS pair.
 - A `regional-dnsdist` resolver agent owns the shared regional frontend and its
-  pool of regional BIND members.
-- Two or more `regional-bind` combined agents independently render the complete
-  private primary-zone set for their member, validate it with
-  `named-checkconf -z`, activate it in isolated BIND context views, prove the
+  pool of regional CoreDNS members.
+- Two or more `regional-coredns` combined agents independently compile the complete
+  DNS context snapshot for their member, validate it with
+  `coredns -validate`, load it atomically into the context plugin, prove the
   exact version over UDP and TCP, and publish a leased ACK.
 
-Contexts, access bindings, and zones add destinations, views, and zone files to
-these processes. They never create workloads per VPC or zone. The legacy
-`cluster` and `both` render roles remain development fallbacks and should not be
-used for the multi-member production layout.
+Contexts, access bindings, and zones add destinations and record data to
+these processes. They never create workloads per VPC or zone. Use `node`,
+`regional-dnsdist`, and `regional-coredns` roles for the multi-member production
+layout. The `cluster` and `both` roles are limited to development.
 
 Each member needs a distinct member ID, NATS identity and durable consumers,
 checkpoint PVC, configuration PVC, and durable activation state. Treat that
@@ -69,15 +69,15 @@ Publishers write addresses and eligibility together in contribution spec using
 optimistic concurrency. DNS owns status and uses API-assigned generations to
 reject stale desired state across takeover and replay.
 
-## Serving identity and BIND views
+## Serving identity and DNS contexts
 
 Consumer and regional listener prefixes must be local routes in their dnsdist
 network namespaces. Galactic authorizes and translates the consumer path to a
 service-side destination. dnsdist preserves that destination in a trusted
-PROXYv2 header. Node BIND selects a context view and forwards to its regional
+PROXYv2 header. Node CoreDNS selects a context and forwards to its regional
 destination. Regional dnsdist selects the same context and load-balances the
-healthy BIND members. Every regional BIND member directly hosts the context's
-private primary zones.
+healthy CoreDNS members. Every regional CoreDNS member hosts the context's
+private zones. Public queries forward to a shared PowerDNS Recursor service.
 
 An owned name without eligible answers carries service-only `TYPE65280`
 metadata at that exact name. This private-use record preserves NODATA without
@@ -88,21 +88,20 @@ retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
 static RRset must use the same TTL.
 
 A context without private zones proves recursion with the root SOA over UDP and
-TCP. `verifier.publicName` can override this probe. BIND members need a writable
+TCP. `verifier.publicName` can override this probe. CoreDNS members need a writable
 `/tmp` runtime volume even when the image root filesystem is read-only.
 
-Private packet caching stays disabled in dnsdist. Each BIND view has its own
-positive and negative cache. `max-ncache-ttl` defaults to five seconds and is
-bounded at 60 seconds. Public recursion retains DNSSEC validation; each view
-adds validation exceptions only for its private apexes. Unknown or withdrawn
-destinations are rejected before cache lookup.
+Private packet caching stays disabled in dnsdist and CoreDNS. The context plugin
+answers private queries from the accepted in-memory zone data. Endpoint changes
+replace that data without retaining cached private answers. Each context has a
+separate public cache. PowerDNS Recursor validates DNSSEC for public queries.
+Unknown destinations are rejected before cache lookup.
 
-Regional publication proof connects directly to that member's BIND listener,
+Regional publication proof connects directly to that member's CoreDNS listener,
 supplies the exact context destination in a protected PROXYv2 header over both
 UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
-network. There are no PowerDNS views, network variants, or per-context source
-markers. Local health probes also require the BIND listener address in
+network. Local health probes also require the CoreDNS listener address in
 `proxyPeers` and loopback in dnsdist ACLs. These peers must remain inside the
 protected serving network.
 
@@ -116,12 +115,12 @@ restores service with the same access mapping. Resolver access readiness
 reports the applied path independently of each zone's publication status. Explicit access withdrawal
 requires a newer access version to reactivate.
 
-The agent writes a complete candidate set into its stage directory. Regional
-zone files are siblings of `cluster-bind.conf`; validation rewrites file
-references to the staged paths and runs `named-checkconf -z`. Installation is
-atomic only after every candidate validates. Reload wrappers must wait for the
-listener and backend pool before returning so the immediate DNS proof observes
-the activated state.
+The agent stages a complete JSON snapshot containing context destinations,
+private zone data, and upstream destinations. The CoreDNS validator parses every
+zone before installation. Atomic rename exposes one complete snapshot; the
+plugin builds its replacement state before swapping the lookup table. Invalid
+updates retain the accepted state. A record update does not restart CoreDNS.
+The agent proves the installed publication over UDP and TCP before acknowledging it.
 
 Publication acknowledgements report verified configuration versions. The fleet
 retains accepted proofs during control plane or broker outages and continues
@@ -146,22 +145,21 @@ transaction lock until the approved checkpoint is committed. Orphaned
 activation remains gated until recovery verifies the saved configuration.
 Readiness and activation gates use local state without Kubernetes or NATS.
 
-Mount the transaction stage, active BIND configuration, zone files, checkpoint,
+Mount the transaction stage, active CoreDNS configuration, checkpoint,
 and activation state on storage local to the serving host. Replication uses
 the durable publication stream and independent regional members; each member
 has its own crash-safe checkpoint volume.
 
-The regional BIND reload helper must reload existing primary zones, for
-example with `rndc reload`. `rndc reconfig` only guarantees configuration and
-new-zone loading, so it is insufficient when an existing private apex moves to
-a newly rendered immutable zone file. The node-tier helper may use the
-deployment's normal configuration reload because that BIND tier is recursive.
+The transaction stage and active configuration must share one filesystem:
+installation uses atomic rename. The examples put the stage at
+`/etc/internal-dns/stage` on the configuration PVC and keep checkpoints on the
+separate state PVC.
 
 ## Capacity and transport
 
-Set `maxBindings` from measured BIND view memory, validation/reload time,
+Set `maxBindings` from measured CoreDNS context memory, snapshot activation time,
 dnsdist rule cost, NATS payload size, and activation recovery time. The example caps a
-shard at 200 contexts and budgets 2 MiB per view. Add another fixed shard before
+shard at 200 contexts. Add another fixed shard before
 raising those bounds.
 
 NATS uses TLS with a verified server name, client certificate, and one scoped
@@ -170,9 +168,9 @@ subjects and consume ACKs. Each serving member can consume its assigned durable
 subjects and publish only its own hashed ACK subject. Broker partitions delay
 updates while the fleet continues serving its applied configuration.
 
-`fleet.example.yaml` provides node, regional frontend, and regional BIND JSON
+`fleet.example.yaml` provides node, regional frontend, and regional CoreDNS JSON
 configurations plus one Deployment template. Instantiate the template for each
-member and create a second regional BIND member with distinct addresses and
+member and create a second regional CoreDNS member with distinct addresses and
 storage. `control-plane.example.yaml` lists both regional members in
 `clusterBackends` and `members`.
 

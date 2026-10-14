@@ -15,12 +15,15 @@ import (
 )
 
 func main() {
+	flags := flag.NewFlagSet("coredns", flag.ExitOnError)
 	var path string
 	var validate, version bool
-	flag.StringVar(&path, "config", "", "Absolute path to the DNS context snapshot")
-	flag.BoolVar(&validate, "validate", false, "Validate the DNS context snapshot and exit")
-	flag.BoolVar(&version, "version", false, "Print the CoreDNS version and exit")
-	flag.Parse()
+	flags.StringVar(&path, "config", "", "Absolute path to the DNS context snapshot")
+	flags.BoolVar(&validate, "validate", false, "Validate the DNS context snapshot and exit")
+	flags.BoolVar(&version, "version", false, "Print the CoreDNS version and exit")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		os.Exit(2)
+	}
 	if version {
 		version := "unknown"
 		if info, ok := debug.ReadBuildInfo(); ok {

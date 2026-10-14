@@ -287,13 +287,8 @@ func (s *suite) run(path string) error {
 		}
 	}
 	a, b := &s.env.Projects[0], &s.env.Projects[1]
-	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name == b.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name {
+	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.Suffix == b.resolverContext.Status.ManagedNamespace.Suffix {
 		return errors.New("source projects lost their distinct context, zone, or managed namespace identity")
-	}
-	for _, p := range []*project{a, b} {
-		if p.resolverContext.Status.ManagedNamespace.Suffix != p.resolverContext.Spec.ManagedNamespace.DomainSuffix {
-			return fmt.Errorf("%s managed suffix does not match its requested domain", p.Name)
-		}
 	}
 	s.pass("independent projects retain distinct context, zone, and managed namespace identities", map[string]string{"a": string(a.resolverContext.UID), "b": string(b.resolverContext.UID)})
 	if err := s.scenarios(a, b); err != nil {
@@ -324,13 +319,13 @@ func (s *suite) permissions(p *project) error {
 }
 
 func (s *suite) prepare(p *project) error {
-	p.resolverContext = dnsv1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application-network", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverContextSpec{ConsumerID: "qualification/" + p.Name, ManagedNamespace: dnsv1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
+	p.resolverContext = dnsv1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application-network", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverContextSpec{ConsumerID: "qualification/" + p.Name, ManagedNamespace: dnsv1.DNSResolverContextManagedNamespace{Enabled: true}}}
 	if err := p.integration.Create(s.ctx, &p.resolverContext); err != nil {
 		return err
 	}
 	if err := s.wait(p.Name+" managed namespace", 120*time.Second, func() (bool, error) {
 		err := p.product.Get(s.ctx, client.ObjectKeyFromObject(&p.resolverContext), &p.resolverContext)
-		return condition(p.resolverContext.Status.Conditions, "Ready", p.resolverContext.Generation) && p.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name != "", err
+		return condition(p.resolverContext.Status.Conditions, "Ready", p.resolverContext.Generation) && p.resolverContext.Status.ManagedNamespace.DNSZoneRef.UID != "", err
 	}); err != nil {
 		return err
 	}

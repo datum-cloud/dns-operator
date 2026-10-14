@@ -68,14 +68,14 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	if role == "" {
 		role = RenderBoth
 	}
-	var binds []BINDRenderConfig
+	var binds []CoreDNSRenderConfig
 	var dists []DNSDistRenderConfig
 	if role == RenderNode || role == RenderBoth {
-		binds = append(binds, a.cfg.Render.NodeBIND)
+		binds = append(binds, a.cfg.Render.NodeCoreDNS)
 		dists = append(dists, a.cfg.Render.NodeDNSDist)
 	}
-	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
-		binds = append(binds, a.cfg.Render.ClusterBIND)
+	if role == RenderCluster || role == RenderBoth || role == RenderRegionalCoreDNS {
+		binds = append(binds, a.cfg.Render.ClusterCoreDNS)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
 		dists = append(dists, a.cfg.Render.ClusterDNSDist)
@@ -86,7 +86,7 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 		for _, network := range []string{networkUDP, networkTCP} {
 			answer, err := exchangePublication(ctx, network, server, ".", view, 200*time.Millisecond)
 			if err != nil || answer == nil || !answer.Response {
-				return fmt.Errorf("local BIND health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
+				return fmt.Errorf("local CoreDNS health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
 			}
 		}
 	}

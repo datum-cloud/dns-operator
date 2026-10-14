@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +183,7 @@ func TestFileTransactionReloadsOnlyChangedTier(t *testing.T) {
 		t.Fatalf("reload calls = %#v", runner.calls)
 	}
 	if got, err := os.ReadFile(named); err != nil || string(got) != "unchanged" {
-		t.Fatalf("unchanged BIND file was disturbed: %q, %v", got, err)
+		t.Fatalf("unchanged CoreDNS file was disturbed: %q, %v", got, err)
 	}
 }
 
@@ -192,40 +191,28 @@ type transactionRunnerFunc func(context.Context, Command) ([]byte, error)
 
 func (f transactionRunnerFunc) Run(ctx context.Context, c Command) ([]byte, error) { return f(ctx, c) }
 
-func TestFileTransactionValidatesFreshStagedZoneReferences(t *testing.T) {
+func TestFileTransactionValidatesCompleteStagedSnapshot(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	config := filepath.Join(dir, "live", "named.conf")
-	zone := filepath.Join(dir, "live", "zone.db")
+	path := filepath.Join(dir, "contexts.json")
+	candidate := []byte(`{"contexts":[{"id":"a","data":"new zone"}]}`)
 	runner := transactionRunnerFunc(func(_ context.Context, c Command) ([]byte, error) {
-		data, err := os.ReadFile(c.Args[0])
+		staged, err := os.ReadFile(c.Args[0])
 		if err != nil {
 			return nil, err
 		}
-		staged := filepath.Join(filepath.Dir(c.Args[0]), "zone.db")
-		if !strings.Contains(string(data), strconv.Quote(staged)) || strings.Contains(string(data), strconv.Quote(zone)) {
-			t.Fatalf("validator sees live zone: %s", data)
-		}
-		content, err := os.ReadFile(staged)
-		if err != nil {
-			return nil, err
-		}
-		if string(content) != "new zone" {
-			t.Fatalf("staged content=%s", content)
+		if !bytes.Equal(staged, candidate) || c.Args[0] == path {
+			t.Fatal("validator did not see complete staged snapshot")
 		}
 		return nil, nil
 	})
-	tx := FileTransaction{Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "named-checkconf", Args: []string{"{stageDir}/named.conf"}}}}, Runner: runner}
-	original := []byte("zone \"test.internal\" { type primary; file " + strconv.Quote(zone) + "; };\n")
-	if err := tx.Apply(context.Background(), map[string][]byte{config: original, zone: []byte("new zone")}); err != nil {
+	tx := FileTransaction{Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "coredns", Args: []string{"{stageDir}/contexts.json"}}}}, Runner: runner}
+	if err := tx.Apply(context.Background(), map[string][]byte{path: candidate}); err != nil {
 		t.Fatal(err)
 	}
-	installed, err := os.ReadFile(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(installed, original) {
-		t.Fatal("installed config retains temporary staging paths")
+	installed, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(installed, candidate) {
+		t.Fatal("installed snapshot differs", err)
 	}
 }
 
@@ -336,30 +323,26 @@ func TestInterruptedInstallationRequiresLocalRecovery(t *testing.T) {
 	}
 }
 
-func TestRecordUpdateReloadsImmutableZoneWithoutStoppingDNS(t *testing.T) {
+func TestContextSnapshotUpdateDoesNotStopDNS(t *testing.T) {
 	dir := t.TempDir()
-	configPath := filepath.Join(dir, "bind.conf")
-	zoneToken := "0123456789abcdef01234567"
-	before := []byte(`view "tenant-a" { zone "prod.internal" { file "` + dir + `/zone-` + zoneToken + `-0123456789abcdef.db"; }; };`)
-	after := []byte(`view "tenant-a" { zone "prod.internal" { file "` + dir + `/zone-` + zoneToken + `-abcdef0123456789.db"; }; };`)
-	if err := os.WriteFile(configPath, before, 0o644); err != nil {
+	path := filepath.Join(dir, "contexts.json")
+	before := []byte(`{"contexts":[{"id":"a","data":"192.0.2.1"}]}`)
+	after := []byte(`{"contexts":[{"id":"a","data":"192.0.2.2"}]}`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{}
-	tx := FileTransaction{MarkerPath: activationMarkerPath(dir), Runner: runner, Config: TransactionConfig{
-		StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}, Reload: []Command{{Path: "reload-bind"}},
-	}}
-	if err := tx.Apply(context.Background(), map[string][]byte{configPath: after}); err != nil {
+	tx := FileTransaction{MarkerPath: activationMarkerPath(dir), Runner: runner, Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}, Reload: []Command{{Path: "activate-coredns"}}}}
+	if err := tx.Apply(context.Background(), map[string][]byte{path: after}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.commitActivation(); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != 1 || runner.calls[0].Path != "reload-bind" {
-		t.Fatalf("record update stopped healthy DNS: %#v", runner.calls)
+	if len(runner.calls) != 1 || runner.calls[0].Path != "activate-coredns" {
+		t.Fatal("snapshot update stopped DNS", runner.calls)
 	}
-	newTenant := bytes.ReplaceAll(after, []byte("tenant-a"), []byte("tenant-b"))
-	if !routingConfigurationChanged(configPath, after, newTenant) {
-		t.Fatal("tenant routing change did not require a gate")
+	if !routingConfigurationChanged(filepath.Join(dir, "dnsdist.conf"), before, after) {
+		t.Fatal("router update did not require a gate")
 	}
 }

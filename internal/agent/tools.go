@@ -200,13 +200,21 @@ type RecordDiagnoseInput struct {
 
 // ------------------------------------------------------------ registration
 
+// readOnly is the annotation every tool here carries: each one reads, and none
+// changes anything, so a client may run them without asking first.
+func readOnly() *mcp.ToolAnnotations {
+	notDestructive := false
+	return &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &notDestructive, IdempotentHint: true}
+}
+
 // RegisterTools adds every tool this package publishes to s. deps is
 // consulted per call rather than captured once, so no caller can inherit
 // another's identity or project.
 func RegisterTools(s *mcp.Server, deps DepsFor) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolZonesList,
-		Title: "List DNS zones",
+		Name:        ToolZonesList,
+		Annotations: readOnly(),
+		Title:       "List DNS zones",
 		Description: "List every DNSZone in the project with its derived status (OK, Pending, Error, " +
 			"Rejected, Not owner, Conflict), delegation state (Complete, Partial, Incomplete, Unknown — " +
 			"Unknown means the registrar has not been checked yet, not that it is broken), and record " +
@@ -216,8 +224,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, zonesList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolZonesGet,
-		Title: "Get zone detail",
+		Name:        ToolZonesGet,
+		Annotations: readOnly(),
+		Title:       "Get zone detail",
 		Description: "Get one DNSZone by name with its full condition tree, the nameservers Datum " +
 			"assigned, and what the registrar actually publishes when that has been observed. A zone " +
 			"can be fully Programmed and still resolve nothing if delegation is incomplete — check both " +
@@ -225,8 +234,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, zonesGet(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolZoneDiagnose,
-		Title: "Diagnose zone",
+		Name:        ToolZoneDiagnose,
+		Annotations: readOnly(),
+		Title:       "Diagnose zone",
 		Description: "Diagnose why a DNSZone is not Accepted or not Programmed. Returns the root cause " +
 			"with an explanation, how long it has held that state, whether it is user-actionable, a " +
 			"platform fault, transient, or stalled, concrete next steps, and which skill covers the " +
@@ -236,8 +246,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, zoneDiagnose(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolDelegationCheck,
-		Title: "Check zone delegation",
+		Name:        ToolDelegationCheck,
+		Annotations: readOnly(),
+		Title:       "Check zone delegation",
 		Description: "Compare the nameservers Datum assigned to a zone against what the registrar " +
 			"actually publishes, one nameserver at a time. State is Complete when every nameserver is " +
 			"set, Partial when some are, Incomplete when none are, and Unknown when nothing can be " +
@@ -248,8 +259,9 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, delegationCheck(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolRecordsList,
-		Title: "List records in a zone",
+		Name:        ToolRecordsList,
+		Annotations: readOnly(),
+		Title:       "List records in a zone",
 		Description: "List every owner name across every DNSRecordSet in one zone, with each name's " +
 			"status and provenance. The status comes from status.recordSets[] per owner name, never " +
 			"from a record set's top-level Programmed condition, which only names the first blocked " +
@@ -260,16 +272,18 @@ func RegisterTools(s *mcp.Server, deps DepsFor) {
 	}, recordsList(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolRecordsGet,
-		Title: "Get record set detail",
+		Name:        ToolRecordsGet,
+		Annotations: readOnly(),
+		Title:       "Get record set detail",
 		Description: "Get one DNSRecordSet by name with the condition and provenance for every owner " +
 			"name it holds. Use when you need the raw per-name status rather than a diagnosis. " +
 			"Read-only.",
 	}, recordsGet(deps))
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name:  ToolRecordDiagnose,
-		Title: "Diagnose a record",
+		Name:        ToolRecordDiagnose,
+		Annotations: readOnly(),
+		Title:       "Diagnose a record",
 		Description: "Diagnose why one owner name within a DNSRecordSet is not programmed. Matches the " +
 			"name qualified and case-folded, since the backend treats \"www\", \"WWW\", and " +
 			"\"www.example.com.\" as one name and status can disagree across spellings. For a Conflict, " +

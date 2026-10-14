@@ -55,7 +55,7 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, renewed)); err != nil {
 		t.Fatalf("normal source2 -> source3 renewal rejected: %v", err)
 	}
-	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
 	if err != nil || !strings.Contains(string(config), renewed.Bindings[0].ViewName()) {
 		t.Fatalf("renewal did not restore context: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 
 func TestCheckpointRejectsPreBindingFenceFormatWithoutDiscardingIt(t *testing.T) {
 	t.Parallel()
-	for _, version := range []int{2, checkpointFormatVersion} {
+	for _, version := range []int{2, 3, checkpointFormatVersion} {
 		t.Run(string(rune('0'+version)), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "checkpoint.json")
 			data, err := json.Marshal(map[string]any{"formatVersion": version, "contributionFences": map[string]any{"original-observation": map[string]any{"epoch": 1, "sequence": 2}}})
@@ -163,5 +163,84 @@ func TestCheckpointRejectsPreBindingFenceFormatWithoutDiscardingIt(t *testing.T)
 				t.Fatal("unsupported checkpoint was modified")
 			}
 		})
+	}
+}
+
+func TestPendingConfigurationGatesQueriesAndRecoversWithoutAuthorizationRenewal(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	cfg := regionalTestConfig(t)
+	runner := &recordingRunner{}
+	dependencies := Dependencies{Runner: runner, Clock: func() time.Time { return now }}
+	agent, err := NewAgent(cfg, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := testSnapshot(now)
+	healthy := active.Bindings[0]
+	healthy.BindingUID, healthy.ProjectUID, healthy.ContextUID = "binding-b", "project-b", "context-b"
+	healthy.ConsumerAddress, healthy.ClusterAddress = "10.253.0.52", "10.253.0.42"
+	healthy.Zones = nil
+	active.Bindings = append(active.Bindings, healthy)
+	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
+		t.Fatal(err)
+	}
+	chunk, manifest := testPublication(t, now)
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
+		t.Fatal(err)
+	}
+	original := active.Bindings[0].Version
+	pending := active
+	pending.Bindings = append([]model.Binding(nil), active.Bindings...)
+	pending.ConfigurationRevision = 2
+	pending.Bindings[0].ConfigurationRevision = 2
+	pending.Bindings[0].ConfigurationPending = true
+	pending.Bindings[0].Zones = nil
+	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, pending)); err != nil {
+		t.Fatal(err)
+	}
+	if agent.state.BindingFences["binding-a"].Tombstone || agent.publicationsReady(pending.Bindings[0]) || !agent.publicationsReady(healthy) {
+		t.Fatal("pending configuration revoked access, activated incomplete data, or gated another context")
+	}
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts := decodedCoreDNS(t, config).Contexts
+	found := false
+	for _, context := range contexts {
+		if context.ID == pending.Bindings[0].ViewName() {
+			found = true
+			if !context.Pending || len(context.Zones) > 0 {
+				t.Fatal("pending context can serve private data")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("pending context missing")
+	}
+	restarted, err := NewAgent(cfg, dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := active
+	ready.Bindings = append([]model.Binding(nil), active.Bindings...)
+	ready.ConfigurationRevision = 3
+	ready.Bindings[0].ConfigurationRevision = 2
+	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, ready)); err != nil {
+		t.Fatalf("completion required a new authorization: %v", err)
+	}
+	if restarted.state.BindingFences["binding-a"].Version != original || !restarted.publicationsReady(ready.Bindings[0]) {
+		t.Fatal("completion changed authority or remained gated")
+	}
+	// The older pending snapshot cannot undo the completed configuration.
+	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, pending)); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.state.Snapshot.Bindings[0].ConfigurationPending {
+		t.Fatal("stale pending replay gated the recovered context")
 	}
 }

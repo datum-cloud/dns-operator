@@ -208,9 +208,9 @@ func TestClusterRoleAutomaticallyVerifiesClusterVIP(t *testing.T) {
 	renderConfig, _ := renderFixture(t)
 	renderConfig.Role = RenderCluster
 	renderConfig.ClusterDNSDist.Path = filepath.Join(dir, "cluster-dnsdist.conf")
-	renderConfig.ClusterBIND.Path = filepath.Join(dir, "cluster-bind.conf")
+	renderConfig.ClusterCoreDNS.Path = filepath.Join(dir, "cluster-coredns.json")
 	renderConfig.NodeDNSDist = DNSDistRenderConfig{}
-	renderConfig.NodeBIND = BINDRenderConfig{}
+	renderConfig.NodeCoreDNS = CoreDNSRenderConfig{}
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "cluster-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
 		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
@@ -231,9 +231,9 @@ func TestStartActivatesPersistedDesiredConfiguration(t *testing.T) {
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	rendered, err := Render(renderConfig, snapshot, map[string]bool{})
 	if err != nil {
 		t.Fatal(err)
@@ -264,11 +264,11 @@ func TestStartActivatesPersistedDesiredConfiguration(t *testing.T) {
 			FailClosed: []Command{{Path: "gate"}},
 			Validate: []Command{
 				{Path: "validate-dnsdist", Args: []string{"{stageDir}/node-dnsdist.conf"}, WhenChanged: []string{renderConfig.NodeDNSDist.Path}},
-				{Path: "validate-bind", Args: []string{"{stageDir}/node-bind.conf"}, WhenChanged: []string{renderConfig.NodeBIND.Path}},
+				{Path: "validate-bind", Args: []string{"{stageDir}/node-coredns.json"}, WhenChanged: []string{renderConfig.NodeCoreDNS.Path}},
 			},
 			Reload: []Command{
 				{Path: "reload-dnsdist", WhenChanged: []string{renderConfig.NodeDNSDist.Path}},
-				{Path: "reload-bind", WhenChanged: []string{renderConfig.NodeBIND.Path}},
+				{Path: "reload-bind", WhenChanged: []string{renderConfig.NodeCoreDNS.Path}},
 			},
 		},
 	}
@@ -315,9 +315,9 @@ func TestStepBoundsStalledAckPublishAndRetainsAppliedConfiguration(t *testing.T)
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
 	var reported []error
 	agent, err := NewAgent(Config{
@@ -394,9 +394,9 @@ func TestResolverApprovesConfigurationBeforeBrokerAckCompletes(t *testing.T) {
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
@@ -424,9 +424,9 @@ func TestResolverGatesFailedTenantAndRetainsHealthyTenant(t *testing.T) {
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
 	failedUID := snapshot.Bindings[0].BindingUID
 	healthy := snapshot.Bindings[0]
@@ -440,7 +440,7 @@ func TestResolverGatesFailedTenantAndRetainsHealthyTenant(t *testing.T) {
 	release := make(chan struct{})
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
-		CacheFlush: []Command{{Path: "flush"}}, Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
 		UnsafeAllowNoFailClosed: true, AckPublishTimeout: time.Second,
 	}, Dependencies{
 		AckPublisher: blockingPublisher{started: started, release: release}, Runner: &recordingRunner{},
@@ -479,9 +479,9 @@ func TestStartPreservesAppliedConfigurationWhileBrokerDisconnected(t *testing.T)
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	snapshot.Bindings[0].Zones = nil
 	publishStarted := make(chan struct{}, 1)
 	publishRelease := make(chan struct{})
@@ -615,9 +615,9 @@ func TestAckEventPreservesAppliedConfigurationAfterReconcile(t *testing.T) {
 	renderConfig, snapshot := renderFixture(t)
 	renderConfig.Role = RenderNode
 	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
-	renderConfig.NodeBIND.Path = filepath.Join(dir, "runtime", "node-bind.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
 	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
-	renderConfig.ClusterBIND = BINDRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
 	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
 	agent, err := NewAgent(Config{
 		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,

@@ -1,6 +1,8 @@
 package serving
 
 import (
+	"encoding/json"
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ func renderFixture(t *testing.T) (RenderConfig, model.ServingSnapshot) {
 	t.Helper()
 	now := time.Now()
 	b := model.Binding{BindingUID: "bind-a", ProjectUID: "project-a", ContextUID: "vpc-a", BindingGeneration: 1, ConfigurationRevision: 3, ConsumerAddress: "10.253.0.51", ClusterAddress: "10.253.0.41", Port: 53, Transports: []model.Transport{model.TransportUDP, model.TransportTCP}, Zones: []model.ZoneAttachment{{ZoneUID: "zone-a", Apex: "prod.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 2}}, Version: model.AccessVersion{Epoch: 1, Sequence: 2}}
-	c := RenderConfig{NodeDNSDist: DNSDistRenderConfig{Path: "/tmp/node-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "node-shared", Backends: []model.Backend{{MemberID: "node-bind-0", Address: "10.253.0.30", Port: 5300}}}, ClusterDNSDist: DNSDistRenderConfig{Path: "/tmp/cluster-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "cluster-shared", Backends: []model.Backend{{MemberID: "cluster-bind-0", Address: "10.253.0.20", Port: 5300}}}, NodeBIND: BINDRenderConfig{Path: "/tmp/node-bind.conf", ListenAddress: "10.253.0.30", Port: 5300, ProxyPeers: []string{"10.253.0.50"}, DefaultCacheSize: "16M"}, ClusterBIND: BINDRenderConfig{Path: "/tmp/cluster-bind.conf", ListenAddress: "10.253.0.20", Port: 5300, ProxyPeers: []string{"10.253.0.40"}, DefaultCacheSize: "16M"}}
+	c := RenderConfig{NodeDNSDist: DNSDistRenderConfig{Path: "/tmp/node-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "node-shared", Backends: []model.Backend{{MemberID: "node-coredns-0", Address: "10.253.0.30", Port: 5300}}}, ClusterDNSDist: DNSDistRenderConfig{Path: "/tmp/cluster-dnsdist.conf", ListenAddress: "0.0.0.0:53", ACLs: []string{"10.253.0.0/24"}, PoolName: "cluster-shared", Backends: []model.Backend{{MemberID: "cluster-coredns-0", Address: "10.253.0.20", Port: 5300}}}, NodeCoreDNS: CoreDNSRenderConfig{Path: "/tmp/node-coredns.json", ListenAddress: "10.253.0.30", Port: 5300, ProxyPeers: []string{"10.253.0.50"}}, ClusterCoreDNS: CoreDNSRenderConfig{Path: "/tmp/cluster-coredns.json", ListenAddress: "10.253.0.20", Port: 5300, ProxyPeers: []string{"10.253.0.40"}}}
 	s := model.ServingSnapshot{Region: "east", Shard: "s1", ConfigurationEpoch: 1, ConfigurationRevision: 3, GeneratedAt: now, Bindings: []model.Binding{b}}
 	return c, s
 }
@@ -27,7 +29,7 @@ func TestRenderStagesViewsButActivatesOnlyReadyBindings(t *testing.T) {
 	if bindingReadyInConfig(string(r.Files[c.NodeDNSDist.Path]), "10.253.0.51") {
 		t.Fatal("unready binding activated in dnsdist")
 	}
-	if !strings.Contains(string(r.Files[c.NodeBIND.Path]), "10.253.0.51") {
+	if !strings.Contains(string(r.Files[c.NodeCoreDNS.Path]), "10.253.0.51") {
 		t.Fatal("view was not staged before activation")
 	}
 	r, err = Render(c, s, map[string]bool{"bind-a": true})
@@ -42,65 +44,44 @@ func TestRenderStagesViewsButActivatesOnlyReadyBindings(t *testing.T) {
 	}
 }
 
-func TestRenderUsesOpaqueViewAndPrivatePROXYListener(t *testing.T) {
+func TestRenderCoreDNSPreservesContextAndPrivateZoneBoundary(t *testing.T) {
 	t.Parallel()
-	c, s := renderFixture(t)
-	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	c, snapshot := renderFixture(t)
+	r, err := Render(c, snapshot, map[string]bool{"bind-a": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cluster := string(r.Files[c.ClusterBIND.Path])
-	if strings.Contains(cluster, "vpc-a") || !strings.Contains(cluster, "proxy plain") || strings.Contains(cluster, "query-source") || !strings.Contains(cluster, "forward only") {
-		t.Fatalf("unsafe or incomplete cluster config:\n%s", cluster)
+	for _, path := range []string{c.NodeCoreDNS.Path, c.ClusterCoreDNS.Path} {
+		cfg := decodedCoreDNS(t, r.Files[path])
+		if len(cfg.ProxyPeers) != 1 || len(cfg.Contexts) != 1 || cfg.Contexts[0].ID != snapshot.Bindings[0].ViewName() {
+			t.Fatalf("identity or proxy peers missing: %#v", cfg)
+		}
+		if len(cfg.Contexts[0].Zones) != 1 || cfg.Contexts[0].Zones[0].Apex != "prod.internal." {
+			t.Fatal("private apex missing")
+		}
 	}
-	for path, config := range map[string]string{c.NodeBIND.Path: string(r.Files[c.NodeBIND.Path]), c.ClusterBIND.Path: cluster} {
-		if !strings.Contains(config, `dnssec-validation auto;`) || !strings.Contains(config, `validate-except { "prod.internal"; };`) {
-			t.Fatalf("%s does not retain public DNSSEC while excluding the private apex:\n%s", path, config)
-		}
-		if !strings.Contains(config, "max-ncache-ttl 5;") {
-			t.Fatalf("%s does not bound private negative cache retention:\n%s", path, config)
-		}
+	cfg := decodedCoreDNS(t, r.Files[c.ClusterCoreDNS.Path])
+	if !cfg.Contexts[0].Zones[0].Pending || cfg.Contexts[0].Zones[0].Data != "" {
+		t.Fatal("missing private publication can be served")
 	}
 }
 
-func TestRenderConfiguresPrivateNegativeCacheBoundPerTier(t *testing.T) {
+func TestRenderRejectsUntrustedCoreDNSListener(t *testing.T) {
 	t.Parallel()
 	c, snapshot := renderFixture(t)
-	c.NodeBIND.MaxNegativeCacheTTLSeconds = 3
-	c.ClusterBIND.MaxNegativeCacheTTLSeconds = 7
-	rendered, err := Render(c, snapshot, map[string]bool{"bind-a": true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if config := string(rendered.Files[c.NodeBIND.Path]); !strings.Contains(config, "max-ncache-ttl 3;") {
-		t.Fatalf("node view missing configured negative cache bound:\n%s", config)
-	}
-	if config := string(rendered.Files[c.ClusterBIND.Path]); !strings.Contains(config, "max-ncache-ttl 7;") {
-		t.Fatalf("cluster view missing configured negative cache bound:\n%s", config)
-	}
-	c.NodeBIND.MaxNegativeCacheTTLSeconds = 61
-	if _, err := Render(c, snapshot, map[string]bool{"bind-a": true}); err == nil {
-		t.Fatal("unsafe negative cache retention was accepted")
+	c.NodeCoreDNS.ProxyPeers = nil
+	if _, err := Render(c, snapshot, nil); err == nil {
+		t.Fatal("unprotected context listener accepted")
 	}
 }
 
-func TestRenderDNSSECExcludesEveryPrivateApexDeterministically(t *testing.T) {
-	t.Parallel()
-	c, snapshot := renderFixture(t)
-	snapshot.Bindings[0].Zones = append(snapshot.Bindings[0].Zones,
-		model.ZoneAttachment{ZoneUID: "zone-z", Apex: "z.private", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1},
-		model.ZoneAttachment{ZoneUID: "zone-a2", Apex: "a.private", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1},
-	)
-	rendered, err := Render(c, snapshot, map[string]bool{"bind-a": true})
-	if err != nil {
+func decodedCoreDNS(t *testing.T, data []byte) contextdns.Config {
+	t.Helper()
+	var cfg contextdns.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	want := `validate-except { "a.private"; "prod.internal"; "z.private"; };`
-	for _, path := range []string{c.NodeBIND.Path, c.ClusterBIND.Path} {
-		if !strings.Contains(string(rendered.Files[path]), want) {
-			t.Fatalf("%s missing sorted multi-zone DNSSEC exclusions:\n%s", path, rendered.Files[path])
-		}
-	}
+	return cfg
 }
 
 func TestRenderRoleOwnsOnlyItsTier(t *testing.T) {
@@ -110,8 +91,8 @@ func TestRenderRoleOwnsOnlyItsTier(t *testing.T) {
 		want []string
 		not  []string
 	}{
-		{RenderNode, []string{"/tmp/node-dnsdist.conf", "/tmp/node-bind.conf"}, []string{"/tmp/cluster-dnsdist.conf", "/tmp/cluster-bind.conf"}},
-		{RenderCluster, []string{"/tmp/cluster-dnsdist.conf", "/tmp/cluster-bind.conf"}, []string{"/tmp/node-dnsdist.conf", "/tmp/node-bind.conf"}},
+		{RenderNode, []string{"/tmp/node-dnsdist.conf", "/tmp/node-coredns.json"}, []string{"/tmp/cluster-dnsdist.conf", "/tmp/cluster-coredns.json"}},
+		{RenderCluster, []string{"/tmp/cluster-dnsdist.conf", "/tmp/cluster-coredns.json"}, []string{"/tmp/node-dnsdist.conf", "/tmp/node-coredns.json"}},
 	} {
 		t.Run(string(tc.role), func(t *testing.T) {
 			c, s := renderFixture(t)
@@ -159,4 +140,29 @@ func bindingReadyInConfig(config, address string) bool {
 		}
 	}
 	return false
+}
+
+func TestPendingConfigurationCannotBeActivatedByReadinessMap(t *testing.T) {
+	t.Parallel()
+	config, snapshot := renderFixture(t)
+	snapshot.Bindings[0].ConfigurationPending = true
+	snapshot.Bindings[0].Zones = nil
+	rendered, err := Render(config, snapshot, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{config.NodeDNSDist.Path, config.ClusterDNSDist.Path} {
+		address := snapshot.Bindings[0].ConsumerAddress
+		if path == config.ClusterDNSDist.Path {
+			address = snapshot.Bindings[0].ClusterAddress
+		}
+		if bindingReadyInConfig(string(rendered.Files[path]), address) {
+			t.Fatal("readiness activated a pending context")
+		}
+	}
+	for _, path := range []string{config.NodeCoreDNS.Path, config.ClusterCoreDNS.Path} {
+		if !decodedCoreDNS(t, rendered.Files[path]).Contexts[0].Pending {
+			t.Fatal("pending CoreDNS context can recurse")
+		}
+	}
 }

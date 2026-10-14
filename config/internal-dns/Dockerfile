@@ -31,7 +31,7 @@ COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532
 RUN for tool in bash ip nc coredns dnsdist pdns_recursor; do \
       command -v "$tool" >/dev/null || exit 1; \
-    done && test -x /internal-dns
+    done && test -x /internal-dns && coredns -version
 RUN for helper in /usr/local/sbin/internal-dns-*; do \
       test -x "$helper" && bash -n "$helper" || exit 1; \
     done

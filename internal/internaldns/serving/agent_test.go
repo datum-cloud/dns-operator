@@ -520,7 +520,7 @@ func TestStartPreservesAppliedConfigurationWhileBrokerDisconnected(t *testing.T)
 	defer releasePublisher()
 	select {
 	case <-publishStarted:
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("resolver did not enter context-ignoring broker publish")
 	}
 

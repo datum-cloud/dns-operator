@@ -33,8 +33,8 @@ type snapshot struct {
 }
 
 func (s *snapshot) close() {
-	for _, proxy := range s.proxies {
-		proxy.Stop()
+	for _, upstreamProxy := range s.proxies {
+		upstreamProxy.Stop()
 	}
 }
 
@@ -50,13 +50,13 @@ func compile(c Config) (*snapshot, error) {
 	}
 	s := &snapshot{contexts: map[string]*contextState{}}
 	public := s.forward(c.PublicUpstreams)
-	for _, context := range c.Contexts {
-		state := &contextState{pending: context.Pending, pendingZones: map[string]bool{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}}
-		for _, zone := range context.Zones {
+	for _, definition := range c.Contexts {
+		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}}
+		for _, zone := range definition.Zones {
 			apex := model.AbsoluteName(zone.Apex)
 			state.pendingZones[apex] = zone.Pending
 			state.zones.Names = append(state.zones.Names, apex)
-			if zone.Pending || len(context.Upstreams) > 0 {
+			if zone.Pending || len(definition.Upstreams) > 0 {
 				state.zones.Z[apex] = nil
 				continue
 			}
@@ -67,13 +67,13 @@ func compile(c Config) (*snapshot, error) {
 			}
 			state.zones.Z[apex] = parsed
 		}
-		state.next = s.forward(context.Upstreams)
+		state.next = s.forward(definition.Upstreams)
 		if public != nil && state.next == nil {
 			cached := cache.New()
 			cached.Next = public
 			state.public = cached
 		}
-		s.contexts[netip.MustParseAddr(context.Destination).Unmap().String()] = state
+		s.contexts[netip.MustParseAddr(definition.Destination).Unmap().String()] = state
 	}
 	return s, nil
 }
@@ -121,11 +121,11 @@ func (p *ContextPlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if err != nil {
 		return dns.RcodeRefused, nil
 	}
-	context := state.contexts[host]
-	if context == nil {
+	selected := state.contexts[host]
+	if selected == nil {
 		return dns.RcodeRefused, nil
 	}
-	if context.pending {
+	if selected.pending {
 		return dns.RcodeServerFailure, nil
 	}
 	if len(r.Question) != 1 || r.Opcode != dns.OpcodeQuery || r.Question[0].Qclass != dns.ClassINET {
@@ -134,24 +134,24 @@ func (p *ContextPlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	if r.Question[0].Qtype == dns.TypeAXFR || r.Question[0].Qtype == dns.TypeIXFR {
 		return dns.RcodeRefused, nil
 	}
-	w = contextWriter{ResponseWriter: w, destination: destination, request: r, recursionAvailable: context.next != nil || context.public != nil}
-	apex := plugin.Zones(context.zones.Names).Matches(strings.ToLower(r.Question[0].Name))
+	w = contextWriter{ResponseWriter: w, destination: destination, request: r, recursionAvailable: selected.next != nil || selected.public != nil}
+	apex := plugin.Zones(selected.zones.Names).Matches(strings.ToLower(r.Question[0].Name))
 	if apex != "" {
-		if context.pendingZones[apex] {
+		if selected.pendingZones[apex] {
 			return dns.RcodeServerFailure, nil
 		}
-		if context.next != nil {
-			return context.next.ServeDNS(ctx, w, r)
+		if selected.next != nil {
+			return selected.next.ServeDNS(ctx, w, r)
 		}
-		return context.zones.ServeDNS(ctx, w, r)
+		return selected.zones.ServeDNS(ctx, w, r)
 	}
-	if context.next != nil {
-		return context.next.ServeDNS(ctx, w, r)
+	if selected.next != nil {
+		return selected.next.ServeDNS(ctx, w, r)
 	}
-	if context.public == nil {
+	if selected.public == nil {
 		return dns.RcodeServerFailure, errors.New("public recursive upstream is unavailable")
 	}
-	return context.public.ServeDNS(ctx, w, r)
+	return selected.public.ServeDNS(ctx, w, r)
 }
 
 type contextWriter struct {

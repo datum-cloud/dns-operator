@@ -211,10 +211,10 @@ func TestPendingConfigurationGatesQueriesAndRecoversWithoutAuthorizationRenewal(
 	}
 	contexts := decodedCoreDNS(t, config).Contexts
 	found := false
-	for _, context := range contexts {
-		if context.ID == pending.Bindings[0].ViewName() {
+	for _, entry := range contexts {
+		if entry.ID == pending.Bindings[0].ViewName() {
 			found = true
-			if !context.Pending || len(context.Zones) > 0 {
+			if !entry.Pending || len(entry.Zones) > 0 {
 				t.Fatal("pending context can serve private data")
 			}
 		}

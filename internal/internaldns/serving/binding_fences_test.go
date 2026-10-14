@@ -55,7 +55,7 @@ func TestBindingWithdrawalPreservesSourceSequenceAndAllowsNormalRenewal(t *testi
 	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 3, renewed)); err != nil {
 		t.Fatalf("normal source2 -> source3 renewal rejected: %v", err)
 	}
-	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
 	if err != nil || !strings.Contains(string(config), renewed.Bindings[0].ViewName()) {
 		t.Fatalf("renewal did not restore context: %v", err)
 	}
@@ -170,7 +170,6 @@ func TestPendingConfigurationGatesQueriesAndRecoversWithoutAuthorizationRenewal(
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
-	cfg.CacheFlush = []Command{{Path: "flush", Args: []string{"{name}"}}}
 	runner := &recordingRunner{}
 	dependencies := Dependencies{Runner: runner, Clock: func() time.Time { return now }}
 	agent, err := NewAgent(cfg, dependencies)
@@ -200,38 +199,28 @@ func TestPendingConfigurationGatesQueriesAndRecoversWithoutAuthorizationRenewal(
 	pending.Bindings[0].ConfigurationRevision = 2
 	pending.Bindings[0].ConfigurationPending = true
 	pending.Bindings[0].Zones = nil
-	priorCalls := len(runner.calls)
 	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, pending)); err != nil {
 		t.Fatal(err)
 	}
 	if agent.state.BindingFences["binding-a"].Tombstone || agent.publicationsReady(pending.Bindings[0]) || !agent.publicationsReady(healthy) {
 		t.Fatal("pending configuration revoked access, activated incomplete data, or gated another context")
 	}
-	flushed := false
-	for _, command := range runner.calls[priorCalls:] {
-		if command.Path == "flush" && len(command.Args) == 1 && command.Args[0] == "prod.internal." {
-			flushed = true
-		}
-	}
-	if !flushed {
-		t.Fatal("detached zone retained its cached names")
-	}
-	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := strings.Index(string(config), `view "`+pending.Bindings[0].ViewName()+`"`)
-	if start < 0 {
-		t.Fatal("pending context missing")
-	}
-	view := strings.SplitN(string(config)[start:], "};\n\n", 2)[0]
-	for _, denied := range []string{"recursion no;", "allow-query { none; };", "allow-recursion { none; };", "allow-query-cache { none; };"} {
-		if !strings.Contains(view, denied) {
-			t.Fatalf("pending view can answer queries: missing %s", denied)
+	contexts := decodedCoreDNS(t, config).Contexts
+	found := false
+	for _, context := range contexts {
+		if context.ID == pending.Bindings[0].ViewName() {
+			found = true
+			if !context.Pending || len(context.Zones) > 0 {
+				t.Fatal("pending context can serve private data")
+			}
 		}
 	}
-	if strings.Contains(view, `zone "prod.internal"`) {
-		t.Fatal("pending configuration retained a private zone")
+	if !found {
+		t.Fatal("pending context missing")
 	}
 	restarted, err := NewAgent(cfg, dependencies)
 	if err != nil {

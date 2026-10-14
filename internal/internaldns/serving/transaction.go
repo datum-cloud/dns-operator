@@ -8,9 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -142,20 +140,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 	for _, path := range paths {
 		stagedPath := filepath.Join(stage, filepath.Base(path))
 		stagedData := files[path]
-		if strings.HasSuffix(path, ".conf") {
-			// Validate the newly staged zone contents, never the previous live files.
-			commandStage := stage
-			if t.Config.CommandStageDir != "" {
-				commandStage = filepath.Join(t.Config.CommandStageDir, filepath.Base(stage))
-			}
-			text := string(stagedData)
-			for renderedPath := range files {
-				if strings.HasSuffix(renderedPath, ".db") {
-					text = strings.ReplaceAll(text, strconv.Quote(renderedPath), strconv.Quote(filepath.Join(commandStage, filepath.Base(renderedPath))))
-				}
-			}
-			stagedData = []byte(text)
-		}
+
 		if err := writeDurable(stagedPath, stagedData, 0o644); err != nil {
 			return err
 		}
@@ -358,14 +343,6 @@ func restoreFiles(paths []string, old map[string]oldFile) error {
 	return errors.Join(errs...)
 }
 
-var immutableZoneFile = regexp.MustCompile(`file "([^"\n]*/zone-[a-f0-9]{24})-[a-f0-9]{16}\.db"`)
-
-// Content-addressed zone files change record data without changing view routing.
 func routingConfigurationChanged(path string, before, after []byte) bool {
-	if !strings.HasSuffix(path, ".conf") {
-		return false
-	}
-	before = immutableZoneFile.ReplaceAll(before, []byte(`file "${1}.db"`))
-	after = immutableZoneFile.ReplaceAll(after, []byte(`file "${1}.db"`))
-	return !bytes.Equal(before, after)
+	return strings.HasSuffix(path, ".conf") && !bytes.Equal(before, after)
 }

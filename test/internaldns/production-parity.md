@@ -39,7 +39,7 @@ cluster health or that the proposed private DNS fleet is deployed.
 - [Public edge DNS](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/downstream/edge)
   uses PowerDNS authoritative servers and Lightningstream. Its loopback
   recursor supports ALIAS expansion. Reuse that public regression environment;
-  add the proposed private dnsdist/BIND fleet alongside it. The public recursor
+  add the proposed private dnsdist/CoreDNS fleet alongside it. The public recursor
   does not establish private tenant isolation.
 
 The existing [Task environment](../../Taskfile.yaml) already deploys public DNS
@@ -94,9 +94,9 @@ flowchart LR
   subgraph SV[Producer DNS service VPC]
     EP1[ServiceEndpoint / node listener A]
     EP2[ServiceEndpoint / node listener B]
-    N1[Edge A shared node dnsdist / BIND]
-    N2[Edge B shared node dnsdist / BIND]
-    R[Shared regional dnsdist / two BIND members]
+    N1[Edge A shared node dnsdist / CoreDNS]
+    N2[Edge B shared node dnsdist / CoreDNS]
+    R[Shared regional dnsdist / two CoreDNS members]
     EP1 --> N1 --> R
     EP2 --> N2 --> R
   end
@@ -120,7 +120,7 @@ cannot choose another tenant's destination or supply a trusted PROXYv2 header.
 
 Keep fleet size fixed when adding VPCs or zones. Two contexts must share the
 same node and regional workloads, with independent regional member storage and
-identities. Deploy controllers, agents, dnsdist, and BIND as real
+identities. Deploy controllers, agents, dnsdist, and CoreDNS as real
 pods from the runtime package, with the same reload and fail-closed helpers
 intended for staging. Do not mount the Docker socket into those workloads.
 

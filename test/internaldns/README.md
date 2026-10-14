@@ -51,8 +51,8 @@ flowchart LR
   A[Project A API / scoped publisher] --> C[Two DNS controller Deployments]
   B[Project B API / scoped publisher] --> C
   C --> J[Three TLS JetStream replicas / PVCs]
-  J --> N[Shared node dnsdist / BIND]
-  J --> R[Shared regional dnsdist / two BIND members]
+  J --> N[Shared node dnsdist / CoreDNS]
+  J --> R[Shared regional dnsdist / two CoreDNS members]
   P[Separate consumer probe] -->|Service destination fixture| N --> R
 ```
 
@@ -71,7 +71,7 @@ Contribution writes publish records and eligibility atomically. Qualification
 checks health withdrawal, stale-write conflicts, and DNS-owned status permissions.
 
 The fleet contains one node member, one regional frontend, and two regional
-BIND members, each with independent persistent state. Agents validate and
+CoreDNS members, each with independent persistent state. Agents validate and
 activate configuration and prove UDP/TCP publication. Local readiness verifies\napproved files and live daemons while healthy DNS survives agent restarts.
 The broker uses three persistent replicas, client and route TLS, and scoped
 subject permissions. cert-manager issues broker, client, and admission

@@ -16,21 +16,20 @@ data:
         "kubeAPI": {"qps":20,"burst":40,"requestTimeoutSeconds":10}
       },
       "nodeBackends": [
-        {"memberID":"node-bind-0","address":"fd70:10::10","port":5300}
+        {"memberID":"node-coredns-0","address":"fd70:10::10","port":5300}
       ],
       "clusterBackends": [
-        {"memberID":"regional-bind-us-central1-0","address":"fd70:20::10","port":5300},
-        {"memberID":"regional-bind-us-central1-1","address":"fd70:20::11","port":5300}
+        {"memberID":"regional-coredns-us-central1-0","address":"fd70:20::10","port":5300},
+        {"memberID":"regional-coredns-us-central1-1","address":"fd70:20::11","port":5300}
       ],
       "members": [
         {"memberID":"node-us-central1-0","replicaID":"node-us-central1-0","role":"node"},
         {"memberID":"regional-front-us-central1-0","replicaID":"regional-front-us-central1-0","role":"resolver"},
-        {"memberID":"regional-bind-us-central1-0","replicaID":"regional-bind-us-central1-0","role":"regional"},
-        {"memberID":"regional-bind-us-central1-1","replicaID":"regional-bind-us-central1-1","role":"regional"}
+        {"memberID":"regional-coredns-us-central1-0","replicaID":"regional-coredns-us-central1-0","role":"regional"},
+        {"memberID":"regional-coredns-us-central1-1","replicaID":"regional-coredns-us-central1-1","role":"regional"}
       ],
       "clusterPrefix": "fd70:200::/48",
-      "managedDomainSuffix": "internal.example.net",
-      "privateZoneClassName": "private-bind",
+      "privateZoneClassName": "private-coredns",
       "ownershipLeaseSeconds": 30,
       "shards": [
         {"region":"us-central1","shard":"shared-0","maxBindings":200,"maxSnapshotBytes":524288}

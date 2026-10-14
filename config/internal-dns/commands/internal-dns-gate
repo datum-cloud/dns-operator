@@ -1,10 +1,10 @@
 #!/bin/sh
 # Clearing enable files before stopping processes prevents automatic restart.
 set -eu
-rm -f /run/internal-dns/allow-named /run/internal-dns/allow-dnsdist
-pkill -TERM -x named || true
+rm -f /run/internal-dns/allow-coredns /run/internal-dns/allow-dnsdist
+pkill -TERM -x coredns || true
 pkill -TERM -x dnsdist || true
-for daemon in named dnsdist; do
+for daemon in coredns dnsdist; do
   for attempt in $(seq 1 40); do
     if ! pgrep -x "$daemon" >/dev/null; then break; fi
     sleep 0.05

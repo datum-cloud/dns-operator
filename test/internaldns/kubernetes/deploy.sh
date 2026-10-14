@@ -41,7 +41,7 @@ done
 "${platform[@]}" -n internal-dns-system wait certificates --all --for=condition=Ready --timeout=180s
 # Wait for network assignment before rendering concrete member addresses. The
 # processes wait for ConfigMaps, so no placeholder serving configuration runs.
-for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-bind-0 internal-dns-regional-bind-1 internal-dns-probe; do
+for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-coredns-0 internal-dns-regional-coredns-1 internal-dns-probe; do
   "${platform[@]}" -n internal-dns-system wait --for=jsonpath='{.status.podIPs}' "pod/$pod" --timeout=180s
 done
 go run ./test/internaldns/kubernetes/render --phase configure --out "$work" \
@@ -54,7 +54,7 @@ go run ./test/internaldns/kubernetes/render --phase configure --out "$work" \
 for controller in control-a control-b; do
   "${platform[@]}" -n internal-dns-system rollout status "deployment/$controller" --timeout=180s
 done
-for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-bind-0 internal-dns-regional-bind-1; do
+for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-coredns-0 internal-dns-regional-coredns-1; do
   "${platform[@]}" -n internal-dns-system wait --for=condition=Ready "pod/$pod" --timeout=180s
 done
 
@@ -73,7 +73,8 @@ mkdir -p "$evidence"
 cp "$work/crds.yaml" "$evidence/crds.yaml"
 cp "$work/environment.json" "$evidence/environment.json"
 cp "$work/image.id" "$evidence/image.id"
-"${platform[@]}" -n internal-dns-system exec internal-dns-probe -- named -V > "$evidence/bind-version.txt"
+"${platform[@]}" -n internal-dns-system exec internal-dns-probe -- coredns -version > "$evidence/coredns-version.txt"
+"${platform[@]}" -n internal-dns-system exec internal-dns-probe -- pdns_recursor --version > "$evidence/recursor-version.txt" 2>&1
 "${platform[@]}" -n internal-dns-system exec internal-dns-probe -- dnsdist --version > "$evidence/dnsdist-version.txt"
 git rev-parse HEAD > "$evidence/source.commit"
 git status --short > "$evidence/source.status"

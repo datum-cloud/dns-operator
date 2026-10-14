@@ -23,7 +23,7 @@ export KUBEBUILDER_ASSETS
 test -x "$KUBEBUILDER_ASSETS/kube-apiserver"
 test -x "$KUBEBUILDER_ASSETS/etcd"
 go test ./internal/internaldns/runtime \
-  -run '^(TestDeploymentExampleConfigsValidate|TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries|TestNATSExampleUsesExactMemberAckSubjects|TestEveryMemberCanCreateAllRuntimeConsumers|TestReadOnlyServingImageHasWritableBINDWorkingDirectory)$' \
+  -run '^(TestDeploymentExampleConfigsValidate|TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries|TestNATSExampleUsesExactMemberAckSubjects|TestEveryMemberCanCreateAllRuntimeConsumers|TestReadOnlyServingImageHasWritableCoreDNSWorkingDirectory)$' \
   -count=1 -v > "$evidence_dir/contracts.log" 2>&1
 # Use the same pinned Kustomize binary as installation and the public E2E job.
 make kustomize > "$evidence_dir/kustomize.log" 2>&1

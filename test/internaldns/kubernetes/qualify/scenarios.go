@@ -20,15 +20,26 @@ import (
 
 func (s *suite) scenarios(a, b *project) error {
 	for _, p := range []*project{a, b} {
+		for _, tcp := range []bool{false, true} {
+			if err := s.wait("validated public recursion", 30*time.Second, func() (bool, error) {
+				result, err := s.query(p, "cloudflare.com", "A", tcp)
+				return err == nil && result.Error == "" && result.Rcode == dns.RcodeSuccess && len(result.Addresses) > 0 && result.Authenticated && result.Recursive, err
+			}); err != nil {
+				return err
+			}
+			s.pass("public DNSSEC recursion through PowerDNS for "+p.Name, map[string]bool{"tcp": tcp})
+		}
+	}
+	for _, p := range []*project{a, b} {
 		if err := s.expect(p, "only-a.prod.internal", "A", false, dns.RcodeNameError); err != nil {
 			return err
 		}
 	}
-	pa, err := s.publish(a, objectRef(&a.zone), "common", "common", "10.42.0.10", "fd42::10")
+	pa, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "common", "common", "10.42.0.10", "fd42::10")
 	if err != nil {
 		return err
 	}
-	pb, err := s.publish(b, objectRef(&b.zone), "common", "common", "10.42.0.20", "fd42::20")
+	pb, err := s.publish(b, dnsv1.DNSNameReference{Name: b.zone.Name}, "common", "common", "10.42.0.20", "fd42::20")
 	if err != nil {
 		return err
 	}
@@ -75,7 +86,7 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("an unbound destination cannot resolve either tenant's private records", nil)
-	if _, err := s.publish(a, objectRef(&a.zone), "only-a", "only-a", "10.42.0.20", ""); err != nil {
+	if _, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "only-a", "only-a", "10.42.0.20", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "only-a.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
@@ -107,14 +118,14 @@ func (s *suite) scenarios(a, b *project) error {
 		}
 	}
 	s.pass("the same hostname in the shared managed domain resolves within its own context over UDP and TCP", managedName)
-	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
+	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-coredns", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
 	if err := a.customer.Create(s.ctx, apps); err != nil {
 		return err
 	}
 	if err := s.associate(a, apps, "apps"); err != nil {
 		return err
 	}
-	if _, err := s.publish(a, objectRef(apps), "apps", "api", "10.42.0.12", ""); err != nil {
+	if _, err := s.publish(a, dnsv1.DNSNameReference{Name: apps.Name}, "apps", "api", "10.42.0.12", ""); err != nil {
 		return err
 	}
 	if err := s.expect(a, "api.apps.internal", "A", true, dns.RcodeSuccess, "10.42.0.12"); err != nil {
@@ -162,7 +173,7 @@ func (s *suite) scenarios(a, b *project) error {
 	if err := s.observe(b, pb, true); err != nil {
 		return err
 	}
-	deleted, err := s.publish(a, objectRef(&a.zone), "deleted", "deleted", "10.42.0.14", "")
+	deleted, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "deleted", "deleted", "10.42.0.14", "")
 	if err != nil {
 		return err
 	}
@@ -348,7 +359,7 @@ func (s *suite) offlineServing(a, b *project) (resultErr error) {
 		return err
 	}
 	// The outage spans multiple DNS cache and fleet acknowledgement intervals.
-	until := time.Now().Add(2 * time.Minute)
+	until := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(until) {
 		for _, tcp := range []bool{false, true} {
 			for _, tenant := range []struct {

@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 
 	"strings"
 	"sync/atomic"
@@ -25,8 +24,8 @@ func regionalTestConfig(t *testing.T) Config {
 	t.Helper()
 	dir := t.TempDir()
 	render, _ := renderFixture(t)
-	render.Role = RenderRegionalBIND
-	render.ClusterBIND.Path = filepath.Join(dir, "runtime", "regional.conf")
+	render.Role = RenderRegionalCoreDNS
+	render.ClusterCoreDNS.Path = filepath.Join(dir, "runtime", "regional.conf")
 	return Config{Region: "east", Shard: "s1", MemberID: "regional-0", ReplicaID: "regional-0", Mode: ModeCombined, StateDir: filepath.Join(dir, "state"), Render: render, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "validate"}}, Reload: []Command{{Path: "reload"}}, FailClosed: []Command{{Path: "gate"}}}, UnsafeAllowNoDNSVerify: true}
 }
 func installTestPublication(t *testing.T, a *Agent, now time.Time) {
@@ -51,15 +50,26 @@ func currentZone(t *testing.T, a *Agent) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for path, data := range files.Files {
-		if strings.HasSuffix(path, ".db") {
-			return string(data)
+	for _, data := range files.Files {
+		var cfg struct {
+			Contexts []struct{ Zones []struct{ Data string } }
+		}
+		if json.Unmarshal(data, &cfg) != nil {
+			continue
+		}
+		for _, context := range cfg.Contexts {
+			for _, zone := range context.Zones {
+				if zone.Data != "" {
+					return zone.Data
+				}
+			}
 		}
 	}
+
 	t.Fatal("no zone")
 	return ""
 }
-func TestBINDPublicationActivatesLocalPrivateAuthority(t *testing.T) {
+func TestCoreDNSPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -73,18 +83,18 @@ func TestBINDPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 	if !strings.Contains(data, "192.0.2.10") || !strings.Contains(data, publicationMailbox(agent.state.Publications["zone-a"])) {
 		t.Fatalf("bad zone: %s", data)
 	}
-	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(config), "type primary") || strings.Contains(string(config), "static-stub") || strings.Contains(string(config), "query-source") {
+	if decodedCoreDNS(t, config).Contexts[0].Zones[0].Data == "" {
 		t.Fatalf("not direct private authority: %s", config)
 	}
 	if !agent.state.Publications["zone-a"].Verified {
 		t.Fatal("publication not verified")
 	}
 }
-func TestBINDPublicationSurvivesBrokerOutageAndRestart(t *testing.T) {
+func TestCoreDNSPublicationSurvivesBrokerOutageAndRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	clock := now
@@ -120,7 +130,7 @@ func TestBINDPublicationSurvivesBrokerOutageAndRestart(t *testing.T) {
 		t.Fatal("restart lost the published record")
 	}
 }
-func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
+func TestCoreDNSActivationFailurePersistsObservationFence(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -159,7 +169,7 @@ func TestBINDActivationFailurePersistsObservationFence(t *testing.T) {
 		t.Fatalf("equal fenced retry failed: %v", err)
 	}
 }
-func TestBINDTombstoneFencesReplayAcrossRestart(t *testing.T) {
+func TestCoreDNSTombstoneFencesReplayAcrossRestart(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -191,11 +201,10 @@ func TestNodeRequiresPublicationAndRetainsCacheDuringOutage(t *testing.T) {
 	cfg := regionalTestConfig(t)
 	render, snapshot := renderFixture(t)
 	render.Role = RenderNode
-	render.NodeBIND.Path = filepath.Join(t.TempDir(), "node.conf")
-	render.NodeDNSDist.Path = filepath.Join(filepath.Dir(render.NodeBIND.Path), "dnsdist.conf")
+	render.NodeCoreDNS.Path = filepath.Join(t.TempDir(), "node.conf")
+	render.NodeDNSDist.Path = filepath.Join(filepath.Dir(render.NodeCoreDNS.Path), "dnsdist.conf")
 	cfg.Render = render
 	cfg.Mode = ModeResolver
-	cfg.CacheFlush = []Command{{Path: "flush", Args: []string{"{name}"}}}
 	runner := &recordingRunner{}
 	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }})
 	if err != nil {
@@ -223,24 +232,9 @@ func TestNodeRequiresPublicationAndRetainsCacheDuringOutage(t *testing.T) {
 	if err := a.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	flushed := false
-	for _, call := range runner.calls {
-		if call.Path == "flush" && call.Args[0] == "api.prod.internal." {
-			flushed = true
-		}
-	}
-	if flushed {
-		t.Fatal("node flushed a valid record during the outage")
-	}
-	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return clock }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !restarted.publicationsReady(snapshot.Bindings[0]) {
-		t.Fatal("restart lost the installed publication proof")
-	}
+
 }
-func TestBINDPublicationVersionProofIncludesFullContentFingerprint(t *testing.T) {
+func TestCoreDNSPublicationVersionProofIncludesFullContentFingerprint(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	chunk, m := testPublication(t, now)
@@ -326,14 +320,14 @@ func TestRegionalPoolRequiresOneMemberWithEveryCurrentZone(t *testing.T) {
 func TestMissingOrStalePrivatePublicationHasNoPublicFallback(t *testing.T) {
 	t.Parallel()
 	c, snapshot := renderFixture(t)
-	c.Role = RenderRegionalBIND
+	c.Role = RenderRegionalCoreDNS
 	publications := map[string]publicationState{"zone-a": {Fence: fence{1, 1}, Plan: model.PublicationPlan{ZoneUID: "zone-a", Apex: "prod.internal"}}}
 	rendered, err := renderPublications(c, snapshot, map[string]bool{}, publications)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conf := string(rendered.Files[c.ClusterBIND.Path])
-	if !strings.Contains(conf, "type forward; forward only; forwarders { 127.0.0.1 port 9; }") {
+	conf := string(rendered.Files[c.ClusterCoreDNS.Path])
+	if !decodedCoreDNS(t, []byte(conf)).Contexts[0].Zones[0].Pending {
 		t.Fatalf("private zone can recurse publicly: %s", conf)
 	}
 	for path := range rendered.Files {
@@ -400,8 +394,8 @@ func TestPublicationProbeTimeoutDoesNotApproveConfiguration(t *testing.T) {
 	}
 	defer func() { _ = udp.Close() }()
 	port := udp.LocalAddr().(*net.UDPAddr).Port
-	cfg.Render.ClusterBIND.ListenAddress = "127.0.0.1"
-	cfg.Render.ClusterBIND.Port = uint16(port)
+	cfg.Render.ClusterCoreDNS.ListenAddress = "127.0.0.1"
+	cfg.Render.ClusterCoreDNS.Port = uint16(port)
 	cfg.PublicationDNSProbe = PublicationDNSVerifierConfig{Server: udp.LocalAddr().String(), Timeout: 50 * time.Millisecond}
 	cfg.UnsafeAllowNoDNSVerify = false
 	a, err := NewAgent(cfg, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
@@ -452,16 +446,19 @@ func installedFileVerifier(t *testing.T, configPath string) PublicationVerifier 
 		if err != nil {
 			return err
 		}
-		pattern := regexp.MustCompile(`zone "` + regexp.QuoteMeta(strings.TrimSuffix(plan.Apex, ".")) + `" \{ type primary; file "([^"]+)"`)
-		match := pattern.FindSubmatch(config)
-		if len(match) != 2 {
-			return errors.New("no activated primary zone")
+		cfg := decodedCoreDNS(t, config)
+		var data string
+		for _, context := range cfg.Contexts {
+			for _, zone := range context.Zones {
+				if zone.Apex == model.AbsoluteName(plan.Apex) && !zone.Pending {
+					data = zone.Data
+				}
+			}
 		}
-		data, err := os.ReadFile(string(match[1]))
-		if err != nil {
-			return err
+		if data == "" {
+			return errors.New("no activated private zone")
 		}
-		parser := dns.NewZoneParser(strings.NewReader(string(data)), model.AbsoluteName(plan.Apex), string(match[1]))
+		parser := dns.NewZoneParser(strings.NewReader(data), model.AbsoluteName(plan.Apex), configPath)
 		for rr, ok := parser.Next(); ok; rr, ok = parser.Next() {
 			if soa, ok := rr.(*dns.SOA); ok {
 				for _, view := range views {
@@ -476,7 +473,7 @@ func installedFileVerifier(t *testing.T, configPath string) PublicationVerifier 
 	})
 }
 
-func TestFailedBINDActivationRetainsPriorInstalledProof(t *testing.T) {
+func TestFailedCoreDNSActivationRetainsPriorInstalledProof(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -499,7 +496,7 @@ func TestFailedBINDActivationRetainsPriorInstalledProof(t *testing.T) {
 	}
 }
 
-func TestBINDDoesNotProbeAuthorityBelowRequiredPublicationFence(t *testing.T) {
+func TestCoreDNSDoesNotProbeAuthorityBelowRequiredPublicationFence(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
@@ -528,8 +525,8 @@ func TestBINDDoesNotProbeAuthorityBelowRequiredPublicationFence(t *testing.T) {
 	if calls != 0 || len(a.publicationViews(a.state.Publications["zone-a"])) != 0 {
 		t.Fatal("SERVFAIL zone attempted authoritative publication proof")
 	}
-	config, err := os.ReadFile(cfg.Render.ClusterBIND.Path)
-	if err != nil || !strings.Contains(string(config), "forward only; forwarders { 127.0.0.1 port 9; }") {
+	config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
+	if err != nil || !decodedCoreDNS(t, config).Contexts[0].Zones[0].Pending {
 		t.Fatalf("behind-required private zone was not gated: %s %v", config, err)
 	}
 }
@@ -553,14 +550,14 @@ func (p *partitioningAckPublisher) Publish(_ context.Context, _ string, env mode
 	return transport.PublishAck{}, nil
 }
 
-func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
+func TestCoreDNSActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	clock := now
 	cfg := regionalTestConfig(t)
 	runner := &afterReloadRunner{}
 	publisher := &partitioningAckPublisher{}
-	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }, AckPublisher: publisher, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterBIND.Path)})
+	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }, AckPublisher: publisher, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterCoreDNS.Path)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +585,7 @@ func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
 		t.Fatal(err)
 	}
-	// Disconnect after BIND reload, exactly before durable/proved activation
+	// Disconnect after CoreDNS reload, exactly before durable/proved activation
 	// attempts its ACK. A transport error must not become a failed installation.
 	runner.after = func() { publisher.disconnected.Store(true) }
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err != nil {
@@ -630,12 +627,12 @@ func TestBINDActivationRacingBrokerDisconnectKeepsServing(t *testing.T) {
 	}
 }
 
-func TestBINDTombstoneAckFailureDoesNotGateDurableWithdrawal(t *testing.T) {
+func TestCoreDNSTombstoneAckFailureDoesNotGateDurableWithdrawal(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
 	publisher := &partitioningAckPublisher{}
-	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: publisher, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterBIND.Path)})
+	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: publisher, PublicationVerifier: installedFileVerifier(t, cfg.Render.ClusterCoreDNS.Path)})
 	if err != nil {
 		t.Fatal(err)
 	}

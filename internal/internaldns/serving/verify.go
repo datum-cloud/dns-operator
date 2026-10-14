@@ -128,11 +128,11 @@ type PublicationDNSVerifierConfig struct {
 }
 type PublicationDNSVerifier struct{ Config PublicationDNSVerifierConfig }
 
-// Probe the member's BIND process directly with the protected destination
+// Probe the member's CoreDNS process directly with the protected destination
 // identity. Querying the shared dnsdist pool could falsely prove another member.
 func (v PublicationDNSVerifier) VerifyPublication(ctx context.Context, plan model.PublicationPlan, views []PublicationView) error {
 	if v.Config.Server == "" {
-		return errors.New("regional BIND probe server is required")
+		return errors.New("regional CoreDNS probe server is required")
 	}
 	if len(views) == 0 {
 		return errors.New("publication is not installed in any configured context")
@@ -146,7 +146,7 @@ func (v PublicationDNSVerifier) VerifyPublication(ctx context.Context, plan mode
 
 type publicationExchange func(context.Context, string, string, string, PublicationView, time.Duration) (*dns.Msg, error)
 
-// BIND reload may return before every view exposes its new zone. Retry the
+// CoreDNS reload may return before every view exposes its new zone. Retry the
 // exact installed fingerprint while retaining one deadline for the entire proof.
 func verifyPublicationViews(ctx context.Context, server, apex string, views []PublicationView, timeout time.Duration, exchange publicationExchange) error {
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -157,7 +157,7 @@ func verifyPublicationViews(ctx context.Context, server, apex string, views []Pu
 			var last error
 			for {
 				if err := publicationDeadlineError(probeCtx, deadline); err != nil {
-					return fmt.Errorf("verify BIND view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, err, last)
+					return fmt.Errorf("verify CoreDNS view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, err, last)
 				}
 				answer, err := exchange(probeCtx, network, server, apex, view, min(time.Until(deadline), 250*time.Millisecond))
 				if err != nil {
@@ -167,7 +167,7 @@ func verifyPublicationViews(ctx context.Context, server, apex string, views []Pu
 				}
 				// An exchange finishing after the total deadline cannot prove readiness.
 				if err := publicationDeadlineError(probeCtx, deadline); err != nil {
-					return fmt.Errorf("verify BIND view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, err, last)
+					return fmt.Errorf("verify CoreDNS view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, err, last)
 				}
 				if last == nil {
 					break
@@ -176,7 +176,7 @@ func verifyPublicationViews(ctx context.Context, server, apex string, views []Pu
 				select {
 				case <-probeCtx.Done():
 					timer.Stop()
-					return fmt.Errorf("verify BIND view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, probeCtx.Err(), last)
+					return fmt.Errorf("verify CoreDNS view %s over %s within %s: %w (last response: %v)", view.View, network, timeout, probeCtx.Err(), last)
 				case <-timer.C:
 				}
 			}
@@ -238,7 +238,7 @@ func exchangePublication(ctx context.Context, network, server, name string, view
 		return nil, err
 	}
 	// Source is immaterial for context selection; destination identity is trusted
-	// only because the direct peer is in BIND's protected proxy ACL.
+	// only because the direct peer is in CoreDNS's protected proxy ACL.
 	header := []byte{13, 10, 13, 10, 0, 13, 10, 81, 85, 73, 84, 10, 0x21, 0, 0, 0}
 	proto := byte(2)
 	if network == networkTCP {

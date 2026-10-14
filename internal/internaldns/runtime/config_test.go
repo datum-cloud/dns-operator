@@ -25,7 +25,7 @@ func TestAgentUsesRootRegionAndDoesNotNeedKubernetes(t *testing.T) {
 		Agent: serving.Config{MemberID: "resolver-1", ReplicaID: "resolver-1", StateDir: t.TempDir(), Mode: serving.ModeResolver,
 			Render: serving.RenderConfig{Role: serving.RenderNode,
 				NodeDNSDist: serving.DNSDistRenderConfig{Path: t.TempDir() + "/dnsdist.conf", ListenAddress: "[::1]:53", PoolName: "node"},
-				NodeBIND:    serving.BINDRenderConfig{Path: t.TempDir() + "/named.conf", ListenAddress: "::1", Port: 5353}},
+				NodeCoreDNS: serving.CoreDNSRenderConfig{Path: t.TempDir() + "/named.conf", ListenAddress: "::1", Port: 5353, ProxyPeers: []string{"::1"}}},
 			Transaction: serving.TransactionConfig{StageDir: t.TempDir()}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true},
 	}
 	if err := c.Validate("agent"); err != nil {
@@ -155,7 +155,7 @@ func TestConfigLoaderRejectsRemovedPrivateServingFields(t *testing.T) {
 
 func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	dir := t.TempDir()
-	cfg := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://127.0.0.1:1", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Agent: serving.Config{MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage")}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ReconcileInterval: 10 * time.Millisecond}}
+	cfg := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://127.0.0.1:1", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Agent: serving.Config{MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeCoreDNS: serving.CoreDNSRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353, ProxyPeers: []string{"::1"}}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage")}, UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, ReconcileInterval: 10 * time.Millisecond}}
 	if err := cfg.Validate(roleAgent); err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {
 	for _, role := range []string{"serving", "readiness"} {
 		t.Run(role, func(t *testing.T) {
 			dir := t.TempDir()
-			cfg := Config{Region: "central", Shard: "one", Agent: serving.Config{MemberID: "node", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, CacheFlush: []serving.Command{{Path: "/bin/true"}}, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeBIND: serving.BINDRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []serving.Command{{Path: "/bin/true"}}}}}
+			cfg := Config{Region: "central", Shard: "one", Agent: serving.Config{MemberID: "node", StateDir: filepath.Join(dir, "state"), Mode: serving.ModeResolver, Render: serving.RenderConfig{Role: serving.RenderNode, NodeDNSDist: serving.DNSDistRenderConfig{Path: filepath.Join(dir, "dnsdist.conf"), ListenAddress: "[::1]:53", PoolName: "node"}, NodeCoreDNS: serving.CoreDNSRenderConfig{Path: filepath.Join(dir, "named.conf"), ListenAddress: "::1", Port: 5353, ProxyPeers: []string{"::1"}}}, Transaction: serving.TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []serving.Command{{Path: "/bin/true"}}}}}
 			if err := cfg.Validate(role); err != nil {
 				t.Fatalf("local role required messaging or control-plane configuration: %v", err)
 			}

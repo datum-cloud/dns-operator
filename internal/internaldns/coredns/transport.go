@@ -40,6 +40,9 @@ func (c *proxyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		if err != nil || size >= n {
 			continue
 		}
+		if source == nil {
+			source, destination = peer, c.LocalAddr()
+		}
 		copy(p, p[size:n])
 		return n - size, &proxyAddress{peer: peer, source: source, destination: destination}, nil
 	}
@@ -88,6 +91,9 @@ func (l *proxyListener) Accept() (net.Conn, error) {
 			_ = conn.Close()
 			continue
 		}
+		if source == nil {
+			source, destination = conn.RemoteAddr(), conn.LocalAddr()
+		}
 		_ = conn.SetReadDeadline(time.Time{})
 		return &proxyConn{Conn: conn, source: source, destination: destination}, nil
 	}
@@ -112,12 +118,15 @@ func trusted(peers map[netip.Addr]bool, addr net.Addr) bool {
 
 func parseHeader(data []byte, tcp bool) (net.Addr, net.Addr, int, error) {
 	invalid := errors.New("a PROXYv2 address header for this transport is required")
-	if len(data) < 16 || !bytes.Equal(data[:12], proxySignature) || data[12] != 0x21 {
+	if len(data) < 16 || !bytes.Equal(data[:12], proxySignature) || data[12] != 0x21 && data[12] != 0x20 {
 		return nil, nil, 0, invalid
 	}
 	size := 16 + int(binary.BigEndian.Uint16(data[14:16]))
 	if size > len(data) || size > 4112 {
 		return nil, nil, 0, invalid
+	}
+	if data[12] == 0x20 {
+		return nil, nil, size, nil
 	}
 	protocol := byte(2)
 	if tcp {

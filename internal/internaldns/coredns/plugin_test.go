@@ -298,7 +298,7 @@ func proxyQuery(network, server, destination string, names ...string) (*dns.Msg,
 
 func TestMalformedAndWrongTransportHeadersAreRejected(t *testing.T) {
 	t.Parallel()
-	for _, data := range [][]byte{nil, make([]byte, 16), append(append([]byte(nil), proxySignature...), 0x20, 0x22, 0, 0)} {
+	for _, data := range [][]byte{nil, make([]byte, 16), append(append([]byte(nil), proxySignature...), 0x22, 0x22, 0, 0)} {
 		if _, _, _, err := parseHeader(data, false); err == nil {
 			t.Fatal("invalid PROXY identity accepted")
 		}
@@ -316,5 +316,21 @@ func TestMalformedAndWrongTransportHeadersAreRejected(t *testing.T) {
 	}
 	if trusted(map[netip.Addr]bool{}, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 53}) {
 		t.Fatal("untrusted proxy peer accepted")
+	}
+}
+
+func TestLocalHealthHeaderCannotSelectAContext(t *testing.T) {
+	t.Parallel()
+	header := append(append([]byte(nil), proxySignature...), 0x20, 0, 0, 0)
+	for _, tcp := range []bool{false, true} {
+		source, destination, size, err := parseHeader(header, tcp)
+		if err != nil || source != nil || destination != nil || size != len(header) {
+			t.Fatal("LOCAL header acquired an asserted tenant identity")
+		}
+	}
+	c := fixture()
+	c.Contexts[0].Destination = "127.0.0.1"
+	if err := c.Validate(); err == nil {
+		t.Fatal("management listener can select a tenant context")
 	}
 }

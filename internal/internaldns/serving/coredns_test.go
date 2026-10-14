@@ -57,8 +57,8 @@ func currentZone(t *testing.T, a *Agent) string {
 		if json.Unmarshal(data, &cfg) != nil {
 			continue
 		}
-		for _, context := range cfg.Contexts {
-			for _, zone := range context.Zones {
+		for _, entry := range cfg.Contexts {
+			for _, zone := range entry.Zones {
 				if zone.Data != "" {
 					return zone.Data
 				}
@@ -448,8 +448,8 @@ func installedFileVerifier(t *testing.T, configPath string) PublicationVerifier 
 		}
 		cfg := decodedCoreDNS(t, config)
 		var data string
-		for _, context := range cfg.Contexts {
-			for _, zone := range context.Zones {
+		for _, entry := range cfg.Contexts {
+			for _, zone := range entry.Zones {
 				if zone.Apex == model.AbsoluteName(plan.Apex) && !zone.Pending {
 					data = zone.Data
 				}

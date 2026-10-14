@@ -2,10 +2,11 @@ package serving
 
 import (
 	"encoding/json"
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"strings"
 	"testing"
 	"time"
+
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )

@@ -541,7 +541,7 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 	}
 	if cmp == 0 && old.Verified {
 		if a.cfg.Mode == ModeResolver {
-			return a.recordResolverPublication(ctx, m.ZoneUID, old, old)
+			return a.recordResolverPublication(m.ZoneUID, old)
 		}
 		if !equalJSON(m, old.Manifest) {
 			return errors.New("conflicting publication manifest at the same epoch and revision")
@@ -595,22 +595,22 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 	}
 	next := publicationState{Fence: fence{m.WriterEpoch, m.Revision}, Manifest: m, Plan: plan, EffectiveHash: effectivePlanHash(plan)}
 	if a.cfg.Mode == ModeResolver {
-		return a.recordResolverPublication(ctx, m.ZoneUID, next, old)
+		return a.recordResolverPublication(m.ZoneUID, next)
 	}
-	return a.activatePublication(ctx, m.ZoneUID, next, old)
+	return a.activatePublication(ctx, m.ZoneUID, next)
 }
 
 func (a *Agent) applyTombstone(ctx context.Context, m model.PublicationManifest, old publicationState) error {
 	next := publicationState{Fence: fence{m.WriterEpoch, m.Revision}, Manifest: m, Plan: old.Plan}
 	if a.cfg.Mode == ModeResolver {
-		return a.recordResolverPublication(ctx, m.ZoneUID, next, old)
+		return a.recordResolverPublication(m.ZoneUID, next)
 	}
-	return a.activatePublication(ctx, m.ZoneUID, next, old)
+	return a.activatePublication(ctx, m.ZoneUID, next)
 }
 
 // Commit the immutable fence before installing files. Failed activation stays
 // gated and an identical redelivery retries the accepted snapshot.
-func (a *Agent) recordResolverPublication(ctx context.Context, uid string, next, old publicationState) error {
+func (a *Agent) recordResolverPublication(uid string, next publicationState) error {
 	next.Verified = false
 	a.state.Publications[uid] = next
 	if err := a.store.Save(a.state); err != nil {
@@ -621,7 +621,7 @@ func (a *Agent) recordResolverPublication(ctx context.Context, uid string, next,
 	return a.store.Save(a.state)
 }
 
-func (a *Agent) activatePublication(ctx context.Context, uid string, next, old publicationState) error {
+func (a *Agent) activatePublication(ctx context.Context, uid string, next publicationState) error {
 	a.state.Publications[uid] = next
 	if err := a.store.Save(a.state); err != nil {
 		return err
@@ -1104,7 +1104,7 @@ func (a *Agent) retryPendingPublications(ctx context.Context) error {
 			continue
 		}
 		if a.cfg.Mode == ModeResolver {
-			if err := a.recordResolverPublication(ctx, uid, p, p); err != nil {
+			if err := a.recordResolverPublication(uid, p); err != nil {
 				return err
 			}
 			continue

@@ -10,8 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"runtime/debug"
+
+	"go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
 func main() {

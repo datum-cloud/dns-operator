@@ -77,7 +77,7 @@ authorized publisher; naming rules match registration labels.
 ### Risks and mitigations
 
 - Tenant leakage: authorize network identity before cache lookup, isolate
-  resolver views, and test overlapping zones and forged identities.
+  DNS contexts, and test overlapping zones and forged identities.
 - Delayed health updates: retain the last reported endpoint state during outages
   and reconcile changes when connectivity returns.
 - Tenant identity reuse: retain destination allocations until withdrawal is
@@ -167,10 +167,10 @@ flowchart TB
   subgraph Shared[Shared DNS service fleet]
     DestA --> Dist[dnsdist: trusted destination to context]
     DestB --> Dist
-    Dist --> ViewA[Context A BIND view and cache]
-    Dist --> ViewB[Context B BIND view and cache]
-    ViewA --> ZoneA[Private zone in view A: api.prod.internal = 10.20.0.10]
-    ViewB --> ZoneB[Private zone in view B: api.prod.internal = 10.20.0.20]
+    Dist --> ViewA[CoreDNS context A]
+    Dist --> ViewB[CoreDNS context B]
+    ViewA --> ZoneA[Private zone in context A: api.prod.internal = 10.20.0.10]
+    ViewB --> ZoneB[Private zone in context B: api.prod.internal = 10.20.0.20]
   end
 ```
 
@@ -183,19 +183,23 @@ Shared node and regional tiers use:
 
 1. **dnsdist** to select the context before lookup, with private packet caching
    disabled.
-2. **BIND views** to isolate positive and negative caches. Node views forward to
-   context-specific regional destinations. Regional views host the context's
-   private authoritative zones and recurse for other names. Views share resolver
-   processes; each context has its own zone selection and cache.
+2. **CoreDNS with a context plugin** to select private zones from the trusted
+   destination. Node members forward to the context's regional destination;
+   regional members answer private queries from accepted publication snapshots.
+3. **PowerDNS Recursor** to resolve public names. CoreDNS keeps public caches
+   separate by context and bypasses caching for private names.
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
-preserves the destination. [BIND PROXY access controls](https://bind9.readthedocs.io/en/v9.20.2/reference.html#namedconf-statement-allow-proxy)
-restrict trusted peers and listeners. A shared pool member must have the current
-configuration and access version for every assigned context.
+preserves the destination. The CoreDNS transport adapter accepts PROXYv2 only
+from configured service peers and preserves the destination over UDP and TCP.
+Unknown contexts are rejected before record or cache lookup.
 
-[BIND views](https://bind9.readthedocs.io/en/v9.20.2/reference.html#view-block-grammar)
-select the private zones visible to each context. Keep caches separate and reject
-unmatched destinations before lookup.
+The publication agent validates and persists a complete snapshot. The context
+plugin builds a replacement lookup table, then atomically activates it without
+restarting DNS listeners. Invalid updates retain the accepted table. Persistent
+snapshots allow serving to recover without an available control plane or broker.
+A shared member must prove the current configuration and publication before it
+receives traffic for that context.
 
 ### Publication and service discovery
 
@@ -237,7 +241,7 @@ contexts or explicit withdrawals. Destination ownership follows the context
 lifetime, so recreating its access binding can retain the same destination.
 
 Regional agents render committed snapshots as zone files, validate and activate
-them in the associated BIND views, then acknowledge serving.
+them in the associated CoreDNS contexts, then acknowledge serving.
 
 Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery is
 at least once. Every serving replica receives its complete assignment and
@@ -638,7 +642,7 @@ after delivery resumes.
 ### Scalability
 
 Measure context capacity, update rates, snapshot size, transport fanout,
-cache memory, reload time, and query throughput. Bound chunks and retained
+cache memory, snapshot activation time, and query throughput. Bound chunks and retained
 history; establish supported limits and regional failover capacity before release.
 
 ### Troubleshooting
@@ -655,14 +659,14 @@ boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
 
 ## Drawbacks
 
-Shared BIND views increase fleet complexity and failure scope. Snapshots and
+The context plugin adds code that needs isolation, capacity, and protocol testing. Snapshots and
 writer coordination add state and API traffic. During control plane outages,
 DNS retains endpoints whose health may have changed.
 
 ## Alternatives
 
-PowerDNS Recursor and CoreDNS remain options if they meet the same tenant
-isolation and capacity requirements.
+BIND views provide another shared serving option. The selected engine must meet
+the same tenant isolation and capacity requirements.
 
 ## Infrastructure Needed
 

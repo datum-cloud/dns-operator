@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/coredns/coredns/plugin/file"
+	"github.com/miekg/dns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -66,17 +67,21 @@ func (c Config) Validate() error {
 		}
 	}
 	for _, upstream := range c.PublicUpstreams {
-		if err := endpoint(upstream); err != nil {
+		if err := publicEndpoint(upstream); err != nil {
 			return fmt.Errorf("CoreDNS public upstream: %w", err)
 		}
 	}
 	seen := map[string]bool{}
+	listenerHost, _, _ := net.SplitHostPort(c.ListenAddress)
 	for _, context := range c.Contexts {
 		destination, err := netip.ParseAddr(context.Destination)
 		if err != nil {
 			return err
 		}
 		key := destination.Unmap().String()
+		if key == netip.MustParseAddr(listenerHost).Unmap().String() {
+			return errors.New("CoreDNS management listener cannot identify a tenant context")
+		}
 		if context.ID == "" || seen[key] {
 			return errors.New("CoreDNS contexts require an identity and a unique destination")
 		}
@@ -100,6 +105,25 @@ func (c Config) Validate() error {
 				return fmt.Errorf("CoreDNS zone %s: %w", apex, err)
 			}
 		}
+	}
+	return nil
+}
+
+func publicEndpoint(value string) error {
+	if err := endpoint(value); err == nil {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return err
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return endpoint(value)
+	}
+	_, valid := dns.IsDomainName(host)
+	portNumber, portErr := strconv.ParseUint(port, 10, 16)
+	if !valid || host == "" || host == "." || portErr != nil || portNumber == 0 {
+		return fmt.Errorf("public DNS upstream requires a hostname or IP and port: %s", value)
 	}
 	return nil
 }

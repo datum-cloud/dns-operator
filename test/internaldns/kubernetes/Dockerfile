@@ -24,4 +24,5 @@ COPY --from=build /out/dns-qualify /dns-qualify
 COPY --from=build /out/coredns /usr/local/bin/coredns
 COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532
+RUN coredns -version
 ENTRYPOINT ["/internal-dns"]

@@ -354,7 +354,7 @@ func (s *suite) prepare(p *project) error {
 }
 
 func (s *suite) associate(p *project, zone *dnsv1.DNSZone, name string) error {
-	association := &dnsv1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace}, Spec: dnsv1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1.DNSNameReference{Name: p.resolverContext.Name}}}
+	association := &dnsv1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.Namespace}, Spec: dnsv1.DNSZoneAssociationSpec{DNSZoneRef: objectRef(zone), ResolverContextRef: objectRef(&p.resolverContext)}}
 	if err := p.customer.Create(s.ctx, association); err != nil {
 		return err
 	}
@@ -385,7 +385,7 @@ func recordSets(name, address, ipv6 string) []dnsv1.DNSContributionRecordSet {
 	return sets
 }
 
-func (s *suite) publish(p *project, zone dnsv1.DNSNameReference, prefix, name, address, ipv6 string) (*publication, error) {
+func (s *suite) publish(p *project, zone dnsv1.DNSObjectReference, prefix, name, address, ipv6 string) (*publication, error) {
 	pub := &publication{registration: dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: prefix + "-registration", Namespace: p.Namespace}, Spec: dnsv1.DNSRegistrationSpec{DNSZoneRef: zone, Name: name, RecordTypes: []dnsv1.RRType{dnsv1.RRTypeA}, TTLSeconds: 2}}}
 	if ipv6 != "" {
 		pub.registration.Spec.RecordTypes = append(pub.registration.Spec.RecordTypes, dnsv1.RRTypeAAAA)

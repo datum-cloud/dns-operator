@@ -173,7 +173,7 @@ func TestEveryMemberCanCreateAllRuntimeConsumers(t *testing.T) {
 	if strings.Contains(controlPolicy, `"$JS.ACK.DNS_PRIVATE.>"`) {
 		t.Error("control plane can acknowledge another serving member's consumers")
 	}
-	for _, member := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-bind-us-central1-0", "regional-bind-us-central1-1"} {
+	for _, member := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"} {
 		start := strings.Index(contents, `user: "`+member+`"`)
 		if start < 0 {
 			t.Fatalf("missing member %s", member)
@@ -201,7 +201,7 @@ func TestEveryMemberCanCreateAllRuntimeConsumers(t *testing.T) {
 	}
 }
 
-func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
+func TestReadOnlyServingImageHasWritableCoreDNSWorkingDirectory(t *testing.T) {
 	found := false
 	for _, object := range deploymentObjects(t, "fleet.example.yaml") {
 		if object.GetKind() != "Deployment" {
@@ -229,7 +229,7 @@ func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
 				}
 			}
 			if runtimeVolume == "" {
-				t.Fatal("read-only serving image lacks writable BIND /tmp mount")
+				t.Fatal("read-only serving image lacks writable CoreDNS /tmp mount")
 			}
 			volumes, _, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "volumes")
 			if err != nil {
@@ -243,7 +243,7 @@ func TestReadOnlyServingImageHasWritableBINDWorkingDirectory(t *testing.T) {
 				}
 			}
 			if !writable {
-				t.Fatal("BIND working-directory mount is not a per-member writable runtime volume")
+				t.Fatal("CoreDNS working-directory mount is not a per-member writable runtime volume")
 			}
 		}
 	}

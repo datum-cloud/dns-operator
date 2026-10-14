@@ -80,7 +80,7 @@ func TestNATSExampleUsesExactMemberAckSubjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, memberID := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-bind-us-central1-0", "regional-bind-us-central1-1"} {
+	for _, memberID := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"} {
 		subject := model.AckSubject("us-central1", "shared-0", memberID)
 		if !bytes.Contains(contents, []byte(`"`+subject+`"`)) {
 			t.Errorf("NATS policy is missing exact ACK subject %q", subject)

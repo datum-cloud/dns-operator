@@ -79,11 +79,13 @@ type report struct {
 }
 
 type probeResult struct {
-	Rcode     int      `json:"rcode"`
-	Answers   []string `json:"answers"`
-	Addresses []string `json:"addresses"`
-	TTL       uint32   `json:"ttl"`
-	Error     string   `json:"error,omitempty"`
+	Authenticated bool     `json:"authenticated"`
+	Recursive     bool     `json:"recursive"`
+	Rcode         int      `json:"rcode"`
+	Answers       []string `json:"answers"`
+	Addresses     []string `json:"addresses"`
+	TTL           uint32   `json:"ttl"`
+	Error         string   `json:"error,omitempty"`
 }
 
 type publication struct {
@@ -147,6 +149,7 @@ func runProbe(server, name, rrType string, tcp bool) error {
 	}
 	message := new(dns.Msg)
 	message.SetQuestion(dns.Fqdn(name), t)
+	message.SetEdns0(1232, true)
 	transport := "udp"
 	if tcp {
 		transport = "tcp"
@@ -155,7 +158,7 @@ func runProbe(server, name, rrType string, tcp bool) error {
 	if err != nil {
 		return json.NewEncoder(os.Stdout).Encode(probeResult{Error: err.Error()})
 	}
-	result := probeResult{Rcode: response.Rcode, Answers: []string{}, Addresses: []string{}}
+	result := probeResult{Rcode: response.Rcode, Answers: []string{}, Addresses: []string{}, Authenticated: response.AuthenticatedData, Recursive: response.RecursionAvailable}
 	for _, answer := range response.Answer {
 		result.Answers = append(result.Answers, answer.String())
 		if result.TTL == 0 || answer.Header().Ttl < result.TTL {
@@ -243,7 +246,7 @@ func (s *suite) run(path string) error {
 		s.env.ProbeBinary = "/dns-qualify"
 	}
 	if len(s.env.RegionalMembers) != 2 {
-		return errors.New("qualification requires two independent regional BIND members")
+		return errors.New("qualification requires two independent regional CoreDNS members")
 	}
 	s.platform, err = newClient(s.env.PlatformKubeconfig)
 	if err != nil {
@@ -332,7 +335,7 @@ func (s *suite) prepare(p *project) error {
 		return err
 	}
 	s.pass(p.Name+" product discovers its managed namespace through the context API", p.resolverContext.Status.ManagedNamespace)
-	p.zone = dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: p.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "prod.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
+	p.zone = dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: p.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "prod.internal", DNSZoneClassName: "private-coredns", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
 	if err := p.customer.Create(s.ctx, &p.zone); err != nil {
 		return err
 	}

@@ -34,8 +34,8 @@ const projectNS = "project-e2e"
 const image = "internal-dns-kubernetes:e2e"
 
 var out, phase, platform, a, b, ai, bi string
-var memberNames = []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-bind-us-central1-0", "regional-bind-us-central1-1"}
-var podNames = []string{"internal-dns-node", "internal-dns-regional-front", "internal-dns-regional-bind-0", "internal-dns-regional-bind-1"}
+var memberNames = []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"}
+var podNames = []string{"internal-dns-node", "internal-dns-regional-front", "internal-dns-regional-coredns-0", "internal-dns-regional-coredns-1"}
 
 func main() {
 	flag.StringVar(&out, "out", ".internal-dns-e2e/kubernetes", "Private generated environment directory")
@@ -159,9 +159,7 @@ func bootstrap() {
 	secret := obj("v1", "Secret", "internal-dns-nats-config", ns)
 	secret["stringData"] = object{"nats.conf": encoded.String()}
 	items = append(items, secret)
-	rndc := obj("v1", "Secret", "internal-dns-rndc", ns)
-	rndc["stringData"] = object{"rndc.key": fmt.Sprintf("key \"internal-dns\" { algorithm hmac-sha256; secret \"%s\"; };\n", randomSecret())}
-	items = append(items, rndc)
+
 	for _, name := range []string{"nats", "internal-dns-nats"} {
 		s := obj("v1", "Service", name, ns)
 		spec := object{"selector": object{"app": "internal-dns-nats"}, "ports": []object{{"name": "client", "port": 4222}, {"name": "cluster", "port": 6222}}}
@@ -175,8 +173,11 @@ func bootstrap() {
 	broker := obj("apps/v1", "StatefulSet", "internal-dns-nats", ns)
 	broker["spec"] = object{"replicas": 3, "serviceName": "internal-dns-nats", "podManagementPolicy": "Parallel", "selector": object{"matchLabels": object{"app": "internal-dns-nats"}}, "template": object{"metadata": object{"labels": object{"app": "internal-dns-nats"}}, "spec": object{"terminationGracePeriodSeconds": 2, "automountServiceAccountToken": false, "containers": []object{{"name": "nats", "image": "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00", "command": []string{"nats-server"}, "args": []string{"-c", "/config/nats.conf", "-n", "$(POD_NAME)"}, "env": []object{{"name": "POD_NAME", "valueFrom": object{"fieldRef": object{"fieldPath": "metadata.name"}}}}, "volumeMounts": []object{{"name": "config", "mountPath": "/config", "readOnly": true}, {"name": "tls", "mountPath": "/tls", "readOnly": true}, {"name": "data", "mountPath": "/data"}}, "readinessProbe": object{"httpGet": object{"path": "/healthz?js-enabled-only=true", "port": 8222}}, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}}}, "volumes": []object{{"name": "config", "secret": object{"secretName": "internal-dns-nats-config"}}, {"name": "tls", "secret": object{"secretName": "internal-dns-nats-server"}}}}}, "volumeClaimTemplates": []object{{"metadata": object{"name": "data"}, "spec": object{"accessModes": []string{"ReadWriteOnce"}, "resources": object{"requests": object{"storage": "1Gi"}}}}}}
 	items = append(items, broker)
+	public := obj("v1", "Service", "internal-dns-public-recursor", ns)
+	public["spec"] = object{"ipFamilies": []string{"IPv6"}, "ipFamilyPolicy": "SingleStack", "selector": object{"app": "internal-dns-public-recursor"}, "ports": []object{{"name": "dns-udp", "port": 5353, "protocol": "UDP"}, {"name": "dns-tcp", "port": 5353, "protocol": "TCP"}}}
+	items = append(items, public)
 	for i, name := range podNames {
-		role := []string{"node", "regional-dnsdist", "regional-bind", "regional-bind"}[i]
+		role := []string{"node", "regional-dnsdist", "regional-coredns", "regional-coredns"}[i]
 		items = append(items, fleetPod(name, memberNames[i], role))
 		for _, vol := range []string{"state", "config"} {
 			pvc := obj("v1", "PersistentVolumeClaim", name+"-"+vol, ns)
@@ -218,7 +219,7 @@ func credentialsVolume(member string) object {
 func fleetPod(name, member, role string) object {
 	o := obj("v1", "Pod", name, ns)
 	o["metadata"].(object)["labels"] = object{"internal-dns-role": role, "internal-dns-member": member}
-	mounts := []object{mount("config", "/config", true), mount("nats", "/var/run/internal-dns/nats", true), mount("state", "/var/lib/internal-dns", false), mount("daemon-config", "/etc/internal-dns", false), mount("lease", "/run/internal-dns", false), mount("runtime", "/tmp", false), mount("rndc", "/etc/bind", true)}
+	mounts := []object{mount("config", "/config", true), mount("nats", "/var/run/internal-dns/nats", true), mount("state", "/var/lib/internal-dns", false), mount("daemon-config", "/etc/internal-dns", false), mount("lease", "/run/internal-dns", false), mount("runtime", "/tmp", false)}
 	containers := make([]object, 0, 3)
 	for _, process := range []string{"agent"} {
 		containers = append(containers, object{"name": process, "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=" + process + " --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
@@ -226,7 +227,7 @@ func fleetPod(name, member, role string) object {
 	sec := security()
 	sec["capabilities"] = object{"drop": []string{"ALL"}, "add": []string{"NET_BIND_SERVICE"}}
 	containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/internal-dns", "--role=serving", "--config=/config/config.json"}, "readinessProbe": object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
-	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}, {"name": "rndc", "secret": object{"secretName": "internal-dns-rndc"}}}
+	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}}
 	// The aliases model the service-side destination contract only. The separate
 	// probe has no ability to write routes or send trusted PROXY traffic.
 	init := []object{}
@@ -286,9 +287,9 @@ func sourceObjects(project string) []object {
 		binding["subjects"] = rb["subjects"]
 		items = append(items, self, binding)
 	}
-	c := obj("dns.networking.miloapis.com/v1alpha1", "DNSZoneClass", "private-bind", "")
+	c := obj("dns.networking.miloapis.com/v1alpha1", "DNSZoneClass", "private-coredns", "")
 	c["metadata"].(object)["labels"] = object{"internal-dns.datum.net/qualification": "true"}
-	c["spec"] = object{"controllerName": "bind", "nameServerPolicy": object{"mode": "Static", "static": object{"servers": []string{"ns.internal."}}}}
+	c["spec"] = object{"controllerName": "coredns", "nameServerPolicy": object{"mode": "Static", "static": object{"servers": []string{"ns.internal."}}}}
 	items = append(items, c)
 	return items
 }
@@ -388,11 +389,16 @@ func configure() {
 	sources["stringData"] = sourceData
 	items := make([]object, 0, 8)
 	items = append(items, sources)
+	recursor := obj("v1", "Pod", "internal-dns-public-recursor", ns)
+	recursor["metadata"].(object)["labels"] = object{"app": "internal-dns-public-recursor"}
+	recursor["spec"] = object{"automountServiceAccountToken": false, "containers": []object{{"name": "recursor", "image": image, "imagePullPolicy": "Never", "command": []string{"pdns_recursor", "--config-dir=/tmp", "--socket-dir=/tmp", "--local-address=::", "--local-port=5353", "--allow-from=fd00::/8", "--daemon=no", "--write-pid=no", "--dnssec=validate", "--security-poll-suffix="}, "securityContext": security(), "volumeMounts": []object{mount("runtime", "/tmp", false)}}}, "volumes": []object{{"name": "runtime", "emptyDir": object{}}}}
+	items = append(items, recursor)
 	cfg := exampleConfigs("control-plane.example.yaml")["internal-dns-control-plane-config"]
 	cfg.ClusterPrefix = "fd54::/64"
 	cfg.OwnershipLeaseSeconds = 10
+	cfg.Stream.MaxBytes = 128 << 20
 	configureProjectSources(&cfg)
-	cfg.NodeBackends = []model.Backend{{MemberID: "node-bind-0", Address: "127.0.0.1", Port: 5300}}
+	cfg.NodeBackends = []model.Backend{{MemberID: "node-coredns-0", Address: "127.0.0.1", Port: 5300}}
 	cfg.ClusterBackends = []model.Backend{{MemberID: memberNames[2], Address: bindIP[0], Port: 5300}, {MemberID: memberNames[3], Address: bindIP[1], Port: 5300}}
 	for _, name := range []string{"control-a", "control-b"} {
 		c := cfg
@@ -402,21 +408,22 @@ func configure() {
 		items = append(items, configMap(name+"-config", c))
 	}
 	configs := exampleConfigs("fleet.example.yaml")
-	for i, key := range []string{"internal-dns-node-0-config", "internal-dns-regional-front-0-config", "internal-dns-regional-bind-0-config", "internal-dns-regional-bind-1-config"} {
+	for i, key := range []string{"internal-dns-node-0-config", "internal-dns-regional-front-0-config", "internal-dns-regional-coredns-0-config", "internal-dns-regional-coredns-1-config"} {
 		c := configs[key]
 		if i == 0 {
 			c.Agent.Render.NodeDNSDist.Backends = cfg.NodeBackends
 			c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
-			c.Agent.Render.NodeBIND.ListenAddress = "127.0.0.1"
-			c.Agent.Render.NodeBIND.ProxyPeers = []string{"127.0.0.1"}
+			c.Agent.Render.NodeCoreDNS.ListenAddress = "127.0.0.1"
+			c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{"127.0.0.1"}
 		}
 		if i == 1 {
 			c.Agent.Render.ClusterDNSDist.Backends = cfg.ClusterBackends
 			c.Agent.Render.ClusterDNSDist.ACLs = []string{nodeIP + "/128", frontIP + "/128", "::1/128"}
 		}
 		if i >= 2 {
-			c.Agent.Render.ClusterBIND.ListenAddress = bindIP[i-2]
-			c.Agent.Render.ClusterBIND.ProxyPeers = []string{frontIP, bindIP[i-2]}
+			c.Agent.Render.ClusterCoreDNS.ListenAddress = bindIP[i-2]
+			c.Agent.Render.ClusterCoreDNS.ProxyPeers = []string{frontIP, bindIP[i-2]}
+			c.Agent.Render.ClusterCoreDNS.PublicUpstreams = []string{"[" + publicRecursorIP(cl) + "]:5353"}
 			c.Agent.PublicationDNSProbe.Server = "[" + bindIP[i-2] + "]:5300"
 		}
 		must(c.Validate("agent"))
@@ -426,13 +433,19 @@ func configure() {
 	routes := obj("v1", "Pod", "internal-dns-network-fixture", ns)
 	// Kind's default masquerading would erase the pod peer identity for service
 	// destinations outside its PodCIDR. Exempt only these two fixture prefixes;
-	// never widen the protected BIND/front ACLs to the host's shared address.
+	// never widen the protected CoreDNS/front ACLs to the host's shared address.
 	routeCommand := fmt.Sprintf("ip -6 route replace fd53::/64 via %s; ip -6 route replace fd54::/64 via %s; for prefix in fd53::/64 fd54::/64; do while ip6tables -t nat -C POSTROUTING -d \"$prefix\" -j RETURN 2>/dev/null; do ip6tables -t nat -D POSTROUTING -d \"$prefix\" -j RETURN; done; ip6tables -t nat -I POSTROUTING 1 -d \"$prefix\" -j RETURN; done", nodeIP, frontIP)
 	routes["spec"] = object{"hostNetwork": true, "restartPolicy": "Never", "terminationGracePeriodSeconds": 2, "automountServiceAccountToken": false, "containers": []object{{"name": "routes", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", routeCommand}, "securityContext": object{"runAsUser": 0, "capabilities": object{"drop": []string{"ALL"}, "add": []string{"NET_ADMIN"}}}}}}
 	items = append(items, routes)
 	list("platform-configure.json", items)
 	// No tokens or certificate contents are included in the public contract.
 	write("environment.json", object{"platformKubeconfig": platform, "namespace": ns, "region": "us-central1", "shard": "shared-0", "probePod": "internal-dns-probe", "probeContainer": "probe", "probeBinary": "/dns-qualify", "controllerDeployments": []string{"control-a", "control-b"}, "brokerStatefulSet": "internal-dns-nats", "projects": projectRows, "regionalMembers": memberNames[2:], "members": memberNames, "limitations": []string{"Service-side route fixture, not Galactic VPC authorization", "Independent Kind project APIs, not Milo project discovery", "One host and one region, not independent regional failure"}})
+}
+
+func publicRecursorIP(cl *kubernetes.Clientset) string {
+	service, err := cl.CoreV1().Services(ns).Get(context.Background(), "internal-dns-public-recursor", metav1.GetOptions{})
+	must(err)
+	return service.Spec.ClusterIP
 }
 
 func configureProjectSources(cfg *runtime.Config) {

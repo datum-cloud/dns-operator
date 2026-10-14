@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +34,6 @@ type Config struct {
 	Mode                      Mode                         `json:"mode"`
 	Render                    RenderConfig                 `json:"render"`
 	Transaction               TransactionConfig            `json:"transaction"`
-	CacheFlush                []Command                    `json:"cacheFlush,omitempty"`
 	ReconcileInterval         time.Duration                `json:"reconcileInterval,omitempty"`
 	RetryDelay                time.Duration                `json:"retryDelay,omitempty"`
 	AckInterval               time.Duration                `json:"ackInterval,omitempty"`
@@ -65,9 +63,6 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if c.Mode == ModeResolver && (c.Render.Role == RenderNode || c.Render.Role == RenderBoth) && len(c.CacheFlush) == 0 && !c.UnsafeAllowNoDNSVerify {
-		return errors.New("node BIND cache withdrawal hooks are required")
-	}
 	if c.AckLease > 2*time.Minute {
 		return errors.New("ack lease may not exceed two minutes")
 	}
@@ -85,11 +80,11 @@ func (c Config) Validate() error {
 		return errors.New("failClosed command is required; use unsafeAllowNoFailClosed only in tests")
 	}
 	if c.Mode == ModeCombined {
-		if c.Render.Role != RenderCluster && c.Render.Role != RenderBoth && c.Render.Role != RenderRegionalBIND && c.Render.Role != "" {
-			return errors.New("combined publication serving requires an owned regional BIND process")
+		if c.Render.Role != RenderCluster && c.Render.Role != RenderBoth && c.Render.Role != RenderRegionalCoreDNS && c.Render.Role != "" {
+			return errors.New("combined publication serving requires an owned regional CoreDNS process")
 		}
-		if c.PublicationDNSProbe.Server != "" && c.PublicationDNSProbe.Server != net.JoinHostPort(c.Render.ClusterBIND.ListenAddress, strconv.Itoa(int(c.Render.ClusterBIND.Port))) {
-			return errors.New("publication probe must target this member's protected BIND listener")
+		if c.PublicationDNSProbe.Server != "" && c.PublicationDNSProbe.Server != net.JoinHostPort(c.Render.ClusterCoreDNS.ListenAddress, strconv.Itoa(int(c.Render.ClusterCoreDNS.Port))) {
+			return errors.New("publication probe must target this member's protected CoreDNS listener")
 		}
 	}
 	return nil
@@ -215,7 +210,7 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 		d.Runner = ExecRunner{}
 	}
 	d.AckPublisher = newBoundedAckPublisher(d.AckPublisher)
-	if (c.Mode == ModeResolver || c.Mode == ModeCombined) && c.Render.Role != RenderRegionalBIND && d.Verifier == nil && !c.UnsafeAllowNoDNSVerify {
+	if (c.Mode == ModeResolver || c.Mode == ModeCombined) && c.Render.Role != RenderRegionalCoreDNS && d.Verifier == nil && !c.UnsafeAllowNoDNSVerify {
 		probeConfig := c.ResolverDNSProbe
 		if c.Render.Role == RenderCluster || c.Render.Role == RenderRegionalDNSDist {
 			probeConfig.UseClusterAddress = true
@@ -482,7 +477,6 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		if err != nil {
 			return err
 		}
-		previous := a.state.Snapshot
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
@@ -493,42 +487,11 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 			_ = a.failClosed(ctx)
 			return err
 		}
-		if err := a.flushRemovedBindingZones(ctx, previous, snapshot); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
 	}
 	if err := a.reconcile(ctx); err != nil {
 		return err
 	}
 	return a.finishEvent(ctx)
-}
-
-// A configuration change can detach a zone without changing its publication.
-// Clear its old cache tree before accepting the mapping, including when the
-// context is temporarily pending. The cache hook must flush descendants too.
-func (a *Agent) flushRemovedBindingZones(ctx context.Context, previous *model.ServingSnapshot, snapshot model.ServingSnapshot) error {
-	if previous == nil {
-		return nil
-	}
-	attached := map[string]bool{}
-	for _, binding := range snapshot.Bindings {
-		for _, zone := range binding.Zones {
-			attached[binding.BindingUID+"/"+zone.ZoneUID+"/"+zone.Apex] = true
-		}
-	}
-	flushed := map[string]bool{}
-	for _, binding := range previous.Bindings {
-		for _, zone := range binding.Zones {
-			if !attached[binding.BindingUID+"/"+zone.ZoneUID+"/"+zone.Apex] && !flushed[zone.Apex] {
-				if err := a.flushName(ctx, zone.Apex); err != nil {
-					return err
-				}
-				flushed[zone.Apex] = true
-			}
-		}
-	}
-	return nil
 }
 
 func (a *Agent) handleChunk(env model.Envelope) error {
@@ -586,11 +549,6 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 		if err := a.verifyPublication(ctx, old); err != nil {
 			_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
 			return err
-		}
-		for _, name := range publicationNames(old.Plan) {
-			if err := a.flushName(ctx, name); err != nil {
-				return err
-			}
 		}
 		return a.emitVerifiedPublicationAck(ctx, m.ZoneUID, m.WriterEpoch, m.Revision)
 	}
@@ -658,12 +616,6 @@ func (a *Agent) recordResolverPublication(ctx context.Context, uid string, next,
 	if err := a.store.Save(a.state); err != nil {
 		return err
 	}
-	for _, name := range append(publicationNames(old.Plan), publicationNames(next.Plan)...) {
-		if err := a.flushName(ctx, name); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
-	}
 	next.Verified = true
 	a.state.Publications[uid] = next
 	return a.store.Save(a.state)
@@ -683,12 +635,6 @@ func (a *Agent) activatePublication(ctx context.Context, uid string, next, old p
 	if err := a.verifyPublication(ctx, next); err != nil {
 		_ = a.failClosed(ctx)
 		return err
-	}
-	for _, name := range append(publicationNames(old.Plan), publicationNames(next.Plan)...) {
-		if err := a.flushName(ctx, name); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
 	}
 	next.Verified = true
 	a.state.Publications[uid] = next
@@ -735,9 +681,6 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		return nil
 	}
 	if ack.Phase == model.AckExpired {
-		if err := a.flushPublicationZone(ctx, ack.ResourceUID); err != nil {
-			return err
-		}
 		if err := a.reconcile(ctx); err != nil {
 			return err
 		}
@@ -760,10 +703,6 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		if err := a.store.Save(a.state); err != nil {
 			return err
 		}
-		if err := a.flushPublicationZone(ctx, ack.ResourceUID); err != nil {
-			_ = a.failClosed(ctx)
-			return err
-		}
 		if err := a.reconcile(ctx); err != nil {
 			return err
 		}
@@ -777,17 +716,6 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 	comparison := model.Compare(ack.Epoch, ack.Revision, old.Fence.Epoch, old.Fence.Revision)
 	if comparison < 0 || (comparison == 0 && !ack.ObservedAt.After(old.ObservedAt)) {
 		return nil
-	}
-	highest := fence{}
-	for _, existing := range a.state.Acks[ack.ResourceUID] {
-		if model.Compare(existing.Fence.Epoch, existing.Fence.Revision, highest.Epoch, highest.Revision) > 0 {
-			highest = existing.Fence
-		}
-	}
-	if model.Compare(ack.Epoch, ack.Revision, highest.Epoch, highest.Revision) > 0 {
-		if err := a.flushPublicationZone(ctx, ack.ResourceUID); err != nil {
-			return err
-		}
 	}
 	if comparison > 0 || (ack.Epoch == old.Fence.Epoch && ack.Revision == old.Fence.Revision && ack.ValidUntil.After(old.ValidUntil)) {
 		a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ValidUntil: ack.ValidUntil, ObservedAt: ack.ObservedAt}
@@ -940,7 +868,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 		}
 	}
 	// Keep activation owned until every materialized publication has query proof
-	// and its affected names have been flushed from resolver caches.
+	// and publication content has passed query verification.
 	if a.cfg.Mode == ModeCombined {
 		for _, p := range a.state.Publications {
 			if !p.Verified && (p.Manifest.Tombstone || len(a.publicationViews(p)) > 0) {
@@ -1190,48 +1118,11 @@ func (a *Agent) retryPendingPublications(ctx context.Context) error {
 		if err := a.verifyPublication(ctx, p); err != nil {
 			return err
 		}
-		for _, name := range publicationNames(p.Plan) {
-			if err := a.flushName(ctx, name); err != nil {
-				return err
-			}
-		}
 		p.Verified = true
 		p.EffectiveHash = effectivePlanHash(p.Plan)
 		a.state.Publications[uid] = p
 		if err := a.store.Save(a.state); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func (a *Agent) flushName(ctx context.Context, name string) error {
-
-	for _, command := range a.cfg.CacheFlush {
-		command.Args = append([]string(nil), command.Args...)
-		for i := range command.Args {
-			command.Args[i] = strings.ReplaceAll(command.Args[i], "{name}", model.AbsoluteName(name))
-		}
-		if _, err := a.deps.Runner.Run(ctx, command); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *Agent) flushPublicationZone(ctx context.Context, zoneUID string) error {
-	if a.state.Snapshot == nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	for _, binding := range a.state.Snapshot.Bindings {
-		for _, zone := range binding.Zones {
-			if zone.ZoneUID == zoneUID && !seen[zone.Apex] {
-				seen[zone.Apex] = true
-				if err := a.flushName(ctx, zone.Apex); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
@@ -1355,32 +1246,6 @@ func equalJSON(left, right any) bool {
 	a, errA := json.Marshal(left)
 	b, errB := json.Marshal(right)
 	return errA == nil && errB == nil && string(a) == string(b)
-}
-
-func publicationNames(plan model.PublicationPlan) []string {
-	seen := map[string]bool{}
-	var out []string
-	if plan.Apex != "" {
-		apex := model.AbsoluteName(plan.Apex)
-		seen[apex] = true
-		out = append(out, apex)
-	}
-	for _, owner := range plan.Owners {
-		owner = model.AbsoluteName(owner)
-		if !seen[owner] {
-			seen[owner] = true
-			out = append(out, owner)
-		}
-	}
-	for _, rrset := range plan.RRSets {
-		owner := model.AbsoluteName(rrset.Name)
-		if !seen[owner] {
-			seen[owner] = true
-			out = append(out, owner)
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 func (a *Agent) validateContributionFences(plan model.PublicationPlan) error {

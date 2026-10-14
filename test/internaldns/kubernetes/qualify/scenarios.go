@@ -20,6 +20,17 @@ import (
 
 func (s *suite) scenarios(a, b *project) error {
 	for _, p := range []*project{a, b} {
+		for _, tcp := range []bool{false, true} {
+			if err := s.wait("validated public recursion", 30*time.Second, func() (bool, error) {
+				result, err := s.query(p, "cloudflare.com", "A", tcp)
+				return err == nil && result.Error == "" && result.Rcode == dns.RcodeSuccess && len(result.Addresses) > 0 && result.Authenticated && result.Recursive, err
+			}); err != nil {
+				return err
+			}
+			s.pass("public DNSSEC recursion through PowerDNS for "+p.Name, map[string]bool{"tcp": tcp})
+		}
+	}
+	for _, p := range []*project{a, b} {
 		if err := s.expect(p, "only-a.prod.internal", "A", false, dns.RcodeNameError); err != nil {
 			return err
 		}
@@ -107,7 +118,7 @@ func (s *suite) scenarios(a, b *project) error {
 		}
 	}
 	s.pass("the same hostname in the shared managed domain resolves within its own context over UDP and TCP", managedName)
-	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-bind", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
+	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-coredns", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
 	if err := a.customer.Create(s.ctx, apps); err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package serving
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -9,8 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -22,18 +23,12 @@ type DNSDistRenderConfig struct {
 	Backends      []model.Backend `json:"backends,omitempty"`
 }
 
-type BINDRenderConfig struct {
-	Path                       string   `json:"path"`
-	ListenAddress              string   `json:"listenAddress"`
-	Port                       uint16   `json:"port"`
-	ProxyPeers                 []string `json:"proxyPeers"`
-	DefaultCacheSize           string   `json:"defaultCacheSize,omitempty"`
-	MaxNegativeCacheTTLSeconds uint32   `json:"maxNegativeCacheTTLSeconds,omitempty"`
-	DNSSECValidation           string   `json:"dnssecValidation,omitempty"`
-	RNDCIncludePath            string   `json:"rndcIncludePath,omitempty"`
-	ControlAddress             string   `json:"controlAddress,omitempty"`
-	ControlPort                uint16   `json:"controlPort,omitempty"`
-	ControlKeyName             string   `json:"controlKeyName,omitempty"`
+type CoreDNSRenderConfig struct {
+	Path            string   `json:"path"`
+	ListenAddress   string   `json:"listenAddress"`
+	Port            uint16   `json:"port"`
+	ProxyPeers      []string `json:"proxyPeers"`
+	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
 }
 
 type RenderRole string
@@ -42,7 +37,7 @@ const (
 	RenderNode            RenderRole = "node"
 	RenderCluster         RenderRole = "cluster"
 	RenderBoth            RenderRole = "both"
-	RenderRegionalBIND    RenderRole = "regional-bind"
+	RenderRegionalCoreDNS RenderRole = "regional-coredns"
 	RenderRegionalDNSDist RenderRole = "regional-dnsdist"
 )
 
@@ -52,8 +47,8 @@ type RenderConfig struct {
 	Role             RenderRole                            `json:"role"`
 	NodeDNSDist      DNSDistRenderConfig                   `json:"nodeDNSDist,omitempty"`
 	ClusterDNSDist   DNSDistRenderConfig                   `json:"clusterDNSDist,omitempty"`
-	NodeBIND         BINDRenderConfig                      `json:"nodeBIND,omitempty"`
-	ClusterBIND      BINDRenderConfig                      `json:"clusterBIND,omitempty"`
+	NodeCoreDNS      CoreDNSRenderConfig                   `json:"nodeCoreDNS,omitempty"`
+	ClusterCoreDNS   CoreDNSRenderConfig                   `json:"clusterCoreDNS,omitempty"`
 }
 
 type Rendered struct{ Files map[string][]byte }
@@ -92,17 +87,17 @@ func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active m
 	}
 	if role == RenderNode || role == RenderBoth {
 		files[c.NodeDNSDist.Path] = renderDNSDist(c.NodeDNSDist, nodeBackends, bindings, active, false, nil, c.ReadyZoneMembers)
-		files[c.NodeBIND.Path] = renderNodeBIND(c.NodeBIND, bindings)
+		files[c.NodeCoreDNS.Path] = renderNodeCoreDNS(c.NodeCoreDNS, bindings)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
 		files[c.ClusterDNSDist.Path] = renderDNSDist(c.ClusterDNSDist, clusterBackends, bindings, active, true, c.ReadyMembers, c.ReadyZoneMembers)
 	}
-	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
-		cluster, err := renderClusterBIND(c.ClusterBIND, bindings, publications, files)
+	if role == RenderCluster || role == RenderBoth || role == RenderRegionalCoreDNS {
+		cluster, err := renderClusterCoreDNS(c.ClusterCoreDNS, bindings, publications, files)
 		if err != nil {
 			return Rendered{}, err
 		}
-		files[c.ClusterBIND.Path] = cluster
+		files[c.ClusterCoreDNS.Path] = cluster
 	}
 	return Rendered{Files: files}, nil
 }
@@ -112,21 +107,21 @@ func validateRenderConfig(c RenderConfig) error {
 	if role == "" {
 		role = RenderBoth
 	}
-	if role != RenderNode && role != RenderCluster && role != RenderBoth && role != RenderRegionalBIND && role != RenderRegionalDNSDist {
+	if role != RenderNode && role != RenderCluster && role != RenderBoth && role != RenderRegionalCoreDNS && role != RenderRegionalDNSDist {
 		return fmt.Errorf("unsupported render role %q", role)
 	}
 
 	dists := map[string]DNSDistRenderConfig{}
-	binds := map[string]BINDRenderConfig{}
+	binds := map[string]CoreDNSRenderConfig{}
 	if role == RenderNode || role == RenderBoth {
 		dists["node dnsdist"] = c.NodeDNSDist
-		binds["node BIND"] = c.NodeBIND
+		binds["node CoreDNS"] = c.NodeCoreDNS
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
 		dists["cluster dnsdist"] = c.ClusterDNSDist
 	}
-	if role == RenderCluster || role == RenderBoth || role == RenderRegionalBIND {
-		binds["cluster BIND"] = c.ClusterBIND
+	if role == RenderCluster || role == RenderBoth || role == RenderRegionalCoreDNS {
+		binds["cluster CoreDNS"] = c.ClusterCoreDNS
 	}
 	for label, d := range dists {
 		if !filepath.IsAbs(d.Path) || d.PoolName == "" || model.SafeToken(d.PoolName) != d.PoolName {
@@ -156,25 +151,9 @@ func validateRenderConfig(c RenderConfig) error {
 				return fmt.Errorf("%s invalid proxy peer %q", label, peer)
 			}
 		}
-		if b.DefaultCacheSize == "" {
-			b.DefaultCacheSize = "16M"
-		}
-		if !safeNamedAtom(b.DefaultCacheSize) {
-			return fmt.Errorf("%s unsafe cache size", label)
-		}
-		if b.MaxNegativeCacheTTLSeconds > 60 {
-			return fmt.Errorf("%s maximum negative cache TTL may not exceed 60 seconds", label)
-		}
-		if b.DNSSECValidation != "" && b.DNSSECValidation != "auto" && b.DNSSECValidation != "yes" && b.DNSSECValidation != "no" {
-			return fmt.Errorf("%s invalid DNSSEC validation mode", label)
-		}
-		if b.RNDCIncludePath != "" && (!filepath.IsAbs(b.RNDCIncludePath) || strings.ContainsAny(b.RNDCIncludePath, "\"\n\r")) {
-			return fmt.Errorf("%s unsafe RNDC include", label)
-		}
-		if b.ControlAddress != "" {
-			if _, err := netip.ParseAddr(b.ControlAddress); err != nil || b.ControlPort == 0 || !safeNamedAtom(b.ControlKeyName) {
-				return fmt.Errorf("%s invalid controls", label)
-			}
+		cfg := contextdns.Config{ListenAddress: net.JoinHostPort(b.ListenAddress, strconv.Itoa(int(b.Port))), ProxyPeers: b.ProxyPeers, PublicUpstreams: b.PublicUpstreams}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
 		}
 	}
 	return nil
@@ -280,138 +259,42 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	return out.Bytes()
 }
 
-func renderOptions(out *bytes.Buffer, c BINDRenderConfig) {
-	fmt.Fprint(out, "options {\n  directory \"/tmp\";\n")
-	directive := "listen-on"
-	if netip.MustParseAddr(c.ListenAddress).Is6() {
-		directive = "listen-on-v6"
+func renderNodeCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding) []byte {
+	cfg := coreDNSConfig(c)
+	for _, b := range bindings {
+		context := contextdns.Context{ID: b.ViewName(), Destination: b.ConsumerAddress, Pending: b.ConfigurationPending, Upstreams: []string{net.JoinHostPort(b.ClusterAddress, strconv.Itoa(int(b.Port)))}}
+		for _, zone := range b.Zones {
+			context.Zones = append(context.Zones, contextdns.Zone{Apex: model.AbsoluteName(zone.Apex), Pending: zone.Pending})
+		}
+		cfg.Contexts = append(cfg.Contexts, context)
 	}
-	fmt.Fprintf(out, "  %s port %d proxy plain { %s; };\n", directive, c.Port, c.ListenAddress)
-	if directive == "listen-on" {
-		fmt.Fprint(out, "  listen-on-v6 { none; };\n")
-	} else {
-		fmt.Fprint(out, "  listen-on { none; };\n")
-	}
-	fmt.Fprint(out, "  allow-proxy { ")
-	for _, p := range c.ProxyPeers {
-		fmt.Fprintf(out, "%s; ", p)
-	}
-	fmt.Fprint(out, "};\n")
-	fmt.Fprintf(out, "  allow-proxy-on { %s; };\n", c.ListenAddress)
-	dnssec := c.DNSSECValidation
-	if dnssec == "" {
-		dnssec = "auto"
-	}
-	id := model.OpaqueToken(c.Path)
-	fmt.Fprintf(out, "  dnssec-validation %s;\n", dnssec)
-	fmt.Fprint(out, "  recursion yes;\n  empty-zones-enable no;\n  stale-answer-enable no;\n  stale-cache-enable no;\n")
-	fmt.Fprintf(out, "  pid-file \"/tmp/internal-dns-%s.pid\";\n  session-keyfile \"/tmp/internal-dns-%s-session.key\";\n};\n\n", id, id)
-	if c.RNDCIncludePath != "" {
-		fmt.Fprintf(out, "include %q;\n", c.RNDCIncludePath)
-	}
-	if c.ControlAddress != "" {
-		fmt.Fprintf(out, "controls { inet %s port %d allow { %s; } keys { %q; }; };\n", c.ControlAddress, c.ControlPort, c.ControlAddress, c.ControlKeyName)
-	}
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	return data
 }
 
-func renderNodeBIND(c BINDRenderConfig, bindings []model.Binding) []byte {
-	var out bytes.Buffer
-	renderOptions(&out, c)
+func renderClusterCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publications map[string]publicationState, _ map[string][]byte) ([]byte, error) {
+	cfg := coreDNSConfig(c)
 	for _, b := range bindings {
-		renderViewStart(&out, b, b.ConsumerAddress, c.DefaultCacheSize, maxNegativeCacheTTL(c))
-		fmt.Fprint(&out, "  forward only;\n  forwarders { ")
-		renderAddrPort(&out, b.ClusterAddress, b.Port)
-		fmt.Fprint(&out, " };\n};\n\n")
-	}
-	renderManagementAndReject(&out, c.ListenAddress)
-	return out.Bytes()
-}
-
-func renderClusterBIND(c BINDRenderConfig, bindings []model.Binding, publications map[string]publicationState, files map[string][]byte) ([]byte, error) {
-	var out bytes.Buffer
-	renderOptions(&out, c)
-	for _, b := range bindings {
-		renderViewStart(&out, b, b.ClusterAddress, c.DefaultCacheSize, maxNegativeCacheTTL(c))
+		context := contextdns.Context{ID: b.ViewName(), Destination: b.ClusterAddress, Pending: b.ConfigurationPending}
 		for _, z := range b.Zones {
+			zone := contextdns.Zone{Apex: model.AbsoluteName(z.Apex)}
 			p, ok := publications[z.ZoneUID]
 			if z.Pending || !ok || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
-				// Never recurse toward the public namespace when a private apex is missing.
-				// The front gate returns immediate SERVFAIL; direct BIND queries fail too.
-				fmt.Fprintf(&out, "  zone %q { type forward; forward only; forwarders { 127.0.0.1 port 9; }; };\n", strings.TrimSuffix(model.AbsoluteName(z.Apex), "."))
-				continue
+				zone.Pending = true
+			} else {
+				data, err := renderZone(p)
+				if err != nil {
+					return nil, err
+				}
+				zone.Data = string(data)
 			}
-			data, err := renderZone(p)
-			if err != nil {
-				return nil, err
-			}
-			path := filepath.Join(filepath.Dir(c.Path), "zone-"+model.OpaqueToken(z.ZoneUID)+"-"+model.Hash(data)[:16]+".db")
-			files[path] = data
-			fmt.Fprintf(&out, "  zone %q { type primary; file %q; allow-transfer { none; }; notify no; };\n", strings.TrimSuffix(model.AbsoluteName(z.Apex), "."), path)
+			context.Zones = append(context.Zones, zone)
 		}
-		fmt.Fprint(&out, "};\n\n")
+		cfg.Contexts = append(cfg.Contexts, context)
 	}
-	renderManagementAndReject(&out, c.ListenAddress)
-	return out.Bytes(), nil
+	return json.MarshalIndent(cfg, "", "  ")
 }
 
-func renderViewStart(out *bytes.Buffer, b model.Binding, dest, defaultCache string, maxNegativeCacheTTL uint32) {
-	if b.ConfigurationPending {
-		fmt.Fprintf(out, "view %q {\n  match-clients { any; };\n  match-destinations { %s; };\n  recursion no;\n  allow-query { none; };\n  allow-recursion { none; };\n  allow-query-cache { none; };\n", b.ViewName(), dest)
-		return
-	}
-	cache := defaultCache
-	if cache == "" {
-		cache = "16M"
-	}
-	fmt.Fprintf(out, "view %q {\n  match-clients { any; };\n  match-destinations { %s; };\n  allow-query { any; };\n  allow-recursion { any; };\n  allow-query-cache { any; };\n  max-cache-size %s;\n  max-ncache-ttl %d;\n", b.ViewName(), dest, cache, maxNegativeCacheTTL)
-	// Private authoritative zones are intentionally unsigned and have no DS in
-	// the public root chain. Keep DNSSEC validation enabled for public recursion,
-	// but exclude every private apex attached to this isolated view.
-	apices := make([]string, 0, len(b.Zones))
-	seen := map[string]bool{}
-	for _, zone := range b.Zones {
-		apex := strings.TrimSuffix(model.AbsoluteName(zone.Apex), ".")
-		if !seen[apex] {
-			seen[apex] = true
-			apices = append(apices, apex)
-		}
-	}
-	if len(apices) > 0 {
-		sort.Strings(apices)
-		fmt.Fprint(out, "  validate-except { ")
-		for _, apex := range apices {
-			fmt.Fprintf(out, "%q; ", apex)
-		}
-		fmt.Fprint(out, "};\n")
-	}
-}
-
-func maxNegativeCacheTTL(c BINDRenderConfig) uint32 {
-	if c.MaxNegativeCacheTTLSeconds == 0 {
-		return 5
-	}
-	return c.MaxNegativeCacheTTLSeconds
-}
-
-func renderManagementAndReject(out *bytes.Buffer, listen string) {
-	fmt.Fprintf(out, "view \"management\" {\n  match-clients { any; };\n  match-destinations { %s; };\n  recursion no;\n  allow-query { any; };\n  allow-query-cache { none; };\n};\n\n", listen)
-	fmt.Fprint(out, "view \"reject\" {\n  match-clients { any; };\n  match-destinations { any; };\n  recursion no;\n  allow-query { none; };\n  allow-query-cache { none; };\n};\n")
-}
-func renderAddrPort(out *bytes.Buffer, addr string, port uint16) {
-	fmt.Fprint(out, addr)
-	if port != 53 {
-		fmt.Fprintf(out, " port %d", port)
-	}
-	fmt.Fprint(out, "; ")
-}
-func safeNamedAtom(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
-			return false
-		}
-	}
-	return true
+func coreDNSConfig(c CoreDNSRenderConfig) contextdns.Config {
+	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
 }

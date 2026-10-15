@@ -202,7 +202,7 @@ func collectBackends(bindings []model.Binding, get func(model.Binding) []model.B
 func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
 	endpoint := dnsdistConsole(c.Path)
-	fmt.Fprint(&out, "local client = isClient()\nif client or not internalDNSInitialized then\n")
+	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
 		Listen   string

@@ -307,7 +307,7 @@ func TestRegionalPoolRequiresOneMemberWithEveryCurrentZone(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf := string(rendered.Files[c.ClusterDNSDist.Path])
-	if strings.Count(conf, "server:addPool(") != 1 {
+	if strings.Count(conf, "]:addPool(") != 1 {
 		t.Fatalf("stale live member remains in context pool:\n%s", conf)
 	}
 	// A newer ACK without the matching publication plan gates even the formerly

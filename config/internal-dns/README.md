@@ -5,7 +5,7 @@ Replace the example images, addresses, certificates, storage classes, admission
 CA injection, and site command wrappers before deployment.
 
 CI publishes `ghcr.io/datum-cloud/internal-dns` for the control plane and
-`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents, CoreDNS, and dnsdist.
+`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents and CoreDNS. dnsdist runs directly from its upstream image.
 The serving image includes the validation, activation, and gating
 commands in `config/internal-dns/commands`. The Kubernetes qualification
 environment uses the same commands.
@@ -18,8 +18,8 @@ feature-branch tags and uses these immutable image references.
 
 The fixed fleet has three roles:
 
-- A `node` resolver agent owns the shared node dnsdist/CoreDNS pair.
-- A `regional-dnsdist` resolver agent owns the shared regional frontend and its
+- A `node` resolver agent configures the shared node dnsdist/CoreDNS pair.
+- A `regional-dnsdist` resolver agent configures the shared regional frontend and its
   pool of regional CoreDNS members.
 - Two or more `regional-coredns` combined agents independently compile the complete
   DNS context snapshot for their member, validate it with
@@ -36,7 +36,23 @@ checkpoint PVC, configuration PVC, and durable activation state. Treat that
 set as a single-writer unit. A rolling update must allocate a new member
 identity and storage; do not run two pods against one checkpoint.
 
+Kubernetes manages the dnsdist process. An init container creates a private,
+pod-local control key and an initial configuration that refuses every context.
+The agent validates complete routing snapshots and replaces the rule chain over
+the authenticated loopback console. Failed validation retains active rules.
+Backend eligibility uses immutable pools shared by identical member sets;
+context identity remains the original trusted destination. Listener or backend
+topology changes require a replacement member with independent storage. Agent and broker outages retain applied
+routing. The control key is generated locally and is never a DNS API field.
+
+`routers.example.yaml` supplies the node and regional frontend workloads.
+`fleet.example.yaml` supplies their configurations and the regional CoreDNS
+workload template. Give every member independent configuration and checkpoint
+storage. CoreDNS process activation uses the serving role; dnsdist runs directly
+as its container process.
+
 ## Control-plane and API boundaries
+
 
 Control-plane replicas discover ready Milo projects through the core API and
 watch every namespace in each project control plane. New projects are included

@@ -1,3 +1,3 @@
 #!/bin/sh
 set -eu
-exec dnsdist --check-config -C "$2"
+INTERNAL_DNS_VALIDATE=1 exec dnsdist --check-config -C "$2"

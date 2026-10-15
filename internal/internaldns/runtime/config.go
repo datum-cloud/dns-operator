@@ -20,6 +20,7 @@ import (
 const (
 	roleReadiness      = "readiness"
 	roleServing        = "serving"
+	rolePrepare        = "prepare"
 	roleControlPlane   = "control-plane"
 	memberRoleRegional = "regional"
 	roleAgent          = "agent"
@@ -164,11 +165,11 @@ func validateKubeAPI(name string, c KubeAPIClientConfig) error {
 func (c *Config) Validate(role string) error {
 	c.defaults()
 	switch role {
-	case roleControlPlane, roleAgent, roleReadiness, roleServing:
+	case roleControlPlane, roleAgent, roleReadiness, roleServing, rolePrepare:
 	default:
 		return fmt.Errorf("unsupported role %q", role)
 	}
-	if role == roleReadiness || role == roleServing {
+	if role == roleReadiness || role == roleServing || role == rolePrepare {
 		if c.Agent.Region == "" {
 			c.Agent.Region = c.Region
 		}

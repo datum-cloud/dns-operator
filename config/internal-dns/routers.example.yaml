@@ -95,10 +95,6 @@ spec:
         - "--disable-syslog"
         - "-C"
         - "/etc/internal-dns/node-dnsdist.conf"
-        readinessProbe:
-          tcpSocket:
-            port: 53
-          periodSeconds: 2
         securityContext: *1
         volumeMounts:
         - name: daemon-config
@@ -221,10 +217,6 @@ spec:
         - "--disable-syslog"
         - "-C"
         - "/etc/internal-dns/cluster-dnsdist.conf"
-        readinessProbe:
-          tcpSocket:
-            port: 53
-          periodSeconds: 2
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

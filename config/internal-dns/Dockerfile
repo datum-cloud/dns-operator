@@ -10,7 +10,7 @@ COPY cmd/internal-dns ./cmd/internal-dns
 COPY cmd/internal-dns-coredns ./cmd/internal-dns-coredns
 COPY api ./api
 COPY internal ./internal
-RUN --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -tags netgo,osusergo -ldflags='-s -w' \
     -o /out/internal-dns ./cmd/internal-dns && \

@@ -7,7 +7,7 @@ case "$1" in
   *) echo 'unknown fleet role' >&2; exit 2 ;;
 esac
 if [ -n "$config" ] && nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; then
-  output=$(timeout 5s dnsdist -C "$config" -c -e 'setRules({newRuleAction(AllRule(),RCodeAction(DNSRCode.SERVFAIL))}); print("INTERNAL_DNS_GATED")')
+  output=$(timeout 5s dnsdist -C "$config" -c -e 'setRules({newRuleAction(AllRule(),RCodeAction(DNSRCode.SERVFAIL))}); return "INTERNAL_DNS_GATED"')
   [ "$output" = 'INTERNAL_DNS_GATED' ] || { printf '%s\n' "$output" >&2; exit 1; }
 fi
 rm -f /run/internal-dns/allow-coredns

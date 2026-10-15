@@ -18,6 +18,7 @@ import (
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	runtime "go.miloapis.com/dns-operator/internal/internaldns/runtime"
+	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -226,11 +227,24 @@ func fleetPod(name, member, role string) object {
 	}
 	sec := security()
 	sec["capabilities"] = object{"drop": []string{"ALL"}, "add": []string{"NET_BIND_SERVICE"}}
-	containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/internal-dns", "--role=serving", "--config=/config/config.json"}, "readinessProbe": object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
+	if role != "regional-dnsdist" {
+		containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/internal-dns", "--role=serving", "--config=/config/config.json"}, "readinessProbe": object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
+	}
+	if role == "node" || role == "regional-dnsdist" {
+		file := "node-dnsdist.conf"
+		if role != "node" {
+			file = "cluster-dnsdist.conf"
+			containers[0]["readinessProbe"] = object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}
+		}
+		containers = append(containers, object{"name": "dnsdist", "image": serving.DNSDistImage, "command": []string{"/usr/local/bin/dnsdist"}, "args": []string{"--supervised", "--disable-syslog", "-C", "/etc/internal-dns/" + file}, "securityContext": sec, "volumeMounts": []object{mount("daemon-config", "/etc/internal-dns", true), mount("lease", "/run/internal-dns", true), mount("runtime", "/tmp", false)}, "readinessProbe": object{"tcpSocket": object{"port": 53}, "periodSeconds": 2}, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
+	}
 	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}}
 	// The aliases model the service-side destination contract only. The separate
 	// probe has no ability to write routes or send trusted PROXY traffic.
 	init := []object{}
+	if role == "node" || role == "regional-dnsdist" {
+		init = append(init, object{"name": "dnsdist-config", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=prepare --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts})
+	}
 	if role == "node" || role == "regional-dnsdist" {
 		prefix := "fd53::/64"
 		if role != "node" {

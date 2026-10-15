@@ -11,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +20,10 @@ import (
 )
 
 func (s *suite) scenarios(a, b *project) error {
+	initialDNSDist, err := s.dnsdistProcesses()
+	if err != nil {
+		return err
+	}
 	for _, p := range []*project{a, b} {
 		for _, tcp := range []bool{false, true} {
 			if err := s.wait("validated public recursion", 30*time.Second, func() (bool, error) {
@@ -197,6 +202,16 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	s.pass("restored controllers and persistent broker publish a fresh observation", nil)
+	finalDNSDist, err := s.dnsdistProcesses()
+	if err != nil {
+		return err
+	}
+	for pod, id := range initialDNSDist {
+		if finalDNSDist[pod] != id {
+			return fmt.Errorf("dnsdist restarted during routing updates or agent recovery on %s", pod)
+		}
+	}
+	s.pass("upstream dnsdist processes survive context updates and agent restart", finalDNSDist)
 	return nil
 }
 
@@ -445,4 +460,28 @@ func readyPods(pods []corev1.Pod, replicas int32) bool {
 		}
 	}
 	return true
+}
+
+func (s *suite) dnsdistProcesses() (map[string]string, error) {
+	result := map[string]string{}
+	for _, name := range []string{"internal-dns-node", "internal-dns-regional-front"} {
+		var pod corev1.Pod
+		if err := s.platform.Get(s.ctx, client.ObjectKey{Namespace: s.env.Namespace, Name: name}, &pod); err != nil {
+			return nil, err
+		}
+		for _, container := range pod.Spec.Containers {
+			if container.Name == "dnsdist" && (container.Image != serving.DNSDistImage || len(container.Command) != 1 || container.Command[0] != "/usr/local/bin/dnsdist") {
+				return nil, fmt.Errorf("%s must run the upstream dnsdist container directly", name)
+			}
+		}
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == "dnsdist" && status.State.Running != nil {
+				result[name] = status.ContainerID
+			}
+		}
+		if result[name] == "" {
+			return nil, fmt.Errorf("%s has no running dnsdist process", name)
+		}
+	}
+	return result, nil
 }

@@ -1,10 +1,9 @@
 #!/bin/sh
 set -eu
-touch /run/internal-dns/allow-dnsdist
-pkill -TERM -x dnsdist || true
-for attempt in $(seq 1 35); do
-  if nc -z -w 1 ::1 53 >/dev/null 2>&1; then exit 0; fi
-  sleep 0.05
-done
-echo 'dnsdist listener did not become ready' >&2
-exit 1
+case "$1" in
+  node) config=/etc/internal-dns/node-dnsdist.conf ;;
+  regional) config=/etc/internal-dns/cluster-dnsdist.conf ;;
+  *) echo 'unknown dnsdist role' >&2; exit 2 ;;
+esac
+output=$(timeout 5s dnsdist -C "$config" -c -e "dofile(\"$config\"); print(\"INTERNAL_DNS_APPLIED\")")
+[ "$output" = 'INTERNAL_DNS_APPLIED' ] || { printf '%s\n' "$output" >&2; exit 1; }

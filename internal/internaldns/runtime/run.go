@@ -51,6 +51,8 @@ func Run(ctx context.Context, role string, cfg Config, kubeconfig string) error 
 		return runAgent(ctx, cfg)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)
+	case rolePrepare:
+		return serving.PrepareDNSDist(cfg.Agent.Render)
 	case roleServing:
 		return serving.RunDaemons(ctx, cfg.Agent)
 	default:

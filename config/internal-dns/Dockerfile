@@ -21,9 +21,10 @@ COPY --from=build /out/internal-dns /internal-dns
 USER 65532:65532
 ENTRYPOINT ["/internal-dns"]
 
-FROM debian:trixie-slim AS serving
+FROM powerdns/dnsdist-20:2.0.10@sha256:24ac720af997aff6b98cb5b50d748754f815428e07b5368dfb0eccd5aa8d07e8 AS serving
+USER 0:0
 RUN apt-get update && apt-get install --no-install-recommends -y \
-    dnsdist pdns-recursor iproute2 procps netcat-openbsd ca-certificates bash && \
+    pdns-recursor iproute2 procps netcat-openbsd ca-certificates bash && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/internal-dns /internal-dns
 COPY --from=build /out/coredns /usr/local/bin/coredns

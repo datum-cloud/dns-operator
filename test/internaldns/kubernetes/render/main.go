@@ -33,6 +33,8 @@ type object = map[string]any
 const ns = "internal-dns-system"
 const projectNS = "project-e2e"
 const image = "internal-dns-kubernetes:e2e"
+const nodeRole = string(serving.RenderNode)
+const regionalDNSDistRole = string(serving.RenderRegionalDNSDist)
 
 var out, phase, platform, a, b, ai, bi string
 var memberNames = []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"}
@@ -178,7 +180,7 @@ func bootstrap() {
 	public["spec"] = object{"ipFamilies": []string{"IPv6"}, "ipFamilyPolicy": "SingleStack", "selector": object{"app": "internal-dns-public-recursor"}, "ports": []object{{"name": "dns-udp", "port": 5353, "protocol": "UDP"}, {"name": "dns-tcp", "port": 5353, "protocol": "TCP"}}}
 	items = append(items, public)
 	for i, name := range podNames {
-		role := []string{"node", "regional-dnsdist", "regional-coredns", "regional-coredns"}[i]
+		role := []string{nodeRole, regionalDNSDistRole, "regional-coredns", "regional-coredns"}[i]
 		items = append(items, fleetPod(name, memberNames[i], role))
 		for _, vol := range []string{"state", "config"} {
 			pvc := obj("v1", "PersistentVolumeClaim", name+"-"+vol, ns)
@@ -227,12 +229,12 @@ func fleetPod(name, member, role string) object {
 	}
 	sec := security()
 	sec["capabilities"] = object{"drop": []string{"ALL"}, "add": []string{"NET_BIND_SERVICE"}}
-	if role != "regional-dnsdist" {
+	if role != regionalDNSDistRole {
 		containers = append(containers, object{"name": "serving", "image": image, "imagePullPolicy": "Never", "command": []string{"/internal-dns", "--role=serving", "--config=/config/config.json"}, "readinessProbe": object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}, "securityContext": sec, "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "100m", "memory": "128Mi"}, "limits": object{"memory": "512Mi"}}})
 	}
-	if role == "node" || role == "regional-dnsdist" {
+	if role == nodeRole || role == regionalDNSDistRole {
 		file := "node-dnsdist.conf"
-		if role != "node" {
+		if role != nodeRole {
 			file = "cluster-dnsdist.conf"
 			containers[0]["readinessProbe"] = object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}
 		}
@@ -242,12 +244,12 @@ func fleetPod(name, member, role string) object {
 	// The aliases model the service-side destination contract only. The separate
 	// probe has no ability to write routes or send trusted PROXY traffic.
 	init := []object{}
-	if role == "node" || role == "regional-dnsdist" {
+	if role == nodeRole || role == regionalDNSDistRole {
 		init = append(init, object{"name": "dnsdist-config", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=prepare --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts})
 	}
-	if role == "node" || role == "regional-dnsdist" {
+	if role == nodeRole || role == regionalDNSDistRole {
 		prefix := "fd53::/64"
-		if role != "node" {
+		if role != nodeRole {
 			prefix = "fd54::/64"
 		}
 		init = append(init, object{"name": "destination-fixture", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "ip -6 route replace local " + prefix + " dev lo"}, "securityContext": object{"runAsUser": 0, "capabilities": object{"drop": []string{"ALL"}, "add": []string{"NET_ADMIN"}}}})

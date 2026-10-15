@@ -10,7 +10,7 @@ COPY internal ./internal
 COPY cmd/internal-dns ./cmd/internal-dns
 COPY cmd/internal-dns-coredns ./cmd/internal-dns-coredns
 COPY test/internaldns/kubernetes/qualify ./test/internaldns/kubernetes/qualify
-RUN --mount=type=cache,target=/root/.cache/go-build \
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/internal-dns ./cmd/internal-dns && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/coredns ./cmd/internal-dns-coredns && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /out/dns-qualify ./test/internaldns/kubernetes/qualify

@@ -63,20 +63,14 @@ func RunDaemons(ctx context.Context, config Config) error {
 	addBind := func(bind CoreDNSRenderConfig) {
 		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: []string{"-config", bind.Path}})
 	}
-	addRouter := func(router DNSDistRenderConfig) {
-		processes = append(processes, &daemonProcess{name: "dnsdist", config: router.Path, args: []string{"--supervised", "-C", router.Path}})
-	}
+
 	switch config.Render.Role {
 	case RenderNode:
 		addBind(config.Render.NodeCoreDNS)
-		addRouter(config.Render.NodeDNSDist)
 	case RenderRegionalCoreDNS:
 		addBind(config.Render.ClusterCoreDNS)
-	case RenderRegionalDNSDist:
-		addRouter(config.Render.ClusterDNSDist)
 	case RenderCluster:
 		addBind(config.Render.ClusterCoreDNS)
-		addRouter(config.Render.ClusterDNSDist)
 	default:
 		return fmt.Errorf("unsupported serving process role %q", config.Render.Role)
 	}

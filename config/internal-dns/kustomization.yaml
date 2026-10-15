@@ -5,4 +5,5 @@ resources:
 - rbac.yaml
 - control-plane.example.yaml
 - fleet.example.yaml
+- routers.example.yaml
 - admission.example.yaml

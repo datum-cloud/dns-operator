@@ -15,7 +15,7 @@ import (
 
 func main() {
 	var role, configPath, kubeconfig string
-	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, or readiness")
+	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, readiness, or prepare")
 	flag.StringVar(&configPath, "config", "", "Absolute path to the internal DNS JSON configuration")
 	// controller-runtime/client-go may install this standard flag from an init
 	// hook. Reuse it when present so the command keeps one stable contract.

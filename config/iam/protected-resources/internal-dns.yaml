@@ -1,0 +1,107 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnszoneassociation
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSZoneAssociation
+  plural: dnszoneassociations
+  singular: dnszoneassociation
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsnamingpolicy
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSNamingPolicy
+  plural: dnsnamingpolicies
+  singular: dnsnamingpolicy
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsregistration
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSRegistration
+  plural: dnsregistrations
+  singular: dnsregistration
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsrecordcontribution
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSRecordContribution
+  plural: dnsrecordcontributions
+  singular: dnsrecordcontribution
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsresolvercontext
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSResolverContext
+  plural: dnsresolvercontexts
+  singular: dnsresolvercontext
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsresolveraccessbinding
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSResolverAccessBinding
+  plural: dnsresolveraccessbindings
+  singular: dnsresolveraccessbinding
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

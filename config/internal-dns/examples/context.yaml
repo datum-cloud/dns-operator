@@ -1,0 +1,11 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSResolverContext
+metadata:
+  name: application-network
+  namespace: project
+spec:
+  # The network integration supplies an opaque, stable consumer identity.
+  consumerID: network-integration/application-network
+  # Products discover this namespace instead of asking users to select a zone.
+  managedNamespace:
+    enabled: true

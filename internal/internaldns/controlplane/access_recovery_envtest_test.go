@@ -37,7 +37,7 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		}
 	})
 	scheme := runtime.NewScheme()
-	requireAccessTestSuccess(t, dnsv1alpha1.AddToScheme(scheme))
+	requireAccessTestSuccess(t, addReferenceStateToScheme(scheme))
 	requireAccessTestSuccess(t, corev1.AddToScheme(scheme))
 	cl, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
@@ -81,6 +81,9 @@ func TestAccessRecoveryPreservesSourceFencesWithCEL(t *testing.T) {
 		requireAccessTestSuccess(t, cl.Status().Update(ctx, c))
 	}
 	readyContext(resolverContext)
+	t.Run("name-only customer references", func(t *testing.T) {
+		verifyNamedReferencesWithAPI(t, cl)
+	})
 	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, Region: "central", DestinationAddress: "fd70:100::10"}}
 	requireAccessTestSuccess(t, cl.Create(ctx, access))
 	r := &Reconciler{Client: cl, Scheme: scheme, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: &platform.Allocator{Client: cl, Namespace: "platform"}}}

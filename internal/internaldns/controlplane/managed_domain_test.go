@@ -18,7 +18,7 @@ import (
 
 func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	domains := map[string]string{"vpc-a": "datum.internal", "vpc-b": "datum.internal", "custom": "private.example.net"}
@@ -50,14 +50,12 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 	if err := c.List(ctx, &associations); err != nil {
 		t.Fatal(err)
 	}
-	for i := range associations.Items {
-		a := &associations.Items[i]
-		a.Status.ResolvedDNSZoneRef = a.Spec.DNSZoneRef
-		a.Status.ResolvedResolverContextRef = a.Spec.ResolverContextRef
-		setCondition(&a.Status.Conditions, "Accepted", metav1.ConditionTrue, "Ready", "", a.Generation, now)
-		if err := c.Status().Update(ctx, a); err != nil {
-			t.Fatal(err)
-		}
+	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
+	for i := range zones.Items {
+		zoneByName[zones.Items[i].Name] = &zones.Items[i]
+	}
+	if err := r.reconcileAssociations(ctx, associations.Items, zoneByName, now); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
@@ -68,7 +66,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, resolver := range contexts.Items {
-		if resolver.Status.ManagedNamespace.Suffix != domains[resolver.Name] || resolver.Status.ManagedNamespace.DNSZoneRef.UID == "" {
+		if resolver.Status.ManagedNamespace.Suffix != domains[resolver.Name] || resolver.Status.ManagedNamespace.DNSZoneRef.Name == "" {
 			t.Fatalf("unallocated context: %#v", resolver.Status)
 		}
 		var zone dnsv1alpha1.DNSZone
@@ -89,7 +87,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 			t.Fatal("managed association must share the resolver context lifecycle")
 		}
 	}
-	if contexts.Items[0].Status.ManagedNamespace.DNSZoneRef.UID == contexts.Items[1].Status.ManagedNamespace.DNSZoneRef.UID {
+	if contexts.Items[0].Status.ManagedNamespace.DNSZoneRef.Name == contexts.Items[1].Status.ManagedNamespace.DNSZoneRef.Name {
 		t.Fatal("contexts share a zone lifetime")
 	}
 	zone := &zones.Items[0]
@@ -105,7 +103,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, resolver := range contexts.Items {
-		if resolver.Status.ManagedNamespace.DNSZoneRef.UID == zone.UID {
+		if resolver.Status.ManagedNamespace.DNSZoneRef.Name == zone.Name {
 			t.Fatal("a mismatched zone domain remained allocated")
 		}
 	}
@@ -115,7 +113,7 @@ func TestManagedNamespaceRequiresRequestedDomain(t *testing.T) {
 	for _, domain := range []string{"", "bad..internal", "*.internal"} {
 		t.Run(domain, func(t *testing.T) {
 			s := runtime.NewScheme()
-			if err := dnsv1alpha1.AddToScheme(s); err != nil {
+			if err := addReferenceStateToScheme(s); err != nil {
 				t.Fatal(err)
 			}
 			resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "consumer", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "opaque-consumer", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: domain}}}

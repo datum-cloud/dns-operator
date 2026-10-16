@@ -60,17 +60,18 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}, Status: dnsv1alpha1.DNSResolverContextStatus{}}
 	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 1, now)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid"}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "zone", UID: "zone-uid", Generation: 1}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}}}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "assoc", Namespace: "project", UID: "assoc-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "zone"}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "ctx"}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "zone"}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "ctx"}}}
 	setCondition(&association.Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", DestinationAddress: "fd70:100::10"}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject, zone, association, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverBinding{}).Build()
 	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: testAllocator{}}}
+	seedReferenceState(t, r, association, map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, "context": {Name: contextObject.Name, UID: contextObject.UID}})
 	if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association}, map[string]*dnsv1alpha1.DNSZone{"zone": zone}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +100,10 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	extraZone.UID = "extra-uid"
 	extraAssociation := association.DeepCopy()
 	extraAssociation.Name = "extra-assoc"
-	extraAssociation.Spec.DNSZoneRef = dnsv1alpha1.DNSObjectReference{Name: extraZone.Name, UID: extraZone.UID}
-	extraAssociation.Status.ResolvedDNSZoneRef = extraAssociation.Spec.DNSZoneRef
+	extraAssociation.Spec.DNSZoneRef = dnsv1alpha1.DNSNameReference{Name: extraZone.Name}
+	extraAssociation.UID = "extra-association-uid"
+	extraAssociation.Status.ResolvedDNSZoneRef = dnsv1alpha1.DNSNameReference{Name: extraZone.Name}
+	seedReferenceState(t, r, extraAssociation, map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: extraZone.Name, UID: extraZone.UID, Generation: extraZone.Generation}, "context": {Name: contextObject.Name, UID: contextObject.UID}})
 	if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association, *extraAssociation}, map[string]*dnsv1alpha1.DNSZone{"zone": zone, "extra": extraZone}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -229,20 +232,29 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 2}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}}
 	setCondition(&resolverContext.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 2, now)
 	z1 := dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "managed", Namespace: "project", UID: "zone-1", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	z2 := dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "services", Namespace: "project", UID: "zone-2", Generation: 3}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	associations := []dnsv1alpha1.DNSZoneAssociation{{Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{UID: z1.UID}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: resolverContext.UID}}}, {Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{UID: z2.UID}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: resolverContext.UID}}}}
+	associations := []dnsv1alpha1.DNSZoneAssociation{{Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{}}}, {Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{}}}}
 	for i := range associations {
+		zone := []dnsv1alpha1.DNSZone{z1, z2}[i]
+		associations[i].Name = zone.Name + "-association"
+		associations[i].Namespace = "project"
+		associations[i].UID = types.UID(associations[i].Name)
+		associations[i].Generation = 1
 		setCondition(&associations[i].Status.Conditions, "Accepted", metav1.ConditionTrue, "Accepted", "", 1, now)
 	}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: resolverContext.UID}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z1.Name, UID: z1.UID, Generation: z1.Generation}, NamePrefix: "instances"}, {Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: z2.Name, UID: z2.UID, Generation: z2.Generation}, NamePrefix: "services"}}}}
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "names", Namespace: "project", UID: "policy-uid", Generation: 1}, Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolverContext.Name}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: z1.Name}, NamePrefix: "instances"}, {DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: z2.Name}, NamePrefix: "services"}}}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolverContext, policy).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSNamingPolicy{}).Build()
 	r := &Reconciler{Client: c, Options: ReconcilerOptions{}}
+	for i := range associations {
+		zone := []dnsv1alpha1.DNSZone{z1, z2}[i]
+		seedReferenceState(t, r, &associations[i], map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, "context": {Name: resolverContext.Name, UID: resolverContext.UID}})
+	}
 	if err := r.reconcileNamingPolicies(ctx, []dnsv1alpha1.DNSNamingPolicy{*policy}, associations, map[string]*dnsv1alpha1.DNSZone{z1.Name: &z1, z2.Name: &z2}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +265,7 @@ func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T)
 	if accepted == nil || accepted.Status != metav1.ConditionTrue || len(policy.Status.ResolvedAdditionalNames) != 2 {
 		t.Fatalf("context naming policy not resolved: %#v", policy.Status)
 	}
-	if policy.Status.ResolvedResolverContextRef.UID != resolverContext.UID {
+	if policy.Status.ResolvedResolverContextRef.Name != resolverContext.Name {
 		t.Fatalf("identity projection incorrect: %#v", policy.Status)
 	}
 }
@@ -286,6 +298,18 @@ func TestStableOneShardPerRegionAssignment(t *testing.T) {
 	after := r.selectServingTargets("vpc-1", existing)
 	if after[0].Shard != central.Shard {
 		t.Fatalf("adding a shard moved live VPC: before=%s after=%s", central.Shard, after[0].Shard)
+	}
+}
+
+func TestAccessPlacementMatchesContextPublicationTargets(t *testing.T) {
+	r := &Reconciler{Options: ReconcilerOptions{ProjectUID: "project", ServingRegions: []ServingRegion{{Region: "east", Shard: "a"}, {Region: "east", Shard: "b"}, {Region: "west", Shard: "a"}}}}
+	for i := range 100 {
+		uid := types.UID(fmt.Sprintf("context-%d", i))
+		for _, target := range r.selectServingTargets(uid, nil) {
+			if shard := r.shardForContextRegion(uid, target.Region, nil); shard != target.Shard {
+				t.Fatalf("binding shard %s does not match publication target %s", shard, target.Shard)
+			}
+		}
 	}
 }
 

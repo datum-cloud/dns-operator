@@ -19,20 +19,25 @@ type DNSObjectReference struct {
 	Generation int64 `json:"generation,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.resolverContextRef) || ((self.resolverContextRef.name.size() == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation) || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0))",message="a nonempty resolverContextRef must pin name and UID"
-// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
-// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0",message="resolverContextRef is required"
+// DNSNameReference selects a resource in the same project namespace.
+// DNS records its resolved lifetime in controller-owned status.
+type DNSNameReference struct {
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+}
+
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
+// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0",message="resolverContextRef is required"
 type DNSZoneAssociationSpec struct {
-	DNSZoneRef         DNSObjectReference `json:"dnsZoneRef"`
-	ResolverContextRef DNSObjectReference `json:"resolverContextRef"`
-	Managed            bool               `json:"managed,omitempty"`
+	DNSZoneRef         DNSNameReference `json:"dnsZoneRef"`
+	ResolverContextRef DNSNameReference `json:"resolverContextRef"`
+	Managed            bool             `json:"managed,omitempty"`
 }
 
 type DNSZoneAssociationStatus struct {
-	ResolvedDNSZoneRef         DNSObjectReference  `json:"resolvedDNSZoneRef,omitempty"`
-	ResolvedResolverContextRef DNSObjectReference  `json:"resolvedResolverContextRef,omitempty"`
-	BindingRef                 *DNSObjectReference `json:"bindingRef,omitempty"`
-	Conditions                 []metav1.Condition  `json:"conditions,omitempty"`
+	ResolvedDNSZoneRef         DNSNameReference   `json:"resolvedDNSZoneRef,omitempty"`
+	ResolvedResolverContextRef DNSNameReference   `json:"resolvedResolverContextRef,omitempty"`
+	Conditions                 []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // DNSResolverContext is the DNS-owned serving and namespace boundary created by
@@ -57,8 +62,8 @@ type DNSResolverContextManagedNamespace struct {
 }
 
 type DNSResolverContextManagedNamespaceStatus struct {
-	DNSZoneRef DNSObjectReference `json:"dnsZoneRef,omitempty"`
-	Suffix     string             `json:"suffix,omitempty"`
+	DNSZoneRef DNSNameReference `json:"dnsZoneRef,omitempty"`
+	Suffix     string           `json:"suffix,omitempty"`
 }
 
 type DNSResolverContextStatus struct {
@@ -111,9 +116,8 @@ type DNSResolverAccessBindingSpec struct {
 }
 
 type DNSResolverAccessBindingStatus struct {
-	ObservedGeneration int64               `json:"observedSequence,omitempty"`
-	BindingRef         *DNSObjectReference `json:"bindingRef,omitempty"`
-	Conditions         []metav1.Condition  `json:"conditions,omitempty"`
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -152,11 +156,11 @@ type DNSZoneAssociationList struct {
 
 const DNSRegistrationMaxTTLSeconds int32 = 30
 
-// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
 type DNSRegistrationSpec struct {
-	DNSZoneRef  DNSObjectReference `json:"dnsZoneRef"`
-	Name        string             `json:"name"`
-	RecordTypes []RRType           `json:"recordTypes"`
+	DNSZoneRef  DNSNameReference `json:"dnsZoneRef"`
+	Name        string           `json:"name"`
+	RecordTypes []RRType         `json:"recordTypes"`
 	// TTLSeconds bounds cached dynamic answers to at most 30 seconds after withdrawal.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=30
@@ -226,21 +230,22 @@ type DNSRecordContributionList struct {
 	Items           []DNSRecordContribution `json:"items"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.resolverContextRef) || ((self.resolverContextRef.name.size() == 0 && !has(self.resolverContextRef.uid) && (!has(self.resolverContextRef.generation) || self.resolverContextRef.generation == 0)) || (self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0))",message="a nonempty resolverContextRef must pin name and UID"
-// +kubebuilder:validation:XValidation:rule="!has(self.dnsZoneRef) || self.dnsZoneRef.name.size() == 0 || (has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0)",message="a selected dnsZoneRef must pin the zone UID"
-// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid) && self.resolverContextRef.uid.size() > 0",message="resolverContextRef is required"
+// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0",message="resolverContextRef is required"
 type DNSNamingPolicySpec struct {
-	ResolverContextRef DNSObjectReference      `json:"resolverContextRef"`
-	AdditionalNames    []DNSAdditionalNameRule `json:"additionalNames"`
-	DNSZoneRef         DNSObjectReference      `json:"dnsZoneRef,omitempty"`
-	ScopePrefix        string                  `json:"scopePrefix,omitempty"`
-	Priority           int32                   `json:"priority,omitempty"`
+	ResolverContextRef DNSNameReference `json:"resolverContextRef"`
+	// +kubebuilder:validation:MaxItems=256
+	AdditionalNames []DNSAdditionalNameRule `json:"additionalNames"`
+	DNSZoneRef      DNSNameReference        `json:"dnsZoneRef,omitempty"`
+	ScopePrefix     string                  `json:"scopePrefix,omitempty"`
+	Priority        int32                   `json:"priority,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
 type DNSAdditionalNameRule struct {
+	// Selector matches DNSRegistration metadata labels within this DNS context.
+	// An omitted or empty selector matches every registration in the context.
 	Selector   *DNSRegistrationSelector `json:"selector,omitempty"`
-	DNSZoneRef DNSObjectReference       `json:"dnsZoneRef"`
+	DNSZoneRef DNSNameReference         `json:"dnsZoneRef"`
 	NamePrefix string                   `json:"namePrefix"`
 }
 
@@ -280,15 +285,14 @@ func (s *DNSRegistrationSelector) AsLabelSelector() *metav1.LabelSelector {
 }
 
 type DNSNamingPolicyStatus struct {
-	ResolvedResolverContextRef DNSObjectReference              `json:"resolvedResolverContextRef,omitempty"`
-	ResolvedDNSZoneRef         DNSObjectReference              `json:"resolvedDNSZoneRef,omitempty"`
+	ResolvedResolverContextRef DNSNameReference                `json:"resolvedResolverContextRef,omitempty"`
 	ResolvedAdditionalNames    []DNSResolvedAdditionalNameRule `json:"resolvedAdditionalNames,omitempty"`
 	Conditions                 []metav1.Condition              `json:"conditions,omitempty"`
 }
 
 type DNSResolvedAdditionalNameRule struct {
 	Selector   *metav1.LabelSelector `json:"selector,omitempty"`
-	DNSZoneRef DNSObjectReference    `json:"dnsZoneRef"`
+	DNSZoneRef DNSNameReference      `json:"dnsZoneRef"`
 	NamePrefix string                `json:"namePrefix"`
 }
 

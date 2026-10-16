@@ -115,7 +115,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 	})
 	for _, ttl := range []int32{0, 31, 2147483647} {
 		t.Run("ttl", func(t *testing.T) {
-			a := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "registration-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSObjectReference{Name: "zone", UID: "zone-uid"}, Name: "web", RecordTypes: []RRType{RRTypeAAAA}, TTLSeconds: ttl}}
+			a := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "registration-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSNameReference{Name: "zone"}, Name: "web", RecordTypes: []RRType{RRTypeAAAA}, TTLSeconds: ttl}}
 			requireInvalid(t, cl.Create(ctx, a))
 		})
 	}
@@ -160,5 +160,6 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		}
 	})
 	validateServiceDNSContracts(t, cl)
+	validateNamingAPISchemas(t, cl)
 
 }

@@ -185,16 +185,32 @@ func TestCompileSRVTargetUsesAbsoluteZoneIdentity(t *testing.T) {
 
 func fixture(now time.Time) CompileInput {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", UID: "zone-a", Generation: 2}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	assoc := func(name string, vpc types.UID) dnsv1alpha1.DNSZoneAssociation {
-		return dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: name, UID: vpc}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: name, UID: vpc}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
+	assoc := func(name string) dnsv1alpha1.DNSZoneAssociation {
+		return dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: name}}, Status: dnsv1alpha1.DNSZoneAssociationStatus{ResolvedDNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: name}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
 	}
-	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, TTLSeconds: 30}}
+	reg := dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", UID: "registration-a", Generation: 3}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeAAAA}, TTLSeconds: 30}}
 	c := dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "endpoint-a", UID: "contribution-a", Generation: 18}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeAAAA, Records: []dnsv1alpha1.RecordEntry{{Name: "api.corp.internal", AAAA: &dnsv1alpha1.AAAARecordSpec{Content: "fd00::1"}}}}}, Eligible: true}, Status: dnsv1alpha1.DNSRecordContributionStatus{ObservedGeneration: 4}}
-	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b", "vpc-b"), assoc("a", "vpc-a")}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
+	zoneRef := dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID, Generation: zone.Generation}
+	return CompileInput{Zone: zone, Associations: []dnsv1alpha1.DNSZoneAssociation{assoc("b"), assoc("a")}, AssociationReferences: map[types.UID]associationReferences{
+		"a": {Zone: zoneRef, Context: dnsv1alpha1.DNSObjectReference{Name: "a", UID: "vpc-a"}},
+		"b": {Zone: zoneRef, Context: dnsv1alpha1.DNSObjectReference{Name: "b", UID: "vpc-b"}},
+	}, RegistrationZoneReferences: map[types.UID]dnsv1alpha1.DNSObjectReference{reg.UID: zoneRef}, Registrations: []dnsv1alpha1.DNSRegistration{reg}, Contributions: []dnsv1alpha1.DNSRecordContribution{c}, Now: now}
 }
 
 func structLocal(name string) corev1.LocalObjectReference {
 	return corev1.LocalObjectReference{Name: name}
+}
+
+func TestCompileRejectsReplacementBehindANameOnlyReference(t *testing.T) {
+	in := fixture(time.Now().UTC())
+	in.Zone.UID = "replacement-zone"
+	result, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted[in.Registrations[0].UID] || result.Reasons[in.Registrations[0].UID] != "InvalidReference" || len(result.Plan.RRsets) != 0 {
+		t.Fatalf("replacement reused a registration's private reference: %#v", result)
+	}
 }
 
 func TestCompileRejectsPrivateAuthorityOverridesWithoutBlockingHealthyRecords(t *testing.T) {
@@ -215,6 +231,7 @@ func TestCompileRejectsPrivateAuthorityOverridesWithoutBlockingHealthyRecords(t 
 			bad.Spec.Name = tt.entry.Name
 			bad.Spec.RecordTypes = []dnsv1alpha1.RRType{tt.recordType}
 			in.Registrations = append(in.Registrations, *bad)
+			in.RegistrationZoneReferences[bad.UID] = in.RegistrationZoneReferences[in.Registrations[0].UID]
 			got, err := Compile(in)
 			if err != nil {
 				t.Fatal(err)

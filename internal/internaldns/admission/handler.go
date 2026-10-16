@@ -135,12 +135,16 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if err := decode(req, &a); err != nil {
 		return err
 	}
-	if _, err := currentPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
+	if err := validateNamedPrivateZone(ctx, cl, req.Namespace, a.Spec.DNSZoneRef); err != nil {
 		return err
 	}
 
-	if a.Spec.ResolverContextRef.UID == "" {
-		return fmt.Errorf("association must pin resolver context UID")
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: a.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
+		return fmt.Errorf("resolver context lookup: %w", err)
+	}
+	if !resolverContext.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("resolver context is being deleted")
 	}
 	return nil
 }
@@ -152,7 +156,7 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 	}
 
 	if p.Spec.DNSZoneRef.Name != "" {
-		if _, err := currentPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
+		if err := validateNamedPrivateZone(ctx, cl, req.Namespace, p.Spec.DNSZoneRef); err != nil {
 			return err
 		}
 	}
@@ -160,21 +164,32 @@ func (h *Handler) namingPolicy(ctx context.Context, cl client.Client, req kubead
 		if _, err := metav1.LabelSelectorAsSelector(rule.Selector.AsLabelSelector()); err != nil {
 			return fmt.Errorf("invalid naming selector: %w", err)
 		}
-		if _, err := currentPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {
+		if err := validateNamedPrivateZone(ctx, cl, req.Namespace, rule.DNSZoneRef); err != nil {
 			return err
 		}
 	}
 
-	if p.Spec.ResolverContextRef.Name == "" || p.Spec.ResolverContextRef.UID == "" {
-		return fmt.Errorf("naming policy must pin resolver context name and UID")
-	}
 	var resolverContext dnsv1alpha1.DNSResolverContext
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: p.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
 		return fmt.Errorf("resolver context lookup: %w", err)
 	}
 	ready := apimeta.FindStatusCondition(resolverContext.Status.Conditions, "Ready")
-	if resolverContext.UID != p.Spec.ResolverContextRef.UID || !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
+	if !resolverContext.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolverContext.Generation {
 		return fmt.Errorf("resolver context lifetime is not ready")
+	}
+	return nil
+}
+
+func validateNamedPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSNameReference) error {
+	if ref.Name == "" {
+		return fmt.Errorf("zone reference requires a name")
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &zone); err != nil {
+		return fmt.Errorf("private zone lookup: %w", err)
+	}
+	if !zone.DeletionTimestamp.IsZero() || zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return fmt.Errorf("internal references require a live private zone")
 	}
 	return nil
 }
@@ -217,16 +232,15 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 	return nil
 }
 
-// Zone references cannot silently follow a replacement with the same name.
-func currentPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSObjectReference) (*dnsv1alpha1.DNSZone, error) {
-	if ref.Name == "" || ref.UID == "" {
-		return nil, fmt.Errorf("zone reference must pin name and UID")
+func currentPrivateZone(ctx context.Context, cl client.Client, namespace string, ref dnsv1alpha1.DNSNameReference) (*dnsv1alpha1.DNSZone, error) {
+	if ref.Name == "" {
+		return nil, fmt.Errorf("zone reference requires a name")
 	}
 	var zone dnsv1alpha1.DNSZone
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, &zone); err != nil {
 		return nil, fmt.Errorf("private zone lookup: %w", err)
 	}
-	if zone.UID != ref.UID || !zone.DeletionTimestamp.IsZero() || (ref.Generation != 0 && ref.Generation != zone.Generation) {
+	if !zone.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("zone lifetime is not current")
 	}
 	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {

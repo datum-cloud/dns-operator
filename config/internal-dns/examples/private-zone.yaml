@@ -1,0 +1,38 @@
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  name: production
+  namespace: project
+spec:
+  visibility: Private
+  domainName: prod.internal
+  dnsZoneClassName: datum-internal-dns
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZoneAssociation
+metadata:
+  name: application-production
+  namespace: project
+spec:
+  # Select resources by name within this project namespace.
+  dnsZoneRef:
+    name: production
+  resolverContextRef:
+    name: application-network
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSNamingPolicy
+metadata:
+  name: application-production-names
+  namespace: project
+spec:
+  resolverContextRef:
+    name: application-network
+  additionalNames:
+    # Match registration labels supplied by any authorized publisher.
+    - selector:
+        matchLabels:
+          app: storefront
+      dnsZoneRef:
+        name: production
+      namePrefix: storefront

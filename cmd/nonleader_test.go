@@ -51,7 +51,8 @@ const (
 
 // projectControlPlanePath is the path Milo serves each project's control plane
 // under; the provider appends it to the project kubeconfig's host.
-var projectControlPlanePath = regexp.MustCompile(`^/apis/resourcemanager\.miloapis\.com/v1alpha1/projects/[^/]+/control-plane`)
+var projectControlPlanePath = regexp.MustCompile(
+	`^/apis/resourcemanager\.miloapis\.com/v1alpha1/projects/[^/]+/control-plane`)
 
 // TestNonLeaderReplica runs the replicator as a replica that never wins the
 // lease, with the Milo provider production uses and a webhook server that
@@ -172,7 +173,10 @@ type planes struct{ deployment, project *rest.Config }
 func startPlanes(t *testing.T) planes {
 	t.Helper()
 	dnsCRDs := filepath.Join("..", "config", "crd", "bases")
-	return planes{deployment: startEnvtest(t, dnsCRDs, miloProjectCRDs(t)), project: startEnvtest(t, dnsCRDs, nsoDomainCRD(t))}
+	return planes{
+		deployment: startEnvtest(t, dnsCRDs, miloProjectCRDs(t)),
+		project:    startEnvtest(t, dnsCRDs, nsoDomainCRD(t)),
+	}
 }
 
 // startReplica builds the replicator the way main does, with the Milo

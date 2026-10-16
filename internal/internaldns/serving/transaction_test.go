@@ -6,9 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunner struct {
@@ -75,39 +75,6 @@ func TestFileTransactionConfigIsReadableByServiceUID(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o644 {
 		t.Fatalf("installed mode = %#o, want 0644", info.Mode().Perm())
-	}
-}
-
-func TestAtomicLeaseWriteReplacesCompleteFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "lease.json")
-	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeAtomicLease(path, []byte(`{"memberID":"node-0"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(contents) != `{"memberID":"node-0"}` {
-		t.Fatalf("atomic durable contents = %q", contents)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("atomic durable mode = %#o", info.Mode().Perm())
-	}
-	temporary, err := filepath.Glob(filepath.Join(dir, ".lease.json.tmp-*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(temporary) != 0 {
-		t.Fatalf("temporary lease files remain: %#v", temporary)
 	}
 }
 
@@ -216,7 +183,7 @@ func TestFileTransactionReloadsOnlyChangedTier(t *testing.T) {
 		t.Fatalf("reload calls = %#v", runner.calls)
 	}
 	if got, err := os.ReadFile(named); err != nil || string(got) != "unchanged" {
-		t.Fatalf("unchanged BIND file was disturbed: %q, %v", got, err)
+		t.Fatalf("unchanged CoreDNS file was disturbed: %q, %v", got, err)
 	}
 }
 
@@ -224,39 +191,158 @@ type transactionRunnerFunc func(context.Context, Command) ([]byte, error)
 
 func (f transactionRunnerFunc) Run(ctx context.Context, c Command) ([]byte, error) { return f(ctx, c) }
 
-func TestFileTransactionValidatesFreshStagedZoneReferences(t *testing.T) {
+func TestFileTransactionValidatesCompleteStagedSnapshot(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	config := filepath.Join(dir, "live", "named.conf")
-	zone := filepath.Join(dir, "live", "zone.db")
+	path := filepath.Join(dir, "contexts.json")
+	candidate := []byte(`{"contexts":[{"id":"a","data":"new zone"}]}`)
 	runner := transactionRunnerFunc(func(_ context.Context, c Command) ([]byte, error) {
-		data, err := os.ReadFile(c.Args[0])
+		staged, err := os.ReadFile(c.Args[0])
 		if err != nil {
 			return nil, err
 		}
-		staged := filepath.Join(filepath.Dir(c.Args[0]), "zone.db")
-		if !strings.Contains(string(data), strconv.Quote(staged)) || strings.Contains(string(data), strconv.Quote(zone)) {
-			t.Fatalf("validator sees live zone: %s", data)
-		}
-		content, err := os.ReadFile(staged)
-		if err != nil {
-			return nil, err
-		}
-		if string(content) != "new zone" {
-			t.Fatalf("staged content=%s", content)
+		if !bytes.Equal(staged, candidate) || c.Args[0] == path {
+			t.Fatal("validator did not see complete staged snapshot")
 		}
 		return nil, nil
 	})
-	tx := FileTransaction{Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "named-checkconf", Args: []string{"{stageDir}/named.conf"}}}}, Runner: runner}
-	original := []byte("zone \"test.internal\" { type primary; file " + strconv.Quote(zone) + "; };\n")
-	if err := tx.Apply(context.Background(), map[string][]byte{config: original, zone: []byte("new zone")}); err != nil {
+	tx := FileTransaction{Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), Validate: []Command{{Path: "coredns", Args: []string{"{stageDir}/contexts.json"}}}}, Runner: runner}
+	if err := tx.Apply(context.Background(), map[string][]byte{path: candidate}); err != nil {
 		t.Fatal(err)
 	}
-	installed, err := os.ReadFile(config)
+	installed, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(installed, candidate) {
+		t.Fatal("installed snapshot differs", err)
+	}
+}
+
+func TestActivationGuardsStructuralChangesBeforeInstallingFiles(t *testing.T) {
+	dir := t.TempDir()
+	bind := filepath.Join(dir, "bind.conf")
+	router := filepath.Join(dir, "dnsdist.conf")
+	for _, path := range []string{bind, router} {
+		if err := os.WriteFile(path, []byte("approved"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := activationMarkerPath(dir)
+	runner := &activationBoundaryRunner{t: t, marker: marker, paths: []string{bind, router}}
+	tx := FileTransaction{MarkerPath: marker, Runner: runner, Config: TransactionConfig{
+		StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}},
+		Reload: []Command{{Path: "reload-bind", WhenChanged: []string{bind}}, {Path: "reload-dnsdist", WhenChanged: []string{router}}},
+	}}
+	if err := tx.Apply(context.Background(), map[string][]byte{bind: []byte("approved"), router: []byte("candidate")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commitActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(runner.calls, ",") != "gate,reload-bind,reload-dnsdist" {
+		t.Fatalf("owned daemons were not restarted together: %#v", runner.calls)
+	}
+}
+
+type activationBoundaryRunner struct {
+	t      *testing.T
+	marker string
+	paths  []string
+	calls  []string
+}
+
+func (r *activationBoundaryRunner) Run(_ context.Context, command Command) ([]byte, error) {
+	r.calls = append(r.calls, command.Path)
+	_, markerErr := os.Stat(r.marker)
+	if command.Path == "gate" {
+		if markerErr != nil {
+			r.t.Fatal("structural gate ran without durable installation guard")
+		}
+		for _, path := range r.paths {
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != "approved" {
+				r.t.Fatal("files changed before DNS was gated")
+			}
+		}
+	} else {
+		start, retain, release := daemonPermission(filepath.Dir(r.marker))
+		defer release()
+		if !start || !retain {
+			r.t.Fatal("complete files could not start for validation")
+		}
+	}
+	return nil, nil
+}
+
+type blockedInstallRunner struct {
+	recordingRunner
+	block func() error
+}
+
+func (r *blockedInstallRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+	if command.Path == "gate" && r.block != nil {
+		if err := r.block(); err != nil {
+			return nil, err
+		}
+	}
+	return r.recordingRunner.Run(ctx, command)
+}
+
+func TestInterruptedInstallationRequiresLocalRecovery(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(installed, original) {
-		t.Fatal("installed config retains temporary staging paths")
+	installTestPublication(t, agent, time.Now().UTC())
+	approved := agent.state.Active.Files
+	badParent := filepath.Join(cfg.StateDir, "not-a-directory")
+	agent.tx.Runner = &blockedInstallRunner{block: func() error {
+		return os.WriteFile(badParent, []byte("blocked"), 0o644)
+	}}
+	files := map[string][]byte{filepath.Join(badParent, "later.conf"): []byte("candidate")}
+	for path := range approved {
+		files[path] = []byte("candidate")
+	}
+	if err := agent.tx.Apply(context.Background(), files); err == nil {
+		t.Fatal("interrupted installation succeeded")
+	}
+	if !activationPending(cfg.StateDir) {
+		t.Fatal("interrupted installation lost its durable guard")
+	}
+	if err := agent.tx.abandonActivation(); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if activationPending(cfg.StateDir) || !installedFilesMatch(approved) {
+		t.Fatal("approved configuration could not recover without a broker")
+	}
+}
+
+func TestContextSnapshotUpdateDoesNotStopDNS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "contexts.json")
+	before := []byte(`{"contexts":[{"id":"a","data":"192.0.2.1"}]}`)
+	after := []byte(`{"contexts":[{"id":"a","data":"192.0.2.2"}]}`)
+	if err := os.WriteFile(path, before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	tx := FileTransaction{MarkerPath: activationMarkerPath(dir), Runner: runner, Config: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}, Reload: []Command{{Path: "activate-coredns"}}}}
+	if err := tx.Apply(context.Background(), map[string][]byte{path: after}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.commitActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 1 || runner.calls[0].Path != "activate-coredns" {
+		t.Fatal("snapshot update stopped DNS", runner.calls)
+	}
+	if !routingConfigurationChanged(filepath.Join(dir, "dnsdist.conf"), before, after) {
+		t.Fatal("router update did not require a gate")
 	}
 }

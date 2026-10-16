@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/config"
+	"go.miloapis.com/dns-operator/internal/controller"
 	"go.miloapis.com/dns-operator/internal/display"
 	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 )
@@ -59,7 +62,8 @@ func TestNonLeaderReplica(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	probe := freeAddress(t)
-	mcmgr := startNonLeaderReplica(ctx, t, ctrl.Options{
+	p := startPlanes(t)
+	mcmgr := startReplica(ctx, t, p, true, newCluster(t, p.deployment), ctrl.Options{
 		HealthProbeBindAddress: probe,
 		WebhookServer:          neverServing{webhook.NewServer(webhook.Options{})},
 	}, setupReplicatorWebhook)
@@ -105,36 +109,97 @@ func readyzOnceProjectsRegistered(t *testing.T, address string, timeout time.Dur
 	return status, body
 }
 
-// startNonLeaderReplica builds the replicator the way main does, with the Milo
-// provider production uses, as a replica that cannot win the lease, and
-// starts it. Two API servers stand in for production's two: the deployment
-// cluster, which holds the Projects, the Lease and downstream DNSZones, and a
-// project control plane, which holds the project's DNSZone. A proxy in front
-// of the second strips the project path, as Milo does. So a webhook that never
+const ownProcessEnv = "DNS_OPERATOR_TEST_OWN_PROCESS"
+
+func TestSingleReplicaWithoutLeaderElection(t *testing.T) {
+	// The Milo provider registers a process-wide controller name, and
+	// TestNonLeaderReplica starts one, so this test runs in a process of its own.
+	if os.Getenv(ownProcessEnv) != t.Name() {
+		runInOwnProcess(t)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := startPlanes(t)
+	downstream := newCluster(t, p.deployment)
+	zoneReplicator := func(mcmgr mcmanager.Manager) error {
+		return (&controller.DNSZoneReplicator{DownstreamClient: downstream.GetClient()}).SetupWithManager(mcmgr, downstream)
+	}
+	mcmgr := startReplica(ctx, t, p, false, downstream, ctrl.Options{
+		HealthProbeBindAddress: freeAddress(t),
+		WebhookServer:          neverServing{webhook.NewServer(webhook.Options{})},
+	}, zoneReplicator, setupReplicatorWebhook)
+
+	if !finalizedWithin(ctx, t, newClient(t, p.project), 60*time.Second) {
+		t.Fatal("the replicator never reconciled the project's DNSZone")
+	}
+	mutator := &dnswebhook.DNSRecordSetMutator{Manager: mcmgr, Client: mcmgr.GetLocalManager().GetClient()}
+	if !annotatedWithin(ctx, t, mutator, 60*time.Second) {
+		t.Fatal("the webhook admitted a DNSRecordSet without its display annotations")
+	}
+}
+
+func runInOwnProcess(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
+	cmd.Env = append(os.Environ(), ownProcessEnv+"="+t.Name())
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s in its own process: %v\n%s", t.Name(), err, out)
+	}
+}
+
+func finalizedWithin(ctx context.Context, t *testing.T, c client.Client, timeout time.Duration) bool {
+	t.Helper()
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(time.Second) {
+		var zone dnsv1alpha1.DNSZone
+		err := c.Get(ctx, client.ObjectKey{Namespace: testNamespace, Name: testZone}, &zone)
+		if err == nil && slices.Contains(zone.Finalizers, "dns.networking.miloapis.com/finalize-dnszone") {
+			return true
+		}
+	}
+	return false
+}
+
+// planes stand in for production's two API servers: the deployment cluster,
+// which holds the Projects, the Lease and downstream DNSZones, and a project
+// control plane, which holds the project's DNSZone. A proxy in front of the
+// second strips the project path, as Milo does. So a webhook that never
 // engaged the project falls back to the deployment cluster, finds no zone
 // there, and admits the record set without annotations.
-func startNonLeaderReplica(
-	ctx context.Context, t *testing.T, opts ctrl.Options, setups ...func(mcmanager.Manager) error,
-) mcmanager.Manager {
+type planes struct{ deployment, project *rest.Config }
+
+func startPlanes(t *testing.T) planes {
 	t.Helper()
 	dnsCRDs := filepath.Join("..", "config", "crd", "bases")
-	deploymentCfg := startEnvtest(t, dnsCRDs, miloProjectCRDs(t))
-	projectCfg := startEnvtest(t, dnsCRDs)
+	return planes{deployment: startEnvtest(t, dnsCRDs, miloProjectCRDs(t)), project: startEnvtest(t, dnsCRDs, nsoDomainCRD(t))}
+}
 
-	deploymentClient := newClient(t, deploymentCfg)
-	holdLease(ctx, t, deploymentClient)
+// startReplica builds the replicator the way main does, with the Milo
+// provider production uses, and starts it. A contended replica runs with
+// leader election on while another replica holds the lease, so it cannot win
+// it; otherwise leader election is off, as production runs it.
+func startReplica(
+	ctx context.Context, t *testing.T, p planes, contended bool, downstream cluster.Cluster,
+	opts ctrl.Options, setups ...func(mcmanager.Manager) error,
+) mcmanager.Manager {
+	t.Helper()
+	deploymentClient := newClient(t, p.deployment)
+	if contended {
+		holdLease(ctx, t, deploymentClient)
+	}
 	createReadyProject(ctx, t, deploymentClient)
-	createZone(ctx, t, newClient(t, projectCfg))
+	createZone(ctx, t, newClient(t, p.project))
 
 	serverConfig := config.DNSOperator{Discovery: config.DiscoveryConfig{
 		Mode:                    multiclusterproviders.ProviderMilo,
-		DiscoveryKubeconfigPath: writeKubeconfig(t, deploymentCfg),
-		ProjectKubeconfigPath:   writeKubeconfig(t, &rest.Config{Host: projectControlPlaneProxy(t, projectCfg)}),
+		DiscoveryKubeconfigPath: writeKubeconfig(t, p.deployment),
+		ProjectKubeconfigPath:   writeKubeconfig(t, &rest.Config{Host: projectControlPlaneProxy(t, p.project)}),
 	}}
 	opts.Scheme = scheme
 	opts.Metrics = metricsserver.Options{BindAddress: "0"}
-	opts.LeaderElection, opts.LeaderElectionID, opts.LeaderElectionNamespace = true, leaderElectionID, testNamespace
-	runnables, mcmgr, err := newReplicatorManager(serverConfig, deploymentCfg, newCluster(t, deploymentCfg), opts)
+	opts.LeaderElection, opts.LeaderElectionID, opts.LeaderElectionNamespace = contended, leaderElectionID, testNamespace
+	runnables, mcmgr, err := newReplicatorManager(serverConfig, p.deployment, newCluster(t, p.deployment), opts)
 	if err != nil {
 		t.Fatalf("newReplicatorManager: %v", err)
 	}
@@ -143,7 +208,7 @@ func startNonLeaderReplica(
 			t.Fatalf("setting up the replica: %v", err)
 		}
 	}
-	go func() { _ = runReplicator(ctx, runnables, newCluster(t, deploymentCfg), mcmgr) }()
+	go func() { _ = runReplicator(ctx, runnables, downstream, mcmgr) }()
 	return mcmgr
 }
 
@@ -233,11 +298,22 @@ func startEnvtest(t *testing.T, dirs ...string) *rest.Config {
 // Project among them, in the module this repository pins.
 func miloProjectCRDs(t *testing.T) string {
 	t.Helper()
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "go.miloapis.com/milo").Output()
+	return filepath.Join(moduleDir(t, "go.miloapis.com/milo"), "config", "crd", "bases", "resourcemanager")
+}
+
+func nsoDomainCRD(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(moduleDir(t, "go.datum.net/network-services-operator"),
+		"config", "crd", "bases", "networking.datumapis.com_domains.yaml")
+}
+
+func moduleDir(t *testing.T, module string) string {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", module).Output()
 	if err != nil {
-		t.Fatalf("locating the milo module: %v", err)
+		t.Fatalf("locating the %s module: %v", module, err)
 	}
-	return filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases", "resourcemanager")
+	return strings.TrimSpace(string(out))
 }
 
 // projectControlPlaneProxy serves the project control plane at Milo's project

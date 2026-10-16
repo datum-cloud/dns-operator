@@ -76,3 +76,48 @@ func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {
 		t.Fatal("new resource lifetime reused the old address")
 	}
 }
+
+func TestDestinationClaimBelongsToContextLifetime(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := Allocator{Client: cl, Namespace: "platform"}
+	for range 2 {
+		if err := allocator.ClaimDestination(ctx, "project", "context", "east", "fd70::53", 53); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := allocator.ClaimDestination(ctx, "project", "replacement-context", "east", "fd70::53", 53); err == nil {
+		t.Fatal("a replacement context reused a quarantined destination")
+	}
+	if err := allocator.ClaimDestination(ctx, "another-project", "context", "east", "fd70::53", 53); err == nil {
+		t.Fatal("another project reused a destination")
+	}
+}
+
+func TestDestinationClaimConversionRequiresPinnedBinding(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := Allocator{Client: cl, Namespace: "platform"}
+	if err := allocator.ClaimDestination(ctx, "project", "access", "east", "fd70::53", 53); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ClaimDestination(ctx, "project", "context", "east", "fd70::53", 53); err == nil {
+		t.Fatal("claim changed ownership without lifetime proof")
+	}
+	binding := &dnsv1alpha1.DNSResolverBinding{}
+	binding.Namespace, binding.Name = "platform", "binding"
+	binding.Spec.Source.ProjectUID = "project"
+	binding.Spec.Source.ResolverContextRef.UID = "context"
+	binding.Spec.Source.AccessBindingRef.UID = "access"
+	binding.Spec.Placement.Region = "east"
+	binding.Spec.Configuration.Query.NodeAddress = "fd70::53"
+	if err := cl.Create(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ClaimDestination(ctx, "project", "context", "east", "fd70::53", 53); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ClaimDestination(ctx, "project", "access", "east", "fd70::53", 53); err == nil {
+		t.Fatal("converted claim returned to access lifetime")
+	}
+}

@@ -50,3 +50,6 @@ go.work.sum
 .claude/settings.local.json
 .claude/worktrees/
 .mcp.json
+
+/.internal-dns-e2e/
+/test/internaldns/results/

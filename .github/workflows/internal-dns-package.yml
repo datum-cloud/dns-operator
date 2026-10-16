@@ -1,0 +1,26 @@
+name: Internal DNS package
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  package:
+    name: Qualify internal DNS runtime package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build and qualify the runtime package
+        run: test/internaldns/qualify-package.sh
+      - name: Retain package evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: internal-dns-package
+          path: test/internaldns/results/package
+          if-no-files-found: warn

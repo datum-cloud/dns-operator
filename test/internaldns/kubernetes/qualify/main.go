@@ -287,8 +287,13 @@ func (s *suite) run(path string) error {
 		}
 	}
 	a, b := &s.env.Projects[0], &s.env.Projects[1]
-	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.Suffix == b.resolverContext.Status.ManagedNamespace.Suffix {
+	if a.resolverContext.UID == b.resolverContext.UID || a.zone.UID == b.zone.UID || a.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name == b.resolverContext.Status.ManagedNamespace.DNSZoneRef.Name {
 		return errors.New("source projects lost their distinct context, zone, or managed namespace identity")
+	}
+	for _, p := range s.env.Projects {
+		if p.resolverContext.Status.ManagedNamespace.Suffix != "datum.internal" {
+			return errors.New("managed namespace did not use the default domain")
+		}
 	}
 	s.pass("independent projects retain distinct context, zone, and managed namespace identities", map[string]string{"a": string(a.resolverContext.UID), "b": string(b.resolverContext.UID)})
 	if err := s.scenarios(a, b); err != nil {

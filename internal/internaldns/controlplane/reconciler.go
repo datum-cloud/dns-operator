@@ -30,7 +30,6 @@ type ReconcilerOptions struct {
 	LeaseDuration         time.Duration
 	Now                   func() time.Time
 	AddressAllocator      AddressAllocator
-	ManagedDomainSuffix   string
 	PrivateZoneClassName  string
 	ServingRegions        []ServingRegion
 }

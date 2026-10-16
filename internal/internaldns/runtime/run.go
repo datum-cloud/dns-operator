@@ -131,8 +131,8 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 				},
 				ProjectNamespace: project.Namespace, PlatformNamespace: cfg.PlatformNamespace,
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
-				LeaseDuration:    cfg.ownershipLease(),
-				AddressAllocator: allocator, ManagedDomainSuffix: cfg.ManagedDomainSuffix,
+				LeaseDuration:        cfg.ownershipLease(),
+				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {

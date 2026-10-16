@@ -122,7 +122,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			consumerOwners[c.Spec.ConsumerID] = c.UID
 		}
 		valid = valid && !duplicate
-		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(r.Options.ManagedDomainSuffix)) > 0
+		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(c.Spec.ManagedNamespace.DomainSuffix)) > 0
 		valid = valid && !invalidDomain
 		c.Status.ServingTargets = nil
 		if valid {
@@ -131,6 +131,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		if c.Spec.ManagedNamespace.Enabled && valid {
 			var err error
 			ready, err = r.reconcileManagedZone(ctx, c)
@@ -143,6 +144,9 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			status, reason, msg = metav1.ConditionFalse, "InvalidIdentity", "consumerID is required and context must be live"
 			if duplicate {
 				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
+			}
+			if invalidDomain {
+				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a valid domainSuffix"
 			}
 		}
 		if valid && !ready {
@@ -603,7 +607,7 @@ func resolverContextReady(contextObject *dnsv1alpha1.DNSResolverContext) bool {
 }
 
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
-	suffix := canonicalName(model.OpaqueToken(string(c.UID)) + "." + r.Options.ManagedDomainSuffix)
+	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
 	zoneName := "managed-" + model.OpaqueToken(string(c.UID))[:12]
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	if r.Scheme != nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -43,6 +45,8 @@ import (
 	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
+
+const leaderElectionID = "1813fe7c.datum.cloud"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -234,7 +238,7 @@ func main() {
 			LeaseDuration:          &leaderElectionLeaseDuration,
 			RenewDeadline:          &leaderElectionRenewDeadline,
 			RetryPeriod:            &leaderElectionRetryPeriod,
-			LeaderElectionID:       "1813fe7c.datum.cloud",
+			LeaderElectionID:       leaderElectionID,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to start manager")
@@ -314,23 +318,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Initialize cluster discovery provider (single or milo)
-		runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
-		if err != nil {
-			setupLog.Error(err, "unable to initialize cluster discovery")
-			os.Exit(1)
-		}
-
 		// Multicluster manager (serves mutating webhook for display annotations)
 		webhookServer := webhook.NewServer(webhookServerOptions)
 		webhookServer = dnswebhook.NewClusterAwareWebhookServer(webhookServer)
-		mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+		runnables, mcmgr, err := newReplicatorManager(serverConfig, cfg, deploymentCluster, ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
 			LeaderElection:         enableLeaderElection,
-			LeaderElectionID:       "1813fe7c.datum.cloud",
+			LeaderElectionID:       leaderElectionID,
 		})
 		if err != nil {
 			setupLog.Error(err, "unable to start multicluster manager")
@@ -356,17 +353,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "DNSRecordSet")
-			os.Exit(1)
-		}
-
-		if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-			setupLog.Error(err, "unable to set up health check")
-			os.Exit(1)
-		}
-		if err := mcmgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-			setupLog.Error(err, "unable to set up ready check")
+		if err := setupReplicatorWebhook(mcmgr); err != nil {
+			setupLog.Error(err, "unable to set up the DNSRecordSet webhook and its checks")
 			os.Exit(1)
 		}
 
@@ -381,6 +369,41 @@ func main() {
 		setupLog.Error(fmt.Errorf("invalid role: %s", role), "")
 		os.Exit(1)
 	}
+}
+
+// newReplicatorManager builds the replicator's cluster discovery and the
+// multicluster manager that discovers clusters through it.
+func newReplicatorManager(
+	serverConfig config.DNSOperator,
+	cfg *rest.Config,
+	deploymentCluster cluster.Cluster,
+	opts ctrl.Options,
+) ([]manager.Runnable, mcmanager.Manager, error) {
+	runnables, provider, setup, err := initializeClusterDiscovery(serverConfig, deploymentCluster, opts.Scheme)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to initialize cluster discovery: %w", err)
+	}
+	mcmgr, err := mcmanager.New(cfg, provider, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := setup(mcmgr); err != nil {
+		return nil, nil, err
+	}
+	return runnables, mcmgr, nil
+}
+
+// setupReplicatorWebhook registers the DNSRecordSet webhooks, the
+// replicator's health check, and a readiness check on its webhook server.
+func setupReplicatorWebhook(mcmgr mcmanager.Manager) error {
+	if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
+		return fmt.Errorf("unable to create the DNSRecordSet webhook: %w", err)
+	}
+	if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to set up health check: %w", err)
+	}
+	// The mutating webhook fails closed.
+	return mcmgr.AddReadyzCheck("webhook", mcmgr.GetWebhookServer().StartedChecker())
 }
 
 // runReplicator starts the pre-created runnables, the downstream cluster, and
@@ -418,8 +441,9 @@ func initializeClusterDiscovery(
 	serverConfig config.DNSOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, setup func(mcmanager.Manager) error, err error) {
 	runnables = append(runnables, deploymentCluster)
+	setup = func(mcmanager.Manager) error { return nil }
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
 		// The single provider implements multicluster.ProviderRunnable and
@@ -428,40 +452,20 @@ func initializeClusterDiscovery(
 		provider = mcsingle.New("single", deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		discoveryManager, miloProvider, err := newMiloProvider(serverConfig.Discovery, scheme)
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+			return nil, nil, nil, err
 		}
-
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+		// Handed to the multicluster manager as it is, the provider's Start
+		// runs on the elected leader only, and the webhooks of every other
+		// replica could reach no project.
+		provider = milomulticluster.WithoutAutoStart(miloProvider)
+		setup = func(mgr mcmanager.Manager) error {
+			if err := milomulticluster.EngageAlways(mgr, miloProvider); err != nil {
+				return fmt.Errorf("unable to start the project provider on every replica: %w", err)
+			}
+			return mgr.AddReadyzCheck("projects", projectsRegistered(miloProvider))
 		}
-
-		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
-				},
-			},
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
-		}
-
-		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
-		}
-
 		runnables = append(runnables, discoveryManager)
 
 	// case providers.ProviderKind:
@@ -474,13 +478,67 @@ func initializeClusterDiscovery(
 	// 	})
 
 	default:
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"unsupported cluster discovery mode %s",
 			serverConfig.Discovery.Mode,
 		)
 	}
 
-	return runnables, provider, nil
+	return runnables, provider, setup, nil
+}
+
+// newMiloProvider builds the manager that discovers projects and the Milo
+// provider that runs its discovery on it.
+func newMiloProvider(
+	discovery config.DiscoveryConfig,
+	scheme *runtime.Scheme,
+) (manager.Manager, *milomulticluster.Provider, error) {
+	discoveryRestConfig, err := discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+
+	projectRestConfig, err := discovery.ProjectRestConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+	}
+
+	discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				Unstructured: true,
+			},
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+	}
+
+	provider, err := milomulticluster.New(discoveryManager, milomulticluster.Options{
+		ClusterOptions: []cluster.Option{
+			func(o *cluster.Options) {
+				o.Scheme = scheme
+			},
+		},
+		InternalServiceDiscovery: discovery.InternalServiceDiscovery,
+		ProjectRestConfig:        projectRestConfig,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
+	}
+	return discoveryManager, provider, nil
+}
+
+// projectsRegistered reports ready once the provider has registered every
+// project it found at start, so a new replica does not answer admission
+// requests for a project it cannot reach yet.
+func projectsRegistered(provider interface{ HasSynced() bool }) healthz.Checker {
+	return func(*http.Request) error {
+		if !provider.HasSynced() {
+			return errors.New("projects found at start are not all registered yet")
+		}
+		return nil
+	}
 }
 
 func ignoreCanceled(err error) error {

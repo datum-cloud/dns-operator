@@ -19,19 +19,20 @@ import (
 )
 
 type ReconcilerOptions struct {
-	ProjectUID           types.UID
-	ProjectNamespace     string
-	PlatformNamespace    string
-	Region               string
-	Shard                string
-	Identity             string
-	ChunkSize            int
-	LeaseDuration        time.Duration
-	Now                  func() time.Time
-	AddressAllocator     AddressAllocator
-	ManagedDomainSuffix  string
-	PrivateZoneClassName string
-	ServingRegions       []ServingRegion
+	ProjectUID            types.UID
+	VerifyProjectIdentity func(context.Context) error
+	ProjectNamespace      string
+	PlatformNamespace     string
+	Region                string
+	Shard                 string
+	Identity              string
+	ChunkSize             int
+	LeaseDuration         time.Duration
+	Now                   func() time.Time
+	AddressAllocator      AddressAllocator
+	ManagedDomainSuffix   string
+	PrivateZoneClassName  string
+	ServingRegions        []ServingRegion
 }
 
 type ServingRegion struct {
@@ -101,11 +102,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.Options.ProjectUID == "" {
 		return ctrl.Result{}, errors.New("projectUID is required")
 	}
+	if r.Options.VerifyProjectIdentity != nil {
+		if err := r.Options.VerifyProjectIdentity(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	ns := r.Options.ProjectNamespace
 	if ns == "" {
 		ns = req.Namespace
 	}
-	if ns == "" || ns == r.Options.PlatformNamespace {
+	if ns == "" {
 		return ctrl.Result{}, nil
 	}
 	return r.reconcileProject(ctx, ns)

@@ -344,5 +344,5 @@ func restoreFiles(paths []string, old map[string]oldFile) error {
 }
 
 func routingConfigurationChanged(path string, before, after []byte) bool {
-	return strings.HasSuffix(path, ".conf") && !bytes.Equal(before, after)
+	return strings.HasSuffix(path, ".conf") && !strings.HasSuffix(path, "-dnsdist.conf") && !bytes.Equal(before, after)
 }

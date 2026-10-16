@@ -1,0 +1,32 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: internal-dns-admission
+  annotations:
+    cert-manager.io/inject-ca-from: internal-dns-system/internal-dns-admission-tls
+webhooks:
+- name: validation.internal-dns.miloapis.com
+  admissionReviewVersions: [v1]
+  sideEffects: None
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  timeoutSeconds: 5
+  clientConfig:
+    service:
+      namespace: internal-dns-system
+      name: internal-dns-admission
+      path: /validate-internal-dns
+      port: 443
+  rules:
+  # Live DNS references require service validation.
+  # The API server authorizes resource and status operations.
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [CREATE, UPDATE]
+    resources:
+    - dnszoneassociations
+    - dnsregistrations
+    - dnsrecordcontributions
+    - dnsnamingpolicies
+    - dnsresolveraccessbindings
+    scope: Namespaced

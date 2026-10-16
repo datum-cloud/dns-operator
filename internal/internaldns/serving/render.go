@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -200,28 +201,54 @@ func collectBackends(bindings []model.Binding, get func(model.Binding) []model.B
 
 func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "setLocal(%q)\n", c.ListenAddress)
-	fmt.Fprint(&out, "setACL({")
+	endpoint := dnsdistConsole(c.Path)
+	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
+	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
+	topology, _ := json.Marshal(struct {
+		Listen   string
+		ACLs     []string
+		Backends []model.Backend
+	}{c.ListenAddress, c.ACLs, backends})
+	fingerprint := model.OpaqueToken(string(topology))
+	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
+	fmt.Fprintf(&out, "setLocal(%q)\nsetACL({", c.ListenAddress)
 	for i, acl := range c.ACLs {
 		if i > 0 {
 			fmt.Fprint(&out, ",")
 		}
 		fmt.Fprintf(&out, "%q", acl)
 	}
-	fmt.Fprint(&out, "})\nsetSecurityPollSuffix(\"\")\n\n")
-	for _, b := range backends {
-		fmt.Fprintf(&out, "local server = newServer({address=%q, name=%q, pool=%q, useProxyProtocol=true, checkName=\".\", checkType=\"SOA\", mustResolve=false})\n", net.JoinHostPort(b.Address, strconv.Itoa(int(b.Port))), "b_"+model.OpaqueToken(b.MemberID), c.PoolName)
-		if cluster {
-			for _, binding := range bindings {
-				for _, zone := range binding.Zones {
-					if zones != nil && active[binding.BindingUID] && zones[binding.BindingUID][zone.ZoneUID][b.MemberID] {
-						fmt.Fprintf(&out, "server:addPool(%q)\n", binding.ViewName()+"_"+model.OpaqueToken(zone.ZoneUID))
-					}
-				}
-				if !binding.ConfigurationPending && active[binding.BindingUID] && (eligible == nil || eligible[binding.BindingUID][b.MemberID]) {
-					fmt.Fprintf(&out, "server:addPool(%q)\n", binding.ViewName())
+	fmt.Fprint(&out, "})\nsetSecurityPollSuffix(\"\")\ninternalDNSServers = {}\ninternalDNSPools = {}\n")
+	for _, backend := range backends {
+		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,useProxyProtocol=true,checkName=\".\",checkType=\"SOA\",mustResolve=false})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName)
+	}
+	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
+	fmt.Fprint(&out, "local rules = {}\nlocal function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n")
+	if cluster {
+		pools := map[string]map[string]bool{}
+		for _, binding := range bindings {
+			if eligible != nil {
+				pools[eligiblePool(backends, eligible[binding.BindingUID])] = eligible[binding.BindingUID]
+			}
+			for _, zone := range binding.Zones {
+				if zones != nil {
+					pools[eligiblePool(backends, zones[binding.BindingUID][zone.ZoneUID])] = zones[binding.BindingUID][zone.ZoneUID]
 				}
 			}
+		}
+		names := make([]string, 0, len(pools))
+		for name := range pools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(&out, "if not internalDNSPools[%q] then\ngetPool(%q)\n", name, name)
+			for _, backend := range backends {
+				if pools[name][backend.MemberID] {
+					fmt.Fprintf(&out, "internalDNSServers[%q]:addPool(%q)\n", backend.MemberID, name)
+				}
+			}
+			fmt.Fprintf(&out, "internalDNSPools[%q] = true\nend\n", name)
 		}
 	}
 	fmt.Fprint(&out, "\nlocal bindings = {\n")
@@ -232,31 +259,47 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		}
 		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), !b.ConfigurationPending && active[b.BindingUID])
 	}
-	fmt.Fprint(&out, "}\n\nfunction classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
-	fmt.Fprint(&out, "addAction(AllRule(), LuaAction(classifyContext))\n")
-	fmt.Fprint(&out, "addAction(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
+	fmt.Fprint(&out, "}\n\nlocal function classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
+	fmt.Fprint(&out, "appendRule(AllRule(), LuaAction(classifyContext))\n")
+	fmt.Fprint(&out, "appendRule(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
 	for _, binding := range bindings {
 		attached := append([]model.ZoneAttachment(nil), binding.Zones...)
 		sort.Slice(attached, func(i, j int) bool { return len(attached[i].Apex) > len(attached[j].Apex) })
 		for _, zone := range attached {
 			rule := fmt.Sprintf("AndRule({TagRule(\"dns-context\",%q),QNameSuffixRule(%q)})", binding.ViewName(), model.AbsoluteName(zone.Apex))
 			if zone.Pending || zones != nil && len(zones[binding.BindingUID][zone.ZoneUID]) == 0 {
-				fmt.Fprintf(&out, "addAction(%s,RCodeAction(DNSRCode.SERVFAIL))\n", rule)
+				fmt.Fprintf(&out, "appendRule(%s,RCodeAction(DNSRCode.SERVFAIL))\n", rule)
 			} else if cluster && zones != nil {
-				pool := binding.ViewName() + "_" + model.OpaqueToken(zone.ZoneUID)
-				fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({%s,NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\naddAction(%s,PoolAction(%q))\n", pool, rule, pool, rule, pool)
+				pool := eligiblePool(backends, zones[binding.BindingUID][zone.ZoneUID])
+				fmt.Fprintf(&out, "getPool(%q)\nappendRule(AndRule({%s,NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\nappendRule(%s,PoolAction(%q))\n", pool, rule, pool, rule, pool)
 			}
 		}
 	}
 	if cluster {
 		for _, binding := range bindings {
-			fmt.Fprintf(&out, "getPool(%q)\naddAction(AndRule({TagRule(\"dns-context\",%q),NotRule(PoolAvailableRule(%q))}), RCodeAction(DNSRCode.SERVFAIL))\naddAction(TagRule(\"dns-context\",%q),PoolAction(%q))\n", binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName(), binding.ViewName())
+			pool := eligiblePool(backends, eligible[binding.BindingUID])
+			if eligible == nil {
+				pool = c.PoolName
+			}
+			fmt.Fprintf(&out, "getPool(%q)\nappendRule(AndRule({TagRule(\"dns-context\",%q),NotRule(PoolAvailableRule(%q))}), RCodeAction(DNSRCode.SERVFAIL))\nappendRule(TagRule(\"dns-context\",%q),PoolAction(%q))\n", pool, binding.ViewName(), pool, binding.ViewName(), pool)
 		}
-		fmt.Fprint(&out, "addAction(AllRule(),RCodeAction(DNSRCode.SERVFAIL))\n")
+		fmt.Fprint(&out, "appendRule(AllRule(),RCodeAction(DNSRCode.SERVFAIL))\n")
 	} else {
-		fmt.Fprintf(&out, "addAction(NotRule(PoolAvailableRule(%q)), RCodeAction(DNSRCode.SERVFAIL))\naddAction(AllRule(),PoolAction(%q))\n", c.PoolName, c.PoolName)
+		fmt.Fprintf(&out, "appendRule(NotRule(PoolAvailableRule(%q)), RCodeAction(DNSRCode.SERVFAIL))\nappendRule(AllRule(),PoolAction(%q))\n", c.PoolName, c.PoolName)
 	}
+	fmt.Fprint(&out, "setRules(rules)\nend\n")
 	return out.Bytes()
+}
+
+func eligiblePool(backends []model.Backend, allowed map[string]bool) string {
+	members := make([]string, 0, len(allowed))
+	for _, backend := range backends {
+		if allowed[backend.MemberID] {
+			members = append(members, backend.MemberID)
+		}
+	}
+	sort.Strings(members)
+	return "ready_" + model.OpaqueToken(strings.Join(members, "\x00"))
 }
 
 func renderNodeCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding) []byte {

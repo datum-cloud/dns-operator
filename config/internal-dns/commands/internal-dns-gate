@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+case "$1" in
+  node) config=/etc/internal-dns/node-dnsdist.conf; port=5199 ;;
+  regional-front) config=/etc/internal-dns/cluster-dnsdist.conf; port=5299 ;;
+  regional-coredns) config= ;;
+  *) echo 'unknown fleet role' >&2; exit 2 ;;
+esac
+if [ -n "$config" ] && nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1; then
+  output=$(timeout 5s dnsdist -C "$config" -c -e 'setRules({newRuleAction(AllRule(),RCodeAction(DNSRCode.SERVFAIL))}); return "INTERNAL_DNS_GATED"')
+  [ "$output" = 'INTERNAL_DNS_GATED' ] || { printf '%s\n' "$output" >&2; exit 1; }
+fi
+rm -f /run/internal-dns/allow-coredns
+pkill -TERM -x coredns || true
+for attempt in $(seq 1 40); do
+  if ! pgrep -x coredns >/dev/null; then exit 0; fi
+  sleep 0.05
+done
+pkill -KILL -x coredns || true
+if pgrep -x coredns >/dev/null; then echo 'CoreDNS did not stop' >&2; exit 1; fi

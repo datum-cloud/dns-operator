@@ -419,8 +419,8 @@ func setupReplicatorWebhook(mcmgr mcmanager.Manager) error {
 }
 
 // runReplicator starts the pre-created runnables, the downstream cluster, and
-// the multicluster manager, and blocks until ctx is cancelled or one of them
-// stops.
+// the multicluster manager, and blocks until ctx is cancelled, the manager
+// stops, or one of them fails.
 //
 // The cluster discovery provider is deliberately not started here: providers
 // implementing multicluster.ProviderRunnable are added as a runnable by
@@ -442,9 +442,10 @@ func runReplicator(
 	return runUntilManagerStops(ctx, mcmgr.Start, workers...)
 }
 
-// runUntilManagerStops runs the manager and the workers until any of them
-// stops. When the manager stops, the workers stop too, so the process exits
-// rather than run on without its controllers, as after a lost lease.
+// runUntilManagerStops runs the manager and the workers until the manager stops
+// or one of them fails. When the manager stops, the workers stop too, so the
+// process exits rather than run on without its controllers, as after a lost
+// lease.
 func runUntilManagerStops(
 	ctx context.Context,
 	startManager func(context.Context) error,

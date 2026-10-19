@@ -215,6 +215,7 @@ KIND_IMAGE ?= $(IMG)
 
 # Network Services Operator integration
 NSO_REPO ?= https://github.com/datum-cloud/network-services-operator.git
+# config/overlays/nso builds NSO from this default path
 NSO_DIR ?= dev/network-services-operator
 NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
 NSO_NAMESPACE ?= network-services-operator-system
@@ -322,10 +323,6 @@ bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to do
 		echo "[bootstrap-upstream] Installing Kubernetes Gateway API CRDs ($(GATEWAY_API_VERSION))"; \
 		$(MAKE) install-gateway-api-crds CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) ; \
 		$(MAKE) nso-deploy-upstream KUBECONFIG=$(abspath dev/kind.upstream.kubeconfig) ; \
-		echo "[bootstrap-upstream] Re-applying NSO overlay (config + RBAC) with server-side apply to override defaults"; \
-		CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/nso $(MAKE) kustomize-apply-ssa ; \
-		echo "[bootstrap-upstream] Restarting NSO to pick up new ConfigMap"; \
-		kubectl --context kind-$(UPSTREAM_CLUSTER_NAME) -n network-services-operator-system rollout restart deploy/network-services-operator-controller-manager || true ; \
 	else \
 		echo "[bootstrap-upstream] Skipping NSO deployment (NSO_DEPLOY=false). Only CRDs installed."; \
 	fi
@@ -491,10 +488,10 @@ nso-load-upstream: ## Load NSO image into upstream kind cluster
 	$(KIND) load docker-image $(NSO_IMG) --name $(UPSTREAM_CLUSTER_NAME)
 
 .PHONY: nso-deploy-upstream
-nso-deploy-upstream: nso-build nso-load-upstream ## Deploy NSO into upstream cluster using KUBECONFIG
+nso-deploy-upstream: nso-build nso-load-upstream kustomize ## Deploy NSO with config/overlays/nso into upstream cluster using KUBECONFIG
 	@test -n "$(KUBECONFIG)" || { echo "KUBECONFIG is required (e.g., dev/kind.upstream.kubeconfig)"; exit 1; }
 	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) set-image-controller IMG=$(NSO_IMG)
-	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) deploy IMG=$(NSO_IMG)
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/overlays/nso | KUBECONFIG=$(abspath $(KUBECONFIG)) $(KUBECTL) apply --server-side=true --force-conflicts -f -
 
 .PHONY: install-networking-crds
 install-networking-crds: controller-gen ## Generate and install networking services CRDs (e.g., Domain) into CONTEXT

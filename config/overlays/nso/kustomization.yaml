@@ -4,20 +4,19 @@ kind: Kustomization
 namespace: network-services-operator-system
 
 resources:
-  - namespace.yaml
+  # NSO's own deployment, from the clone that `make nso-clone` makes (NSO_DIR)
+  - ../../../dev/network-services-operator/config/default
   - leader-election-rbac.yaml
   - domain-rbac.yaml
   - configmap-rbac.yaml
   - secret-rbac.yaml
 
-generatorOptions:
-  disableNameSuffixHash: true
-
+# Replace NSO's config in the same build, so that the manager mounts this one under the name
+# NSO's bundle gives it, hashed or not, and restarts when it changes.
 configMapGenerator:
-  - name: network-services-operator-config
+  - name: config
+    behavior: replace
     files:
       - config.yaml
       # Use the upstream kubeconfig for downstreamResourceManagement.kubeconfigPath
       - kubeconfig=../../../dev/kind.upstream.kubeconfig
-
-

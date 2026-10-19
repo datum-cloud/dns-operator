@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -46,7 +47,27 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-const leaderElectionID = "1813fe7c.datum.cloud"
+// Each role leads a lease of its own. The agents and the replicator run in one
+// namespace, so with one lease between them only one of their pods would lead.
+// The agents keep the original name, so a rollout never runs two agent leaders.
+const (
+	downstreamLeaseName = "1813fe7c.datum.cloud"
+	replicatorLeaseName = "replicator.dns.networking.miloapis.com"
+)
+
+// The lease's own client limits, apart from the manager's.
+const (
+	leaderElectionQPS   = 5
+	leaderElectionBurst = 10
+)
+
+// leaderElection holds the --leader-elect flags.
+type leaderElection struct {
+	enabled       bool
+	leaseDuration time.Duration
+	renewDeadline time.Duration
+	retryPeriod   time.Duration
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -73,10 +94,7 @@ func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var leaderElectionLeaseDuration time.Duration
-	var leaderElectionRenewDeadline time.Duration
-	var leaderElectionRetryPeriod time.Duration
+	var le leaderElection
 	var probeAddr string
 	var aliasTargetResolver string
 	var secureMetrics bool
@@ -93,14 +111,14 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&aliasTargetResolver, "alias-target-resolver", "",
 		"The DNS server (host:port) used to check that ALIAS targets resolve. Defaults to the system resolver.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(&le.enabled, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 10*time.Second,
+	flag.DurationVar(&le.leaseDuration, "leader-elect-lease-duration", 10*time.Second,
 		"The duration that non-leader candidates will wait to force acquire leadership.")
-	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 3*time.Second,
+	flag.DurationVar(&le.renewDeadline, "leader-elect-renew-deadline", 3*time.Second,
 		"The duration that the leader will retry leadership renewal.")
-	flag.DurationVar(&leaderElectionRetryPeriod, "leader-elect-retry-period", 2*time.Second,
+	flag.DurationVar(&le.retryPeriod, "leader-elect-retry-period", 2*time.Second,
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
@@ -230,16 +248,12 @@ func main() {
 
 	switch role {
 	case "downstream":
-		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		cfg := ctrl.GetConfigOrDie()
+		mgr, err := ctrl.NewManager(cfg, withLeaderElection(ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			HealthProbeBindAddress: probeAddr,
-			LeaderElection:         enableLeaderElection,
-			LeaseDuration:          &leaderElectionLeaseDuration,
-			RenewDeadline:          &leaderElectionRenewDeadline,
-			RetryPeriod:            &leaderElectionRetryPeriod,
-			LeaderElectionID:       leaderElectionID,
-		})
+		}, cfg, downstreamLeaseName, le))
 		if err != nil {
 			setupLog.Error(err, "unable to start manager")
 			os.Exit(1)
@@ -321,14 +335,12 @@ func main() {
 		// Multicluster manager (serves mutating webhook for display annotations)
 		webhookServer := webhook.NewServer(webhookServerOptions)
 		webhookServer = dnswebhook.NewClusterAwareWebhookServer(webhookServer)
-		runnables, mcmgr, err := newReplicatorManager(serverConfig, cfg, deploymentCluster, ctrl.Options{
+		runnables, mcmgr, err := newReplicatorManager(serverConfig, cfg, deploymentCluster, withLeaderElection(ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
-			LeaderElection:         enableLeaderElection,
-			LeaderElectionID:       leaderElectionID,
-		})
+		}, cfg, replicatorLeaseName, le))
 		if err != nil {
 			setupLog.Error(err, "unable to start multicluster manager")
 			os.Exit(1)
@@ -407,8 +419,8 @@ func setupReplicatorWebhook(mcmgr mcmanager.Manager) error {
 }
 
 // runReplicator starts the pre-created runnables, the downstream cluster, and
-// the multicluster manager, and blocks until ctx is cancelled or one of them
-// returns an error.
+// the multicluster manager, and blocks until ctx is cancelled, the manager
+// stops, or one of them fails.
 //
 // The cluster discovery provider is deliberately not started here: providers
 // implementing multicluster.ProviderRunnable are added as a runnable by
@@ -419,22 +431,66 @@ func runReplicator(
 	downstreamCluster cluster.Cluster,
 	mcmgr mcmanager.Manager,
 ) error {
+	workers := make([]func(context.Context) error, 0, len(runnables)+1)
+	for _, r := range runnables {
+		workers = append(workers, r.Start)
+	}
+	// The downstream cluster's cache backs the replicators' delegating client.
+	workers = append(workers, downstreamCluster.Start)
+
+	setupLog.Info("starting multicluster manager (replicator)")
+	return runUntilManagerStops(ctx, mcmgr.Start, workers...)
+}
+
+// runUntilManagerStops runs the manager and the workers until the manager stops
+// or one of them fails. When the manager stops, the workers stop too, so the
+// process exits rather than run on without its controllers, as after a lost
+// lease.
+func runUntilManagerStops(
+	ctx context.Context,
+	startManager func(context.Context) error,
+	workers ...func(context.Context) error,
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Start any pre-created runnables (e.g., deploymentCluster)
-	for _, r := range runnables {
-		rr := r
-		g.Go(func() error { return ignoreCanceled(rr.Start(ctx)) })
+	for _, work := range workers {
+		g.Go(func() error { return ignoreCanceled(work(ctx)) })
 	}
-
-	// Start downstream cluster (its cache backs your delegating client)
-	g.Go(func() error { return ignoreCanceled(downstreamCluster.Start(ctx)) })
-
-	// Finally start the multicluster manager (controllers + caches)
-	setupLog.Info("starting multicluster manager (replicator)")
-	g.Go(func() error { return ignoreCanceled(mcmgr.Start(ctx)) })
+	g.Go(func() error {
+		defer cancel()
+		return ignoreCanceled(startManager(ctx))
+	})
 
 	return g.Wait()
+}
+
+// withLeaderElection sets opts to lead the named lease with le's timings. The
+// lease gets a client and connection of its own, so a renewal never waits
+// behind the manager's other requests. A stopping leader frees the lease at
+// once, which is safe because each role exits when its manager stops.
+func withLeaderElection(opts ctrl.Options, cfg *rest.Config, name string, le leaderElection) ctrl.Options {
+	opts.LeaderElection = le.enabled
+	opts.LeaderElectionID = name
+	opts.LeaseDuration = &le.leaseDuration
+	opts.RenewDeadline = &le.renewDeadline
+	opts.RetryPeriod = &le.retryPeriod
+	opts.LeaderElectionConfig = leaderElectionRestConfig(cfg)
+	opts.LeaderElectionReleaseOnCancel = true
+	return opts
+}
+
+// leaderElectionRestConfig copies base with a rate limiter and a dialer of its
+// own. A config with its own dialer is never given a cached transport, so its
+// requests open their own connection.
+func leaderElectionRestConfig(base *rest.Config) *rest.Config {
+	cfg := rest.CopyConfig(base)
+	cfg.RateLimiter = nil
+	cfg.QPS = leaderElectionQPS
+	cfg.Burst = leaderElectionBurst
+	cfg.Dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	return cfg
 }
 
 func initializeClusterDiscovery(

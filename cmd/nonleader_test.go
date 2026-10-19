@@ -202,7 +202,10 @@ func startReplica(
 	}}
 	opts.Scheme = scheme
 	opts.Metrics = metricsserver.Options{BindAddress: "0"}
-	opts.LeaderElection, opts.LeaderElectionID, opts.LeaderElectionNamespace = contended, leaderElectionID, testNamespace
+	le := testLeaderElection
+	le.enabled = contended
+	opts = withLeaderElection(opts, p.deployment, replicatorLeaseName, le)
+	opts.LeaderElectionNamespace = testNamespace
 	runnables, mcmgr, err := newReplicatorManager(serverConfig, p.deployment, newCluster(t, p.deployment), opts)
 	if err != nil {
 		t.Fatalf("newReplicatorManager: %v", err)
@@ -366,7 +369,7 @@ func holdLease(ctx context.Context, t *testing.T, c client.Client) {
 	t.Helper()
 	holder, seconds, now := "another-replica", int32(3600), metav1.NewMicroTime(time.Now())
 	lease := &coordinationv1.Lease{
-		ObjectMeta: metav1.ObjectMeta{Name: leaderElectionID, Namespace: testNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: replicatorLeaseName, Namespace: testNamespace},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity: &holder, LeaseDurationSeconds: &seconds, AcquireTime: &now, RenewTime: &now,
 		},

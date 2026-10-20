@@ -10,15 +10,19 @@ spec:
   includedPermissions:
     - dns.networking.miloapis.com/dnszones.list
     - dns.networking.miloapis.com/dnszones.get
+    - dns.networking.miloapis.com/dnszones/status.get
     - dns.networking.miloapis.com/dnszones.watch
     - dns.networking.miloapis.com/dnsrecordsets.list
     - dns.networking.miloapis.com/dnsrecordsets.get
+    - dns.networking.miloapis.com/dnsrecordsets/status.get
     - dns.networking.miloapis.com/dnsrecordsets.watch
     - dns.networking.miloapis.com/dnszoneclasses.list
     - dns.networking.miloapis.com/dnszoneclasses.get
+    - dns.networking.miloapis.com/dnszoneclasses/status.get
     - dns.networking.miloapis.com/dnszoneclasses.watch
     - dns.networking.miloapis.com/dnszonediscoveries.list
     - dns.networking.miloapis.com/dnszonediscoveries.get
+    - dns.networking.miloapis.com/dnszonediscoveries/status.get
     - dns.networking.miloapis.com/dnszonediscoveries.watch
 
 

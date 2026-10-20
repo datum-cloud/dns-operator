@@ -8,6 +8,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -43,6 +46,28 @@ import (
 	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
+
+// Each role leads a lease of its own. The agents and the replicator run in one
+// namespace, so with one lease between them only one of their pods would lead.
+// The agents keep the original name, so a rollout never runs two agent leaders.
+const (
+	downstreamLeaseName = "1813fe7c.datum.cloud"
+	replicatorLeaseName = "replicator.dns.networking.miloapis.com"
+)
+
+// The lease's own client limits, apart from the manager's.
+const (
+	leaderElectionQPS   = 5
+	leaderElectionBurst = 10
+)
+
+// leaderElection holds the --leader-elect flags.
+type leaderElection struct {
+	enabled       bool
+	leaseDuration time.Duration
+	renewDeadline time.Duration
+	retryPeriod   time.Duration
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -69,10 +94,7 @@ func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
-	var enableLeaderElection bool
-	var leaderElectionLeaseDuration time.Duration
-	var leaderElectionRenewDeadline time.Duration
-	var leaderElectionRetryPeriod time.Duration
+	var le leaderElection
 	var probeAddr string
 	var aliasTargetResolver string
 	var secureMetrics bool
@@ -89,14 +111,14 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&aliasTargetResolver, "alias-target-resolver", "",
 		"The DNS server (host:port) used to check that ALIAS targets resolve. Defaults to the system resolver.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
+	flag.BoolVar(&le.enabled, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 10*time.Second,
+	flag.DurationVar(&le.leaseDuration, "leader-elect-lease-duration", 10*time.Second,
 		"The duration that non-leader candidates will wait to force acquire leadership.")
-	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 3*time.Second,
+	flag.DurationVar(&le.renewDeadline, "leader-elect-renew-deadline", 3*time.Second,
 		"The duration that the leader will retry leadership renewal.")
-	flag.DurationVar(&leaderElectionRetryPeriod, "leader-elect-retry-period", 2*time.Second,
+	flag.DurationVar(&le.retryPeriod, "leader-elect-retry-period", 2*time.Second,
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
@@ -226,16 +248,12 @@ func main() {
 
 	switch role {
 	case "downstream":
-		mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		cfg := ctrl.GetConfigOrDie()
+		mgr, err := ctrl.NewManager(cfg, withLeaderElection(ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			HealthProbeBindAddress: probeAddr,
-			LeaderElection:         enableLeaderElection,
-			LeaseDuration:          &leaderElectionLeaseDuration,
-			RenewDeadline:          &leaderElectionRenewDeadline,
-			RetryPeriod:            &leaderElectionRetryPeriod,
-			LeaderElectionID:       "1813fe7c.datum.cloud",
-		})
+		}, cfg, downstreamLeaseName, le))
 		if err != nil {
 			setupLog.Error(err, "unable to start manager")
 			os.Exit(1)
@@ -314,24 +332,15 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Initialize cluster discovery provider (single or milo)
-		runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
-		if err != nil {
-			setupLog.Error(err, "unable to initialize cluster discovery")
-			os.Exit(1)
-		}
-
 		// Multicluster manager (serves mutating webhook for display annotations)
 		webhookServer := webhook.NewServer(webhookServerOptions)
 		webhookServer = dnswebhook.NewClusterAwareWebhookServer(webhookServer)
-		mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+		runnables, mcmgr, err := newReplicatorManager(serverConfig, cfg, deploymentCluster, withLeaderElection(ctrl.Options{
 			Scheme:                 scheme,
 			Metrics:                metricsServerOptions,
 			WebhookServer:          webhookServer,
 			HealthProbeBindAddress: probeAddr,
-			LeaderElection:         enableLeaderElection,
-			LeaderElectionID:       "1813fe7c.datum.cloud",
-		})
+		}, cfg, replicatorLeaseName, le))
 		if err != nil {
 			setupLog.Error(err, "unable to start multicluster manager")
 			os.Exit(1)
@@ -356,17 +365,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "DNSRecordSet")
-			os.Exit(1)
-		}
-
-		if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-			setupLog.Error(err, "unable to set up health check")
-			os.Exit(1)
-		}
-		if err := mcmgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-			setupLog.Error(err, "unable to set up ready check")
+		if err := setupReplicatorWebhook(mcmgr); err != nil {
+			setupLog.Error(err, "unable to set up the DNSRecordSet webhook and its checks")
 			os.Exit(1)
 		}
 
@@ -383,9 +383,44 @@ func main() {
 	}
 }
 
+// newReplicatorManager builds the replicator's cluster discovery and the
+// multicluster manager that discovers clusters through it.
+func newReplicatorManager(
+	serverConfig config.DNSOperator,
+	cfg *rest.Config,
+	deploymentCluster cluster.Cluster,
+	opts ctrl.Options,
+) ([]manager.Runnable, mcmanager.Manager, error) {
+	runnables, provider, setup, err := initializeClusterDiscovery(serverConfig, deploymentCluster, opts.Scheme)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to initialize cluster discovery: %w", err)
+	}
+	mcmgr, err := mcmanager.New(cfg, provider, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := setup(mcmgr); err != nil {
+		return nil, nil, err
+	}
+	return runnables, mcmgr, nil
+}
+
+// setupReplicatorWebhook registers the DNSRecordSet webhooks, the
+// replicator's health check, and a readiness check on its webhook server.
+func setupReplicatorWebhook(mcmgr mcmanager.Manager) error {
+	if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
+		return fmt.Errorf("unable to create the DNSRecordSet webhook: %w", err)
+	}
+	if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to set up health check: %w", err)
+	}
+	// The mutating webhook fails closed.
+	return mcmgr.AddReadyzCheck("webhook", mcmgr.GetWebhookServer().StartedChecker())
+}
+
 // runReplicator starts the pre-created runnables, the downstream cluster, and
-// the multicluster manager, and blocks until ctx is cancelled or one of them
-// returns an error.
+// the multicluster manager, and blocks until ctx is cancelled, the manager
+// stops, or one of them fails.
 //
 // The cluster discovery provider is deliberately not started here: providers
 // implementing multicluster.ProviderRunnable are added as a runnable by
@@ -396,30 +431,75 @@ func runReplicator(
 	downstreamCluster cluster.Cluster,
 	mcmgr mcmanager.Manager,
 ) error {
+	workers := make([]func(context.Context) error, 0, len(runnables)+1)
+	for _, r := range runnables {
+		workers = append(workers, r.Start)
+	}
+	// The downstream cluster's cache backs the replicators' delegating client.
+	workers = append(workers, downstreamCluster.Start)
+
+	setupLog.Info("starting multicluster manager (replicator)")
+	return runUntilManagerStops(ctx, mcmgr.Start, workers...)
+}
+
+// runUntilManagerStops runs the manager and the workers until the manager stops
+// or one of them fails. When the manager stops, the workers stop too, so the
+// process exits rather than run on without its controllers, as after a lost
+// lease.
+func runUntilManagerStops(
+	ctx context.Context,
+	startManager func(context.Context) error,
+	workers ...func(context.Context) error,
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Start any pre-created runnables (e.g., deploymentCluster)
-	for _, r := range runnables {
-		rr := r
-		g.Go(func() error { return ignoreCanceled(rr.Start(ctx)) })
+	for _, work := range workers {
+		g.Go(func() error { return ignoreCanceled(work(ctx)) })
 	}
-
-	// Start downstream cluster (its cache backs your delegating client)
-	g.Go(func() error { return ignoreCanceled(downstreamCluster.Start(ctx)) })
-
-	// Finally start the multicluster manager (controllers + caches)
-	setupLog.Info("starting multicluster manager (replicator)")
-	g.Go(func() error { return ignoreCanceled(mcmgr.Start(ctx)) })
+	g.Go(func() error {
+		defer cancel()
+		return ignoreCanceled(startManager(ctx))
+	})
 
 	return g.Wait()
+}
+
+// withLeaderElection sets opts to lead the named lease with le's timings. The
+// lease gets a client and connection of its own, so a renewal never waits
+// behind the manager's other requests. A stopping leader frees the lease at
+// once, which is safe because each role exits when its manager stops.
+func withLeaderElection(opts ctrl.Options, cfg *rest.Config, name string, le leaderElection) ctrl.Options {
+	opts.LeaderElection = le.enabled
+	opts.LeaderElectionID = name
+	opts.LeaseDuration = &le.leaseDuration
+	opts.RenewDeadline = &le.renewDeadline
+	opts.RetryPeriod = &le.retryPeriod
+	opts.LeaderElectionConfig = leaderElectionRestConfig(cfg)
+	opts.LeaderElectionReleaseOnCancel = true
+	return opts
+}
+
+// leaderElectionRestConfig copies base with a rate limiter and a dialer of its
+// own. A config with its own dialer is never given a cached transport, so its
+// requests open their own connection.
+func leaderElectionRestConfig(base *rest.Config) *rest.Config {
+	cfg := rest.CopyConfig(base)
+	cfg.RateLimiter = nil
+	cfg.QPS = leaderElectionQPS
+	cfg.Burst = leaderElectionBurst
+	cfg.Dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	return cfg
 }
 
 func initializeClusterDiscovery(
 	serverConfig config.DNSOperator,
 	deploymentCluster cluster.Cluster,
 	scheme *runtime.Scheme,
-) (runnables []manager.Runnable, provider multicluster.Provider, err error) {
+) (runnables []manager.Runnable, provider multicluster.Provider, setup func(mcmanager.Manager) error, err error) {
 	runnables = append(runnables, deploymentCluster)
+	setup = func(mcmanager.Manager) error { return nil }
 	switch serverConfig.Discovery.Mode {
 	case multiclusterproviders.ProviderSingle:
 		// The single provider implements multicluster.ProviderRunnable and
@@ -428,40 +508,20 @@ func initializeClusterDiscovery(
 		provider = mcsingle.New("single", deploymentCluster)
 
 	case multiclusterproviders.ProviderMilo:
-		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()
+		discoveryManager, miloProvider, err := newMiloProvider(serverConfig.Discovery, scheme)
 		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+			return nil, nil, nil, err
 		}
-
-		projectRestConfig, err := serverConfig.Discovery.ProjectRestConfig()
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+		// Handed to the multicluster manager as it is, the provider's Start
+		// runs on the elected leader only, and the webhooks of every other
+		// replica could reach no project.
+		provider = milomulticluster.WithoutAutoStart(miloProvider)
+		setup = func(mgr mcmanager.Manager) error {
+			if err := milomulticluster.EngageAlways(mgr, miloProvider); err != nil {
+				return fmt.Errorf("unable to start the project provider on every replica: %w", err)
+			}
+			return mgr.AddReadyzCheck("projects", projectsRegistered(miloProvider))
 		}
-
-		discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
-			Client: client.Options{
-				Cache: &client.CacheOptions{
-					Unstructured: true,
-				},
-			},
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
-		}
-
-		provider, err = milomulticluster.New(discoveryManager, milomulticluster.Options{
-			ClusterOptions: []cluster.Option{
-				func(o *cluster.Options) {
-					o.Scheme = scheme
-				},
-			},
-			InternalServiceDiscovery: serverConfig.Discovery.InternalServiceDiscovery,
-			ProjectRestConfig:        projectRestConfig,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
-		}
-
 		runnables = append(runnables, discoveryManager)
 
 	// case providers.ProviderKind:
@@ -474,13 +534,67 @@ func initializeClusterDiscovery(
 	// 	})
 
 	default:
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"unsupported cluster discovery mode %s",
 			serverConfig.Discovery.Mode,
 		)
 	}
 
-	return runnables, provider, nil
+	return runnables, provider, setup, nil
+}
+
+// newMiloProvider builds the manager that discovers projects and the Milo
+// provider that runs its discovery on it.
+func newMiloProvider(
+	discovery config.DiscoveryConfig,
+	scheme *runtime.Scheme,
+) (manager.Manager, *milomulticluster.Provider, error) {
+	discoveryRestConfig, err := discovery.DiscoveryRestConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get discovery rest config: %w", err)
+	}
+
+	projectRestConfig, err := discovery.ProjectRestConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get project rest config: %w", err)
+	}
+
+	discoveryManager, err := manager.New(discoveryRestConfig, manager.Options{
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				Unstructured: true,
+			},
+		},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to set up overall controller manager: %w", err)
+	}
+
+	provider, err := milomulticluster.New(discoveryManager, milomulticluster.Options{
+		ClusterOptions: []cluster.Option{
+			func(o *cluster.Options) {
+				o.Scheme = scheme
+			},
+		},
+		InternalServiceDiscovery: discovery.InternalServiceDiscovery,
+		ProjectRestConfig:        projectRestConfig,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to create datum project provider: %w", err)
+	}
+	return discoveryManager, provider, nil
+}
+
+// projectsRegistered reports ready once the provider has registered every
+// project it found at start, so a new replica does not answer admission
+// requests for a project it cannot reach yet.
+func projectsRegistered(provider interface{ HasSynced() bool }) healthz.Checker {
+	return func(*http.Request) error {
+		if !provider.HasSynced() {
+			return errors.New("projects found at start are not all registered yet")
+		}
+		return nil
+	}
 }
 
 func ignoreCanceled(err error) error {

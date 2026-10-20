@@ -18,7 +18,6 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
-	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
@@ -27,8 +26,8 @@ import (
 )
 
 // TestReplicatorProviderLifecycle exercises the replicator startup path from
-// cmd/main.go against envtest: initializeClusterDiscovery builds the single
-// cluster discovery provider, and runReplicator starts everything.
+// cmd/main.go against envtest: newReplicatorManager builds the single cluster
+// discovery provider and the manager, and runReplicator starts everything.
 //
 // It asserts that the multicluster manager engages the cluster on its own -
 // there is no explicit provider start call anymore - by requiring that a
@@ -66,21 +65,13 @@ func TestReplicatorProviderLifecycle(t *testing.T) {
 	serverConfig := config.DNSOperator{
 		Discovery: config.DiscoveryConfig{Mode: multiclusterproviders.ProviderSingle},
 	}
-	runnables, provider, err := initializeClusterDiscovery(serverConfig, deploymentCluster, scheme)
-	if err != nil {
-		t.Fatalf("initializeClusterDiscovery: %v", err)
-	}
-	if provider == nil {
-		t.Fatal("initializeClusterDiscovery returned a nil provider")
-	}
-
-	mcmgr, err := mcmanager.New(cfg, provider, ctrl.Options{
+	runnables, mcmgr, err := newReplicatorManager(serverConfig, cfg, deploymentCluster, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
 	})
 	if err != nil {
-		t.Fatalf("creating multicluster manager: %v", err)
+		t.Fatalf("newReplicatorManager: %v", err)
 	}
 
 	// A controller registered through the multicluster builder only starts

@@ -324,7 +324,7 @@ func (s *suite) permissions(p *project) error {
 }
 
 func (s *suite) prepare(p *project) error {
-	p.resolverContext = dnsv1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application-network", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverContextSpec{ConsumerID: "qualification/" + p.Name, ManagedNamespace: dnsv1.DNSResolverContextManagedNamespace{Enabled: true}}}
+	p.resolverContext = dnsv1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application-network", Namespace: p.Namespace}, Spec: dnsv1.DNSResolverContextSpec{ConsumerID: "qualification/" + p.Name, ManagedNamespace: dnsv1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
 	if err := p.integration.Create(s.ctx, &p.resolverContext); err != nil {
 		return err
 	}

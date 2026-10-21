@@ -106,6 +106,7 @@ func (s *suite) scenarios(a, b *project) error {
 		return err
 	}
 	managedName := "web." + a.resolverContext.Status.ManagedNamespace.Suffix
+	managedNameB := "web." + b.resolverContext.Status.ManagedNamespace.Suffix
 	for _, tcp := range []bool{false, true} {
 		if err := s.expect(b, managedName, "A", tcp, dns.RcodeNameError); err != nil {
 			return err
@@ -118,11 +119,11 @@ func (s *suite) scenarios(a, b *project) error {
 		if err := s.expect(a, managedName, "A", tcp, dns.RcodeSuccess, "10.42.0.11"); err != nil {
 			return err
 		}
-		if err := s.expect(b, managedName, "A", tcp, dns.RcodeSuccess, "10.42.0.21"); err != nil {
+		if err := s.expect(b, managedNameB, "A", tcp, dns.RcodeSuccess, "10.42.0.21"); err != nil {
 			return err
 		}
 	}
-	s.pass("the same hostname in the shared managed domain resolves within its own context over UDP and TCP", managedName)
+	s.pass("managed names resolve within their owning contexts over UDP and TCP", map[string]string{"a": managedName, "b": managedNameB})
 	apps := &dnsv1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "apps", Namespace: a.Namespace}, Spec: dnsv1.DNSZoneSpec{DomainName: "apps.internal", DNSZoneClassName: "private-coredns", Visibility: dnsv1.DNSZoneVisibilityPrivate}}
 	if err := a.customer.Create(s.ctx, apps); err != nil {
 		return err

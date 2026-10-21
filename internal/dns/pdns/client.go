@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/prometheus/client_golang/prometheus"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
 	"go.miloapis.com/dns-operator/internal/dns/ownername"
@@ -23,7 +24,17 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
+
+var otherTypeRecordsPruned = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "dns_operator_other_type_records_pruned_total",
+	Help: "Records a DNSRecordSet wrote under a type other than its current one, deleted from PowerDNS.",
+}, []string{"record_type"})
+
+func init() {
+	ctrlmetrics.Registry.MustRegister(otherTypeRecordsPruned)
+}
 
 type Client struct {
 	BaseURL string
@@ -323,33 +334,23 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		replacedStatus = append(replacedStatus, len(statusList)-1)
 	}
 
-	// Deletion phase. The zone read already says which owner names of this type
-	// this record set owns, so the surplus ones are a local diff — no global
-	// comment search, which is unscoped and therefore couples every zone in the
-	// database to this reconcile.
-	deletes := make([]rrset, 0)
-	for key, current := range existing {
-		if key.typ != recordType {
-			continue
-		}
-		if _, wanted := desired[key.name]; wanted {
-			continue
-		}
-		// A record set only prunes the owner names it wrote itself. Names owned
-		// by another DNSRecordSet of the same type, or by nothing at all, belong
-		// to whoever holds them.
-		if rrsetOwnerRef(current) != ownerRef {
-			continue
-		}
+	// Deletion phase. The zone read already says which RRsets this record set
+	// wrote, so the surplus ones are a local diff — no global comment search,
+	// which is unscoped and therefore couples every zone in the database to this
+	// reconcile.
+	surplus := make([]rrset, 0)
+	for _, key := range ownedSurplus(existing, ownerRef, recordType, desired) {
 		c.logger.Info("Deleting RecordSet from PowerDNS", "owner", key.name, "recordType", key.typ, "recordSet", recordSet.Name)
-		deletes = append(deletes, newDeleteRRSet(key.name, key.typ))
+		surplus = append(surplus, newDeleteRRSet(key.name, key.typ))
 	}
+	changes, deletes := pairDeletes(replaces, surplus)
 	sortRRSets(deletes)
 
 	transient := make([]error, 0)
 	for _, chunk := range chunkRRSets(replaces) {
-		for i, err := range c.applyIsolatingRefusals(ctx, zoneName, chunk.rrsets) {
+		for i, err := range c.applyIsolatingRefusals(ctx, zoneName, changes[chunk.start:chunk.end]) {
 			if err == nil {
+				c.notePrunes(zoneName, recordSet, changes[chunk.start+i])
 				continue
 			}
 			idx := replacedStatus[chunk.start+i]
@@ -359,7 +360,7 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			}
 			if refuses(err, patchIdentity(chunk.rrsets[i])) {
 				c.logger.Info("PowerDNS refused rrset because another record holds its name", "zone", zoneName, "owner", owner, "recordType", recordType)
-				statusList[idx] = recordSetRefusedStatus(owner, ownername.Qualify(owner, zoneName), recordType, existing)
+				statusList[idx] = recordSetRefusedStatus(owner, ownername.Qualify(owner, zoneName), recordType, ownerRef, existing)
 				continue
 			}
 			c.logger.Error(err, "Failed to apply rrsets to PowerDNS", "zone", zoneName, "owner", owner)
@@ -370,22 +371,74 @@ func (c *Client) EnsureRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 	for _, chunk := range chunkRRSets(deletes) {
 		if err := c.applyRRSetPatch(ctx, zoneName, chunk.rrsets); err != nil {
 			c.logger.Error(err, "failed to delete recordsets from PowerDNS", "zone", zoneName, "count", len(chunk.rrsets))
+			continue
 		}
+		c.notePrunes(zoneName, recordSet, chunk.rrsets)
 	}
 
 	return keepTransitionTimes(statusList, recordSet.Status.RecordSets), errors.Join(transient...)
 }
 
-func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets []rrset) []error {
-	errs := make([]error, len(rrsets))
-	pending := make([]int, len(rrsets))
+// ownedSurplus returns the RRsets this record set wrote and no longer wants:
+// every one of another type, and those of its own type at a name outside
+// wanted. Records another record set wrote, or nothing did, are not its own.
+func ownedSurplus(existing map[rrsetKey]zoneRRset, ownerRef, recordType string, wanted map[string]struct{}) []rrsetKey {
+	out := make([]rrsetKey, 0)
+	for key, current := range existing {
+		if rrsetOwnerRef(current) != ownerRef {
+			continue
+		}
+		if _, ok := wanted[key.name]; ok && key.typ == recordType {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
+}
+
+// pairDeletes groups each replace with the deletes at its name, and returns the
+// deletes at no replaced name apart. PowerDNS refuses a CNAME beside another
+// type and rolls back the whole PATCH, so a delete that travels with the replace
+// at its name keeps the old record serving until the new one can be written.
+func pairDeletes(replaces, deletes []rrset) ([][]rrset, []rrset) {
+	changes := make([][]rrset, len(replaces))
+	at := make(map[string]int, len(replaces))
+	for i, rr := range replaces {
+		changes[i] = []rrset{rr}
+		at[rr.Name] = i
+	}
+	rest := make([]rrset, 0, len(deletes))
+	for _, rr := range deletes {
+		i, replaced := at[rr.Name]
+		if !replaced {
+			rest = append(rest, rr)
+			continue
+		}
+		changes[i] = append(changes[i], rr)
+	}
+	return changes, rest
+}
+
+func (c *Client) notePrunes(zone string, recordSet dnsv1alpha1.DNSRecordSet, applied []rrset) {
+	for _, rr := range applied {
+		if rr.ChangeType != changeTypeDelete || rr.Type == string(recordSet.Spec.RecordType) {
+			continue
+		}
+		c.logger.Info("Deleted a record its record set wrote under another type", "zone", zone, "owner", rr.Name, "recordType", rr.Type, "recordSet", recordSet.Name, "recordSetType", recordSet.Spec.RecordType)
+		otherTypeRecordsPruned.WithLabelValues(rr.Type).Inc()
+	}
+}
+
+func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, changes [][]rrset) []error {
+	errs := make([]error, len(changes))
+	pending := make([]int, len(changes))
 	for i := range pending {
 		pending[i] = i
 	}
 	for len(pending) > 0 {
 		batch := make([]rrset, 0, len(pending))
 		for _, i := range pending {
-			batch = append(batch, rrsets[i])
+			batch = append(batch, changes[i]...)
 		}
 		err := c.applyRRSetPatch(ctx, zone, batch)
 		if err == nil {
@@ -397,7 +450,7 @@ func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets
 		}
 		kept := pending[:0]
 		for _, i := range pending {
-			if _, ok := refused[patchIdentity(rrsets[i])]; ok {
+			if refusedIn(changes[i], refused) {
 				errs[i] = err
 				continue
 			}
@@ -414,15 +467,28 @@ func (c *Client) applyIsolatingRefusals(ctx context.Context, zone string, rrsets
 	return errs
 }
 
-func recordSetRefusedStatus(owner, qualified, recordType string, existing map[rrsetKey]zoneRRset) dnsv1alpha1.RecordSetStatus {
+func refusedIn(change []rrset, refused map[rrsetKey]struct{}) bool {
+	for _, rr := range change {
+		if _, ok := refused[patchIdentity(rr)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func recordSetRefusedStatus(owner, qualified, recordType, ownerRef string, existing map[rrsetKey]zoneRRset) dnsv1alpha1.RecordSetStatus {
 	name := stripTrailingDot(qualified)
 	holders := make([]string, 0)
 	for key, rr := range existing {
 		if !strings.EqualFold(key.name, qualified) || strings.EqualFold(key.typ, recordType) {
 			continue
 		}
+		ref := rrsetOwnerRef(rr)
+		if ref == ownerRef {
+			continue
+		}
 		holder := key.typ + " record"
-		if ref := rrsetOwnerRef(rr); ref != "" {
+		if ref != "" {
 			holder = fmt.Sprintf("%s record of DNSRecordSet %s", key.typ, ref[strings.LastIndex(ref, ":")+1:])
 		}
 		holders = append(holders, holder)
@@ -596,10 +662,10 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		return err
 	}
 
-	targets := make(map[string]struct{}, len(recordSet.Spec.Records))
+	targets := make(map[rrsetKey]struct{}, len(recordSet.Spec.Records))
 	for i := range recordSet.Spec.Records {
-		qualified := ownername.Qualify(recordSet.Spec.Records[i].Name, zoneName)
-		current, found := existing[rrsetKey{name: qualified, typ: recordType}]
+		key := rrsetKey{name: ownername.Qualify(recordSet.Spec.Records[i].Name, zoneName), typ: recordType}
+		current, found := existing[key]
 		if !found {
 			continue
 		}
@@ -608,22 +674,16 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 		if owner := rrsetOwnerRef(current); owner != "" && owner != ownerRef {
 			continue
 		}
-		targets[qualified] = struct{}{}
+		targets[key] = struct{}{}
 	}
 
-	// Owner names this record set wrote that its spec no longer mentions.
-	for key, current := range existing {
-		if key.typ != recordType {
-			continue
-		}
-		if rrsetOwnerRef(current) == ownerRef {
-			targets[key.name] = struct{}{}
-		}
+	for _, key := range ownedSurplus(existing, ownerRef, recordType, nil) {
+		targets[key] = struct{}{}
 	}
 
 	deletes := make([]rrset, 0, len(targets))
-	for name := range targets {
-		deletes = append(deletes, newDeleteRRSet(name, recordType))
+	for key := range targets {
+		deletes = append(deletes, newDeleteRRSet(key.name, key.typ))
 	}
 	sortRRSets(deletes)
 
@@ -632,6 +692,7 @@ func (c *Client) DeleteRecordSet(ctx context.Context, zone dnsv1alpha1.DNSZone, 
 			c.logger.Error(err, "Failed to delete record set from PowerDNS", "zone", zoneName, "recordType", recordType)
 			return err
 		}
+		c.notePrunes(zoneName, recordSet, chunk.rrsets)
 	}
 
 	return nil
@@ -784,8 +845,14 @@ func chunkRRSets(rrsets []rrset) []rrsetChunk {
 	return out
 }
 
+// sortRRSets puts every DELETE ahead of every REPLACE. PowerDNS applies a patch
+// in order and checks each REPLACE against what the name holds by then, so a
+// record that changes type must be gone before the new one is written.
 func sortRRSets(patch []rrset) {
 	sort.Slice(patch, func(i, j int) bool {
+		if deleteI, deleteJ := patch[i].ChangeType == changeTypeDelete, patch[j].ChangeType == changeTypeDelete; deleteI != deleteJ {
+			return deleteI
+		}
 		if patch[i].Type != patch[j].Type {
 			return patch[i].Type < patch[j].Type
 		}

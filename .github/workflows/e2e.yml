@@ -42,6 +42,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Set file watcher limits
+        run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+
       - name: Setup Kind
         uses: helm/kind-action@v1
         with:
@@ -73,6 +76,10 @@ jobs:
         # zones-and-records), the control->edge Lightningstream suite
         # (federation), and the end-to-end upstream->edge suite (full-chain).
         run: task --yes env:chainsaw
+
+      - name: Collect Kubernetes bootstrap diagnostics
+        if: failure()
+        run: hack/collect-kind-diagnostics.sh
 
       - name: Collect diagnostic logs
         if: failure()

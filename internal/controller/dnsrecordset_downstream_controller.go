@@ -189,8 +189,9 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// provider and the status says so. Every status write the controller makes
 	// comes back as an update event, so without this the object reprograms
 	// itself once per write — for a record set holding thousands of names that
-	// is the difference between a reconcile and a reconcile loop. Drift written
-	// outside the operator is still corrected on the manager's resync.
+	// is the difference between a reconcile and a reconcile loop. A resync
+	// returns here too, so drift written outside the operator stays until the
+	// record set's generation changes.
 	if recordSetProgrammedAtGeneration(&rs) {
 		logger.V(1).Info("RecordSet already programmed at this generation", "generation", rs.Generation)
 		return r.checkALIASTargets(ctx, &rs)

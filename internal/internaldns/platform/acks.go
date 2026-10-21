@@ -26,6 +26,7 @@ const dnsValueNode = "node"
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
 type ProjectScope struct {
+	ProjectUID     string
 	Client         client.Client
 	Namespace      string
 	RequestTimeout time.Duration
@@ -190,7 +191,12 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 		projects = append(projects, ProjectScope{Client: s.Client, Namespace: ns})
 	}
 	results := make(chan error, len(projects))
+	started := 0
 	for _, project := range projects {
+		if owner := m.Labels["internal-dns.miloapis.com/project-uid"]; owner != "" && project.ProjectUID != owner {
+			continue
+		}
+		started++
 
 		go func() {
 			projectCtx := ctx
@@ -203,7 +209,7 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 		}()
 	}
 	var projectErrors error
-	for range projects {
+	for i := 0; i < started; i++ {
 		projectErrors = errors.Join(projectErrors, <-results)
 	}
 	return projectErrors

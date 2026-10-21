@@ -555,3 +555,23 @@ func TestServingAvailabilityDoesNotRequireEveryReplica(t *testing.T) {
 		t.Fatal("stale observations claimed a serving outage")
 	}
 }
+
+func TestPublicationProjectionOnlyReadsOwningProject(t *testing.T) {
+	cl := testClient(t)
+	unrelated := &blockingListClient{Client: cl, started: make(chan struct{})}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{"internal-dns.miloapis.com/project-uid": "owner"},
+	}}
+	sink := AckSink{Client: cl, Projects: []ProjectScope{
+		{ProjectUID: "unrelated", Client: unrelated, RequestTimeout: 20 * time.Millisecond},
+		{ProjectUID: "owner", Client: cl},
+	}}
+	if err := sink.projectPublication(context.Background(), manifest, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-unrelated.started:
+		t.Fatal("publication contacted an unrelated project")
+	default:
+	}
+}

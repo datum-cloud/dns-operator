@@ -312,11 +312,14 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 			continue
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
-		localDone := make(chan error, len(consumers)+1)
+		const ackWorkers = 4
+		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
 		go retryLoop(workerCtx, 500*time.Millisecond, "outbox "+region, outbox.Step, localDone)
 		for key, consumer := range consumers {
-			go consumeAcks(workerCtx, consumer, sinks[key], localDone)
+			for range ackWorkers {
+				go consumeAcks(workerCtx, consumer, sinks[key], localDone)
+			}
 		}
 		<-ctx.Done()
 		cancel()

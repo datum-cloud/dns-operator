@@ -411,6 +411,7 @@ func configure() {
 	items = append(items, recursor)
 	cfg := exampleConfigs("control-plane.example.yaml")["internal-dns-control-plane-config"]
 	cfg.ClusterPrefix = "fd54::/64"
+	cfg.ManagedDomainSuffix = "datum.internal"
 	cfg.OwnershipLeaseSeconds = 10
 	cfg.Stream.MaxBytes = 128 << 20
 	configureProjectSources(&cfg)

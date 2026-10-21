@@ -72,9 +72,14 @@ record types require:
 The client drives PowerDNS through its HTTP API, authenticating with an API key
 in the `X-API-Key` header. For a zone, the agent ensures the zone exists and
 applies the nameserver policy from its `DNSZoneClass`. For a record set, the
-agent replaces the desired owners and deletes extraneous owners of the same
-type. When PowerDNS rejects a change, the agent reports the failure on the
-resource with reason `PDNSError` and a human-readable message.
+agent replaces the desired owners and deletes every other RRset the record set
+wrote, whatever its type. So a record set that changes type removes its old
+records, such as the ALIAS it held before it became a CNAME. The delete and the
+rewrite at one name travel in one request, so when PowerDNS refuses the
+rewrite, the old record keeps serving. The agent counts each record it deletes
+of another type in `dns_operator_other_type_records_pruned_total`. When
+PowerDNS rejects a change, the agent reports the failure on the resource with
+reason `PDNSError` and a human-readable message.
 
 ## Storage and Serving
 

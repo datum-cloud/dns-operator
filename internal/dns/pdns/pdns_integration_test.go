@@ -937,3 +937,236 @@ func TestPDNS_LMDB_AZoneDeleteThatFailsKeepsTheRecords(t *testing.T) {
 		t.Fatalf("the zone is still there after the retry: GetZone returned %v", err)
 	}
 }
+
+func typedRecordSet(name string, generation int64, recordType dnsv1alpha1.RRType, owners ...string) dnsv1alpha1.DNSRecordSet {
+	records := make([]dnsv1alpha1.RecordEntry, 0, len(owners))
+	for _, owner := range owners {
+		entry := dnsv1alpha1.RecordEntry{Name: owner}
+		switch recordType {
+		case dnsv1alpha1.RRTypeA:
+			entry.A = &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}
+		case dnsv1alpha1.RRTypeAAAA:
+			entry.AAAA = &dnsv1alpha1.AAAARecordSpec{Content: "2001:db8::10"}
+		case dnsv1alpha1.RRTypeALIAS:
+			entry.ALIAS = &dnsv1alpha1.ALIASRecordSpec{Content: "target.example.net."}
+		case dnsv1alpha1.RRTypeCNAME:
+			entry.CNAME = &dnsv1alpha1.CNAMERecordSpec{Content: "target.example.net."}
+		case dnsv1alpha1.RRTypeTXT:
+			entry.TXT = &dnsv1alpha1.TXTRecordSpec{Content: "held by " + name}
+		case dnsv1alpha1.RRTypeNS:
+			entry.NS = &dnsv1alpha1.NSRecordSpec{Content: "ns1.example.net."}
+		}
+		records = append(records, entry)
+	}
+	return dnsv1alpha1.DNSRecordSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID("uid-" + name), Generation: generation},
+		Spec:       dnsv1alpha1.DNSRecordSetSpec{RecordType: recordType, Records: records},
+	}
+}
+
+func ensureProgrammed(ctx context.Context, t *testing.T, client *Client, zone dnsv1alpha1.DNSZone, rs dnsv1alpha1.DNSRecordSet) {
+	t.Helper()
+	statuses, err := client.EnsureRecordSet(ctx, zone, rs)
+	if err != nil {
+		t.Fatalf("EnsureRecordSet(%s %s): %v", rs.Name, rs.Spec.RecordType, err)
+	}
+	for _, st := range statuses {
+		if cond := st.Conditions[0]; cond.Status != metav1.ConditionTrue {
+			t.Fatalf("%s %s at %s is not programmed: %s: %s", rs.Name, rs.Spec.RecordType, st.Name, cond.Reason, cond.Message)
+		}
+	}
+}
+
+func patchCountingClient(t *testing.T, baseURL, apiKey string) (*Client, *atomic.Int32) {
+	t.Helper()
+	backend, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("parse %s: %v", baseURL, err)
+	}
+	forward := httputil.NewSingleHostReverseProxy(backend)
+	var patches atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patches.Add(1)
+		}
+		forward.ServeHTTP(w, r)
+	}))
+	t.Cleanup(proxy.Close)
+	return NewClient(proxy.URL, apiKey), &patches
+}
+
+type heldRRSet struct{ owner, typ string }
+
+func requireHeld(ctx context.Context, t *testing.T, client *Client, zoneName string, want ...heldRRSet) {
+	t.Helper()
+	for _, rr := range want {
+		if records, _, _ := rrsetCounts(ctx, t, client, zoneName, rr.owner, rr.typ); records != 1 {
+			t.Fatalf("%s holds %d %s records, want 1", rr.owner, records, rr.typ)
+		}
+	}
+}
+
+func requireGone(ctx context.Context, t *testing.T, client *Client, zoneName string, gone ...heldRRSet) {
+	t.Helper()
+	for _, rr := range gone {
+		if _, _, listed := rrsetCounts(ctx, t, client, zoneName, rr.owner, rr.typ); listed {
+			t.Fatalf("%s still lists its %s", rr.owner, rr.typ)
+		}
+	}
+}
+
+func TestPDNS_LMDB_ARecordSetChangesTypeAtOneName(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client, patches := patchCountingClient(t, baseURL, apiKey)
+	ctx := context.Background()
+	const zoneName = "retype.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+	before := zoneCommentTotal(ctx, t, client, zoneName)
+
+	alias, cname := heldRRSet{"www", "ALIAS"}, heldRRSet{"www", "CNAME"}
+	steps := []struct {
+		recordType  dnsv1alpha1.RRType
+		held, other heldRRSet
+	}{
+		{dnsv1alpha1.RRTypeALIAS, alias, cname},
+		{dnsv1alpha1.RRTypeCNAME, cname, alias},
+		{dnsv1alpha1.RRTypeALIAS, alias, cname},
+	}
+	var web dnsv1alpha1.DNSRecordSet
+	for i, step := range steps {
+		web = typedRecordSet("web", int64(i+1), step.recordType, "www")
+		patches.Store(0)
+		ensureProgrammed(ctx, t, client, zone, web)
+		if got := patches.Load(); got != 1 {
+			t.Fatalf("step %d (%s) took %d PATCHes, want the delete and the replace in one", i+1, step.recordType, got)
+		}
+		requireHeld(ctx, t, client, zoneName, step.held)
+		requireGone(ctx, t, client, zoneName, step.other)
+	}
+
+	patches.Store(0)
+	ensureProgrammed(ctx, t, client, zone, web)
+	if got := patches.Load(); got != 0 {
+		t.Fatalf("a second reconcile at the same generation sent %d PATCHes, want none", got)
+	}
+
+	if err := client.DeleteRecordSet(ctx, zone, web); err != nil {
+		t.Fatalf("DeleteRecordSet: %v", err)
+	}
+	requireGone(ctx, t, client, zoneName, alias, cname)
+	if after := zoneCommentTotal(ctx, t, client, zoneName); after != before {
+		t.Fatalf("the zone holds %d comments after the record set was deleted, and held %d before it", after, before)
+	}
+}
+
+func TestPDNS_LMDB_ATypeChangeLeavesWhatItDidNotWrite(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client := NewClient(baseURL, apiKey)
+	ctx := context.Background()
+	const zoneName = "neighbours.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("web", 1, dnsv1alpha1.RRTypeA, "www", "api", "old"))
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("txt", 1, dnsv1alpha1.RRTypeTXT, "www"))
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("mail", 1, dnsv1alpha1.RRTypeA, "mail"))
+	if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
+		`{"rrsets":[{"name":"`+ownername.Qualify("www", zoneName)+`","type":"MX","ttl":300,"changetype":"REPLACE","records":[{"content":"10 mx.example.net.","disabled":false}]}]}`); err != nil {
+		t.Fatalf("write the unnoted MX: %v", err)
+	}
+	notWritten := []heldRRSet{{"www", "TXT"}, {"www", "MX"}, {"mail", "A"}}
+	written := []heldRRSet{{"www", "AAAA"}, {"api", "AAAA"}}
+
+	web := typedRecordSet("web", 2, dnsv1alpha1.RRTypeAAAA, "www", "api")
+	ensureProgrammed(ctx, t, client, zone, web)
+	requireGone(ctx, t, client, zoneName, heldRRSet{"www", "A"}, heldRRSet{"api", "A"}, heldRRSet{"old", "A"})
+	requireHeld(ctx, t, client, zoneName, append(written, notWritten...)...)
+
+	if err := client.DeleteRecordSet(ctx, zone, web); err != nil {
+		t.Fatalf("DeleteRecordSet: %v", err)
+	}
+	requireGone(ctx, t, client, zoneName, written...)
+	requireHeld(ctx, t, client, zoneName, notWritten...)
+}
+
+func TestPDNS_LMDB_AnApexRecordChangesTypeBesideSOAAndNS(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client := NewClient(baseURL, apiKey)
+	ctx := context.Background()
+	const zoneName = "apex.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("ns", 1, dnsv1alpha1.RRTypeNS, "@"))
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("apex", 1, dnsv1alpha1.RRTypeALIAS, "@"))
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("apex", 2, dnsv1alpha1.RRTypeA, "@"))
+
+	if _, _, listed := rrsetCounts(ctx, t, client, zoneName, "@", "ALIAS"); listed {
+		t.Fatal("the apex became A and its old ALIAS is still listed")
+	}
+	for _, rr := range []struct {
+		typ      string
+		comments int
+	}{{"A", 3}, {"NS", 3}, {"SOA", 0}} {
+		if records, comments, _ := rrsetCounts(ctx, t, client, zoneName, "@", rr.typ); records != 1 || comments != rr.comments {
+			t.Fatalf("the apex %s holds records=%d comments=%d, want 1 and %d", rr.typ, records, comments, rr.comments)
+		}
+	}
+}
+
+func TestPDNS_LMDB_ARefusedTypeChangeKeepsTheOldRecord(t *testing.T) {
+	// No t.Parallel(): container + real PDNS.
+	baseURL, apiKey, stop := startPDNSLMDB(t)
+	defer stop()
+
+	client := NewClient(baseURL, apiKey)
+	ctx := context.Background()
+	const zoneName = "refusal.test"
+	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}
+
+	if err := client.CreateZone(ctx, zoneName, []string{"ns1.example.net", "ns2.example.net"}); err != nil {
+		t.Fatalf("CreateZone: %v", err)
+	}
+	ensureProgrammed(ctx, t, client, zone, typedRecordSet("web", 1, dnsv1alpha1.RRTypeALIAS, "www", "api"))
+	txt := typedRecordSet("txt", 1, dnsv1alpha1.RRTypeTXT, "www")
+	ensureProgrammed(ctx, t, client, zone, txt)
+
+	web := typedRecordSet("web", 2, dnsv1alpha1.RRTypeCNAME, "www", "api")
+	statuses, err := client.EnsureRecordSet(ctx, zone, web)
+	if err != nil {
+		t.Fatalf("EnsureRecordSet: %v", err)
+	}
+	refused := programmedCondition(t, statuses, "www")
+	if refused.Status != metav1.ConditionFalse || refused.Reason != "Conflict" {
+		t.Fatalf("a CNAME beside another record set's TXT was not refused: %+v", refused)
+	}
+	if !strings.Contains(refused.Message, "TXT record of DNSRecordSet txt") || strings.Contains(refused.Message, "DNSRecordSet web") {
+		t.Fatalf("the message must name the TXT that blocks and not the record set's own old record: %q", refused.Message)
+	}
+	requireHeld(ctx, t, client, zoneName, heldRRSet{"www", "ALIAS"}, heldRRSet{"api", "CNAME"})
+	requireGone(ctx, t, client, zoneName, heldRRSet{"api", "ALIAS"})
+
+	if err := client.DeleteRecordSet(ctx, zone, txt); err != nil {
+		t.Fatalf("DeleteRecordSet(txt): %v", err)
+	}
+	ensureProgrammed(ctx, t, client, zone, web)
+	requireHeld(ctx, t, client, zoneName, heldRRSet{"www", "CNAME"})
+	requireGone(ctx, t, client, zoneName, heldRRSet{"www", "ALIAS"})
+}

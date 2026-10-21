@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,30 +62,30 @@ func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Cli
 			body, _ := io.ReadAll(r.Body)
 			var req patchZoneRequest
 			_ = json.Unmarshal(body, &req)
-			for _, rr := range req.RRSets {
-				if rr.ChangeType != changeTypeReplace {
-					continue
-				}
-				for key := range fake.rrsets {
-					if key.name == rr.Name && key.typ != rr.Type && (key.typ == "CNAME" || rr.Type == "CNAME") {
-						w.WriteHeader(http.StatusUnprocessableEntity)
-						if fake.multi {
-							_, _ = fmt.Fprintf(w, `{"error": "Multiple errors found in RRset", "errors": ["RRset %s IN %s: Conflicts with pre-existing RRset"]}`, rr.Name, rr.Type)
-							return
-						}
-						_, _ = fmt.Fprintf(w, `{"error": "RRset %s IN %s: Conflicts with pre-existing RRset"}`, rr.Name, rr.Type)
-						return
-					}
-				}
-			}
+			staged := maps.Clone(fake.rrsets)
 			for _, rr := range req.RRSets {
 				key := rrsetKey{name: rr.Name, typ: rr.Type}
-				if rr.ChangeType == changeTypeDelete {
-					delete(fake.rrsets, key)
-					continue
+				switch {
+				case rr.ChangeType == changeTypeDelete:
+					delete(staged, key)
+				case rr.Records == nil:
+					if current, ok := staged[key]; ok {
+						current.Comments = rr.Comments
+						staged[key] = current
+					}
+				case conflictsAt(staged, rr):
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					if fake.multi {
+						_, _ = fmt.Fprintf(w, `{"error": "Multiple errors found in RRset", "errors": ["RRset %s IN %s: Conflicts with pre-existing RRset"]}`, rr.Name, rr.Type)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"error": "RRset %s IN %s: Conflicts with pre-existing RRset"}`, rr.Name, rr.Type)
+					return
+				default:
+					staged[key] = zoneRRset{Name: rr.Name, Type: rr.Type, Comments: rr.Comments}
 				}
-				fake.rrsets[key] = zoneRRset{Name: rr.Name, Type: rr.Type, Comments: rr.Comments}
 			}
+			fake.rrsets = staged
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -93,6 +94,15 @@ func newCoexistencePDNS(t *testing.T, seed ...zoneRRset) (*coexistencePDNS, *Cli
 	s := httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return fake, NewClient(s.URL, "k")
+}
+
+func conflictsAt(rrsets map[rrsetKey]zoneRRset, rr rrset) bool {
+	for key := range rrsets {
+		if key.name == rr.Name && key.typ != rr.Type && (key.typ == "CNAME" || rr.Type == "CNAME") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *coexistencePDNS) has(name, typ string) bool {

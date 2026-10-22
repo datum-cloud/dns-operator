@@ -207,8 +207,11 @@ type DNSContributionRecordSet struct {
 type DNSRecordContributionSpec struct {
 	RegistrationRef DNSObjectReference `json:"registrationRef"`
 	// +kubebuilder:validation:MaxItems=14
+	// +listType=map
+	// +listMapKey=recordType
 	RecordSets []DNSContributionRecordSet `json:"recordSets"`
 	Eligible   bool                       `json:"eligible"`
+	// +kubebuilder:validation:MaxLength=1024
 	Reason     string                     `json:"reason,omitempty"`
 }
 
@@ -245,6 +248,7 @@ type DNSNamingPolicySpec struct {
 	// +kubebuilder:validation:MaxItems=256
 	AdditionalNames []DNSAdditionalNameRule `json:"additionalNames"`
 	DNSZoneRef      DNSObjectReference      `json:"dnsZoneRef,omitempty"`
+	// +kubebuilder:validation:MaxLength=253
 	ScopePrefix     string                  `json:"scopePrefix,omitempty"`
 	Priority        int32                   `json:"priority,omitempty"`
 }
@@ -253,6 +257,7 @@ type DNSNamingPolicySpec struct {
 type DNSAdditionalNameRule struct {
 	Selector   *DNSRegistrationSelector `json:"selector,omitempty"`
 	DNSZoneRef DNSObjectReference       `json:"dnsZoneRef"`
+	// +kubebuilder:validation:MaxLength=253
 	NamePrefix string                   `json:"namePrefix"`
 }
 
@@ -306,6 +311,7 @@ type DNSResolvedAdditionalNameRule struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 type DNSNamingPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

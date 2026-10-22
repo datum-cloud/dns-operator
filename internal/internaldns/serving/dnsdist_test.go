@@ -64,10 +64,10 @@ func TestDNSDistBootstrapPublishesOnlyCompleteConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(router.Path)
-	if err != nil || !strings.Contains(string(data), "DNSAction.Refused") || !strings.Contains(string(data), "setRules(rules)") {
+	if err != nil || !strings.Contains(string(data), "RCodeAction(DNSRCode.REFUSED)") || !strings.Contains(string(data), "setRules(rules)") {
 		t.Fatal("bootstrap must refuse unknown contexts", err)
 	}
-	accepted := strings.Replace(string(data), "local bindings = {", "local bindings = {\n  [\"fd53::a\"] = {context=\"tenant-a\", ready=true},", 1)
+	accepted := strings.Replace(string(data), "appendRule(NotRule(", "appendRule(destination(\"fd53::a\"), SetTagAction(\"dns-context\", \"tenant-a\"))\nappendRule(NotRule(", 1)
 	accepted = strings.ReplaceAll(accepted, "tcpOnly=true,checkTCP=true,", "")
 	if err := os.WriteFile(router.Path, []byte(accepted), 0644); err != nil {
 		t.Fatal(err)

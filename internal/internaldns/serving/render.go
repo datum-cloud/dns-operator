@@ -255,16 +255,18 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 			fmt.Fprintf(&out, "internalDNSPools[%q] = true\nend\n", name)
 		}
 	}
-	fmt.Fprint(&out, "\nlocal bindings = {\n")
+	fmt.Fprint(&out, "local function destination(address) local nmg = newNMG(); nmg:addMask(address); return NetmaskGroupRule(nmg, false, true) end\n\n")
 	for _, b := range bindings {
 		addr := b.ConsumerAddress
 		if cluster {
 			addr = b.ClusterAddress
 		}
-		fmt.Fprintf(&out, "  [%q] = {context=%q, ready=%t},\n", addr, b.ViewName(), !b.ConfigurationPending && active[b.BindingUID])
+		fmt.Fprintf(&out, "appendRule(destination(%q), SetTagAction(\"dns-context\", %q))\n", addr, b.ViewName())
+		if b.ConfigurationPending || !active[b.BindingUID] {
+			fmt.Fprintf(&out, "appendRule(destination(%q), SetTagAction(\"context-unready\", \"true\"))\n", addr)
+		}
 	}
-	fmt.Fprint(&out, "}\n\nlocal function classifyContext(dq)\n  local binding = bindings[dq.localaddr:toString()]\n  if binding == nil then\n    return DNSAction.Refused, \"\"\n  end\n  dq:setTag(\"dns-context\", binding.context)\n  if not binding.ready then dq:setTag(\"context-unready\", \"true\") end\n  return DNSAction.None, \"\"\nend\n\n")
-	fmt.Fprint(&out, "appendRule(AllRule(), LuaAction(classifyContext))\n")
+	fmt.Fprint(&out, "appendRule(NotRule(TagRule(\"dns-context\")), RCodeAction(DNSRCode.REFUSED))\n")
 	fmt.Fprint(&out, "appendRule(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
 	for _, binding := range bindings {
 		attached := append([]model.ZoneAttachment(nil), binding.Zones...)

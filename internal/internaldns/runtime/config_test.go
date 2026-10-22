@@ -192,7 +192,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), "ready=true") {
+	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), `SetTagAction("dns-context"`) || strings.Contains(string(data), `SetTagAction("context-unready"`) {
 		t.Fatalf("persisted resolver mapping was not restored: %s", data)
 	}
 	cancel()

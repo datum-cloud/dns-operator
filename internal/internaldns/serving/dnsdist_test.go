@@ -117,6 +117,13 @@ func TestRestartRetainsRoutingAcrossProcessConfigurationRefresh(t *testing.T) {
 	if err := prepareDNSDistRouter(cfg.Render.NodeDNSDist); err != nil {
 		t.Fatal(err)
 	}
+	runtimeDir := t.TempDir()
+	if err := restoreDaemonPermissions(cfg.StateDir, runtimeDir, []string{"coredns"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeDir, "allow-coredns")); err != nil {
+		t.Fatalf("refreshed dnsdist process settings withheld daemon start permission: %v", err)
+	}
 	runner := &recordingRunner{}
 	restarted, err := NewAgent(cfg, Dependencies{Runner: runner})
 	if err != nil {

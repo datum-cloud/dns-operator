@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -104,10 +105,14 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 const localDaemonStartGrace = 10 * time.Second
 
 func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
-	deadline := time.Now().Add(localDaemonStartGrace)
+	deadline := a.deps.Clock().Add(localDaemonStartGrace)
 	for {
 		err := a.probeLocalDaemons(ctx)
-		if err == nil || ctx.Err() != nil || !time.Now().Before(deadline) {
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		if !a.deps.Clock().Before(deadline) {
+			a.report(fmt.Errorf("local daemons did not answer within %s, reapplying the approved configuration: %w", localDaemonStartGrace, err))
 			return err
 		}
 		if !waitRetry(ctx, 200*time.Millisecond) {

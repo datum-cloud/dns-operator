@@ -38,6 +38,28 @@ func installedFilesMatch(files map[string][]byte) bool {
 	return true
 }
 
+// approvedFilesInstalled accepts a dnsdist file whose process settings were
+// refreshed at startup, provided its routing rules are the approved ones.
+func approvedFilesInstalled(files map[string][]byte) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for path, expected := range files {
+		actual, err := os.ReadFile(path)
+		if err != nil || !(bytes.Equal(actual, expected) || sameDNSDistRules(actual, expected)) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameDNSDistRules(a, b []byte) bool {
+	boundary := []byte(dnsdistRulesBoundary)
+	_, rulesA, okA := bytes.Cut(a, boundary)
+	_, rulesB, okB := bytes.Cut(b, boundary)
+	return okA && okB && bytes.Equal(rulesA, rulesB)
+}
+
 // Readiness verifies the approved files and live DNS processes using local state.
 // It does not require the configuration agent or state delivery to be available.
 func Readiness(ctx context.Context, config Config) error {

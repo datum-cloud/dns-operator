@@ -73,7 +73,7 @@ func restoreDaemonPermissions(stateDir, runtimeDir string, names []string) error
 
 func approvedConfigurationInstalled(stateDir string) bool {
 	state, err := (stateStore{path: filepath.Join(stateDir, "checkpoint.json")}).Load()
-	return err == nil && state.Active != nil && installedFilesMatch(state.Active.Files)
+	return err == nil && state.Active != nil && approvedFilesInstalled(state.Active.Files)
 }
 
 // RunDaemons owns query processes independently of the configuration agent.

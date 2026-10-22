@@ -376,3 +376,37 @@ func serveProxiedTCPDNS(listener net.Listener) {
 		}()
 	}
 }
+
+func TestRestoreReportsDaemonsThatNeverAnswer(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+
+	cfg.UnsafeAllowNoDNSVerify = false
+	cfg.Render.ClusterCoreDNS.ListenAddress = "127.0.0.1"
+	cfg.Render.ClusterCoreDNS.Port = 1
+	now := time.Now()
+	var reported []error
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{
+		Runner:              runner,
+		PublicationVerifier: publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error { return nil }),
+		Clock:               func() time.Time { now = now.Add(localDaemonStartGrace / 2); return now },
+		OnError:             func(err error) { reported = append(reported, err) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0].Error(), "did not answer within") {
+		t.Fatalf("expired daemon wait was not reported: %v", reported)
+	}
+	if len(runner.calls) == 0 {
+		t.Fatal("expired daemon wait did not reapply the approved configuration")
+	}
+}

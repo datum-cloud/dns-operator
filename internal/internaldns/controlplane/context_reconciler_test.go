@@ -95,6 +95,30 @@ func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	if access.Status.ObservedGeneration != 1 {
 		t.Fatalf("source generation not observed: %#v", access.Status)
 	}
+	until := metav1.NewTime(now.Add(time.Minute))
+	b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
+	b.Status.MemberAcknowledgements = []dnsv1alpha1.DNSApplyAcknowledgement{{Phase: string(model.AckVerified), Revision: b.Spec.Configuration.Revision, AccessEpoch: b.Spec.Version.Epoch, AccessSequence: b.Spec.Version.Sequence, ValidUntil: &until}}
+	setCondition(&b.Status.Conditions, "Serving", metav1.ConditionTrue, "Ready", "", b.Generation, now)
+	if err := c.Status().Update(ctx, &b); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := r.reconcileContextBindings(ctx, "project", []dnsv1alpha1.DNSZoneAssociation{*association}, map[string]*dnsv1alpha1.DNSZone{"zone": zone}, now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		previousVersion := access.ResourceVersion
+		if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
+			t.Fatal(err)
+		}
+		ready := apimeta.FindStatusCondition(access.Status.Conditions, "Ready")
+		if ready == nil || ready.Status != metav1.ConditionTrue || !ready.LastTransitionTime.Time.Equal(now) {
+			t.Fatalf("unchanged serving state changed its transition: %#v", ready)
+		}
+		if i > 0 && access.ResourceVersion != previousVersion {
+			t.Fatal("unchanged serving state wrote access status")
+		}
+	}
+
 	extraZone := zone.DeepCopy()
 	extraZone.Name = "extra"
 	extraZone.UID = "extra-uid"

@@ -141,7 +141,13 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 	if err := r.List(ctx, &contexts, client.InNamespace(ns)); err != nil {
 		return err
 	}
-	sort.Slice(contexts.Items, func(i, j int) bool { return contexts.Items[i].Name < contexts.Items[j].Name })
+	sort.Slice(contexts.Items, func(i, j int) bool {
+		left, right := contexts.Items[i], contexts.Items[j]
+		if !left.CreationTimestamp.Equal(&right.CreationTimestamp) {
+			return left.CreationTimestamp.Before(&right.CreationTimestamp)
+		}
+		return left.UID < right.UID
+	})
 	consumerOwners := map[string]types.UID{}
 	for i := range contexts.Items {
 		c := &contexts.Items[i]

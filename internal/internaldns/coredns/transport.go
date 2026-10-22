@@ -148,11 +148,9 @@ func parseHeader(data []byte, tcp bool) (net.Addr, net.Addr, int, error) {
 	if data[12] == 0x20 {
 		return nil, nil, size, nil
 	}
-	protocol := byte(2)
-	if tcp {
-		protocol = 1
-	}
-	if data[13]&0x0f != protocol {
+	protocol := data[13] & 0x0f
+	// The header describes the client protocol, independently of the trusted TCP hop.
+	if protocol != 2 && (!tcp || protocol != 1) {
 		return nil, nil, 0, invalid
 	}
 	length := 4

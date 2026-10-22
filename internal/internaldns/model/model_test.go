@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -89,5 +90,20 @@ func TestEnvelopeRejectsObsoleteWireVersion(t *testing.T) {
 	current.APIVersion = "internal.dns.networking.miloapis.com/v1alpha1"
 	if current.Validate() == nil {
 		t.Fatal("obsolete transport version accepted")
+	}
+}
+
+func TestEnvelopeHeaderIsFrozenAcrossVersions(t *testing.T) {
+	future, err := NewEnvelope(KindMemberAck, "event", "central", "shared", "uid", 1, 1, time.Now(), MemberAck{MemberID: "member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	future.APIVersion = "internal.dns.networking.miloapis.com/v1beta1"
+	if err := future.Validate(); !errors.Is(err, ErrUnsupportedEnvelope) {
+		t.Fatalf("future envelope with the frozen header was not parked: %v", err)
+	}
+	future.EventID = ""
+	if err := future.Validate(); err == nil || errors.Is(err, ErrUnsupportedEnvelope) {
+		t.Fatalf("future envelope that breaks the frozen header must be malformed, got %v", err)
 	}
 }

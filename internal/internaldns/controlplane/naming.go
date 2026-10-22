@@ -39,7 +39,9 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, _ typ
 	for i := range managed.Items {
 		m := &managed.Items[i]
 		accepted := apimeta.FindStatusCondition(m.Status.Conditions, "Ready")
-		if m.UID == contextUID && m.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue {
+		// A Ready context without a managed namespace, or whose Ready
+		// condition predates its spec, has no current canonical zone.
+		if m.UID == contextUID && m.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == m.Generation && m.Status.ManagedNamespace.DNSZoneRef.UID != "" {
 			out = append(out, ResolvedName{DNSZoneRef: m.Status.ManagedNamespace.DNSZoneRef, Name: label, Canonical: true})
 			break
 		}

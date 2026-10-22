@@ -310,12 +310,74 @@ func TestRegionalPoolRequiresOneMemberWithEveryCurrentZone(t *testing.T) {
 	if strings.Count(conf, "]:addPool(") != 1 {
 		t.Fatalf("stale live member remains in context pool:\n%s", conf)
 	}
-	// A newer ACK without the matching publication plan gates even the formerly
-	// current member; a resolver must hold the publication version confirmed by the member.
 	a.state.Acks["zone-a"]["regional-1/"] = replicaAck{Fence: fence{2, 5}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
-	if a.publicationsReady(b) {
-		t.Fatal("ACK ahead of local publication plan activated context")
+	if ready := a.eligibleRegionalMembers(b); !ready["regional-0"] || !ready["regional-1"] {
+		t.Fatalf("ACK ahead of local publication emptied or narrowed the pool: %#v", ready)
 	}
+	a.state.Acks["zone-a"]["regional-1/"] = replicaAck{Fence: fence{2, 3}, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	if a.eligibleRegionalMembers(b)["regional-1"] {
+		t.Fatal("member below the required publication was selected")
+	}
+	a.state.Acks["zone-a"]["regional-1/"] = replicaAck{Fence: fence{2, 5}, ObservedAt: now, Rejected: true}
+	if a.eligibleRegionalMembers(b)["regional-1"] {
+		t.Fatal("member with a rejected publication was selected")
+	}
+}
+
+func TestZoneUpdateKeepsServingMembersOnPreviousPublication(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	snapshot := testSnapshot(now)
+	b := snapshot.Bindings[0]
+	snapshot.Members = []model.Member{{MemberID: "regional-0", Role: "regional"}, {MemberID: "regional-1", Role: "regional"}}
+	a := &Agent{cfg: Config{Mode: ModeResolver}, state: newCheckpoint(), deps: Dependencies{Clock: func() time.Time { return now }}}
+	a.state.Snapshot = &snapshot
+	a.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
+	ack := func(member string, f fence) {
+		a.state.Acks["zone-a"][member+"/"] = replicaAck{Fence: f, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	}
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 4}, Verified: true}
+	a.state.Acks["zone-a"] = map[string]replicaAck{}
+	ack("regional-0", fence{2, 4})
+	ack("regional-1", fence{2, 4})
+
+	c, _ := renderFixture(t)
+	c.ClusterDNSDist.Backends = []model.Backend{{MemberID: "regional-0", Address: "10.253.0.20", Port: 5300}, {MemberID: "regional-1", Address: "10.253.0.21", Port: 5300}}
+	servfail := fmt.Sprintf("appendRule(AndRule({TagRule(\"dns-context\",%q),QNameSuffixRule(%q)}),RCodeAction(DNSRCode.SERVFAIL))", b.ViewName(), model.AbsoluteName("prod.internal"))
+	assertServing := func(step string, want ...string) {
+		t.Helper()
+		ready := a.eligibleRegionalMembers(b)
+		if len(ready) != len(want) {
+			t.Fatalf("%s: ready members %#v, want %v", step, ready, want)
+		}
+		for _, member := range want {
+			if !ready[member] {
+				t.Fatalf("%s: ready members %#v, want %v", step, ready, want)
+			}
+		}
+		c.ReadyZoneMembers = map[string]map[string]map[string]bool{b.BindingUID: {"zone-a": ready}}
+		rendered, err := Render(c, snapshot, map[string]bool{b.BindingUID: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{c.NodeDNSDist.Path, c.ClusterDNSDist.Path} {
+			if strings.Contains(string(rendered.Files[path]), servfail) {
+				t.Fatalf("%s: %s answers SERVFAIL for the zone", step, path)
+			}
+		}
+	}
+
+	assertServing("before update", "regional-0", "regional-1")
+	ack("regional-0", fence{2, 5})
+	assertServing("member ACK ahead of resolver", "regional-0", "regional-1")
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{2, 5}, Verified: true}
+	assertServing("resolver holds new publication", "regional-0", "regional-1")
+	ack("regional-1", fence{2, 5})
+	assertServing("all members on new publication", "regional-0", "regional-1")
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{3, 1}, Verified: true}
+	assertServing("writer epoch bump", "regional-0", "regional-1")
+	ack("regional-0", fence{3, 1})
+	assertServing("first member on new epoch", "regional-0", "regional-1")
 }
 func TestMissingOrStalePrivatePublicationHasNoPublicFallback(t *testing.T) {
 	t.Parallel()

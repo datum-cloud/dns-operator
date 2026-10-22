@@ -388,15 +388,15 @@ func TestPublicationProbeTimeoutDoesNotApproveConfiguration(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
 	cfg := regionalTestConfig(t)
-	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = udp.Close() }()
-	port := udp.LocalAddr().(*net.UDPAddr).Port
+	defer func() { _ = listener.Close() }()
+	port := listener.Addr().(*net.TCPAddr).Port
 	cfg.Render.ClusterCoreDNS.ListenAddress = "127.0.0.1"
 	cfg.Render.ClusterCoreDNS.Port = uint16(port)
-	cfg.PublicationDNSProbe = PublicationDNSVerifierConfig{Server: udp.LocalAddr().String(), Timeout: 50 * time.Millisecond}
+	cfg.PublicationDNSProbe = PublicationDNSVerifierConfig{Server: listener.Addr().String(), Timeout: 50 * time.Millisecond}
 	cfg.UnsafeAllowNoDNSVerify = false
 	a, err := NewAgent(cfg, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
 	if err != nil {

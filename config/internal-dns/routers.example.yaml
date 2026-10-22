@@ -195,8 +195,6 @@ spec:
           capabilities:
             drop:
             - ALL
-            add:
-            - KILL
         volumeMounts:
         - name: config
           mountPath: "/config"

@@ -48,8 +48,16 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 // context lifetime.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, accessUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
-	if err != nil || parsed.IsUnspecified() || projectUID == "" || accessUID == "" || region == "" || port != 53 {
+	if err != nil || !parsed.IsGlobalUnicast() || projectUID == "" || accessUID == "" || region == "" || port != 53 {
 		return fmt.Errorf("destination claim identity, region, IP, and DNS port are required")
+	}
+	parsed = parsed.Unmap()
+	prefix, err := a.regionalPrefix()
+	if err != nil {
+		return err
+	}
+	if prefix.Contains(parsed) {
+		return fmt.Errorf("service destination must be outside the regional resolver address pool")
 	}
 	address = parsed.String()
 	owner := string(projectUID) + "/" + string(accessUID)
@@ -74,15 +82,10 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) 
 	}
 	owner := projectUID + "/" + contextUID
 
-	prefix := a.ClusterPrefix
-	if prefix == "" {
-		prefix = "fd54::/64"
+	parsed, err := a.regionalPrefix()
+	if err != nil {
+		return AddressLease{}, err
 	}
-	parsed, err := netip.ParsePrefix(prefix)
-	if err != nil || !parsed.Addr().Is6() || parsed.Bits() > 112 {
-		return AddressLease{}, fmt.Errorf("allocator prefix must be IPv6 with at least 16 host bits: %q", prefix)
-	}
-	parsed = parsed.Masked()
 	key := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}
 	var stored corev1.ConfigMap
 	if err := a.Client.Get(ctx, key, &stored); err == nil {
@@ -148,4 +151,16 @@ func addressInPrefix(prefix netip.Prefix, owner string, salt int) string {
 	}
 	base[15] |= 1 // Never allocate the subnet's all-zero host address.
 	return netip.AddrFrom16(base).String()
+}
+
+func (a *Allocator) regionalPrefix() (netip.Prefix, error) {
+	prefix := a.ClusterPrefix
+	if prefix == "" {
+		prefix = "fd54::/64"
+	}
+	parsed, err := netip.ParsePrefix(prefix)
+	if err != nil || !parsed.Addr().Is6() || parsed.Bits() > 112 {
+		return netip.Prefix{}, fmt.Errorf("allocator prefix must be IPv6 with at least 16 host bits: %q", prefix)
+	}
+	return parsed.Masked(), nil
 }

@@ -127,7 +127,7 @@ func TestDNSDistUsesPersistentIdentityAndBackendHealthCheck(t *testing.T) {
 	if strings.Contains(conf, "validUntil") || strings.Contains(conf, "os.time()") {
 		t.Fatal("resolver access depends on a deadline")
 	}
-	for _, required := range []string{"checkName=\".\"", "useProxyProtocol=true", "tcpOnly=true", "checkTCP=true"} {
+	for _, required := range []string{"checkName=\".\"", "useProxyProtocol=true", "tcpOnly=true", "checkTCP=true", "maxCheckFailures=3", "rise=2"} {
 		if !strings.Contains(conf, required) {
 			t.Fatalf("dnsdist config missing %q:\n%s", required, conf)
 		}

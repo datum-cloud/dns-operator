@@ -212,7 +212,7 @@ type DNSRecordContributionSpec struct {
 	RecordSets []DNSContributionRecordSet `json:"recordSets"`
 	Eligible   bool                       `json:"eligible"`
 	// +kubebuilder:validation:MaxLength=1024
-	Reason     string                     `json:"reason,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 type DNSRecordContributionStatus struct {
@@ -249,8 +249,8 @@ type DNSNamingPolicySpec struct {
 	AdditionalNames []DNSAdditionalNameRule `json:"additionalNames"`
 	DNSZoneRef      DNSObjectReference      `json:"dnsZoneRef,omitempty"`
 	// +kubebuilder:validation:MaxLength=253
-	ScopePrefix     string                  `json:"scopePrefix,omitempty"`
-	Priority        int32                   `json:"priority,omitempty"`
+	ScopePrefix string `json:"scopePrefix,omitempty"`
+	Priority    int32  `json:"priority,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() > 0",message="dnsZoneRef must pin the zone UID"
@@ -258,7 +258,7 @@ type DNSAdditionalNameRule struct {
 	Selector   *DNSRegistrationSelector `json:"selector,omitempty"`
 	DNSZoneRef DNSObjectReference       `json:"dnsZoneRef"`
 	// +kubebuilder:validation:MaxLength=253
-	NamePrefix string                   `json:"namePrefix"`
+	NamePrefix string `json:"namePrefix"`
 }
 
 // DNSRegistrationSelector matches registration labels using Kubernetes selector semantics.

@@ -23,7 +23,10 @@ func TestCapacityOverflowDoesNotBlockWithdrawal(t *testing.T) {
 	candidate := prior
 	candidate.ConfigurationRevision++
 	candidate.Bindings = []model.Binding{capacityBinding(2), capacityBinding(3), capacityBinding(4)}
-	bounded, rejected := fitSnapshot(candidate, prior, 2, 512*1024)
+	bounded, rejected, err := fitSnapshot(candidate, prior, 2, 512*1024)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(bounded.Bindings) != 2 || len(rejected) != 1 {
 		t.Fatalf("capacity result: %#v, rejected %#v", bounded.Bindings, rejected)
 	}
@@ -46,7 +49,10 @@ func TestByteOverflowPreservesExistingContext(t *testing.T) {
 	}
 	binding.ConfigurationRevision++
 	candidate.Bindings = []model.Binding{binding, capacityBinding(2)}
-	bounded, rejected := fitSnapshot(candidate, prior, 2, 4096)
+	bounded, rejected, err := fitSnapshot(candidate, prior, 2, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !rejected["binding-1"] || len(bounded.Bindings) != 2 || bounded.Bindings[0].ConfigurationRevision != 1 {
 		t.Fatalf("overflow interrupted an established context: %#v", bounded)
 	}

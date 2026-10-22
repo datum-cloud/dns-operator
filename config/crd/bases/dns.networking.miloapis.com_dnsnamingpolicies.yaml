@@ -116,6 +116,7 @@ spec:
                   - message: dnsZoneRef must pin the zone UID
                     rule: has(self.dnsZoneRef.uid) && self.dnsZoneRef.uid.size() >
                       0
+                maxItems: 256
                 type: array
               dnsZoneRef:
                 description: |-
@@ -183,6 +184,14 @@ spec:
             - message: resolverContextRef is required
               rule: self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid)
                 && self.resolverContextRef.uid.size() > 0
+            - message: resolverContextRef identity is immutable
+              rule: self.resolverContextRef.name == oldSelf.resolverContextRef.name
+                && self.resolverContextRef.uid == oldSelf.resolverContextRef.uid
+            - message: dnsZoneRef identity is immutable
+              rule: '(has(self.dnsZoneRef) ? self.dnsZoneRef.name : "") == (has(oldSelf.dnsZoneRef)
+                ? oldSelf.dnsZoneRef.name : "") && ((has(self.dnsZoneRef) && has(self.dnsZoneRef.uid))
+                ? self.dnsZoneRef.uid : "") == ((has(oldSelf.dnsZoneRef) && has(oldSelf.dnsZoneRef.uid))
+                ? oldSelf.dnsZoneRef.uid : "")'
           status:
             properties:
               conditions:

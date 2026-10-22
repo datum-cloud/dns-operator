@@ -604,7 +604,7 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
 		return false, err
 	}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}, Managed: true}}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err

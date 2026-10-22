@@ -60,8 +60,6 @@ spec:
                 required:
                 - name
                 type: object
-              managed:
-                type: boolean
               resolverContextRef:
                 description: |-
                   DNSObjectReference pins a namespaced object by API-assigned UID. Generation
@@ -100,6 +98,12 @@ spec:
             - message: resolverContextRef is required
               rule: self.resolverContextRef.name.size() > 0 && has(self.resolverContextRef.uid)
                 && self.resolverContextRef.uid.size() > 0
+            - message: dnsZoneRef identity is immutable
+              rule: self.dnsZoneRef.name == oldSelf.dnsZoneRef.name && self.dnsZoneRef.uid
+                == oldSelf.dnsZoneRef.uid
+            - message: resolverContextRef identity is immutable
+              rule: self.resolverContextRef.name == oldSelf.resolverContextRef.name
+                && self.resolverContextRef.uid == oldSelf.resolverContextRef.uid
           status:
             properties:
               bindingRef:

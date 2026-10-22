@@ -252,3 +252,9 @@ reference state to retain the target object's identity. If that state is
 missing, DNS rejects the source instead of attaching it to a same-name target.
 The rejection persists across retries. Restore a verified reference-state
 backup, or recreate the source resource to select its targets explicitly.
+
+Registration write permission is the publication boundary within a project.
+Naming-policy selectors organize names; they do not authorize publishers.
+A publisher that can change registration labels can select every matching
+rule for the registration's associated context. Restrict registration writes
+with RBAC when publishers must not share that authority.

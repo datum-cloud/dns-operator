@@ -14,6 +14,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -573,5 +574,83 @@ func TestPublicationProjectionOnlyReadsOwningProject(t *testing.T) {
 	case <-unrelated.started:
 		t.Fatal("publication contacted an unrelated project")
 	default:
+	}
+}
+
+type heldManifestRead struct {
+	client.Client
+	read    chan struct{}
+	release chan struct{}
+}
+
+func (c *heldManifestRead) Get(ctx context.Context, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+	if err := c.Client.Get(ctx, key, object, opts...); err != nil {
+		return err
+	}
+	if _, ok := object.(*dnsv1alpha1.DNSPublicationManifest); ok {
+		close(c.read)
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestConcurrentAckProjectionPreservesNewerObservation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, WriterEpoch: 1, Revision: 2}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone")[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone", WriterEpoch: 1, ActiveManifestName: manifest.Name}}
+	cl := testClient(t, owner, manifest)
+	held := &heldManifestRead{Client: cl, read: make(chan struct{}), release: make(chan struct{})}
+	sink := AckSink{Client: cl, Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "auth", ReplicaID: "replica", Role: "regional"}}, Now: func() time.Time { return now }}
+	olderSink := sink
+	olderSink.Client = held
+	ack := model.MemberAck{MemberID: "auth", ReplicaID: "replica", ResourceUID: "zone", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 2, Phase: model.AckVerified, ObservedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute)}
+	older, err := model.NewEnvelope(model.KindMemberAck, "older", "east", "shared", "zone", 1, 2, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack.Phase = model.AckRejected
+	ack.ObservedAt = now
+	newer, err := model.NewEnvelope(model.KindMemberAck, "newer", "east", "shared", "zone", 1, 2, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := model.AckSubject("east", "shared", "auth")
+	done := make(chan error, 1)
+	go func() { done <- olderSink.Apply(ctx, subject, older) }()
+	select {
+	case <-held.read:
+	case <-ctx.Done():
+		t.Fatal("older acknowledgement did not reach manifest")
+	}
+	if err := sink.Apply(ctx, subject, newer); err != nil {
+		close(held.release)
+		t.Fatal(err)
+	}
+	close(held.release)
+	if err := <-done; !apierrors.IsConflict(err) {
+		t.Fatalf("racing older projection did not reject stale write: %v", err)
+	}
+	if err := sink.Apply(ctx, subject, older); err != nil {
+		t.Fatalf("older acknowledgement redelivery failed: %v", err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(manifest), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Status.ReplicaAcknowledgements) != 1 || manifest.Status.ReplicaAcknowledgements[0].Phase != string(model.AckRejected) || manifest.Status.ReplicaAcknowledgements[0].ObservedUnixNano != now.UnixNano() {
+		t.Fatalf("late verified acknowledgement overwrote newer rejection: %+v", manifest.Status.ReplicaAcknowledgements)
+	}
+}
+
+func TestPublicationProjectionReportsMissingProjectIdentity(t *testing.T) {
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"internal-dns.miloapis.com/project-uid": "project-owner"}}}
+	sink := AckSink{Projects: []ProjectScope{{Namespace: "default"}}}
+	if err := sink.projectPublication(context.Background(), manifest, true, time.Now()); err == nil {
+		t.Fatal("missing projection identity was silently skipped")
 	}
 }

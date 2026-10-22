@@ -35,7 +35,6 @@ type ProjectScope struct {
 type AckSink struct {
 	Client             client.Client
 	Namespace          string
-	ProjectNamespaces  []string
 	Projects           []ProjectScope
 	ProjectScopes      func() []ProjectScope
 	PublicationMembers []model.Member
@@ -187,12 +186,14 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 	if s.ProjectScopes != nil {
 		projects = append(projects, s.ProjectScopes()...)
 	}
-	for _, ns := range s.ProjectNamespaces {
-		projects = append(projects, ProjectScope{Client: s.Client, Namespace: ns})
-	}
 	results := make(chan error, len(projects))
 	started := 0
+	var projectErrors error
 	for _, project := range projects {
+		if m.Labels["internal-dns.miloapis.com/project-uid"] != "" && project.ProjectUID == "" {
+			projectErrors = errors.Join(projectErrors, fmt.Errorf("publication projection scope %q requires a project identity", project.Namespace))
+			continue
+		}
 		if owner := m.Labels["internal-dns.miloapis.com/project-uid"]; owner != "" && project.ProjectUID != owner {
 			continue
 		}
@@ -208,7 +209,6 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 			results <- s.projectPublicationForScope(projectCtx, project, m, complete, now)
 		}()
 	}
-	var projectErrors error
 	for i := 0; i < started; i++ {
 		projectErrors = errors.Join(projectErrors, <-results)
 	}

@@ -180,6 +180,9 @@ type Agent struct {
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
 	installedPublications map[string]installedPublication
+	restoredAt            time.Time
+	stateReceived         bool
+	checkpointWithdrawn   bool
 	// render is renderPublications unless a test injects a failure.
 	render func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error)
 }
@@ -246,6 +249,9 @@ func (a *Agent) Start(ctx context.Context) error {
 	a.mu.Lock()
 	if err := a.restoreActive(ctx); err != nil {
 		a.report(err)
+	}
+	if a.state.Active != nil && !a.needsActivation {
+		a.restoredAt = a.deps.Clock()
 	}
 	a.mu.Unlock()
 	for {
@@ -323,6 +329,9 @@ func (a *Agent) loadBootstrap(ctx context.Context, loader BootstrapSource) error
 	if err != nil {
 		return fmt.Errorf("load bootstrap snapshot: %w", err)
 	}
+	a.mu.Lock()
+	a.stateReceived = true
+	a.mu.Unlock()
 	order := func(k model.Kind) int {
 		switch k {
 		case model.KindPublicationChunk:
@@ -739,6 +748,9 @@ func (a *Agent) Step(ctx context.Context) error {
 	defer a.mu.Unlock()
 	if a.state.Snapshot == nil {
 		return errors.New("no verified serving configuration is available")
+	}
+	if a.restoredCheckpointExpired() {
+		return a.withdrawRestoredCheckpoint(ctx)
 	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {

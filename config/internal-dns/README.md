@@ -153,7 +153,8 @@ update delivery without withdrawing an applied resolver binding.
 Records and access bindings have no expiry deadline. Product services withdraw
 endpoints through explicit health updates or deletion. When delivery stops, DNS
 retains the last reported endpoint state. Agents restore applied configuration
-from persistent checkpoints before waiting for messaging connectivity. New
+from persistent checkpoints before waiting for messaging connectivity, and
+gate serving if no DNS state arrives within 15 minutes of the restart. New
 nodes require a complete configuration before accepting queries. Replay cannot
 regress writer or configuration versions or restore a withdrawn lifetime.
 

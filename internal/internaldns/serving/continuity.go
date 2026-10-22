@@ -104,6 +104,20 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 
 const localDaemonStartGrace = 10 * time.Second
 
+const restoredCheckpointLimit = 15 * time.Minute
+
+func (a *Agent) restoredCheckpointExpired() bool {
+	return !a.restoredAt.IsZero() && !a.stateReceived && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
+}
+
+func (a *Agent) withdrawRestoredCheckpoint(ctx context.Context) error {
+	if a.checkpointWithdrawn {
+		return nil
+	}
+	a.checkpointWithdrawn = true
+	return errors.Join(fmt.Errorf("no DNS state received within %s of restart, withdrawing the restored configuration", restoredCheckpointLimit), a.failClosed(ctx))
+}
+
 func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
 	deadline := a.deps.Clock().Add(localDaemonStartGrace)
 	for {

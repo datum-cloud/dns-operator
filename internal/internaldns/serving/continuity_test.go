@@ -410,3 +410,93 @@ func TestRestoreReportsDaemonsThatNeverAnswer(t *testing.T) {
 		t.Fatal("expired daemon wait did not reapply the approved configuration")
 	}
 }
+
+type bootstrapFunc func(context.Context) ([]model.Envelope, error)
+
+func (f bootstrapFunc) Load(ctx context.Context) ([]model.Envelope, error) { return f(ctx) }
+
+func TestRestoredCheckpointIsWithdrawnWithoutState(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+
+	now := time.Now()
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := restarted.restoreActive(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restarted.restoredAt = now
+	gated := func() int {
+		n := 0
+		for _, c := range runner.calls {
+			if c.Path == "gate" {
+				n++
+			}
+		}
+		return n
+	}
+
+	now = now.Add(restoredCheckpointLimit - time.Second)
+	if err := restarted.Step(ctx); err != nil || gated() != 0 {
+		t.Fatalf("checkpoint withdrawn before the limit: err=%v gates=%d", err, gated())
+	}
+	now = now.Add(time.Second)
+	if err := restarted.Step(ctx); err == nil || !strings.Contains(err.Error(), "no DNS state received") || gated() != 1 {
+		t.Fatalf("expired checkpoint kept serving: err=%v gates=%d", err, gated())
+	}
+	if err := restarted.Step(ctx); err != nil || gated() != 1 {
+		t.Fatalf("withdrawn checkpoint was reapplied without state: err=%v gates=%d", err, gated())
+	}
+
+	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return nil, nil })); err != nil {
+		t.Fatal(err)
+	}
+	calls := len(runner.calls)
+	if err := restarted.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.needsActivation || len(runner.calls) == calls {
+		t.Fatal("received state did not reactivate serving")
+	}
+}
+
+func TestRestoredCheckpointServesOnceStateArrives(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+
+	now := time.Now()
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := restarted.restoreActive(ctx); err != nil {
+		t.Fatal(err)
+	}
+	restarted.restoredAt = now
+	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return nil, nil })); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(2 * restoredCheckpointLimit)
+	if err := restarted.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range runner.calls {
+		if c.Path == "gate" {
+			t.Fatal("checkpoint withdrawn after DNS state arrived")
+		}
+	}
+}

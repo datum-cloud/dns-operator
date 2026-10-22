@@ -19,6 +19,8 @@ import (
 
 const APIVersion = "internal.dns.networking.miloapis.com/v1alpha6"
 
+var ErrUnsupportedEnvelope = errors.New("unsupported DNS envelope")
+
 type Kind string
 
 const (
@@ -53,19 +55,19 @@ func NewEnvelope(kind Kind, eventID, region, shard, uid string, epoch, revision 
 }
 
 func (e Envelope) Validate() error {
+	if e.APIVersion == "" || e.Kind == "" || e.EventID == "" || e.Region == "" || e.Shard == "" || e.ResourceUID == "" || e.Epoch == 0 || e.Revision == 0 || e.PublishedAt.IsZero() || !json.Valid(e.Payload) {
+		return errors.New("envelope version, kind, identity, epoch, revision, timestamp, and JSON payload are required")
+	}
+	if SafeToken(e.Region) != e.Region || SafeToken(e.Shard) != e.Shard {
+		return errors.New("region and shard must be safe lowercase identifiers")
+	}
 	if e.APIVersion != APIVersion {
-		return fmt.Errorf("unsupported apiVersion %q", e.APIVersion)
+		return fmt.Errorf("%w: apiVersion %q", ErrUnsupportedEnvelope, e.APIVersion)
 	}
 	switch e.Kind {
 	case KindServingSnapshot, KindPublicationChunk, KindPublicationManifest, KindMemberAck:
 	default:
-		return fmt.Errorf("unsupported kind %q", e.Kind)
-	}
-	if e.EventID == "" || e.Region == "" || e.Shard == "" || e.ResourceUID == "" || e.Epoch == 0 || e.Revision == 0 || e.PublishedAt.IsZero() || len(e.Payload) == 0 {
-		return errors.New("envelope identity, epoch, revision, timestamp, and payload are required")
-	}
-	if SafeToken(e.Region) != e.Region || SafeToken(e.Shard) != e.Shard {
-		return errors.New("region and shard must be safe lowercase identifiers")
+		return fmt.Errorf("%w: kind %q", ErrUnsupportedEnvelope, e.Kind)
 	}
 	return nil
 }

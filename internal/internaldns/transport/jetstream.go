@@ -400,6 +400,10 @@ func (s *SnapshotStore) Get(ctx context.Context, key string) (model.Envelope, er
 
 func (s *SnapshotStore) List(ctx context.Context, prefix string) ([]model.Envelope, error) {
 	keys, err := s.kv.Keys(ctx)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		// A new region's bucket is empty until its first snapshot.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}

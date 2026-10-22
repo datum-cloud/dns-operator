@@ -50,7 +50,7 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
 	if err != nil || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
-		return fmt.Errorf("destination claim identity, region, IP, and DNS port are required")
+		return fmt.Errorf("%w: destination claim identity, region, IP, and DNS port are required", model.ErrDestinationRefused)
 	}
 	parsed = parsed.Unmap()
 	prefix, err := a.regionalPrefix()
@@ -58,13 +58,13 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return err
 	}
 	if prefix.Contains(parsed) {
-		return fmt.Errorf("service destination must be outside the regional resolver address pool")
+		return fmt.Errorf("%w: service destination must be outside the regional resolver address pool", model.ErrDestinationRefused)
 	}
 	address = parsed.String()
 	var regionalClaim corev1.ConfigMap
 	claimKey := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-claim-" + model.OpaqueToken(address)}
 	if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
-		return fmt.Errorf("service destination is reserved for regional resolution")
+		return fmt.Errorf("%w: service destination is reserved for regional resolution", model.ErrDestinationRefused)
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -91,7 +91,7 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 					return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 				}
 			}
-			return fmt.Errorf("service destination is already reserved")
+			return fmt.Errorf("%w: service destination is already reserved", model.ErrDestinationRefused)
 		}
 		return nil
 	} else {

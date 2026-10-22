@@ -3,9 +3,10 @@ package transport
 import (
 	"context"
 	"errors"
+	"testing"
+
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"testing"
 )
 
 func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {

@@ -89,35 +89,26 @@ authorized publisher; naming rules match registration labels.
 
 ### Control-plane boundaries
 
-The DNS service runs in its own VPC. Galactic exposes it through a private
-endpoint in each consumer VPC. The diagram shows which API owns each resource;
-it does not prescribe where controller processes run.
+The DNS service separates project intent from shared regional serving state.
+The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
+covers platform placement; Galactic owns private connectivity and network identity.
 
 ```mermaid
-flowchart TB
-  Products[Product services] -->|Records and eligibility| P
-  Integration[Trusted VPC integration] -->|DNS access and network intent| P
-  P["Consumer project API<br/>DNS resources and network intent"]
-  D["DNS service project API<br/>Publication state, fleet plans, and service network intent"]
-  K["Karmada API<br/>Placement and propagation"]
-  E["Edge API and shared fleet<br/>Local networking, DNS agents, and serving state"]
-  P -->|DNS reconciliation| D
-  P -->|Network and workload intent| K
-  D -->|Service network and workload intent| K
-  K -->|Placed desired state| E
-  D -->|Committed DNS updates through regional NATS| E
-  E -.->|Serving acknowledgments| D
-  D -.->|DNS status| P
+flowchart LR
+  P["Consumer project API<br/>Contexts, zones, access, and publications"]
+  C[DNS controllers]
+  D["DNS service project API<br/>References, snapshots, and fleet plans"]
+  N[Regional NATS]
+  E[Shared serving fleet]
+  P --> C --> D --> N --> E
+  E -.->|Applied acknowledgments| D
+  C -.->|Serving status| P
 ```
 
-- **Consumer project:** Owns contexts, access bindings, zones, naming policy, and
-  publications. VPC integration writes access intent; product services publish
-  records and eligibility; DNS reports serving status.
-- **DNS service project:** Owns internal reference records, writer leases, snapshots, outboxes, fleet plans,
-  and the service's network intent.
-- **Karmada:** Places network and workload intent. Guest resolver settings travel
-  as desired state; DNS publications use their own delivery path.
-- **Edge:** Owns local networking, shared serving workloads, and checkpoints.
+Trusted network integration writes context and access intent. Product services
+write registrations and contributions. DNS controllers compile that intent and
+report whether the serving fleet has applied it. Karmada distributes workloads
+and network configuration; it does not carry DNS record updates.
 
 DNS discovers ready Milo projects and watches every namespace through
 authenticated project clients. Discovery outages retain existing sources and
@@ -130,7 +121,8 @@ their resources into DNS intent; DNS does not watch their APIs.
 A logical network has one DNS context across its locations. The context selects
 its managed namespace and associated zones. Separate contexts can use identical
 zone names and overlapping IP addresses. Sharing a zone requires an explicit
-association.
+association within the project. Network peering does not automatically share
+zones or extend DNS access; cross-project sharing is outside this proposal.
 
 ```mermaid
 flowchart LR
@@ -143,7 +135,10 @@ flowchart LR
 Bindings live in the consumer project API; `region` selects serving capacity.
 Each has independent identity, access mapping, and readiness. Publication is
 asynchronous, and a failed region must not block healthy regions. Regional access
-does not imply that discovery returns only region-local endpoints.
+does not imply that discovery returns only region-local endpoints. The VPC
+resolver handles both private and public queries, so loss of every eligible
+member in its region interrupts both. This design does not provide automatic
+cross-region resolver failover.
 
 ### Query path and network identity
 
@@ -191,7 +186,8 @@ Shared node and regional tiers use:
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
 preserves the destination. The CoreDNS transport adapter accepts PROXYv2 only
-from configured service peers and preserves the destination over UDP and TCP.
+from configured service peers over TCP. dnsdist forwards both consumer UDP and
+TCP queries over this protected TCP backend; CoreDNS has no UDP listener.
 Unknown contexts are rejected before record or cache lookup.
 
 The publication agent validates and persists a complete snapshot. The context
@@ -203,7 +199,10 @@ receives traffic for that context.
 
 ### Publication and service discovery
 
-A registration reserves a name and record types. An RBAC-authorized product
+A registration reserves a name and record types. Names have no automatic
+product prefix or generated suffix. Publishers requesting the same owner and
+record types receive a conflict rather than a renamed record. An RBAC-authorized
+product
 service publishes records and explicit endpoint eligibility through a contribution.
 DNS validates ownership and resource generations, then compiles a zone snapshot.
 
@@ -236,8 +235,9 @@ exporters repair missing outboxes after crashes.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.
-An allocation that exceeds capacity reports a condition without blocking other
-contexts or explicit withdrawals. Destination ownership follows the context
+New allocations that exceed capacity report a condition. If an update cannot
+retain established access, the planner rejects the update and retains the
+applied configuration. Destination ownership follows the context
 lifetime, so recreating its access binding can retain the same destination.
 
 Regional agents render committed snapshots as zone files, validate and activate
@@ -252,13 +252,17 @@ Products define eligibility for instance identity, application discovery, or
 stable service addresses. Records and resolver bindings persist until an explicit
 update or withdrawal. Control plane and messaging outages delay changes but do
 not expire applied DNS configuration. Agents can restore verified configuration
-from local checkpoints without contacting the control plane.
+from local checkpoints without contacting the control plane. An endpoint can
+remain published indefinitely if its publisher cannot report a health change.
+This availability tradeoff is intentional; record TTLs bound client caching,
+not the lifetime of authoritative records.
 
 Agents retain desired version fences and an activated configuration separately.
 A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
-DNS daemons over UDP and TCP without contacting the broker or project APIs.
+consumer listeners over UDP and TCP and CoreDNS over TCP, without contacting
+the broker or project APIs.
 The serving supervisor retains approved configuration independently of the
 agent. A transaction lock owns candidate verification; incomplete or orphaned
 activation stays gated until recovery verifies the saved configuration. DNS query probes and backend health checks isolate
@@ -275,8 +279,8 @@ answers and bound dynamic TTLs; withdrawal budgets include client caching.
 ### API design
 
 All examples use `dns.networking.miloapis.com/v1alpha1`. The project API assigns
-object UIDs and generations. Reference UIDs, timestamps, addresses, and allocated
-suffixes below are illustrative. `status` examples show controller output and
+object UIDs and generations. Reference identities and addresses below are
+illustrative. `status` examples show controller output and
 are not fields consumers submit when creating resources.
 
 #### Ownership and validation
@@ -317,22 +321,23 @@ status:
     suffix: datum.internal
   # Regional assignments do not move this object out of the project API.
   servingTargets:
-    - region: central
+    - region: us-central-1
       shard: shared-0
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSResolverAccessBinding
 metadata:
-  name: application-central
+  name: application-us-central-1
 spec:
   # Pin the context lifetime so recreation cannot inherit old access.
   contextRef:
     name: application
     uid: 33333333-3333-4333-8333-333333333333
   # Select the serving region, not a separate project control plane.
-  region: central
-  # Galactic maps verified VPC traffic to this service-side destination.
-  # This differs from the well-known address exposed inside the VPC.
+  region: us-central-1
+  # Trusted network integration proposes this service-side destination.
+  # DNS reserves it before accepting access; Galactic maps verified VPC traffic here.
+  # It differs from the well-known address exposed inside the VPC.
   destinationAddress: fd70:100::10
 ```
 
@@ -340,9 +345,13 @@ Access reports `Accepted` after validation and `Ready` after required members
 apply the current access mapping and configuration. Zone publication readiness is
 reported separately; a pending zone does not block resolver access. Context, region,
 and destination are immutable per access lifetime. DNS serves UDP and TCP on port 53
-and generates internal mapping versions. Destinations are unique within their routing
-scope. Galactic enforces network access to each destination. Project RBAC controls
-who can manage the DNS mappings.
+and generates internal mapping versions. DNS reserves each destination globally
+within the service and rejects conflicting ownership. Serving rejects ambiguous
+mappings before lookup. Galactic enforces network access to each destination.
+Only trusted integration roles can create contexts and access bindings; product
+publisher roles cannot select query contexts. The authenticated project and
+resolved context identity define ownership. Copying a `consumerID` does not
+grant access to another project's context.
 
 #### Private zones and associations
 
@@ -525,7 +534,7 @@ or create a resolver deployment.
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSResolverBinding
 metadata:
-  name: application-central
+  name: application-us-central-1
   namespace: dns-platform
 spec:
   source:
@@ -537,11 +546,11 @@ spec:
       uid: 33333333-3333-4333-8333-333333333333
     # Identify the regional access mapping that produced this plan.
     accessBindingRef:
-      name: application-central
+      name: application-us-central-1
       uid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
   placement:
     # Identify shared capacity; these fields do not select the source API.
-    region: central
+    region: us-central-1
     shard: shared-0
   configuration:
     # Fence plan replacement. This is distinct from metadata.generation.

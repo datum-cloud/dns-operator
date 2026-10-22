@@ -46,7 +46,7 @@ func approvedFilesInstalled(files map[string][]byte) bool {
 	}
 	for path, expected := range files {
 		actual, err := os.ReadFile(path)
-		if err != nil || !(bytes.Equal(actual, expected) || sameDNSDistRules(actual, expected)) {
+		if err != nil || !bytes.Equal(actual, expected) && !sameDNSDistRules(actual, expected) {
 			return false
 		}
 	}

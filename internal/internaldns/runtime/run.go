@@ -191,6 +191,13 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 	}
 
 	errCh := make(chan error, len(projects)+len(planners)*3+8)
+	if cfg.MetricsBindAddress != "" && cfg.MetricsBindAddress != "0" {
+		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: cfg.MetricsBindAddress}, platformREST, nil)
+		if err != nil {
+			return fmt.Errorf("create metrics server: %w", err)
+		}
+		go func() { errCh <- server.Start(ctx) }()
+	}
 	startProjectSources(ctx, projects)
 	if discovery != nil {
 		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, "project discovery", discovery.step, errCh)
@@ -317,11 +324,14 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 			continue
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
-		localDone := make(chan error, len(consumers)+1)
+		const ackWorkers = 4
+		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
 		go retryLoop(workerCtx, 500*time.Millisecond, "outbox "+region, outbox.Step, localDone)
 		for key, consumer := range consumers {
-			go consumeAcks(workerCtx, consumer, sinks[key], localDone)
+			for range ackWorkers {
+				go consumeAcks(workerCtx, consumer, sinks[key], localDone)
+			}
 		}
 		<-ctx.Done()
 		cancel()
@@ -475,7 +485,11 @@ func retryLoop(ctx context.Context, interval time.Duration, name string, step fu
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := step(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		err := step(ctx)
+		if !errors.Is(err, context.Canceled) {
+			observeOperation(name, err)
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Error(err, "operation failed; retrying")
 		}
 		select {
@@ -496,16 +510,22 @@ func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform
 				terminal <- nil
 				return
 			}
+			observeOperation("ack read "+sink.Region+"/"+sink.Shard, err)
 			log.Error(err, "read acknowledgement failed; retrying")
 			time.Sleep(time.Second)
 			continue
 		}
-		if err := sink.Apply(ctx, message.Subject(), message.Envelope()); err != nil {
+		observeOperation("ack read "+sink.Region+"/"+sink.Shard, nil)
+		err = sink.Apply(ctx, message.Subject(), message.Envelope())
+		observeOperation("ack apply "+sink.Region+"/"+sink.Shard, err)
+		if err != nil {
 			log.Error(err, "apply acknowledgement failed; retrying")
 			_ = message.Retry(time.Second)
 			continue
 		}
-		if err := message.Ack(ctx); err != nil {
+		err = message.Ack(ctx)
+		observeOperation("ack commit "+sink.Region+"/"+sink.Shard, err)
+		if err != nil {
 			log.Error(err, "acknowledgement commit was ambiguous; awaiting redelivery")
 		}
 	}

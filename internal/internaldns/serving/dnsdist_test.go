@@ -3,6 +3,8 @@
 package serving
 
 import (
+	"bytes"
+	"context"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -65,14 +67,68 @@ func TestDNSDistBootstrapPublishesOnlyCompleteConfiguration(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "DNSAction.Refused") || !strings.Contains(string(data), "setRules(rules)") {
 		t.Fatal("bootstrap must refuse unknown contexts", err)
 	}
-	if err := os.WriteFile(router.Path, []byte("accepted snapshot"), 0644); err != nil {
+	accepted := strings.Replace(string(data), "local bindings = {", "local bindings = {\n  [\"fd53::a\"] = {context=\"tenant-a\", ready=true},", 1)
+	accepted = strings.ReplaceAll(accepted, "tcpOnly=true,checkTCP=true,", "")
+	if err := os.WriteFile(router.Path, []byte(accepted), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := prepareDNSDistRouter(router); err != nil {
 		t.Fatal(err)
 	}
 	retained, err := os.ReadFile(router.Path)
-	if err != nil || string(retained) != "accepted snapshot" {
-		t.Fatal("bootstrap replaced accepted routing", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, acceptedRules, _ := strings.Cut(accepted, dnsdistRulesBoundary)
+	_, retainedRules, _ := strings.Cut(string(retained), dnsdistRulesBoundary)
+	if retainedRules != acceptedRules || !strings.Contains(string(retained), "tcpOnly=true,checkTCP=true") {
+		t.Fatal("startup must refresh transport and preserve accepted tenant rules")
+	}
+	if err := os.WriteFile(router.Path, []byte("incomplete configuration"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDNSDistRouter(router); err == nil {
+		t.Fatal("incomplete retained rules must block startup")
+	}
+}
+
+func TestRestartRetainsRoutingAcrossProcessConfigurationRefresh(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	cfg.Mode = ModeResolver
+	cfg.Render.Role = RenderNode
+	cfg.Render.NodeDNSDist.Path = filepath.Join(t.TempDir(), "node-dnsdist.conf")
+	_, snapshot := renderFixture(t)
+	data := renderDNSDist(cfg.Render.NodeDNSDist, cfg.Render.NodeDNSDist.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+	retained := []byte(strings.ReplaceAll(string(data), "tcpOnly=true,checkTCP=true,", ""))
+	if err := os.WriteFile(cfg.Render.NodeDNSDist.Path, retained, 0644); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.Snapshot = &snapshot
+	agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
+	agent.state.Active = &activeConfiguration{Snapshot: snapshot, Files: map[string][]byte{cfg.Render.NodeDNSDist.Path: retained}}
+	agent.state.RenderedHash = hashFiles(agent.state.Active.Files)
+	if err := agent.store.Save(agent.state); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDNSDistRouter(cfg.Render.NodeDNSDist); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("restoration reloaded a running daemon with matching accepted routing: %v", runner.calls)
+	}
+	if !installedFilesMatch(restarted.state.Active.Files) || !bytes.Equal(restarted.state.Active.Files[cfg.Render.NodeDNSDist.Path], data) {
+		t.Fatal("accepted checkpoint and current process configuration differ")
 	}
 }

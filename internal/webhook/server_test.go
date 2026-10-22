@@ -177,11 +177,11 @@ func TestSetupWebhooks_AreServed(t *testing.T) {
 	if err := k8sClient.Create(ctx, privateZone); err != nil {
 		t.Fatalf("creating private DNSZone: %v", err)
 	}
-	registrationReview := func(zoneUID types.UID, extra map[string]authv1.ExtraValue) admissionv1.AdmissionReview {
+	registrationReview := func(zoneName string, extra map[string]authv1.ExtraValue) admissionv1.AdmissionReview {
 		registration := &dnsv1alpha1.DNSRegistration{
 			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
 			Spec: dnsv1alpha1.DNSRegistrationSpec{
-				DNSZoneRef:  dnsv1alpha1.DNSObjectReference{Name: privateZone.Name, UID: zoneUID},
+				DNSZoneRef:  dnsv1alpha1.DNSNameReference{Name: zoneName},
 				Name:        "web",
 				RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA},
 				TTLSeconds:  30,
@@ -207,22 +207,22 @@ func TestSetupWebhooks_AreServed(t *testing.T) {
 	}
 
 	t.Run("internal DNS path admits a live private zone reference", func(t *testing.T) {
-		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.UID, nil))
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.Name, nil))
 		if !resp.Allowed {
 			t.Fatalf("internal DNS webhook refused a live private zone reference: %v", resp.Result)
 		}
 	})
 
-	t.Run("internal DNS path refuses a replaced zone", func(t *testing.T) {
-		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview("replaced-zone-uid", nil))
+	t.Run("internal DNS path refuses a missing zone", func(t *testing.T) {
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview("missing-zone", nil))
 		if resp.Allowed {
-			t.Fatal("internal DNS webhook admitted a reference to a replaced zone")
+			t.Fatal("internal DNS webhook admitted a reference to a missing zone")
 		}
 	})
 
 	t.Run("internal DNS path fails closed for an unknown project", func(t *testing.T) {
 		extra := map[string]authv1.ExtraValue{ParentTypeExtraKey: {"Project"}, ParentNameExtraKey: {"missing-project"}}
-		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.UID, extra))
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.Name, extra))
 		if resp.Allowed {
 			t.Fatal("internal DNS webhook checked an unknown project's write against the local cluster")
 		}

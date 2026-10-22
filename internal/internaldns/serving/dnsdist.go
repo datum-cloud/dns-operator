@@ -3,6 +3,7 @@
 package serving
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -55,13 +56,18 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 	if err := os.MkdirAll(filepath.Dir(router.Path), 0750); err != nil {
 		return err
 	}
-	if _, err := os.Stat(router.Path); err == nil {
-		return nil
+	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
+	retained, err := os.ReadFile(router.Path)
+	if err == nil {
+		startup, err = refreshDNSDistConfiguration(router, retained)
+		if err != nil {
+			return err
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	temporary := router.Path + ".bootstrap"
-	if err := writeDurable(temporary, renderDNSDist(router, router.Backends, nil, nil, false, nil, nil), 0644); err != nil {
+	if err := writeDurable(temporary, startup, 0644); err != nil {
 		return err
 	}
 	if err := os.Rename(temporary, router.Path); err != nil {
@@ -71,6 +77,18 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 		return err
 	}
 	return nil
+}
+
+// Refresh immutable process settings while retaining accepted tenant rules.
+func refreshDNSDistConfiguration(router DNSDistRenderConfig, retained []byte) ([]byte, error) {
+	boundary := []byte(dnsdistRulesBoundary)
+	_, rules, ok := bytes.Cut(retained, boundary)
+	if !ok || !bytes.HasSuffix(rules, []byte("setRules(rules)\nend\n")) {
+		return nil, errors.New("retained dnsdist configuration has no complete rules section")
+	}
+	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
+	header, _, _ := bytes.Cut(startup, boundary)
+	return append(append(header, boundary...), rules...), nil
 }
 
 func prepareDNSDistKey(path string) error {

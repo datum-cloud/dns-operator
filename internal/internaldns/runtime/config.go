@@ -63,6 +63,7 @@ type RegionalTransportConfig struct {
 }
 
 type Config struct {
+	MetricsBindAddress    string                    `json:"metricsBindAddress,omitempty"`
 	Region                string                    `json:"region"`
 	Shard                 string                    `json:"shard"`
 	PlatformNamespace     string                    `json:"platformNamespace"`

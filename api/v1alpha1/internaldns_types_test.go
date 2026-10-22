@@ -7,8 +7,8 @@ import (
 
 func TestDNSPoliciesSelectResolverContexts(t *testing.T) {
 	for name, value := range map[string]any{
-		"association context": DNSZoneAssociationSpec{ResolverContextRef: DNSObjectReference{Name: "ctx", UID: "ctx-uid"}},
-		"naming context":      DNSNamingPolicySpec{ResolverContextRef: DNSObjectReference{Name: "ctx", UID: "ctx-uid"}},
+		"association context": DNSZoneAssociationSpec{ResolverContextRef: DNSNameReference{Name: "ctx"}},
+		"naming context":      DNSNamingPolicySpec{ResolverContextRef: DNSNameReference{Name: "ctx"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(value)

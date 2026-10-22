@@ -285,9 +285,20 @@ func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, 
 // Next returns one event. Malformed envelopes are terminated so a poison event
 // cannot block every later revision on an ordered durable.
 func (c *Consumer) Next(ctx context.Context) (Message, error) {
-	m, err := c.c.Next(jetstream.FetchContext(ctx))
-	if err != nil {
-		return nil, err
+	var m jetstream.Msg
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var err error
+		m, err = c.c.Next(jetstream.FetchContext(ctx))
+		if errors.Is(err, nats.ErrTimeout) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		break
 	}
 	var env model.Envelope
 	if err := json.Unmarshal(m.Data(), &env); err != nil {

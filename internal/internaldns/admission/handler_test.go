@@ -5,6 +5,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,49 @@ func TestResolverAccessRequiresCurrentContext(t *testing.T) {
 	}
 }
 
+func TestCustomerNamedReferencesValidateLiveResources(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "production", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "application", Namespace: "project", Generation: 1}}
+	setAdmissionCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, 1, time.Now())
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolver).Build()}
+	zoneRef, contextRef := dnsv1alpha1.DNSNameReference{Name: zone.Name}, dnsv1alpha1.DNSNameReference{Name: resolver.Name}
+	for resource, object := range map[string]any{
+		"dnszoneassociations": &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: zoneRef, ResolverContextRef: contextRef}},
+		"dnsnamingpolicies":   &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: contextRef, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{DNSZoneRef: zoneRef, NamePrefix: "hosts"}}}},
+	} {
+		if response := h.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)); !response.Allowed {
+			t.Fatalf("valid %s denied: %v", resource, response.Result)
+		}
+		missing := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+		if missing.Handle(context.Background(), request(resource, "rbac-authorized-customer", object, nil)).Allowed {
+			t.Fatalf("%s accepted missing references", resource)
+		}
+	}
+}
+
+func TestNamingPolicyRejectsMalformedSelectors(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	for _, selector := range []*dnsv1alpha1.DNSRegistrationSelector{
+		{MatchLabels: map[string]string{"bad key": "value"}},
+		{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: "Unsupported"}}},
+		{MatchExpressions: []dnsv1alpha1.DNSRegistrationSelectorRequirement{{Key: "app", Operator: metav1.LabelSelectorOpIn}}},
+	} {
+		policy := &dnsv1alpha1.DNSNamingPolicy{Spec: dnsv1alpha1.DNSNamingPolicySpec{ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: "application"}, AdditionalNames: []dnsv1alpha1.DNSAdditionalNameRule{{Selector: selector, DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "production"}, NamePrefix: "application"}}}}
+		response := h.Handle(context.Background(), request("dnsnamingpolicies", "customer", policy, nil))
+		if response.Allowed || response.Result == nil || !strings.Contains(response.Result.Message, "invalid naming selector") {
+			t.Fatalf("malformed selector was not rejected by validation: %v", response.Result)
+		}
+	}
+}
+
 func setAdmissionCondition(conditions *[]metav1.Condition, conditionType string, status metav1.ConditionStatus, generation int64, now time.Time) {
 	apimeta.SetStatusCondition(conditions, metav1.Condition{Type: conditionType, Status: status, Reason: "Test", ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
 }
@@ -128,7 +172,7 @@ func TestPrivateRegistrationRejectsAuthorityOverrides(t *testing.T) {
 		rt      dnsv1alpha1.RRType
 		allowed bool
 	}{{"api", dnsv1alpha1.RRTypeA, true}, {"api", dnsv1alpha1.RRTypeCNAME, true}, {"@", dnsv1alpha1.RRTypeCNAME, false}, {"CORP.INTERNAL.", dnsv1alpha1.RRTypeCNAME, false}, {"@", dnsv1alpha1.RRTypeSOA, false}} {
-		registration := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, TTLSeconds: 5, Name: tt.owner, RecordTypes: []dnsv1alpha1.RRType{tt.rt}}}
+		registration := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, TTLSeconds: 5, Name: tt.owner, RecordTypes: []dnsv1alpha1.RRType{tt.rt}}}
 		response := h.Handle(context.Background(), request("dnsregistrations", "tenant", registration, nil))
 		if response.Allowed != tt.allowed {
 			t.Fatalf("owner %s type %s allowed=%v expected=%v", tt.owner, tt.rt, response.Allowed, tt.allowed)
@@ -144,15 +188,15 @@ func TestRegistrationRequiresCurrentZone(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "current"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone).Build()}
 	for _, tt := range []struct {
-		uid     types.UID
+		name    string
 		ttl     int32
 		allowed bool
 	}{
-		{"current", 1, true}, {"current", 30, true}, {"", 5, false}, {"retired", 5, false},
+		{zone.Name, 1, true}, {zone.Name, 30, true}, {"", 5, false}, {"missing", 5, false},
 	} {
-		reg := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: tt.uid}, TTLSeconds: tt.ttl, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+		reg := dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: tt.name}, TTLSeconds: tt.ttl, Name: "api", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
 		if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); got.Allowed != tt.allowed {
-			t.Errorf("UID=%q TTL=%d: allowed=%v: %v", tt.uid, tt.ttl, got.Allowed, got.Result)
+			t.Errorf("name=%q TTL=%d: allowed=%v: %v", tt.name, tt.ttl, got.Allowed, got.Result)
 		}
 	}
 }
@@ -162,8 +206,8 @@ func TestContributionValidatesReferencesForRBACAuthorizedCallers(t *testing.T) {
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "zone-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Name: "web", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "web", RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
 	handler := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).Build()}
 	contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: registration.Name, UID: registration.UID, Generation: registration.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web", A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
 	for _, caller := range []string{"compute-publisher", "connect-publisher"} {
@@ -183,7 +227,7 @@ func TestContributionOwnersStayWithinRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "zone-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Name: "web", ReservedDescendants: []string{"targets.web"}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "web", ReservedDescendants: []string{"targets.web"}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
 	handler := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).Build()}
 	for _, tt := range []struct {
 		owner   string
@@ -204,26 +248,15 @@ func TestAssociationRequiresCurrentResolverContext(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "zone-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	// A context that is not yet Ready is still a valid association target.
 	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}}
-	association := func(contextUID types.UID) *dnsv1alpha1.DNSZoneAssociation {
-		return &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: resolverContext.Name, UID: contextUID}}}
+	association := func(contextName string) *dnsv1alpha1.DNSZoneAssociation {
+		return &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextName}}}
 	}
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolverContext).Build()}
-	if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("ctx-uid"), nil)); !got.Allowed {
+	if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", association(resolverContext.Name), nil)); !got.Allowed {
 		t.Fatalf("current context rejected: %v", got.Result)
 	}
-	if h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("replaced"), nil)).Allowed {
-		t.Fatal("association accepted a replaced resolver context")
-	}
-	h.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone).Build()
-	if h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("ctx-uid"), nil)).Allowed {
+	if h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("missing"), nil)).Allowed {
 		t.Fatal("association accepted a missing resolver context")
-	}
-	deleting := resolverContext.DeepCopy()
-	deleting.Finalizers = []string{"test"}
-	deleting.DeletionTimestamp = &metav1.Time{Time: time.Now()}
-	h.Client = fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, deleting).Build()
-	if h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("ctx-uid"), nil)).Allowed {
-		t.Fatal("association accepted a deleting resolver context")
 	}
 }
 

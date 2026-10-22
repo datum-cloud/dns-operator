@@ -52,7 +52,7 @@ func TestProjectPublicationContinuesAfterSourceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "healthy", Namespace: "healthy-project", UID: "zone-healthy", Generation: 4}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "healthy.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: zone.Namespace, UID: "registration-healthy", Generation: 2}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Name: "api"}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: zone.Namespace, UID: "registration-healthy", Generation: 2}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api"}}
 	healthy := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).WithStatusSubresource(&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}).Build()
 	blocked := &blockingListClient{Client: healthy, started: make(chan struct{})}
 	sink := AckSink{Client: testClient(t, chunk), Namespace: "platform", Projects: []ProjectScope{{Client: blocked, Namespace: "offline-project", RequestTimeout: 200 * time.Millisecond}, {Client: healthy, Namespace: zone.Namespace}}}
@@ -553,5 +553,104 @@ func TestServingAvailabilityDoesNotRequireEveryReplica(t *testing.T) {
 	sink.bindingConditions(binding, envelope, snapshot, now.Add(2*time.Minute), false)
 	if c := apimeta.FindStatusCondition(binding.Status.Conditions, "Serving"); c == nil || c.Status != metav1.ConditionUnknown {
 		t.Fatal("stale observations claimed a serving outage")
+	}
+}
+
+func TestPublicationProjectionOnlyReadsOwningProject(t *testing.T) {
+	cl := testClient(t)
+	unrelated := &blockingListClient{Client: cl, started: make(chan struct{})}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{
+		Labels: map[string]string{"internal-dns.miloapis.com/project-uid": "owner"},
+	}}
+	sink := AckSink{Client: cl, Projects: []ProjectScope{
+		{ProjectUID: "unrelated", Client: unrelated, RequestTimeout: 20 * time.Millisecond},
+		{ProjectUID: "owner", Client: cl},
+	}}
+	if err := sink.projectPublication(context.Background(), manifest, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-unrelated.started:
+		t.Fatal("publication contacted an unrelated project")
+	default:
+	}
+}
+
+type heldManifestRead struct {
+	client.Client
+	once    sync.Once
+	read    chan struct{}
+	release chan struct{}
+}
+
+func (c *heldManifestRead) Get(ctx context.Context, key client.ObjectKey, object client.Object, opts ...client.GetOption) error {
+	if err := c.Client.Get(ctx, key, object, opts...); err != nil {
+		return err
+	}
+	if _, ok := object.(*dnsv1alpha1.DNSPublicationManifest); ok {
+		c.once.Do(func() { close(c.read) })
+		select {
+		case <-c.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func TestConcurrentAckProjectionPreservesNewerObservation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	now := time.Now().UTC()
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, WriterEpoch: 1, Revision: 2}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone")[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone", WriterEpoch: 1, ActiveManifestName: manifest.Name}}
+	cl := testClient(t, owner, manifest)
+	held := &heldManifestRead{Client: cl, read: make(chan struct{}), release: make(chan struct{})}
+	sink := AckSink{Client: cl, Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "auth", ReplicaID: "replica", Role: "regional"}}, Now: func() time.Time { return now }}
+	olderSink := sink
+	olderSink.Client = held
+	ack := model.MemberAck{MemberID: "auth", ReplicaID: "replica", ResourceUID: "zone", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 2, Phase: model.AckVerified, ObservedAt: now.Add(-time.Second), ValidUntil: now.Add(time.Minute)}
+	older, err := model.NewEnvelope(model.KindMemberAck, "older", "east", "shared", "zone", 1, 2, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack.Phase = model.AckRejected
+	ack.ObservedAt = now
+	newer, err := model.NewEnvelope(model.KindMemberAck, "newer", "east", "shared", "zone", 1, 2, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := model.AckSubject("east", "shared", "auth")
+	done := make(chan error, 1)
+	go func() { done <- olderSink.Apply(ctx, subject, older) }()
+	select {
+	case <-held.read:
+	case <-ctx.Done():
+		t.Fatal("older acknowledgement did not reach manifest")
+	}
+	if err := sink.Apply(ctx, subject, newer); err != nil {
+		close(held.release)
+		t.Fatal(err)
+	}
+	close(held.release)
+	if err := <-done; err != nil {
+		t.Fatalf("racing older projection did not retry the optimistic conflict: %v", err)
+	}
+	if err := sink.Apply(ctx, subject, older); err != nil {
+		t.Fatalf("older acknowledgement redelivery failed: %v", err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(manifest), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Status.ReplicaAcknowledgements) != 1 || manifest.Status.ReplicaAcknowledgements[0].Phase != string(model.AckRejected) || manifest.Status.ReplicaAcknowledgements[0].ObservedUnixNano != now.UnixNano() {
+		t.Fatalf("late verified acknowledgement overwrote newer rejection: %+v", manifest.Status.ReplicaAcknowledgements)
+	}
+}
+
+func TestPublicationProjectionReportsMissingProjectIdentity(t *testing.T) {
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"internal-dns.miloapis.com/project-uid": "project-owner"}}}
+	sink := AckSink{Projects: []ProjectScope{{Namespace: "default"}}}
+	if err := sink.projectPublication(context.Background(), manifest, true, time.Now()); err == nil {
+		t.Fatal("missing projection identity was silently skipped")
 	}
 }

@@ -116,7 +116,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 	})
 	for _, ttl := range []int32{0, 31, 2147483647} {
 		t.Run("ttl", func(t *testing.T) {
-			a := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "registration-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSObjectReference{Name: "zone", UID: "zone-uid"}, Name: "web", RecordTypes: []RRType{RRTypeAAAA}, TTLSeconds: ttl}}
+			a := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "registration-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSNameReference{Name: "zone"}, Name: "web", RecordTypes: []RRType{RRTypeAAAA}, TTLSeconds: ttl}}
 			requireInvalid(t, cl.Create(ctx, a))
 		})
 	}
@@ -165,29 +165,27 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		}
 	})
 	validateServiceDNSContracts(t, cl)
+	validateNamingAPISchemas(t, cl)
 	validateReferenceIdentity(t, cl, requireInvalid)
 	validateRegistrationBounds(t, cl, requireInvalid)
 }
 
-// References may advance a pinned generation, but never retarget another object.
+// References select objects by name and never retarget another object.
 func validateReferenceIdentity(t *testing.T, cl client.Client, requireInvalid func(*testing.T, error)) {
 	ctx := context.Background()
-	zone := DNSObjectReference{Name: "zone", UID: "zone-uid", Generation: 1}
-	resolverContext := DNSObjectReference{Name: "context", UID: "context-uid"}
+	zone := DNSNameReference{Name: "zone"}
+	resolverContext := DNSNameReference{Name: "context"}
 	t.Run("association-reference-identity", func(t *testing.T) {
 		for name, mutate := range map[string]func(*DNSZoneAssociation){
 			"zone-name":    func(a *DNSZoneAssociation) { a.Spec.DNSZoneRef.Name = "other" },
-			"zone-uid":     func(a *DNSZoneAssociation) { a.Spec.DNSZoneRef.UID = "other-uid" },
 			"context-name": func(a *DNSZoneAssociation) { a.Spec.ResolverContextRef.Name = "other" },
-			"context-uid":  func(a *DNSZoneAssociation) { a.Spec.ResolverContextRef.UID = "other-uid" },
 		} {
 			a := &DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{GenerateName: "association-", Namespace: "validation"}, Spec: DNSZoneAssociationSpec{DNSZoneRef: zone, ResolverContextRef: resolverContext}}
 			if err := cl.Create(ctx, a); err != nil {
 				t.Fatal(err)
 			}
-			a.Spec.DNSZoneRef.Generation = 2
 			if err := cl.Update(ctx, a); err != nil {
-				t.Fatalf("zone generation cannot advance: %v", err)
+				t.Fatalf("unchanged association update rejected: %v", err)
 			}
 			mutate(a)
 			t.Run(name, func(t *testing.T) { requireInvalid(t, cl.Update(ctx, a)) })
@@ -196,10 +194,8 @@ func validateReferenceIdentity(t *testing.T, cl client.Client, requireInvalid fu
 	t.Run("naming-policy-reference-identity", func(t *testing.T) {
 		for name, mutate := range map[string]func(*DNSNamingPolicy){
 			"zone-name":    func(p *DNSNamingPolicy) { p.Spec.DNSZoneRef.Name = "other" },
-			"zone-uid":     func(p *DNSNamingPolicy) { p.Spec.DNSZoneRef.UID = "other-uid" },
-			"zone-cleared": func(p *DNSNamingPolicy) { p.Spec.DNSZoneRef = DNSObjectReference{} },
+			"zone-cleared": func(p *DNSNamingPolicy) { p.Spec.DNSZoneRef = DNSNameReference{} },
 			"context-name": func(p *DNSNamingPolicy) { p.Spec.ResolverContextRef.Name = "other" },
-			"context-uid":  func(p *DNSNamingPolicy) { p.Spec.ResolverContextRef.UID = "other-uid" },
 		} {
 			p := &DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{GenerateName: "naming-", Namespace: "validation"}, Spec: DNSNamingPolicySpec{ResolverContextRef: resolverContext, DNSZoneRef: zone, AdditionalNames: []DNSAdditionalNameRule{}}}
 			if err := cl.Create(ctx, p); err != nil {
@@ -223,16 +219,14 @@ func validateReferenceIdentity(t *testing.T, cl client.Client, requireInvalid fu
 		for name, mutate := range map[string]func(*DNSRegistration){
 			"name":      func(r *DNSRegistration) { r.Spec.Name = "api" },
 			"zone-name": func(r *DNSRegistration) { r.Spec.DNSZoneRef.Name = "other" },
-			"zone-uid":  func(r *DNSRegistration) { r.Spec.DNSZoneRef.UID = "other-uid" },
 		} {
 			r := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "registration-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: zone, Name: "web", RecordTypes: []RRType{RRTypeAAAA}, TTLSeconds: 30}}
 			if err := cl.Create(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			r.Spec.TTLSeconds = 10
-			r.Spec.DNSZoneRef.Generation = 2
 			if err := cl.Update(ctx, r); err != nil {
-				t.Fatalf("registration cannot change TTL or zone generation: %v", err)
+				t.Fatalf("registration cannot change TTL: %v", err)
 			}
 			mutate(r)
 			t.Run(name, func(t *testing.T) { requireInvalid(t, cl.Update(ctx, r)) })
@@ -258,7 +252,7 @@ func validateRegistrationBounds(t *testing.T, cl client.Client, requireInvalid f
 		"many-reserved":         func(s *DNSRegistrationSpec) { s.ReservedDescendants = many(65, "r") },
 	} {
 		t.Run("registration-bounds-"+name, func(t *testing.T) {
-			r := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "bounded-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSObjectReference{Name: "zone", UID: "zone-uid"}, Name: "web", RecordTypes: []RRType{RRTypeA}, TTLSeconds: 30}}
+			r := &DNSRegistration{ObjectMeta: metav1.ObjectMeta{GenerateName: "bounded-", Namespace: "validation"}, Spec: DNSRegistrationSpec{DNSZoneRef: DNSNameReference{Name: "zone"}, Name: "web", RecordTypes: []RRType{RRTypeA}, TTLSeconds: 30}}
 			mutate(&r.Spec)
 			requireInvalid(t, cl.Create(ctx, r))
 		})

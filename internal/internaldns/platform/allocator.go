@@ -49,7 +49,7 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 // context lifetime.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
-	if err != nil || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
+	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
 		return fmt.Errorf("%w: destination claim identity, region, IP, and DNS port are required", model.ErrDestinationRefused)
 	}
 	parsed = parsed.Unmap()

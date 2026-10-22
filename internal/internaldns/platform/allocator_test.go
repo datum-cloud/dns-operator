@@ -4,11 +4,13 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -154,5 +156,23 @@ func TestServiceDestinationCannotReuseRetainedRegionalClaim(t *testing.T) {
 	allocator.ClusterPrefix = "fd80::/96"
 	if err := allocator.ClaimDestination(ctx, "project-b", "context-b", "region", address, 53); err == nil {
 		t.Fatal("service destination reused a retained regional allocation")
+	}
+}
+
+func TestServiceDestinationRejectsZonedAddresses(t *testing.T) {
+	ctx := context.Background()
+	allocator := Allocator{Client: testClient(t), Namespace: "platform"}
+	for _, address := range []string{"fd54::1%eth0", "fd70::53%1", "2001:db8::53%eth0"} {
+		err := allocator.ClaimDestination(ctx, "project", "context", "region", address, 53)
+		if !errors.Is(err, model.ErrDestinationRefused) {
+			t.Fatalf("zoned destination %s was not refused: %v", address, err)
+		}
+	}
+	var claims corev1.ConfigMapList
+	if err := allocator.Client.List(ctx, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if len(claims.Items) != 0 {
+		t.Fatalf("zoned destination left %d claims", len(claims.Items))
 	}
 }

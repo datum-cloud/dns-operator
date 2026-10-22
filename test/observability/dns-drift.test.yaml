@@ -1,4 +1,4 @@
-# Missing parents must not page; real drift must still fire without Accepted status.
+# Missing parents and private zones must not page; real drift must still fire without Accepted status.
 evaluation_interval: 30s
 tests:
 - name: Prometheus underscored labels
@@ -19,6 +19,10 @@ tests:
   - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="replicated",dns_zone_name="valid",record_type="A"}
     values: 1x40
   - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="valid"}
+    values: 1x40
+  - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="private",visibility="Private"}
+    values: 1x40
+  - series: dns_record_set_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="private-record",dns_zone_name="private",record_type="A"}
     values: 1x40
   - series: dns_zone_info{milo_project_name="alpha",milo_control_plane_type="project",namespace="default",name="pending"}
     values: 1x40
@@ -72,6 +76,10 @@ tests:
   - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="replicated",dns_zone_name="valid",record_type="A"}
     values: 1x40
   - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="valid"}
+    values: 1x40
+  - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="private",visibility="Private"}
+    values: 1x40
+  - series: dns_record_set_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="private-record",dns_zone_name="private",record_type="A"}
     values: 1x40
   - series: dns_zone_info{"milo.project.name"="alpha","milo.control_plane.type"="project",namespace="default",name="pending"}
     values: 1x40

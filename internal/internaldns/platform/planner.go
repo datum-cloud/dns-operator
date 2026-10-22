@@ -218,36 +218,10 @@ func (p *Planner) Step(ctx context.Context) error {
 	if fitErr != nil {
 		return fitErr
 	}
-	dependencies := map[string]bool{}
-	requirements := map[string]model.PublicationRequirement{}
-	for _, binding := range snapshot.Bindings {
-		for _, zone := range binding.Zones {
-			if zone.Pending {
-				continue
-			}
-			activation := activations[zone.ZoneUID]
-			if activation == "" {
-				return fmt.Errorf("zone %s has no publication activation", zone.ZoneUID)
-			}
-			dependencies[activation] = true
-			requirement := model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: zone.RequiredPublicationEpoch, Revision: zone.RequiredPublicationRevision}
-			old := requirements[zone.ZoneUID]
-			if model.Compare(requirement.Epoch, requirement.Revision, old.Epoch, old.Revision) > 0 {
-				requirements[zone.ZoneUID] = requirement
-			}
-		}
+	dependsOn, err := publicationDependencies(&snapshot, activations)
+	if err != nil {
+		return err
 	}
-	var dependsOn []string
-	for dependency := range dependencies {
-		dependsOn = append(dependsOn, dependency)
-	}
-	sort.Strings(dependsOn)
-	for _, requirement := range requirements {
-		snapshot.RequiredPublications = append(snapshot.RequiredPublications, requirement)
-	}
-	sort.Slice(snapshot.RequiredPublications, func(i, j int) bool {
-		return snapshot.RequiredPublications[i].ZoneUID < snapshot.RequiredPublications[j].ZoneUID
-	})
 	report := func() {
 		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
 			log.FromContext(ctx).Error(err, "report shard capacity")
@@ -322,4 +296,38 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	report()
 	return nil
+}
+
+func publicationDependencies(snapshot *model.ServingSnapshot, activations map[string]string) ([]string, error) {
+	dependencies := map[string]bool{}
+	requirements := map[string]model.PublicationRequirement{}
+	for _, binding := range snapshot.Bindings {
+		for _, zone := range binding.Zones {
+			if zone.Pending {
+				continue
+			}
+			activation := activations[zone.ZoneUID]
+			if activation == "" {
+				return nil, fmt.Errorf("zone %s has no publication activation", zone.ZoneUID)
+			}
+			dependencies[activation] = true
+			requirement := model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: zone.RequiredPublicationEpoch, Revision: zone.RequiredPublicationRevision}
+			old := requirements[zone.ZoneUID]
+			if model.Compare(requirement.Epoch, requirement.Revision, old.Epoch, old.Revision) > 0 {
+				requirements[zone.ZoneUID] = requirement
+			}
+		}
+	}
+	var dependsOn []string
+	for dependency := range dependencies {
+		dependsOn = append(dependsOn, dependency)
+	}
+	sort.Strings(dependsOn)
+	for _, requirement := range requirements {
+		snapshot.RequiredPublications = append(snapshot.RequiredPublications, requirement)
+	}
+	sort.Slice(snapshot.RequiredPublications, func(i, j int) bool {
+		return snapshot.RequiredPublications[i].ZoneUID < snapshot.RequiredPublications[j].ZoneUID
+	})
+	return dependsOn, nil
 }

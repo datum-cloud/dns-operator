@@ -105,3 +105,87 @@ spec:
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnsresolverbinding
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSResolverBinding
+  plural: dnsresolverbindings
+  singular: dnsresolverbinding
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnspublicationmanifest
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSPublicationManifest
+  plural: dnspublicationmanifests
+  singular: dnspublicationmanifest
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnspublicationchunk
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSPublicationChunk
+  plural: dnspublicationchunks
+  singular: dnspublicationchunk
+  permissions: [list, get, watch, create, update, patch, delete]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnstransportoutbox
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSTransportOutbox
+  plural: dnstransportoutboxes
+  singular: dnstransportoutbox
+  permissions: [list, get, watch, create, update, patch, delete]
+  subresources:
+    - name: status
+      permissions: [get, update, patch]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: dns.networking.miloapis.com-dnspublicationownership
+spec:
+  serviceRef:
+    name: dns.networking.miloapis.com
+  kind: DNSPublicationOwnership
+  plural: dnspublicationownerships
+  singular: dnspublicationownership
+  permissions: [list, get, watch, create, update, patch, delete]
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

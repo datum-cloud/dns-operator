@@ -5,6 +5,7 @@ package serving
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -149,5 +150,38 @@ func TestApprovedConfigurationRemainsInstalledDuringCandidateValidation(t *testi
 	close(runner.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFailedRestartInstallationRequiresActivation(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+	for path := range agent.state.Active.Files {
+		if err := os.WriteFile(path, []byte("incomplete configuration"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	runner := &recordingRunner{failAt: 1}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err == nil {
+		t.Fatal("failed installation was accepted")
+	}
+	if !restarted.needsActivation {
+		t.Fatal("failed installation must force daemon activation on retry")
+	}
+	runner.failAt = 0
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.needsActivation || !installedFilesMatch(restarted.state.Active.Files) {
+		t.Fatal("successful retry did not restore approved configuration")
 	}
 }

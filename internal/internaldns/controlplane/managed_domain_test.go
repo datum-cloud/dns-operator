@@ -8,6 +8,7 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -135,5 +136,61 @@ func TestManagedNamespaceRequiresRequestedDomain(t *testing.T) {
 				t.Fatalf("invalid domain allocated a namespace: %#v, %v", namespaces.Items, err)
 			}
 		})
+	}
+}
+
+func TestManagedNamespaceStatusSurvivesPendingAssociation(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "project", UID: "vpc-context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/vpc", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		obj.SetUID(types.UID(obj.GetName() + "-uid"))
+		obj.SetGeneration(1)
+		return cl.Create(ctx, obj, opts...)
+	}}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid"}}
+	r.Options.defaults()
+	ctx := context.Background()
+	now := time.Now()
+	accept := func(status metav1.ConditionStatus) {
+		t.Helper()
+		var associations dnsv1alpha1.DNSZoneAssociationList
+		if err := c.List(ctx, &associations); err != nil || len(associations.Items) != 1 {
+			t.Fatalf("expected one managed association: %v", err)
+		}
+		a := &associations.Items[0]
+		a.Status.ResolvedDNSZoneRef = a.Spec.DNSZoneRef
+		a.Status.ResolvedResolverContextRef = a.Spec.ResolverContextRef
+		setCondition(&a.Status.Conditions, "Accepted", status, "Test", "", a.Generation, now)
+		if err := c.Status().Update(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile := func() dnsv1alpha1.DNSResolverContext {
+		t.Helper()
+		if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+			t.Fatal(err)
+		}
+		var got dnsv1alpha1.DNSResolverContext
+		if err := c.Get(ctx, client.ObjectKeyFromObject(resolver), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	reconcile()
+	accept(metav1.ConditionTrue)
+	known := reconcile().Status.ManagedNamespace
+	if known.Suffix != "datum.internal" || known.DNSZoneRef.UID == "" {
+		t.Fatalf("managed namespace was not reported: %#v", known)
+	}
+	accept(metav1.ConditionFalse)
+	got := reconcile()
+	if got.Status.ManagedNamespace != known {
+		t.Fatalf("managed namespace flapped while the association was pending: %#v", got.Status.ManagedNamespace)
+	}
+	if ready := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("pending association left the context ready: %#v", got.Status.Conditions)
 	}
 }

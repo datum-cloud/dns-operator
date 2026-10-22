@@ -138,7 +138,9 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
-		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+		if !c.Spec.ManagedNamespace.Enabled || invalidDomain {
+			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+		}
 		if c.Spec.ManagedNamespace.Enabled && valid {
 			var err error
 			ready, err = r.reconcileManagedZone(ctx, c)
@@ -655,9 +657,13 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 		return false, err
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
-	ready := metav1.IsControlledBy(zone, c) && metav1.IsControlledBy(association, c) && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation && association.Status.ResolvedDNSZoneRef.UID == zone.UID && association.Status.ResolvedResolverContextRef.UID == c.UID
+	zoneCurrent := metav1.IsControlledBy(zone, c) && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero()
+	ready := zoneCurrent && metav1.IsControlledBy(association, c) && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation && association.Status.ResolvedDNSZoneRef.UID == zone.UID && association.Status.ResolvedResolverContextRef.UID == c.UID
+	known := c.Status.ManagedNamespace.DNSZoneRef.Name == zone.Name && c.Status.ManagedNamespace.DNSZoneRef.UID == zone.UID && c.Status.ManagedNamespace.Suffix == suffix
 	if ready {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, Suffix: suffix}
+	} else if !zoneCurrent || !known {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 	}
 	return ready, nil
 }

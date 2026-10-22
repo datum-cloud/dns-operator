@@ -180,6 +180,8 @@ type Agent struct {
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
 	installedPublications map[string]installedPublication
+	// render is renderPublications unless a test injects a failure.
+	render func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error)
 }
 
 // installedPublication identifies the exact files activated by a validated transaction.
@@ -771,10 +773,32 @@ func (a *Agent) finishEvent(ctx context.Context) error {
 	return a.verifyAppliedConfiguration(ctx)
 }
 
+// reconcile installs the desired configuration. When the desired state
+// withdraws anything the approved configuration serves (a revoked binding, a
+// detached zone or a deleted record), any failure to install it gates serving:
+// returning early would leave the daemons answering with withdrawn data while
+// every retry hits the same error.
 func (a *Agent) reconcile(ctx context.Context) error {
 	if a.state.Snapshot == nil {
 		return nil
 	}
+	withdrawing := !a.canRetainActive()
+	err := a.reconcileDesired(ctx)
+	// Shutdown is not a failed install: restart gates again via restoreActive.
+	if err != nil && withdrawing && ctx.Err() == nil {
+		return errors.Join(err, a.failClosed(ctx))
+	}
+	return err
+}
+
+func (a *Agent) renderDesired(c RenderConfig, snapshot model.ServingSnapshot, active map[string]bool) (Rendered, error) {
+	if a.render != nil {
+		return a.render(c, snapshot, active, a.state.Publications)
+	}
+	return renderPublications(c, snapshot, active, a.state.Publications)
+}
+
+func (a *Agent) reconcileDesired(ctx context.Context) error {
 
 	active := map[string]bool{}
 	filtered := *a.state.Snapshot
@@ -802,7 +826,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 			renderConfig.ReadyZoneMembers[binding.BindingUID][zone.ZoneUID] = a.eligibleRegionalMembers(private)
 		}
 	}
-	rendered, err := renderPublications(renderConfig, filtered, active, a.state.Publications)
+	rendered, err := a.renderDesired(renderConfig, filtered, active)
 	if err != nil {
 		return err
 	}
@@ -850,7 +874,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 	// Any binding that fails either UDP or TCP is immediately removed again.
 	probeFailed := a.verifyResolverBindings(ctx, filtered.Bindings, active)
 	if probeFailed {
-		gated, err := renderPublications(renderConfig, filtered, active, a.state.Publications)
+		gated, err := a.renderDesired(renderConfig, filtered, active)
 		if err != nil {
 			return err
 		}

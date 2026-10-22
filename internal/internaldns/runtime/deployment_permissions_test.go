@@ -87,6 +87,7 @@ func TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	verifyStateNamespaceBoundary(t, ctx, cl)
 	for _, identity := range []struct{ name, role string }{{"product", "internal-dns-product-writer"}, {"integration", "internal-dns-vpc-integration"}, {"customer", "internal-dns-customer"}} {
 		binding := &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: identity.name + "-test", Namespace: "example-project"}, Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: identity.name, Namespace: "example-project"}}, RoleRef: rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: identity.role}}
 		if err := cl.Create(ctx, binding); err != nil {
@@ -270,6 +271,31 @@ func verifyProjectReferenceSchemas(t *testing.T, ctx context.Context, cl client.
 		}
 		if !tc.valid && !apierrors.IsInvalid(err) {
 			t.Errorf("invalid %s should fail API schema validation: %v", tc.name, err)
+		}
+	}
+}
+
+func verifyStateNamespaceBoundary(t *testing.T, ctx context.Context, cl client.Client) {
+	t.Helper()
+	for _, resource := range []struct{ group, name string }{{"", "configmaps"}, {"coordination.k8s.io", "leases"}} {
+		for _, namespace := range []string{"internal-dns-system", "example-project"} {
+			for _, verb := range []string{"get", "create", "patch"} {
+				allowed := namespace == "internal-dns-system"
+				deadline := time.Now().Add(5 * time.Second)
+				for {
+					review := &authorizationv1.SubjectAccessReview{Spec: authorizationv1.SubjectAccessReviewSpec{User: "system:serviceaccount:internal-dns-system:internal-dns-control-plane", Groups: []string{"system:authenticated", "system:serviceaccounts", "system:serviceaccounts:internal-dns-system"}, ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Group: resource.group, Resource: resource.name, Verb: verb}}}
+					if err := cl.Create(ctx, review); err != nil {
+						t.Fatal(err)
+					}
+					if review.Status.Allowed == allowed {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("state boundary %s %s in %s allowed=%t want=%t", verb, resource.name, namespace, review.Status.Allowed, allowed)
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
 		}
 	}
 }

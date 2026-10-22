@@ -17,7 +17,9 @@ import (
 
 // The private DNS reference checks fail closed: a write that skipped them
 // could bind a registration, contribution, association, naming policy, or
-// access binding to another tenant's or a replaced object.
+// access binding to another tenant's or a replaced object. This marker
+// registers them for kind and e2e only; in deployed environments the
+// internal-dns control plane registers the same path.
 // +kubebuilder:webhook:path=/validate-internal-dns,mutating=false,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnszoneassociations;dnsregistrations;dnsrecordcontributions;dnsnamingpolicies;dnsresolveraccessbindings,verbs=create;update,versions=v1alpha1,name=vinternaldns.kb.io,admissionReviewVersions=v1
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones;dnsregistrations;dnsresolvercontexts,verbs=get
 

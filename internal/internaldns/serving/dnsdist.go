@@ -59,14 +59,10 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
 	retained, err := os.ReadFile(router.Path)
 	if err == nil {
-		// Refresh immutable process settings while retaining accepted tenant rules.
-		boundary := []byte(dnsdistRulesBoundary)
-		_, rules, ok := bytes.Cut(retained, boundary)
-		if !ok || !bytes.HasSuffix(rules, []byte("setRules(rules)\nend\n")) {
-			return errors.New("retained dnsdist configuration has no complete rules section")
+		startup, err = refreshDNSDistConfiguration(router, retained)
+		if err != nil {
+			return err
 		}
-		header, _, _ := bytes.Cut(startup, boundary)
-		startup = append(append(header, boundary...), rules...)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -81,6 +77,18 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 		return err
 	}
 	return nil
+}
+
+// Refresh immutable process settings while retaining accepted tenant rules.
+func refreshDNSDistConfiguration(router DNSDistRenderConfig, retained []byte) ([]byte, error) {
+	boundary := []byte(dnsdistRulesBoundary)
+	_, rules, ok := bytes.Cut(retained, boundary)
+	if !ok || !bytes.HasSuffix(rules, []byte("setRules(rules)\nend\n")) {
+		return nil, errors.New("retained dnsdist configuration has no complete rules section")
+	}
+	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
+	header, _, _ := bytes.Cut(startup, boundary)
+	return append(append(header, boundary...), rules...), nil
 }
 
 func prepareDNSDistKey(path string) error {

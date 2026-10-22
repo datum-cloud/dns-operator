@@ -106,6 +106,9 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 	if !a.canRetainActive() {
 		return a.failClosed(ctx)
 	}
+	if err := a.refreshActiveDNSDist(); err != nil {
+		return err
+	}
 	files := a.state.Active.Files
 	if !activationPending(a.cfg.StateDir) && installedFilesMatch(files) {
 		if err := a.probeLocalDaemons(ctx); err == nil {
@@ -128,4 +131,30 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 		return err
 	}
 	return a.tx.commitActivation()
+}
+
+func (a *Agent) refreshActiveDNSDist() error {
+	role := a.cfg.Render.Role
+	var routers []DNSDistRenderConfig
+	if role == "" || role == RenderBoth || role == RenderNode {
+		routers = append(routers, a.cfg.Render.NodeDNSDist)
+	}
+	if role == "" || role == RenderBoth || role == RenderCluster || role == RenderRegionalDNSDist {
+		routers = append(routers, a.cfg.Render.ClusterDNSDist)
+	}
+	for _, router := range routers {
+		if len(router.Backends) == 0 {
+			continue
+		}
+		retained, ok := a.state.Active.Files[router.Path]
+		if !ok {
+			continue
+		}
+		current, err := refreshDNSDistConfiguration(router, retained)
+		if err != nil {
+			return err
+		}
+		a.state.Active.Files[router.Path] = current
+	}
+	return nil
 }

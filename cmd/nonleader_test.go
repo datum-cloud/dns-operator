@@ -215,7 +215,7 @@ func startReplica(
 			t.Fatalf("setting up the replica: %v", err)
 		}
 	}
-	go func() { _ = runReplicator(ctx, runnables, downstream, mcmgr) }()
+	goUntilCleanup(t, func() error { return runReplicator(ctx, runnables, downstream, mcmgr) })
 	return mcmgr
 }
 
@@ -281,13 +281,33 @@ func annotatedWithin(ctx context.Context, t *testing.T, m *dnswebhook.DNSRecordS
 	return false
 }
 
+// goUntilCleanup runs run in the background and, when the test ends, waits for
+// it to return. The caller cancels run's context before cleanup. A manager
+// still running when envtest stops its API server keeps watches and lease
+// renewals open, and the API server then outlasts envtest's stop timeout.
+// Cleanups run in reverse order, so every caller after startEnvtest is waited
+// for before its API server stops.
+func goUntilCleanup(t *testing.T, run func() error) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = run()
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("a manager did not stop within 30 s of its context ending")
+		}
+	})
+}
+
 // startEnvtest starts an API server with the CRDs in dirs and stops it when
 // the test ends.
 func startEnvtest(t *testing.T, dirs ...string) *rest.Config {
 	t.Helper()
-	// A loaded CI runner can take longer than envtest's 20 second default to
-	// stop an API server that still holds the managers' watch connections.
-	env := &envtest.Environment{CRDDirectoryPaths: dirs, ErrorIfCRDPathMissing: true, ControlPlaneStopTimeout: time.Minute}
+	env := &envtest.Environment{CRDDirectoryPaths: dirs, ErrorIfCRDPathMissing: true}
 	if dir := firstEnvTestBinaryDir(t); dir != "" {
 		env.BinaryAssetsDirectory = dir
 	}

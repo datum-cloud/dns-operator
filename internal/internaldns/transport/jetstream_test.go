@@ -2,11 +2,14 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
 func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {
@@ -101,5 +104,59 @@ func TestConsumerIdlePullHonorsCancellation(t *testing.T) {
 	_, err := c.Next(ctx)
 	if !errors.Is(err, context.Canceled) || calls != 1 {
 		t.Fatalf("got %v after %d pulls; want cancellation", err, calls)
+	}
+}
+
+type envelopeMessage struct {
+	jetstream.Msg
+	data       []byte
+	terminated bool
+	retryDelay time.Duration
+}
+
+func (m *envelopeMessage) Data() []byte { return m.data }
+func (m *envelopeMessage) TermWithReason(string) error {
+	m.terminated = true
+	return nil
+}
+func (m *envelopeMessage) NakWithDelay(delay time.Duration) error {
+	m.retryDelay = delay
+	return nil
+}
+
+type envelopeConsumer struct {
+	jetstream.Consumer
+	message jetstream.Msg
+}
+
+func (c envelopeConsumer) Next(...jetstream.FetchOpt) (jetstream.Msg, error) {
+	return c.message, nil
+}
+
+func TestUnsupportedEnvelopesRemainDeliverable(t *testing.T) {
+	for _, kind := range []model.Kind{model.KindMemberAck, "FutureKind"} {
+		env := model.Envelope{APIVersion: "future-version", Kind: kind, EventID: "event", Region: "east", Shard: "shared", ResourceUID: "resource", Epoch: 1, Revision: 1, PublishedAt: time.Now(), Payload: json.RawMessage(`{}`)}
+		if kind != model.KindMemberAck {
+			env.APIVersion = model.APIVersion
+		}
+		data, err := json.Marshal(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		message := &envelopeMessage{data: data}
+		c := Consumer{c: envelopeConsumer{message: message}}
+		if _, err := c.Next(context.Background()); !errors.Is(err, model.ErrUnsupportedEnvelope) || message.terminated || message.retryDelay != time.Minute {
+			t.Fatalf("unsupported event not retained: error=%v terminated=%t retry=%v", err, message.terminated, message.retryDelay)
+		}
+	}
+}
+
+func TestMalformedEnvelopesAreTerminated(t *testing.T) {
+	for _, data := range []string{`invalid-json`, `{"apiVersion":"future","kind":"FutureKind"}`} {
+		message := &envelopeMessage{data: []byte(data)}
+		c := Consumer{c: envelopeConsumer{message: message}}
+		if _, err := c.Next(context.Background()); err == nil || !message.terminated || message.retryDelay != 0 {
+			t.Fatalf("malformed event not terminated: error=%v terminated=%t retry=%v", err, message.terminated, message.retryDelay)
+		}
 	}
 }

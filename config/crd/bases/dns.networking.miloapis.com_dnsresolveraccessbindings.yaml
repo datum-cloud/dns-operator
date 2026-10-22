@@ -164,7 +164,7 @@ spec:
                   - type
                   type: object
                 type: array
-              observedSequence:
+              observedGeneration:
                 format: int64
                 type: integer
             type: object

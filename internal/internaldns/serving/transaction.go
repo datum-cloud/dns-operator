@@ -159,7 +159,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 	if force {
 		commandChanges = nil
 	}
-	if err := t.commandsForChanges(ctx, t.Config.Validate, map[string]string{"{stageDir}": commandStage}, commandChanges); err != nil {
+	if err := t.commandsForChanges(ctx, t.Config.Validate, map[string]string{"{stageDir}": commandStage}, commandChanges, nil, false); err != nil {
 		return preservedTransactionError{fmt.Errorf("validate staged serving configuration: %w", err)}
 	}
 	if t.MarkerPath != "" {
@@ -206,7 +206,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 	if err := t.filesInstalled(); err != nil {
 		return err
 	}
-	if err := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges); err != nil {
+	if err := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges, files, true); err != nil {
 		if t.MarkerPath != "" {
 			if guardErr := t.beginActivation(); guardErr != nil {
 				return errors.Join(err, guardErr)
@@ -223,7 +223,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 		if guardErr := t.filesInstalled(); guardErr != nil {
 			return errors.Join(err, guardErr)
 		}
-		reloadErr := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges)
+		reloadErr := t.commandsForChanges(ctx, t.Config.Reload, nil, commandChanges, oldPayload(old), true)
 		if rollbackErr == nil && reloadErr == nil {
 			if guardErr := t.commitActivation(); guardErr != nil {
 				return errors.Join(err, guardErr)
@@ -239,14 +239,10 @@ func (t FileTransaction) FailClosed(ctx context.Context) error {
 	if t.Runner == nil {
 		t.Runner = ExecRunner{}
 	}
-	return t.commands(ctx, t.Config.FailClosed, nil)
+	return t.commandsForChanges(ctx, t.Config.FailClosed, nil, nil, nil, true)
 }
 
-func (t FileTransaction) commands(ctx context.Context, commands []Command, replacements map[string]string) error {
-	return t.commandsForChanges(ctx, commands, replacements, nil)
-}
-
-func (t FileTransaction) commandsForChanges(ctx context.Context, commands []Command, replacements map[string]string, changed map[string]bool) error {
+func (t FileTransaction) commandsForChanges(ctx context.Context, commands []Command, replacements map[string]string, changed map[string]bool, payload map[string][]byte, daemonUpdate bool) error {
 	for _, c := range commands {
 		// Command is copied by value, but its Args slice would otherwise retain
 		// replacements in the configured transaction. Every Apply uses a fresh
@@ -268,7 +264,12 @@ func (t FileTransaction) commandsForChanges(ctx context.Context, commands []Comm
 		for i := range c.Args {
 			c.Args[i] = replace(c.Args[i], replacements)
 		}
+		finished := func(error) {}
+		if daemonUpdate {
+			finished = logDaemonUpdate(ctx, c, payload)
+		}
 		out, err := t.Runner.Run(ctx, c)
+		finished(err)
 		if err != nil {
 			return fmt.Errorf("%s %s: %w: %s", c.Path, strings.Join(c.Args, " "), err, strings.TrimSpace(string(out)))
 		}

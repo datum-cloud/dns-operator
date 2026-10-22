@@ -111,10 +111,7 @@ func compileInputs(in CompileInput, rejected map[types.UID]string) (CompileResul
 
 	claims := map[ownershipKey]types.UID{}
 	staticClaim := map[ownershipKey]types.UID{}
-	validStatic, staticTTLs, err := collectStaticClaims(in, result.Plan.ZoneApex, claims, staticClaim, result.Reasons)
-	if err != nil {
-		return result, err
-	}
+	validStatic, staticTTLs := collectStaticClaims(in, result.Plan.ZoneApex, claims, staticClaim, result.Reasons)
 	for uid := range validStatic {
 		result.Accepted[uid] = true
 	}
@@ -522,7 +519,7 @@ func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
 	return nil
 }
 
-func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32, error) {
+func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32) {
 	validStatic := map[types.UID]bool{}
 	staticTTLs := map[ownershipKey]int32{}
 	records := append([]dnsv1alpha1.DNSRecordSet(nil), in.StaticRecords...)
@@ -576,5 +573,5 @@ func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[o
 			claims[key], staticClaim[key] = rs.UID, rs.UID
 		}
 	}
-	return validStatic, staticTTLs, nil
+	return validStatic, staticTTLs
 }

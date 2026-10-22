@@ -506,9 +506,9 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		base := record.DeepCopy()
 		reason := result.Reasons[record.UID]
 		if reason == "" {
-			reason = "Accepted"
+			reason = dnsValueAccepted
 		}
-		setCondition(&record.Status.Conditions, "Accepted", boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
+		setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
 		if !reflect.DeepEqual(base.Status, record.Status) {
 			if err := r.Status().Patch(ctx, record, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 				return err
@@ -525,7 +525,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		accepted := result.Accepted[reg.UID]
 		reason := result.Reasons[reg.UID]
 		if reason == "" {
-			reason = "Accepted"
+			reason = dnsValueAccepted
 		}
 		base := reg.DeepCopy()
 		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
@@ -536,7 +536,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
 		}
 		reg.Status.ObservedGeneration = reg.Generation
-		setCondition(&reg.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, reg.Generation, now)
+		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -549,11 +549,11 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		accepted := result.Accepted[c.UID]
 		reason := result.Reasons[c.UID]
 		if reason == "" {
-			reason = "Accepted"
+			reason = dnsValueAccepted
 		}
 		base := c.DeepCopy()
 		c.Status.ObservedGeneration = c.Generation
-		setCondition(&c.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, c.Generation, now)
+		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}

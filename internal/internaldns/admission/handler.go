@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -137,9 +138,38 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubead
 			if err := model.ValidatePrivateRecordOwner(record.Name, zone.Spec.DomainName, string(set.RecordType)); err != nil {
 				return err
 			}
+			if !registrationCoversOwner(&registration, record.Name, zone.Spec.DomainName) {
+				return fmt.Errorf("record owner %q is outside the registration", record.Name)
+			}
 		}
 	}
 	return nil
+}
+
+// registrationCoversOwner mirrors the publisher's name scope so writers get
+// immediate feedback: an owner must be the registered name or fall within one
+// of its reserved descendants.
+func registrationCoversOwner(registration *dnsv1alpha1.DNSRegistration, owner, apex string) bool {
+	name := zoneRelativeOwner(owner, apex)
+	if name == zoneRelativeOwner(registration.Spec.Name, apex) {
+		return true
+	}
+	for _, scope := range registration.Spec.ReservedDescendants {
+		s := zoneRelativeOwner(scope, apex)
+		if name == s || strings.HasSuffix(name, "."+s) {
+			return true
+		}
+	}
+	return false
+}
+
+func zoneRelativeOwner(name, apex string) string {
+	n := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+	a := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(apex), "."))
+	if n == a {
+		return "@"
+	}
+	return strings.TrimSuffix(n, "."+a)
 }
 
 func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
@@ -151,6 +181,8 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 		return err
 	}
 
+	// Readiness is not required here: the context controller creates the
+	// managed zone association before the context itself can become Ready.
 	var resolverContext dnsv1alpha1.DNSResolverContext
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: a.Spec.ResolverContextRef.Name}, &resolverContext); err != nil {
 		return fmt.Errorf("resolver context lookup: %w", err)

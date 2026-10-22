@@ -218,9 +218,12 @@ type DNSContributionRecordSet struct {
 type DNSRecordContributionSpec struct {
 	RegistrationRef DNSObjectReference `json:"registrationRef"`
 	// +kubebuilder:validation:MaxItems=14
+	// +listType=map
+	// +listMapKey=recordType
 	RecordSets []DNSContributionRecordSet `json:"recordSets"`
 	Eligible   bool                       `json:"eligible"`
-	Reason     string                     `json:"reason,omitempty"`
+	// +kubebuilder:validation:MaxLength=1024
+	Reason string `json:"reason,omitempty"`
 }
 
 type DNSRecordContributionStatus struct {
@@ -254,8 +257,9 @@ type DNSNamingPolicySpec struct {
 	// +kubebuilder:validation:MaxItems=256
 	AdditionalNames []DNSAdditionalNameRule `json:"additionalNames"`
 	DNSZoneRef      DNSNameReference        `json:"dnsZoneRef,omitempty"`
-	ScopePrefix     string                  `json:"scopePrefix,omitempty"`
-	Priority        int32                   `json:"priority,omitempty"`
+	// +kubebuilder:validation:MaxLength=253
+	ScopePrefix string `json:"scopePrefix,omitempty"`
+	Priority    int32  `json:"priority,omitempty"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
@@ -264,7 +268,8 @@ type DNSAdditionalNameRule struct {
 	// An omitted or empty selector matches every registration in the context.
 	Selector   *DNSRegistrationSelector `json:"selector,omitempty"`
 	DNSZoneRef DNSNameReference         `json:"dnsZoneRef"`
-	NamePrefix string                   `json:"namePrefix"`
+	// +kubebuilder:validation:MaxLength=253
+	NamePrefix string `json:"namePrefix"`
 }
 
 // DNSRegistrationSelector matches registration labels using Kubernetes selector semantics.
@@ -316,6 +321,7 @@ type DNSResolvedAdditionalNameRule struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations="discovery.miloapis.com/parent-contexts=Project"
 type DNSNamingPolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

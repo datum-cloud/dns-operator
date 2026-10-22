@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"sort"
@@ -318,8 +319,14 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		if owner := destinations[key]; owner != "" && owner != a.UID {
 			valid = false
 		} else if valid {
-			if r.Options.AddressAllocator == nil || r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.DestinationAddress).String(), 53) != nil {
+			if r.Options.AddressAllocator == nil {
 				valid = false
+			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.DestinationAddress).String(), 53); errors.Is(err, model.ErrDestinationRefused) {
+				valid = false
+			} else if err != nil {
+				// A transient API failure is not a refusal: retry rather
+				// than flip an accepted binding to AccessRejected.
+				return fmt.Errorf("claim service destination: %w", err)
 			} else {
 				destinations[key] = a.UID
 			}

@@ -103,7 +103,8 @@ spec:
               "dns_zone_name", "$1", "name", "(.*)"
             )
 
-        # Missing: replication is expected only when the parent zone exists.
+        # Missing: replication is expected only when the parent zone exists
+        # and is public; private zones never replicate downstream.
         # Do not gate on the record's Accepted status: that is mirrored back
         # from downstream and would hide records that never replicated.
         - record: dns:recordset_downstream_missing
@@ -111,7 +112,7 @@ spec:
             (
               dns:recordset_upstream:normalized{project!=""}
                 and on(project, namespace, dns_zone_name)
-              dns:zone_upstream:normalized{project!=""}
+              dns:zone_upstream:normalized{project!="", visibility!="Private"}
             )
               unless on(project, upstream_namespace, upstream_name)
             dns:recordset_downstream:scoped{project!=""}

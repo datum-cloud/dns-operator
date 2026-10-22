@@ -221,6 +221,45 @@ func TestContributionValidatesReferencesForRBACAuthorizedCallers(t *testing.T) {
 	}
 }
 
+func TestContributionOwnersStayWithinRegistration(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "zone-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "web", ReservedDescendants: []string{"targets.web"}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+	handler := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).Build()}
+	for _, tt := range []struct {
+		owner   string
+		allowed bool
+	}{{"web", true}, {"WEB.datum.internal.", true}, {"targets.web", true}, {"a.targets.web.datum.internal", true}, {"api", false}, {"other.web", false}, {"@", false}} {
+		contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: registration.Name, UID: registration.UID, Generation: registration.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: tt.owner, A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
+		if got := handler.Handle(context.Background(), request("dnsrecordcontributions", "publisher", contribution, nil)); got.Allowed != tt.allowed {
+			t.Errorf("owner %q: allowed=%v expected=%v: %v", tt.owner, got.Allowed, tt.allowed, got.Result)
+		}
+	}
+}
+
+func TestAssociationRequiresCurrentResolverContext(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: "project", UID: "zone-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	// A context that is not yet Ready is still a valid association target.
+	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}}
+	association := func(contextName string) *dnsv1alpha1.DNSZoneAssociation {
+		return &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: contextName}}}
+	}
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, resolverContext).Build()}
+	if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", association(resolverContext.Name), nil)); !got.Allowed {
+		t.Fatalf("current context rejected: %v", got.Result)
+	}
+	if h.Handle(context.Background(), request("dnszoneassociations", "tenant", association("missing"), nil)).Allowed {
+		t.Fatal("association accepted a missing resolver context")
+	}
+}
+
 func TestDeletingResourceCanRemoveFinalizersWithoutReferences(t *testing.T) {
 	h := Handler{}
 	for _, resource := range []string{"dnsregistrations", "dnsrecordcontributions", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings"} {

@@ -35,7 +35,10 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, proje
 	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: contextName}, &resolver); err != nil {
 		return nil, err
 	}
-	if !resolver.DeletionTimestamp.IsZero() || !apimeta.IsStatusConditionTrue(resolver.Status.Conditions, "Ready") {
+	ready := apimeta.FindStatusCondition(resolver.Status.Conditions, "Ready")
+	// A Ready context without a managed namespace, or whose Ready
+	// condition predates its spec, has no current canonical zone.
+	if !resolver.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolver.Generation || resolver.Status.ManagedNamespace.DNSZoneRef.Name == "" {
 		return nil, fmt.Errorf("managed DNS namespace for context %s is not ready", contextName)
 	}
 	var canonical dnsv1alpha1.DNSZone

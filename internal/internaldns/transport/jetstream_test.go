@@ -160,3 +160,16 @@ func TestMalformedEnvelopesAreTerminated(t *testing.T) {
 		}
 	}
 }
+
+type emptyKeyValue struct{ jetstream.KeyValue }
+
+func (emptyKeyValue) Keys(context.Context, ...jetstream.WatchOpt) ([]string, error) {
+	return nil, jetstream.ErrNoKeysFound
+}
+
+func TestSnapshotListOfEmptyBucketIsEmpty(t *testing.T) {
+	envelopes, err := (&SnapshotStore{kv: emptyKeyValue{}}).List(context.Background(), "central.")
+	if err != nil || len(envelopes) != 0 {
+		t.Fatalf("empty bucket must list no snapshots, got %v, %v", envelopes, err)
+	}
+}

@@ -317,8 +317,9 @@ spec:
               rule: self.registrationRef.name.size() > 0 && has(self.registrationRef.uid)
                 && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation)
                 && self.registrationRef.generation > 0
-            - message: contribution registration reference is immutable
-              rule: self.registrationRef == oldSelf.registrationRef
+            - message: contribution registration identity is immutable
+              rule: self.registrationRef.name == oldSelf.registrationRef.name && self.registrationRef.uid
+                == oldSelf.registrationRef.uid
           status:
             properties:
               conditions:

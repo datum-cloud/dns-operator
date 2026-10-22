@@ -56,6 +56,12 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	if !upstream.DeletionTimestamp.IsZero() {
+		strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
+		_, err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream)
+		return ctrl.Result{}, err
+	}
+
 	// Resolve visibility before installing public finalizers or creating events.
 	var zone dnsv1alpha1.DNSZone
 	zoneErr := upstreamCluster.GetClient().Get(ctx,
@@ -64,6 +70,11 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 		return ctrl.Result{}, zoneErr
 	}
 	if zoneErr == nil && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		if controllerutil.ContainsFinalizer(&upstream, rsFinalizer) {
+			strategy := downstreamclient.NewMappedNamespaceResourceStrategy(req.ClusterName, upstreamCluster.GetClient(), r.DownstreamClient)
+			_, err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream)
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -92,21 +103,6 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 			return ctrl.Result{}, err
 		}
 		lg.Info("added upstream finalizer", "finalizer", rsFinalizer)
-		return ctrl.Result{}, nil
-	}
-
-	// Deletion path: downstream-first via finalizer
-	if !upstream.DeletionTimestamp.IsZero() {
-		done, err := r.handleDeletion(ctx, upstreamCluster.GetClient(), strategy, &upstream)
-		if err != nil {
-			lg.Error(err, "deletion handling error; requeueing")
-			return ctrl.Result{}, err
-		}
-		if !done {
-			return ctrl.Result{}, nil
-		}
-		lg.Info("finalizer removed; allowing upstream DNSRecordSet to finalize")
-		// finalizer removed; allow upstream object to finalize
 		return ctrl.Result{}, nil
 	}
 

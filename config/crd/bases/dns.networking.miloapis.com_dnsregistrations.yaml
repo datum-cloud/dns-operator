@@ -50,6 +50,11 @@ spec:
                 - name
                 type: object
               name:
+                description: Name is the owner name, relative to the zone or fully
+                  qualified.
+                maxLength: 253
+                minLength: 1
+                pattern: ^(@|[A-Za-z0-9*._-]+)$
                 type: string
               recordTypes:
                 items:
@@ -69,11 +74,18 @@ spec:
                   - HTTPS
                   - SVCB
                   type: string
+                maxItems: 14
+                minItems: 1
                 type: array
+                x-kubernetes-list-type: set
               reservedDescendants:
                 items:
+                  maxLength: 253
+                  minLength: 1
                   type: string
+                maxItems: 64
                 type: array
+                x-kubernetes-list-type: set
               ttlSeconds:
                 description: TTLSeconds bounds cached dynamic answers to at most 30
                   seconds after withdrawal.
@@ -90,6 +102,10 @@ spec:
             x-kubernetes-validations:
             - message: dnsZoneRef requires a name
               rule: self.dnsZoneRef.name.size() > 0
+            - message: dnsZoneRef is immutable
+              rule: self.dnsZoneRef.name == oldSelf.dnsZoneRef.name
+            - message: name is immutable
+              rule: self.name == oldSelf.name
           status:
             properties:
               canonicalFQDN:

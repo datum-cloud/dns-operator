@@ -141,6 +141,11 @@ spec:
             x-kubernetes-validations:
             - message: resolverContextRef is required
               rule: self.resolverContextRef.name.size() > 0
+            - message: resolverContextRef is immutable
+              rule: self.resolverContextRef.name == oldSelf.resolverContextRef.name
+            - message: dnsZoneRef is immutable
+              rule: '(has(self.dnsZoneRef) ? self.dnsZoneRef.name : "") == (has(oldSelf.dnsZoneRef)
+                ? oldSelf.dnsZoneRef.name : "")'
           status:
             properties:
               conditions:

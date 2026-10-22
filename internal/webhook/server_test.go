@@ -16,6 +16,7 @@ import (
 	"time"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	authv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,9 +34,11 @@ import (
 const (
 	mutatePath   = "/mutate-dns-networking-miloapis-com-v1alpha1-dnsrecordset"
 	validatePath = "/validate-dns-networking-miloapis-com-v1alpha1-dnsrecordset"
+	// Kept literal so the test fails if the served path drifts from the manifests.
+	internalDNSPath = "/validate-internal-dns"
 )
 
-func TestSetupDNSRecordSetWebhook_IsServed(t *testing.T) {
+func TestSetupWebhooks_AreServed(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
@@ -75,8 +78,8 @@ func TestSetupDNSRecordSetWebhook_IsServed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating multicluster manager: %v", err)
 	}
-	if err := SetupDNSRecordSetWebhook(mgr); err != nil {
-		t.Fatalf("SetupDNSRecordSetWebhook: %v", err)
+	if err := SetupWebhooks(mgr); err != nil {
+		t.Fatalf("SetupWebhooks: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,6 +170,64 @@ func TestSetupDNSRecordSetWebhook_IsServed(t *testing.T) {
 		}
 	})
 
+	privateZone := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "private-zone", Namespace: "default"},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "internal.example", DNSZoneClassName: "private", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate},
+	}
+	if err := k8sClient.Create(ctx, privateZone); err != nil {
+		t.Fatalf("creating private DNSZone: %v", err)
+	}
+	registrationReview := func(zoneName string, extra map[string]authv1.ExtraValue) admissionv1.AdmissionReview {
+		registration := &dnsv1alpha1.DNSRegistration{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default"},
+			Spec: dnsv1alpha1.DNSRegistrationSpec{
+				DNSZoneRef:  dnsv1alpha1.DNSNameReference{Name: zoneName},
+				Name:        "web",
+				RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA},
+				TTLSeconds:  30,
+			},
+		}
+		raw, err := json.Marshal(registration)
+		if err != nil {
+			t.Fatalf("marshalling DNSRegistration: %v", err)
+		}
+		return admissionv1.AdmissionReview{
+			TypeMeta: metav1.TypeMeta{APIVersion: "admission.k8s.io/v1", Kind: "AdmissionReview"},
+			Request: &admissionv1.AdmissionRequest{
+				UID:       "internal-dns-uid",
+				Operation: admissionv1.Create,
+				Namespace: registration.Namespace,
+				Name:      registration.Name,
+				Kind:      metav1.GroupVersionKind{Group: dnsv1alpha1.GroupVersion.Group, Version: dnsv1alpha1.GroupVersion.Version, Kind: "DNSRegistration"},
+				Resource:  metav1.GroupVersionResource{Group: dnsv1alpha1.GroupVersion.Group, Version: dnsv1alpha1.GroupVersion.Version, Resource: "dnsregistrations"},
+				UserInfo:  authv1.UserInfo{Username: "project-admin", Extra: extra},
+				Object:    runtime.RawExtension{Raw: raw},
+			},
+		}
+	}
+
+	t.Run("internal DNS path admits a live private zone reference", func(t *testing.T) {
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.Name, nil))
+		if !resp.Allowed {
+			t.Fatalf("internal DNS webhook refused a live private zone reference: %v", resp.Result)
+		}
+	})
+
+	t.Run("internal DNS path refuses a missing zone", func(t *testing.T) {
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview("missing-zone", nil))
+		if resp.Allowed {
+			t.Fatal("internal DNS webhook admitted a reference to a missing zone")
+		}
+	})
+
+	t.Run("internal DNS path fails closed for an unknown project", func(t *testing.T) {
+		extra := map[string]authv1.ExtraValue{ParentTypeExtraKey: {"Project"}, ParentNameExtraKey: {"missing-project"}}
+		resp := sendAdmissionReview(ctx, t, httpClient, endpoint(internalDNSPath), registrationReview(privateZone.Name, extra))
+		if resp.Allowed {
+			t.Fatal("internal DNS webhook checked an unknown project's write against the local cluster")
+		}
+	})
+
 	cancel()
 	select {
 	case err := <-runErr:
@@ -237,6 +298,17 @@ func postAdmissionReview(
 		}
 		review.Request.OldObject = runtime.RawExtension{Raw: oldRaw}
 	}
+	return sendAdmissionReview(ctx, t, httpClient, url, review)
+}
+
+func sendAdmissionReview(
+	ctx context.Context,
+	t *testing.T,
+	httpClient *http.Client,
+	url string,
+	review admissionv1.AdmissionReview,
+) *admissionv1.AdmissionResponse {
+	t.Helper()
 
 	body, err := json.Marshal(review)
 	if err != nil {

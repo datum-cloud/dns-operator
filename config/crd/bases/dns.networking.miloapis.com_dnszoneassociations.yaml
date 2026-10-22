@@ -49,8 +49,6 @@ spec:
                 required:
                 - name
                 type: object
-              managed:
-                type: boolean
               resolverContextRef:
                 description: |-
                   DNSNameReference selects a resource in the same project namespace.
@@ -71,6 +69,10 @@ spec:
               rule: self.dnsZoneRef.name.size() > 0
             - message: resolverContextRef is required
               rule: self.resolverContextRef.name.size() > 0
+            - message: dnsZoneRef is immutable
+              rule: self.dnsZoneRef.name == oldSelf.dnsZoneRef.name
+            - message: resolverContextRef is immutable
+              rule: self.resolverContextRef.name == oldSelf.resolverContextRef.name
           status:
             properties:
               conditions:

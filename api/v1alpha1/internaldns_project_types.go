@@ -28,10 +28,11 @@ type DNSNameReference struct {
 
 // +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
 // +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0",message="resolverContextRef is required"
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name == oldSelf.dnsZoneRef.name",message="dnsZoneRef is immutable"
+// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name == oldSelf.resolverContextRef.name",message="resolverContextRef is immutable"
 type DNSZoneAssociationSpec struct {
 	DNSZoneRef         DNSNameReference `json:"dnsZoneRef"`
 	ResolverContextRef DNSNameReference `json:"resolverContextRef"`
-	Managed            bool             `json:"managed,omitempty"`
 }
 
 type DNSZoneAssociationStatus struct {
@@ -157,14 +158,27 @@ type DNSZoneAssociationList struct {
 const DNSRegistrationMaxTTLSeconds int32 = 30
 
 // +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name.size() > 0",message="dnsZoneRef requires a name"
+// +kubebuilder:validation:XValidation:rule="self.dnsZoneRef.name == oldSelf.dnsZoneRef.name",message="dnsZoneRef is immutable"
+// +kubebuilder:validation:XValidation:rule="self.name == oldSelf.name",message="name is immutable"
 type DNSRegistrationSpec struct {
-	DNSZoneRef  DNSNameReference `json:"dnsZoneRef"`
-	Name        string           `json:"name"`
-	RecordTypes []RRType         `json:"recordTypes"`
+	DNSZoneRef DNSNameReference `json:"dnsZoneRef"`
+	// Name is the owner name, relative to the zone or fully qualified.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^(@|[A-Za-z0-9*._-]+)$`
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=14
+	// +listType=set
+	RecordTypes []RRType `json:"recordTypes"`
 	// TTLSeconds bounds cached dynamic answers to at most 30 seconds after withdrawal.
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=30
-	TTLSeconds          int32    `json:"ttlSeconds"`
+	TTLSeconds int32 `json:"ttlSeconds"`
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	// +listType=set
 	ReservedDescendants []string `json:"reservedDescendants,omitempty"`
 }
 
@@ -194,17 +208,19 @@ type DNSRegistrationList struct {
 }
 
 type DNSContributionRecordSet struct {
-	RecordType RRType        `json:"recordType"`
-	Records    []RecordEntry `json:"records"`
+	RecordType RRType `json:"recordType"`
+	// +kubebuilder:validation:MaxItems=256
+	Records []RecordEntry `json:"records"`
 }
 
 // +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation) && self.registrationRef.generation > 0",message="registrationRef requires name, UID, and generation"
 // +kubebuilder:validation:XValidation:rule="self.registrationRef.name == oldSelf.registrationRef.name && self.registrationRef.uid == oldSelf.registrationRef.uid",message="contribution registration identity is immutable"
 type DNSRecordContributionSpec struct {
-	RegistrationRef DNSObjectReference         `json:"registrationRef"`
-	RecordSets      []DNSContributionRecordSet `json:"recordSets"`
-	Eligible        bool                       `json:"eligible"`
-	Reason          string                     `json:"reason,omitempty"`
+	RegistrationRef DNSObjectReference `json:"registrationRef"`
+	// +kubebuilder:validation:MaxItems=14
+	RecordSets []DNSContributionRecordSet `json:"recordSets"`
+	Eligible   bool                       `json:"eligible"`
+	Reason     string                     `json:"reason,omitempty"`
 }
 
 type DNSRecordContributionStatus struct {
@@ -231,6 +247,8 @@ type DNSRecordContributionList struct {
 }
 
 // +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name.size() > 0",message="resolverContextRef is required"
+// +kubebuilder:validation:XValidation:rule="self.resolverContextRef.name == oldSelf.resolverContextRef.name",message="resolverContextRef is immutable"
+// +kubebuilder:validation:XValidation:rule="(has(self.dnsZoneRef) ? self.dnsZoneRef.name : \"\") == (has(oldSelf.dnsZoneRef) ? oldSelf.dnsZoneRef.name : \"\")",message="dnsZoneRef is immutable"
 type DNSNamingPolicySpec struct {
 	ResolverContextRef DNSNameReference `json:"resolverContextRef"`
 	// +kubebuilder:validation:MaxItems=256

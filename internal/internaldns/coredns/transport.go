@@ -9,94 +9,114 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"time"
 )
 
 var proxySignature = []byte("\r\n\r\n\x00\r\nQUIT\n")
 
-type proxyAddress struct {
-	peer, source, destination net.Addr
-}
-
-func (a *proxyAddress) Network() string               { return a.peer.Network() }
-func (a *proxyAddress) String() string                { return a.source.String() }
-func (a *proxyAddress) OriginalDestination() net.Addr { return a.destination }
-
-type proxyPacketConn struct {
-	net.PacketConn
-	peers map[netip.Addr]bool
-}
-
-func (c *proxyPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	for {
-		n, peer, err := c.PacketConn.ReadFrom(p)
-		if err != nil {
-			return n, peer, err
-		}
-		if !trusted(c.peers, peer) {
-			continue
-		}
-		source, destination, size, err := parseHeader(p[:n], false)
-		if err != nil || size >= n {
-			continue
-		}
-		if source == nil {
-			source, destination = peer, c.LocalAddr()
-		}
-		copy(p, p[size:n])
-		return n - size, &proxyAddress{peer: peer, source: source, destination: destination}, nil
-	}
-}
-
-func (c *proxyPacketConn) WriteTo(p []byte, peer net.Addr) (int, error) {
-	if addr, ok := peer.(*proxyAddress); ok {
-		peer = addr.peer
-	}
-	return c.PacketConn.WriteTo(p, peer)
-}
+const maxProxyHandshakes = 64
 
 type proxyListener struct {
 	net.Listener
-	peers map[netip.Addr]bool
+	peers     map[netip.Addr]bool
+	once      sync.Once
+	closeOnce sync.Once
+	ready     chan net.Conn
+	done      chan struct{}
+}
+
+func (l *proxyListener) start() {
+	l.once.Do(func() {
+		l.ready = make(chan net.Conn)
+		l.done = make(chan struct{})
+		go l.acceptConnections()
+	})
 }
 
 func (l *proxyListener) Accept() (net.Conn, error) {
+	l.start()
+	select {
+	case conn := <-l.ready:
+		return conn, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *proxyListener) Close() error {
+	l.start()
+	var err error
+	l.closeOnce.Do(func() {
+		close(l.done)
+		err = l.Listener.Close()
+	})
+	return err
+}
+
+func (l *proxyListener) acceptConnections() {
+	pending := make(chan struct{}, maxProxyHandshakes)
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			return nil, err
+			_ = l.Close()
+			return
 		}
 		if !trusted(l.peers, conn.RemoteAddr()) {
 			_ = conn.Close()
 			continue
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		header := make([]byte, 16)
-		if _, err := io.ReadFull(conn, header); err != nil || !bytes.Equal(header[:12], proxySignature) {
+		select {
+		case pending <- struct{}{}:
+			go func() {
+				defer func() { <-pending }()
+				accepted, err := readProxyConnection(conn)
+				if err != nil {
+					_ = conn.Close()
+					return
+				}
+				select {
+				case l.ready <- accepted:
+				case <-l.done:
+					_ = conn.Close()
+				}
+			}()
+		default:
 			_ = conn.Close()
-			continue
 		}
-		size := int(binary.BigEndian.Uint16(header[14:16]))
-		if size > 4096 {
-			_ = conn.Close()
-			continue
-		}
-		body := make([]byte, size)
-		if _, err := io.ReadFull(conn, body); err != nil {
-			_ = conn.Close()
-			continue
-		}
-		source, destination, _, err := parseHeader(append(header, body...), true)
-		if err != nil {
-			_ = conn.Close()
-			continue
-		}
-		if source == nil {
-			source, destination = conn.RemoteAddr(), conn.LocalAddr()
-		}
-		_ = conn.SetReadDeadline(time.Time{})
-		return &proxyConn{Conn: conn, source: source, destination: destination}, nil
 	}
+}
+
+func readProxyConnection(conn net.Conn) (net.Conn, error) {
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return nil, err
+	}
+	header := make([]byte, 16)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(header[:12], proxySignature) {
+		return nil, errors.New("invalid PROXY signature")
+	}
+	size := int(binary.BigEndian.Uint16(header[14:16]))
+	if size > 4096 {
+		return nil, errors.New("PROXY header exceeds size limit")
+	}
+	body := make([]byte, size)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return nil, err
+	}
+	source, destination, _, err := parseHeader(append(header, body...), true)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		source, destination = conn.RemoteAddr(), conn.LocalAddr()
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return nil, err
+	}
+	return &proxyConn{Conn: conn, source: source, destination: destination}, nil
 }
 
 type proxyConn struct {

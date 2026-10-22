@@ -26,6 +26,11 @@ var ErrUnsupportedEnvelope = errors.New("unsupported DNS envelope")
 // transient failure to reach the API.
 var ErrDestinationRefused = errors.New("service destination refused")
 
+// DestinationKey identifies a claimed service destination within a region.
+func DestinationKey(region, address string) string {
+	return region + "\x00" + address
+}
+
 type Kind string
 
 const (

@@ -4,12 +4,14 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -236,5 +238,107 @@ func TestServiceDestinationYieldsToRacingRegionalClaim(t *testing.T) {
 		if strings.HasPrefix(claim.Name, "dns-destination-claim-") {
 			t.Fatal("refused destination kept its claim")
 		}
+	}
+}
+
+func destinationClaims(t *testing.T, cl client.Client) map[string]string {
+	t.Helper()
+	var claims corev1.ConfigMapList
+	if err := cl.List(context.Background(), &claims, client.InNamespace("platform")); err != nil {
+		t.Fatal(err)
+	}
+	owners := map[string]string{}
+	for _, claim := range claims.Items {
+		if strings.HasPrefix(claim.Name, "dns-destination-claim-") {
+			owners[claim.Data["address"]] = claim.Data["owner"]
+		}
+	}
+	return owners
+}
+
+func TestReleaseDestinationsFreesOnlyUnheldUnroutedProjectClaims(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := Allocator{Client: cl, Namespace: "platform"}
+	for _, claim := range []struct{ project, context, address string }{
+		{"project-a", "context-a", "fd70::1"},
+		{"project-a", "context-a", "fd70::2"},
+		{"project-a", "context-b", "fd70::3"},
+		{"project-b", "context-c", "fd70::4"},
+	} {
+		if err := allocator.ClaimDestination(ctx, types.UID(claim.project), types.UID(claim.context), "east", claim.address, 53); err != nil {
+			t.Fatal(err)
+		}
+	}
+	live := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "live", Namespace: "platform"}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project-a"}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: "east", Shard: "shared"}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: "fd70::3"}}}}
+	if err := cl.Create(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", map[string]bool{model.DestinationKey("east", "fd70::1"): true}); err != nil {
+		t.Fatal(err)
+	}
+	got := destinationClaims(t, cl)
+	if _, ok := got["fd70::1"]; !ok {
+		t.Fatal("held destination was released")
+	}
+	if _, ok := got["fd70::2"]; ok {
+		t.Fatal("unused destination was not released")
+	}
+	if _, ok := got["fd70::3"]; !ok {
+		t.Fatal("destination routed by a live binding was released")
+	}
+	if got["fd70::4"] != "project-b/context-c" {
+		t.Fatal("another project's destination was released")
+	}
+	if err := allocator.ClaimDestination(ctx, "project-b", "context-d", "east", "fd70::2", 53); err != nil {
+		t.Fatalf("released destination stayed burned: %v", err)
+	}
+}
+
+func TestReleaseDestinationsWaitsForWithdrawnSnapshot(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	region, shard, ns := "east", "shared", "platform"
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: ns, UID: "binding-uid", Labels: map[string]string{"internal-dns.miloapis.com/region": region, "internal-dns.miloapis.com/shard": shard}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project-a", ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "context-a", UID: "context-a"}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: shard}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 1, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: "fd70::1", RegionalAddress: "fd54::1"}}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}}
+	state, _ := json.Marshal(shardState{Holder: "planner", Epoch: 1, NextRevision: 1, LeaseUntil: now.Add(time.Minute)})
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: ns, UID: "shard-owner-uid"}, Data: map[string]string{"state": string(state)}}
+	cl := testClient(t, binding, owner)
+	allocator := &Allocator{Client: cl, Namespace: ns}
+	if err := allocator.ClaimDestination(ctx, "project-a", "context-a", region, "fd70::1", 53); err != nil {
+		t.Fatal(err)
+	}
+	p := Planner{Client: cl, Allocator: allocator, Config: PlannerConfig{Namespace: ns, Region: region, Shard: shard, Identity: "planner", ClusterBackends: []model.Backend{{MemberID: "cluster-1", Address: "fd00::20", Port: 5300}}}, Now: func() time.Time { return now }}
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 1 {
+		t.Fatalf("binding was not published: %#v", snapshot.Bindings)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+		t.Fatal(err)
+	}
+	binding.Spec.Tombstone = true
+	binding.Spec.Configuration.Revision++
+	binding.Spec.Version.Sequence++
+	if err := cl.Update(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := destinationClaims(t, cl)["fd70::1"]; !ok {
+		t.Fatal("destination was released while the committed snapshot still routed it")
+	}
+	if err := p.Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 0 {
+		t.Fatalf("tombstone was not withdrawn: %#v", snapshot.Bindings)
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := destinationClaims(t, cl)["fd70::1"]; ok {
+		t.Fatal("withdrawn destination was not released")
 	}
 }

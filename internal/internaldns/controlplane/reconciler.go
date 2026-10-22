@@ -39,12 +39,14 @@ type ServingRegion struct {
 	Shard  string
 }
 
-// AddressAllocator durably leases globally unique listener destinations. Its
-// implementation must retain quarantine state after release; a pure hash is
-// only a candidate and is never sufficient proof of uniqueness.
+// AddressAllocator durably leases globally unique listener destinations. A
+// pure hash is only a candidate and is never sufficient proof of uniqueness.
+// ReleaseDestinations frees the project's destination claims outside held
+// (keys from model.DestinationKey) once nothing routes them.
 type AddressAllocator interface {
 	Allocate(context.Context, types.UID, types.UID) (cluster string, err error)
 	ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error
+	ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error
 }
 
 func (o *ReconcilerOptions) defaults() {

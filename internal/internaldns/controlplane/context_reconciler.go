@@ -242,6 +242,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	}
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
+	held := map[string]bool{}
 	desired := map[string]bool{}
 	for i := range accesses.Items {
 		a := &accesses.Items[i]
@@ -271,8 +272,11 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		contextReady := resolverContextReady(contextObject)
 		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady
-		if _, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
+		destination := ""
+		if parsed, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
 			valid = false
+		} else {
+			destination = parsed.Unmap().String()
 		}
 		if _, ok := r.targetForRegion(spec.Region); !ok {
 			valid = false
@@ -283,7 +287,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else if valid {
 			if r.Options.AddressAllocator == nil {
 				valid = false
-			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.DestinationAddress).String(), 53); errors.Is(err, model.ErrDestinationRefused) {
+			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, destination, 53); errors.Is(err, model.ErrDestinationRefused) {
 				valid = false
 			} else if err != nil {
 				// A transient API failure is not a refusal: retry rather
@@ -291,6 +295,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return fmt.Errorf("claim service destination: %w", err)
 			} else {
 				destinations[key] = a.UID
+				held[model.DestinationKey(spec.Region, destination)] = true
 			}
 		}
 		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
@@ -419,7 +424,10 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
-	return nil
+	if r.Options.AddressAllocator == nil {
+		return nil
+	}
+	return r.Options.AddressAllocator.ReleaseDestinations(ctx, r.Options.ProjectUID, held)
 }
 
 // confirmAccessWithdrawal prevents a stale or incomplete source List from

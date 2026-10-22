@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -30,8 +31,8 @@ type AddressLease struct {
 }
 
 // Allocator reserves all generated addresses through atomic, globally named Kubernetes address claims.
-// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Leases are retained after revocation: addresses are never reused by
-// another resolver context lifetime. Explicit garbage collection needs a quarantine policy.
+// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional leases are retained after revocation: those addresses
+// are never reused by another resolver context lifetime. Service destination claims are released once no binding routes them.
 type Allocator struct {
 	Client        client.Client
 	Namespace     string
@@ -44,9 +45,7 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 }
 
 // ClaimDestination atomically reserves an integration-selected service
-// destination across every project sharing this platform control plane. Claims
-// are retained after revocation so a stale route cannot become valid for a new
-// context lifetime.
+// destination across every project sharing this platform control plane.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
 	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
@@ -108,6 +107,88 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return nil
 	}
 	return err
+}
+
+// ReleaseDestinations deletes the project's destination claims that are not in
+// held and that no binding still routes. A destination stays routed while a
+// live binding names it or while a committed serving snapshot for its region
+// still carries it, so a claim is never freed before its route is withdrawn.
+func (a *Allocator) ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error {
+	if a.Client == nil || a.Namespace == "" || projectUID == "" {
+		return fmt.Errorf("destination release requires a client, namespace, and project identity")
+	}
+	var claims corev1.ConfigMapList
+	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true"}); err != nil {
+		return err
+	}
+	var bindings *dnsv1alpha1.DNSResolverBindingList
+	snapshots := map[string]*model.ServingSnapshot{}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		region, address := claim.Data["region"], claim.Data["address"]
+		if region == "" || !strings.HasPrefix(claim.Data["owner"], string(projectUID)+"/") || held[model.DestinationKey(region, address)] {
+			continue
+		}
+		if bindings == nil {
+			bindings = &dnsv1alpha1.DNSResolverBindingList{}
+			if err := a.Client.List(ctx, bindings, client.InNamespace(a.Namespace)); err != nil {
+				return err
+			}
+		}
+		routed, err := a.destinationRouted(ctx, bindings.Items, snapshots, region, address)
+		if err != nil {
+			return err
+		}
+		if routed {
+			continue
+		}
+		if err := a.deleteClaim(ctx, claim); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, snapshots map[string]*model.ServingSnapshot, region, address string) (bool, error) {
+	shards := map[string]bool{}
+	for _, b := range bindings {
+		if b.Spec.Placement.Region != region {
+			continue
+		}
+		shards[b.Spec.Placement.Shard] = true
+		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() && sameAddress(b.Spec.Configuration.Query.NodeAddress, address) {
+			return true, nil
+		}
+	}
+	for shard := range shards {
+		key := region + "/" + shard
+		snapshot, cached := snapshots[key]
+		if !cached {
+			var err error
+			if _, snapshot, err = LoadCommittedServingSnapshot(ctx, a.Client, a.Namespace, region, shard); err != nil {
+				return false, err
+			}
+			snapshots[key] = snapshot
+		}
+		if snapshot == nil {
+			continue
+		}
+		for _, b := range snapshot.Bindings {
+			if sameAddress(b.ConsumerAddress, address) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func sameAddress(a, b string) bool {
+	left, err := netip.ParseAddr(a)
+	if err != nil {
+		return a == b
+	}
+	right, err := netip.ParseAddr(b)
+	return err == nil && left.Unmap() == right.Unmap()
 }
 
 func (a *Allocator) destinationClaimed(ctx context.Context, address string) (bool, error) {

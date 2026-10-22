@@ -16,6 +16,7 @@ latest-milestone: "TBD"
   - [Control-plane boundaries](#control-plane-boundaries)
   - [Contexts and regional access](#contexts-and-regional-access)
   - [Query path and network identity](#query-path-and-network-identity)
+  - [Threat model](#threat-model)
   - [Publication and service discovery](#publication-and-service-discovery)
   - [API design](#api-design)
   - [Integration boundaries](#integration-boundaries)
@@ -197,14 +198,57 @@ snapshots allow serving to recover without an available control plane or broker.
 A shared member must prove the current configuration and publication before it
 receives traffic for that context.
 
+### Threat model
+
+DNS does not authenticate callers itself. The project API server authenticates
+every request and authorizes it with RBAC before DNS admission or controllers
+see the object. Only principals bound to the `internal-dns-vpc-integration` role
+can write `DNSResolverContext` and `DNSResolverAccessBinding`; bind that role
+only to the network integration's service principal in each project. Customer
+roles (`dns-admin`, `internal-dns-customer`) and the product publisher role
+(`internal-dns-product-writer`) cannot create either resource. The DNS admission
+webhook does not inspect the caller; it validates live references and lifetimes.
+
+DNS does not rely on RBAC alone. If a principal writes a context or access
+binding it should not, DNS fails closed:
+
+- Destination takeover: DNS records each destination claim per region with the
+  owning project and context. A binding for a destination that another project
+  or context holds reports `Accepted=False` with reason `InvalidOrStaleAccess`
+  and is never mapped to a context.
+- Forged `consumerID`: DNS does not dereference `consumerID` or use it for
+  authorization. Ownership is the authenticated project and the context UID, so
+  a copied value grants nothing. A second live context in the same project
+  namespace with the same `consumerID` reports `DuplicateConsumerID`.
+- Replaced objects: access bindings pin the context UID. A binding whose context
+  was deleted and recreated with the same name is rejected.
+- Forged network identity: DNS ignores client addresses, ECS, and
+  client-supplied PROXY headers. CoreDNS accepts PROXYv2 only from configured
+  peers over TCP.
+
+Galactic decides which service-side destination each VPC can reach. A
+destination claim in DNS does not route another VPC's traffic to it.
+
 ### Publication and service discovery
 
-A registration reserves a name and record types. Names have no automatic
-product prefix or generated suffix. Publishers requesting the same owner and
-record types receive a conflict rather than a renamed record. An RBAC-authorized
-product
-service publishes records and explicit endpoint eligibility through a contribution.
-DNS validates ownership and resource generations, then compiles a zone snapshot.
+A registration reserves a name and record types in one zone. Names have no
+automatic product prefix or generated suffix. An RBAC-authorized product service
+publishes records and explicit endpoint eligibility through a contribution. DNS
+validates ownership and resource generations, then compiles a zone snapshot.
+
+DNS does not rank publishers. A Compute instance, a Connect export, and a
+customer registration that claim the same name compete under one rule:
+
+1. Static records in the zone claim their names first.
+2. Among registrations, the oldest by creation time wins; the UID breaks ties.
+3. A claim conflicts with another claim for the same name and record type. A
+   CNAME conflicts with every other type at that name, so registrations for
+   different non-CNAME types at one name can both be accepted.
+
+A losing registration reports `Accepted=False` with reason `NameConflict` and
+publishes nothing. DNS does not rename it or add a suffix; the publisher picks
+another name. When the winning claim is deleted, the next oldest registration
+is accepted on the next compilation.
 
 ```mermaid
 sequenceDiagram
@@ -335,23 +379,25 @@ spec:
     uid: 33333333-3333-4333-8333-333333333333
   # Select the serving region, not a separate project control plane.
   region: us-central-1
-  # Trusted network integration proposes this service-side destination.
-  # DNS reserves it before accepting access; Galactic maps verified VPC traffic here.
+  # Spec, written by trusted network integration. DNS reserves it before
+  # accepting access; Galactic maps verified VPC traffic here.
   # It differs from the well-known address exposed inside the VPC.
   destinationAddress: fd70:100::10
 ```
 
+`destinationAddress` is a spec field. The trusted network integration writes it,
+and DNS neither allocates nor rewrites it. DNS reserves the address when it
+accepts the binding and reports the result in status conditions.
+
 Access reports `Accepted` after validation and `Ready` after required members
 apply the current access mapping and configuration. Zone publication readiness is
 reported separately; a pending zone does not block resolver access. Context, region,
-and destination are immutable per access lifetime. DNS serves UDP and TCP on port 53
-and generates internal mapping versions. DNS reserves each destination globally
-within the service and rejects conflicting ownership. Serving rejects ambiguous
-mappings before lookup. Galactic enforces network access to each destination.
-Only trusted integration roles can create contexts and access bindings; product
-publisher roles cannot select query contexts. The authenticated project and
-resolved context identity define ownership. Copying a `consumerID` does not
-grant access to another project's context.
+and destination are immutable per access lifetime. dnsdist serves consumers over
+UDP and TCP on port 53, and DNS generates internal mapping versions. DNS reserves
+each destination per region across all projects and rejects conflicting
+ownership. Serving rejects ambiguous mappings before lookup. Galactic enforces
+network access to each destination. The [threat model](#threat-model) describes
+who can create contexts and access bindings and how DNS fails closed.
 
 #### Private zones and associations
 

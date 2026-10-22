@@ -42,7 +42,7 @@ func TestEachRoleLeadsItsOwnLease(t *testing.T) {
 		if err != nil {
 			t.Fatalf("manager for %s: %v", name, err)
 		}
-		go func() { _ = mgr.Start(ctx) }()
+		goUntilCleanup(t, func() error { return mgr.Start(ctx) })
 		select {
 		case <-mgr.Elected():
 		case <-time.After(15 * time.Second):

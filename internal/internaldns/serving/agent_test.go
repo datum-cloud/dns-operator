@@ -679,3 +679,44 @@ func assertAppliedCheckpoint(t *testing.T, agent *Agent) {
 		t.Fatal("approved configuration is not durably active")
 	}
 }
+
+func TestResolverVerificationProbesOnlyChangedBindings(t *testing.T) {
+	t.Parallel()
+	var probed []string
+	failing := false
+	agent := &Agent{
+		cfg: Config{ResolverVerifyConcurrency: 1, ResolverDNSProbe: DNSVerifierConfig{Timeout: time.Second}},
+		deps: Dependencies{Verifier: resolverVerifierFunc(func(_ context.Context, binding model.Binding) error {
+			probed = append(probed, binding.BindingUID)
+			if failing {
+				return errors.New("probe timed out")
+			}
+			return nil
+		})},
+	}
+	bindings := []model.Binding{{BindingUID: "binding-0"}, {BindingUID: "binding-1"}}
+	activeSet := func() map[string]bool { return map[string]bool{"binding-0": true, "binding-1": true} }
+
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, activeSet()); failed || len(probed) != 2 {
+		t.Fatalf("first verification failed=%v probed=%v", failed, probed)
+	}
+	failing, probed = true, nil
+	active := activeSet()
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, active); failed || len(probed) != 0 || !active["binding-0"] || !active["binding-1"] {
+		t.Fatalf("unchanged verified bindings were probed again or withdrawn: failed=%v probed=%v active=%v", failed, probed, active)
+	}
+	bindings[1].Version.Sequence++
+	active = activeSet()
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, active); !failed || len(probed) != 1 || probed[0] != "binding-1" || !active["binding-0"] || active["binding-1"] {
+		t.Fatalf("changed binding was not proven alone: failed=%v probed=%v active=%v", failed, probed, active)
+	}
+	failing, probed = false, nil
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, activeSet()); failed || len(probed) != 1 || probed[0] != "binding-1" {
+		t.Fatalf("withdrawn binding was not proven again: failed=%v probed=%v", failed, probed)
+	}
+	agent.verifiedPaths = nil
+	probed = nil
+	if agent.verifyResolverBindings(context.Background(), bindings, activeSet()); len(probed) != 2 {
+		t.Fatalf("cleared proofs did not reprove every binding: %v", probed)
+	}
+}

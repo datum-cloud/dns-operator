@@ -180,6 +180,7 @@ type Agent struct {
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
 	installedPublications map[string]installedPublication
+	verifiedPaths         map[string]string
 	// render is renderPublications unless a test injects a failure.
 	render func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error)
 }
@@ -302,6 +303,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
+	a.verifiedPaths = nil
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
@@ -942,13 +944,22 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	if a.deps.Verifier == nil {
 		return false
 	}
+	verified := map[string]string{}
+	identities := map[string]string{}
 	eligible := make([]model.Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		if active[binding.BindingUID] {
 			binding.Zones = a.readyZones(binding)
+			identity := probeIdentity(binding)
+			if a.verifiedPaths[binding.BindingUID] == identity {
+				verified[binding.BindingUID] = identity
+				continue
+			}
+			identities[binding.BindingUID] = identity
 			eligible = append(eligible, binding)
 		}
 	}
+	a.verifiedPaths = verified
 	if len(eligible) == 0 {
 		return false
 	}
@@ -1002,6 +1013,8 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s after %s: %w", result.bindingUID, result.duration.Round(time.Millisecond), result.err))
 				delete(active, result.bindingUID)
 				probeFailed = true
+			} else {
+				a.verifiedPaths[result.bindingUID] = identities[result.bindingUID]
 			}
 		case <-probeCtx.Done():
 			for bindingUID := range pending {
@@ -1012,6 +1025,11 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 		}
 	}
 	return probeFailed
+}
+
+func probeIdentity(b model.Binding) string {
+	data, _ := json.Marshal(b)
+	return model.Hash(data)
 }
 
 func (a *Agent) publicationsReady(b model.Binding) bool {

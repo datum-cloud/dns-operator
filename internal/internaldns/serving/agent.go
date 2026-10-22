@@ -1032,8 +1032,8 @@ func (a *Agent) publicationsReady(b model.Binding) bool {
 	return len(a.eligibleRegionalMembers(b)) > 0
 }
 
-// Every selected member must prove every attached zone at the exact publication
-// plan version this resolver holds. One zone per different member is unsafe.
+// Every selected member must prove every attached zone at or above the zone's
+// required publication. One zone per different member is unsafe.
 func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 	out := map[string]bool{}
 	if a.state.Snapshot == nil || b.ConfigurationPending {
@@ -1056,13 +1056,8 @@ func (a *Agent) eligibleRegionalMembers(b model.Binding) map[string]bool {
 				ready = false
 				break
 			}
-			for _, known := range a.state.Acks[z.ZoneUID] {
-				if model.Compare(known.Fence.Epoch, known.Fence.Revision, p.Fence.Epoch, p.Fence.Revision) > 0 {
-					ready = false
-				}
-			}
 			proof := a.state.Acks[z.ZoneUID][member.MemberID+"/"+member.ReplicaID]
-			if proof.Rejected || proof.ObservedAt.IsZero() || proof.Fence != p.Fence {
+			if proof.Rejected || proof.ObservedAt.IsZero() || model.Compare(proof.Fence.Epoch, proof.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
 				ready = false
 				break
 			}

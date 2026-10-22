@@ -220,3 +220,13 @@ func TestContributionValidatesReferencesForRBACAuthorizedCallers(t *testing.T) {
 		t.Fatal("contribution accepted a mismatched registration lifetime")
 	}
 }
+
+func TestDeletingResourceCanRemoveFinalizersWithoutReferences(t *testing.T) {
+	h := Handler{}
+	for _, resource := range []string{"dnsregistrations", "dnsrecordcontributions", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings"} {
+		object := metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{Time: time.Now()}}}
+		if res := h.Handle(context.Background(), request(resource, "publisher", object, object)); !res.Allowed {
+			t.Fatalf("%s finalization required live references: %v", resource, res.Result)
+		}
+	}
+}

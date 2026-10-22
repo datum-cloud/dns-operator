@@ -124,6 +124,10 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 		if err := cl.Create(ctx, a); err != nil {
 			t.Fatal(err)
 		}
+		a.Spec.RegistrationRef.Generation = 2
+		if err := cl.Update(ctx, a); err != nil {
+			t.Fatalf("registration generation cannot advance: %v", err)
+		}
 		a.Spec.RegistrationRef.Name = "other"
 		requireInvalid(t, cl.Update(ctx, a))
 	})

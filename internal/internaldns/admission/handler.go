@@ -50,6 +50,15 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	default:
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
 	}
+	if req.Operation == admissionv1.Update {
+		var object metav1.PartialObjectMetadata
+		if err := json.Unmarshal(req.Object.Raw, &object); err != nil {
+			return kubeadmission.Denied("invalid resource metadata")
+		}
+		if !object.DeletionTimestamp.IsZero() {
+			return kubeadmission.Allowed("resource finalization does not require live references")
+		}
+	}
 	cl := h.Client
 	if h.ClientForRequest != nil {
 		var err error

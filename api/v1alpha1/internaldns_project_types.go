@@ -199,7 +199,7 @@ type DNSContributionRecordSet struct {
 }
 
 // +kubebuilder:validation:XValidation:rule="self.registrationRef.name.size() > 0 && has(self.registrationRef.uid) && self.registrationRef.uid.size() > 0 && has(self.registrationRef.generation) && self.registrationRef.generation > 0",message="registrationRef requires name, UID, and generation"
-// +kubebuilder:validation:XValidation:rule="self.registrationRef == oldSelf.registrationRef",message="contribution registration reference is immutable"
+// +kubebuilder:validation:XValidation:rule="self.registrationRef.name == oldSelf.registrationRef.name && self.registrationRef.uid == oldSelf.registrationRef.uid",message="contribution registration identity is immutable"
 type DNSRecordContributionSpec struct {
 	RegistrationRef DNSObjectReference         `json:"registrationRef"`
 	RecordSets      []DNSContributionRecordSet `json:"recordSets"`

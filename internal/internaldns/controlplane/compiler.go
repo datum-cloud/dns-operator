@@ -79,11 +79,31 @@ type ownershipKey struct {
 // Compile builds a canonical plan and applies the same ownership and fencing
 // checks even when an admission webhook was unavailable.
 func Compile(in CompileInput) (CompileResult, error) {
+	rejected := map[types.UID]string{}
+	for {
+		result, err := compileInputs(in, rejected)
+		if err != nil {
+			return result, err
+		}
+		invalid := invalidSRVSources(result.Plan)
+		if len(invalid) == 0 {
+			return result, nil
+		}
+		for uid := range invalid {
+			rejected[uid] = "MissingSRVTargetAddress"
+		}
+	}
+}
+
+func compileInputs(in CompileInput, rejected map[types.UID]string) (CompileResult, error) {
 	if err := validatePrivateZone(in.Zone); err != nil {
 		return CompileResult{}, err
 	}
 
 	result := CompileResult{Accepted: map[types.UID]bool{}, Reasons: map[types.UID]string{}}
+	for uid, reason := range rejected {
+		result.Reasons[uid] = reason
+	}
 	result.Plan.ZoneUID = in.Zone.UID
 	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
 
@@ -95,8 +115,19 @@ func Compile(in CompileInput) (CompileResult, error) {
 	if err != nil {
 		return result, err
 	}
+	for uid := range validStatic {
+		result.Accepted[uid] = true
+	}
 
 	regs := map[types.UID]*dnsv1alpha1.DNSRegistration{}
+	in.Registrations = append([]dnsv1alpha1.DNSRegistration(nil), in.Registrations...)
+	sort.Slice(in.Registrations, func(i, j int) bool {
+		a, b := in.Registrations[i], in.Registrations[j]
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			return a.CreationTimestamp.Before(&b.CreationTimestamp)
+		}
+		return a.UID < b.UID
+	})
 	for i := range in.Registrations {
 		reg := &in.Registrations[i]
 		if !reg.DeletionTimestamp.IsZero() {
@@ -131,11 +162,13 @@ func Compile(in CompileInput) (CompileResult, error) {
 			key := ownershipKey{name, rt}
 			if old, ok := conflictingClaim(claims, key); ok && old != reg.UID {
 				result.Reasons[reg.UID] = "NameConflict"
-				continue
+				break
 			}
-			claims[key] = reg.UID
 		}
 		if result.Reasons[reg.UID] == "" {
+			for _, rt := range uniqueTypes(reg.Spec.RecordTypes) {
+				claims[ownershipKey{name, rt}] = reg.UID
+			}
 			regs[reg.UID] = reg
 			result.Accepted[reg.UID] = true
 			result.Plan.Registrations = append(result.Plan.Registrations, RegistrationFence{UID: reg.UID, Generation: reg.Generation})
@@ -201,6 +234,9 @@ func Compile(in CompileInput) (CompileResult, error) {
 		previousFence := previousSeq[c.UID]
 		if previousFence.UID == "" || currentFence.Generation > previousFence.Generation || currentFence.Retired {
 			publicationFences[c.UID] = currentFence
+		}
+		if rejected[c.UID] != "" {
+			continue
 		}
 		if !c.DeletionTimestamp.IsZero() {
 			result.Reasons[c.UID] = dnsValueTerminating
@@ -282,10 +318,37 @@ func Compile(in CompileInput) (CompileResult, error) {
 		return result.Plan.RRsets[i].Name < result.Plan.RRsets[j].Name
 	})
 	sort.Slice(result.Plan.Contributions, func(i, j int) bool { return result.Plan.Contributions[i].UID < result.Plan.Contributions[j].UID })
-	if err := validateSRVTargets(result.Plan.RRsets, result.Plan.ZoneApex); err != nil {
-		return result, err
-	}
 	return result, nil
+}
+
+func invalidSRVSources(plan PublicationPlan) map[types.UID]bool {
+	addresses := map[string]bool{}
+	for _, set := range plan.RRsets {
+		if set.RecordType == dnsv1alpha1.RRTypeA || set.RecordType == dnsv1alpha1.RRTypeAAAA {
+			addresses[absoluteOwner(set.Name, plan.ZoneApex)] = true
+		}
+	}
+	invalid := map[types.UID]bool{}
+	for _, set := range plan.RRsets {
+		if set.RecordType != dnsv1alpha1.RRTypeSRV {
+			continue
+		}
+		for i, entry := range set.Records {
+			if entry.SRV == nil || addresses[srvTargetOwner(entry.SRV.Target, plan.ZoneApex)] {
+				continue
+			}
+			if i < len(set.ContributionUIDs) {
+				invalid[set.ContributionUIDs[i]] = true
+			} else {
+				for _, owner := range plan.Owners {
+					if owner.Name == set.Name && owner.StaticRecordUID != "" {
+						invalid[owner.StaticRecordUID] = true
+					}
+				}
+			}
+		}
+	}
+	return invalid
 }
 
 func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, previous ContributionFence) string {
@@ -322,26 +385,6 @@ func recordAllowed(reg *dnsv1alpha1.DNSRegistration, key ownershipKey, apex stri
 		return false
 	}
 	return allowedName
-}
-
-func validateSRVTargets(rrsets []PublicationRRSet, apex string) error {
-	addresses := map[string]bool{}
-	for _, r := range rrsets {
-		if r.RecordType == dnsv1alpha1.RRTypeA || r.RecordType == dnsv1alpha1.RRTypeAAAA {
-			addresses[absoluteOwner(r.Name, apex)] = true
-		}
-	}
-	for _, r := range rrsets {
-		if r.RecordType != dnsv1alpha1.RRTypeSRV {
-			continue
-		}
-		for _, entry := range r.Records {
-			if entry.SRV != nil && !addresses[srvTargetOwner(entry.SRV.Target, apex)] {
-				return fmt.Errorf("SRV target %s has no address in publication", entry.SRV.Target)
-			}
-		}
-	}
-	return nil
 }
 
 func srvTargetOwner(name, apex string) string {
@@ -482,45 +525,56 @@ func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
 func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32, error) {
 	validStatic := map[types.UID]bool{}
 	staticTTLs := map[ownershipKey]int32{}
-	for i := range in.StaticRecords {
-		rs := &in.StaticRecords[i]
-		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() {
+	records := append([]dnsv1alpha1.DNSRecordSet(nil), in.StaticRecords...)
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			return a.CreationTimestamp.Before(&b.CreationTimestamp)
+		}
+		return a.UID < b.UID
+	})
+	for i := range records {
+		rs := &records[i]
+		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() || reasons[rs.UID] != "" {
 			continue
 		}
-		valid := true
+		pending := map[ownershipKey]int32{}
 		for _, record := range rs.Spec.Records {
-			if model.ValidatePrivateRecordOwner(zoneOwner(record.Name, apex), apex, string(rs.Spec.RecordType)) != nil {
-				valid = false
+			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
+			if model.ValidatePrivateRecordOwner(key.name, apex, string(key.rrtype)) != nil {
+				reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 				break
 			}
-		}
-		if !valid {
-			reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
-			continue
-		}
-		for _, record := range rs.Spec.Records {
+			if _, err := recordContent(rs.Spec.RecordType, record); err != nil {
+				reasons[rs.UID] = "InvalidRecord"
+				break
+			}
 			ttl := int64(300)
 			if record.TTL != nil {
 				ttl = *record.TTL
 			}
 			if ttl < 0 || ttl > 2147483647 {
-				return nil, nil, fmt.Errorf("static TTL must be between 0 and 2147483647 seconds")
+				reasons[rs.UID] = "InvalidTTL"
+				break
 			}
-			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
-			if previous, ok := staticTTLs[key]; ok && previous != int32(ttl) {
-				return nil, nil, fmt.Errorf("conflicting static TTLs for %s %s", key.name, key.rrtype)
+			if previous, ok := pending[key]; ok && previous != int32(ttl) {
+				reasons[rs.UID] = "ConflictingTTL"
+				break
 			}
-			staticTTLs[key] = int32(ttl)
+			if old, ok := conflictingClaim(claims, key); ok && old != rs.UID {
+				reasons[rs.UID] = "NameConflict"
+				break
+			}
+			pending[key] = int32(ttl)
+		}
+		if reasons[rs.UID] != "" {
+			continue
 		}
 		validStatic[rs.UID] = true
-		for _, record := range rs.Spec.Records {
-			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
-			if old, ok := claims[key]; ok && old != rs.UID {
-				return nil, nil, fmt.Errorf("static ownership conflict for %s %s", key.name, key.rrtype)
-			}
+		for key, ttl := range pending {
+			staticTTLs[key] = ttl
 			claims[key], staticClaim[key] = rs.UID, rs.UID
 		}
 	}
-
 	return validStatic, staticTTLs, nil
 }

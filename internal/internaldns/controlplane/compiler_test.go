@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -178,7 +177,7 @@ func TestCompileSRVTargetUsesAbsoluteZoneIdentity(t *testing.T) {
 	}
 
 	in.Contributions[0].Spec.RecordSets = in.Contributions[0].Spec.RecordSets[1:]
-	if _, err := Compile(in); err == nil || !strings.Contains(err.Error(), "has no address") {
+	if result, err := Compile(in); err != nil || result.Reasons[in.Contributions[0].UID] != "MissingSRVTargetAddress" {
 		t.Fatalf("missing SRV target address was not rejected: %v", err)
 	}
 }
@@ -272,7 +271,7 @@ func TestStaticTTLPreservedAndConflictsRejected(t *testing.T) {
 	in.StaticRecords[0].DeletionTimestamp = nil
 	otherTTL := int64(31)
 	in.StaticRecords[0].Spec.Records = append(in.StaticRecords[0].Spec.Records, dnsv1alpha1.RecordEntry{Name: "api", TTL: &otherTTL, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.2"}})
-	if _, err := Compile(in); err == nil {
+	if result, err := Compile(in); err != nil || result.Reasons["static"] != "ConflictingTTL" {
 		t.Fatal("conflicting per-RRset TTL accepted")
 	}
 }
@@ -315,5 +314,57 @@ func TestCompileRetainsHealthyRecordsUntilExplicitWithdrawal(t *testing.T) {
 	}
 	if len(withdrawn.Plan.RRsets) != 0 {
 		t.Fatal("explicit unhealthy observation did not withdraw the endpoint")
+	}
+}
+
+func TestCompileRejectedRegistrationDoesNotClaimOtherTypes(t *testing.T) {
+	in := fixture(time.Now())
+	original := in.Registrations[0]
+	original.CreationTimestamp = metav1.NewTime(time.Unix(1, 0))
+	rejected := *original.DeepCopy()
+	rejected.Name, rejected.UID = "aaa-rejected", "registration-b"
+	rejected.CreationTimestamp = metav1.NewTime(time.Unix(2, 0))
+	rejected.Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA, dnsv1alpha1.RRTypeAAAA}
+	valid := *original.DeepCopy()
+	valid.Name, valid.UID = "other-a", "registration-c"
+	valid.CreationTimestamp = metav1.NewTime(time.Unix(3, 0))
+	valid.Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}
+	in.Registrations = []dnsv1alpha1.DNSRegistration{rejected, valid, original}
+	got, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Accepted[original.UID] || !got.Accepted[valid.UID] || got.Accepted[rejected.UID] {
+		t.Fatalf("non-atomic or unstable claims: %#v", got.Reasons)
+	}
+}
+
+func TestCompileInvalidSRVDoesNotBlockWithdrawal(t *testing.T) {
+	in := fixture(time.Now())
+	previous, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Previous = &previous.Plan
+	in.Contributions[0].Spec.Eligible = false
+	in.Contributions[0].Generation++
+	reg := *in.Registrations[0].DeepCopy()
+	reg.Name, reg.UID, reg.Spec.Name = "srv", "srv", "_grpc._tcp.svc"
+	reg.Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeSRV}
+	in.Registrations = append(in.Registrations, reg)
+	c := *in.Contributions[0].DeepCopy()
+	c.Name, c.UID, c.Spec.Eligible = "srv", "srv-contribution", true
+	c.Spec.RegistrationRef = dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}
+	c.Spec.RecordSets = []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeSRV, Records: []dnsv1alpha1.RecordEntry{{Name: reg.Spec.Name, SRV: &dnsv1alpha1.SRVRecordSpec{Port: 443, Target: "missing.corp.internal."}}}}}
+	in.Contributions = append(in.Contributions, c)
+	got, err := Compile(in)
+	if err != nil {
+		t.Fatalf("bad SRV blocks withdrawal: %v", err)
+	}
+	if len(got.Plan.RRsets) != 0 || got.Accepted[c.UID] || got.Reasons[c.UID] != "MissingSRVTargetAddress" {
+		t.Fatalf("invalid publication: %#v", got)
+	}
+	if len(got.Plan.Contributions) != 2 {
+		t.Fatal("rejected contribution lost its generation fence")
 	}
 }

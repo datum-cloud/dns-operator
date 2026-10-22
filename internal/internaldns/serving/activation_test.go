@@ -132,3 +132,25 @@ func TestRestoreActiveUsesInstalledConfigurationHash(t *testing.T) {
 		t.Fatal("approved installed hash was not checkpointed")
 	}
 }
+
+func TestServingStateUsesReadOnlyGroupAccess(t *testing.T) {
+	dir := t.TempDir()
+	checkpoint := dir + "/checkpoint.json"
+	if err := os.WriteFile(checkpoint, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareServingState(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{checkpoint, activationMarkerPath(dir) + ".lock"} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0640 {
+			t.Fatalf("serving group permissions on %s: %v %v", path, info, err)
+		}
+	}
+	start, retain, release := daemonPermission(dir)
+	release()
+	if !start || !retain {
+		t.Fatal("read-only descriptor cannot check accepted activation")
+	}
+}

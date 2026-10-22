@@ -28,7 +28,7 @@ func (t *FileTransaction) beginActivation() error {
 		return err
 	}
 	if t.activationLock == nil {
-		lock, err := os.OpenFile(t.MarkerPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+		lock, err := os.OpenFile(t.MarkerPath+".lock", os.O_CREATE|os.O_RDWR, 0o640)
 		if err != nil {
 			return err
 		}
@@ -98,7 +98,7 @@ func (t *FileTransaction) abandonActivation() error {
 // installation cannot race with a process loading its configuration files.
 func daemonPermission(stateDir string) (start, retain bool, release func()) {
 	marker := activationMarkerPath(stateDir)
-	lock, err := os.OpenFile(marker+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := os.Open(marker + ".lock")
 	if err != nil {
 		return false, false, func() {}
 	}

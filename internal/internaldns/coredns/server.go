@@ -49,14 +49,10 @@ func Run(ctx context.Context, path string) error {
 		return err
 	}
 	defer func() { _ = tcp.Close() }()
-	udp, err := net.ListenPacket("udp", cfg.ListenAddress)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = udp.Close() }()
-	done := make(chan error, 2)
-	go func() { done <- server.Serve(&proxyListener{Listener: tcp, peers: peers}) }()
-	go func() { done <- server.ServePacket(&proxyPacketConn{PacketConn: udp, peers: peers}) }()
+	listener := &proxyListener{Listener: tcp, peers: peers}
+	defer func() { _ = listener.Close() }()
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {

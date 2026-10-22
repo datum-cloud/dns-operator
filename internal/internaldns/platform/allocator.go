@@ -49,10 +49,25 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 // context lifetime.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
-	if err != nil || parsed.IsUnspecified() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
+	if err != nil || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
 		return fmt.Errorf("destination claim identity, region, IP, and DNS port are required")
 	}
+	parsed = parsed.Unmap()
+	prefix, err := a.regionalPrefix()
+	if err != nil {
+		return err
+	}
+	if prefix.Contains(parsed) {
+		return fmt.Errorf("service destination must be outside the regional resolver address pool")
+	}
 	address = parsed.String()
+	var regionalClaim corev1.ConfigMap
+	claimKey := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-claim-" + model.OpaqueToken(address)}
+	if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
+		return fmt.Errorf("service destination is reserved for regional resolution")
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
 	owner := string(projectUID) + "/" + string(contextUID)
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
 	if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
@@ -90,15 +105,10 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) 
 	}
 	owner := projectUID + "/" + contextUID
 
-	prefix := a.ClusterPrefix
-	if prefix == "" {
-		prefix = "fd54::/64"
+	parsed, err := a.regionalPrefix()
+	if err != nil {
+		return AddressLease{}, err
 	}
-	parsed, err := netip.ParsePrefix(prefix)
-	if err != nil || !parsed.Addr().Is6() || parsed.Bits() > 112 {
-		return AddressLease{}, fmt.Errorf("allocator prefix must be IPv6 with at least 16 host bits: %q", prefix)
-	}
-	parsed = parsed.Masked()
 	key := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}
 	var stored corev1.ConfigMap
 	if err := a.Client.Get(ctx, key, &stored); err == nil {
@@ -164,4 +174,16 @@ func addressInPrefix(prefix netip.Prefix, owner string, salt int) string {
 	}
 	base[15] |= 1 // Never allocate the subnet's all-zero host address.
 	return netip.AddrFrom16(base).String()
+}
+
+func (a *Allocator) regionalPrefix() (netip.Prefix, error) {
+	prefix := a.ClusterPrefix
+	if prefix == "" {
+		prefix = "fd54::/64"
+	}
+	parsed, err := netip.ParsePrefix(prefix)
+	if err != nil || !parsed.Addr().Is6() || parsed.Bits() > 112 {
+		return netip.Prefix{}, fmt.Errorf("allocator prefix must be IPv6 with at least 16 host bits: %q", prefix)
+	}
+	return parsed.Masked(), nil
 }

@@ -90,7 +90,7 @@ spec:
       - name: agent
         image: example.invalid/dns-operator/internal-dns-serving:VERSION
         args: ["--role=agent","--config=/config/config.json"]
-        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: {drop: [ALL]}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, capabilities: {drop: [ALL], add: [KILL]}}
         volumeMounts: &member-mounts
         - {name: config, mountPath: /config, readOnly: true}
         - {name: nats, mountPath: /var/run/internal-dns/nats, readOnly: true}
@@ -105,7 +105,7 @@ spec:
           exec: {command: ["/internal-dns", "--role=readiness", "--config=/config/config.json"]}
           periodSeconds: 2
           timeoutSeconds: 2
-        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsUser: 65532, runAsGroup: 65532, capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}}
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsUser: 65533, runAsGroup: 65532, capabilities: {drop: [ALL], add: [NET_BIND_SERVICE]}}
         volumeMounts:
         - {name: config, mountPath: /config, readOnly: true}
         - {name: state, mountPath: /var/lib/internal-dns}

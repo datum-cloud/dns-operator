@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -217,5 +218,54 @@ func TestPublicRecordDeletionCompletesAfterZoneDisappears(t *testing.T) {
 	}
 	if err := cl.Get(ctx, client.ObjectKeyFromObject(record), record); !apierrors.IsNotFound(err) {
 		t.Fatalf("public record deletion did not finish after its zone disappeared: %v", err)
+	}
+}
+
+func TestPrivateReferenceRemovesPublicShadow(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "project", UID: "project-uid"}}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: namespace.Name}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	record := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: namespace.Name, UID: "record-uid", Finalizers: []string{rsFinalizer}}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name}}}
+	shadow := record.DeepCopy()
+	shadow.Namespace = "ns-project-uid"
+	shadow.Finalizers = nil
+	upstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace, zone, record).Build()
+	downstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(shadow).Build()
+	r := &DNSRecordSetReplicator{mgr: &isolationManager{upstream: &isolationCluster{client: upstream}}, DownstreamClient: downstream}
+	req := mcreconcile.Request{ClusterName: "project", Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(record)}}
+	for range 2 {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := downstream.Get(ctx, client.ObjectKeyFromObject(shadow), shadow); !apierrors.IsNotFound(err) {
+		t.Fatalf("public shadow retained after private reference: %v", err)
+	}
+	if err := upstream.Get(ctx, client.ObjectKeyFromObject(record), record); err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Finalizers) != 0 {
+		t.Fatalf("public finalizer retained: %v", record.Finalizers)
+	}
+}
+
+func TestRecordDeletionDoesNotReadZone(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "project", UID: "project-uid"}}
+	record := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: namespace.Name, UID: "record-uid", Finalizers: []string{rsFinalizer}, DeletionTimestamp: &metav1.Time{Time: time.Now()}}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: "zone"}}}
+	upstream := fake.NewClientBuilder().WithScheme(scheme).WithObjects(namespace, record).WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(*dnsv1alpha1.DNSZone); ok {
+			t.Fatal("deleting record fetched its zone")
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}}).Build()
+	r := &DNSRecordSetReplicator{mgr: &isolationManager{upstream: &isolationCluster{client: upstream}}, DownstreamClient: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	if _, err := r.Reconcile(ctx, mcreconcile.Request{ClusterName: "project", Request: ctrl.Request{NamespacedName: client.ObjectKeyFromObject(record)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := upstream.Get(ctx, client.ObjectKeyFromObject(record), record); !apierrors.IsNotFound(err) {
+		t.Fatalf("record did not finalize: %v", err)
 	}
 }

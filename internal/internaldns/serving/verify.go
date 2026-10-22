@@ -153,7 +153,7 @@ func verifyPublicationViews(ctx context.Context, server, apex string, views []Pu
 	defer cancel()
 	deadline, _ := probeCtx.Deadline()
 	for _, view := range views {
-		for _, network := range []string{networkUDP, networkTCP} {
+		for _, network := range []string{networkTCP} {
 			var last error
 			for {
 				if err := publicationDeadlineError(probeCtx, deadline); err != nil {

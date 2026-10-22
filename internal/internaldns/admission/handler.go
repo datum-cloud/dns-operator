@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -22,7 +23,12 @@ const subresourceStatus = "status"
 
 const contributionResource = "dnsrecordcontributions"
 
+// Path is where the dns-operator webhook server serves this handler.
 const Path = "/validate-internal-dns"
+
+// Resources lists the resources whose writes require live reference checks.
+// The ValidatingWebhookConfiguration must match exactly these resources.
+var Resources = []string{"dnszoneassociations", "dnsregistrations", contributionResource, "dnsnamingpolicies", "dnsresolveraccessbindings"}
 
 // Handler uses an uncached client selected by authenticated project context.
 type Handler struct {
@@ -44,11 +50,17 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.SubResource == subresourceStatus {
 		return kubeadmission.Allowed("API server status authorization applies")
 	}
-	switch req.Resource.Resource {
-	case "dnsregistrations", contributionResource, "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings":
-		// These resources require live references.
-	default:
+	if !slices.Contains(Resources, req.Resource.Resource) {
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
+	}
+	if req.Operation == admissionv1.Update {
+		var object metav1.PartialObjectMetadata
+		if err := json.Unmarshal(req.Object.Raw, &object); err != nil {
+			return kubeadmission.Denied("invalid resource metadata")
+		}
+		if !object.DeletionTimestamp.IsZero() {
+			return kubeadmission.Allowed("resource finalization does not require live references")
+		}
 	}
 	cl := h.Client
 	if h.ClientForRequest != nil {

@@ -33,9 +33,13 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
           capabilities:
             drop:
             - ALL
+            add:
+            - KILL
         volumeMounts:
         - name: config
           mountPath: "/config"
@@ -67,7 +71,7 @@ spec:
         securityContext: &1
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
-          runAsUser: 65532
+          runAsUser: 65533
           runAsGroup: 65532
           capabilities:
             drop:
@@ -133,6 +137,8 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
           capabilities:
             drop:
             - ALL
@@ -184,6 +190,8 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
           capabilities:
             drop:
             - ALL
@@ -220,7 +228,7 @@ spec:
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
-          runAsUser: 65532
+          runAsUser: 65533
           runAsGroup: 65532
           capabilities:
             drop:
@@ -264,6 +272,8 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
           capabilities:
             drop:
             - ALL

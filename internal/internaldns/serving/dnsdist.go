@@ -83,7 +83,7 @@ func prepareDNSDistKey(path string) error {
 		if decodeErr != nil || len(key) != 32 {
 			return errors.New("invalid dnsdist control key")
 		}
-		return nil
+		return os.Chmod(path, 0640)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -93,7 +93,7 @@ func prepareDNSDistKey(path string) error {
 		return err
 	}
 	temporary := path + ".tmp"
-	if err := writeDurable(temporary, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0600); err != nil {
+	if err := writeDurable(temporary, []byte(base64.StdEncoding.EncodeToString(key)+"\n"), 0640); err != nil {
 		return err
 	}
 	return os.Rename(temporary, path)

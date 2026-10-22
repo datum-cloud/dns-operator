@@ -96,12 +96,6 @@ rules:
   - dnsresolvercontexts/status
   - dnsresolveraccessbindings/status
   verbs: [get, update, patch]
-- apiGroups: [coordination.k8s.io]
-  resources: [leases]
-  verbs: [get, list, watch, create, update, patch]
-- apiGroups: [""]
-  resources: [configmaps]
-  verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -111,6 +105,33 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: internal-dns-control-plane
+subjects:
+- kind: ServiceAccount
+  name: internal-dns-control-plane
+  namespace: internal-dns-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-control-plane-state
+  namespace: internal-dns-system
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch]
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: internal-dns-control-plane-state
+  namespace: internal-dns-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: internal-dns-control-plane-state
 subjects:
 - kind: ServiceAccount
   name: internal-dns-control-plane

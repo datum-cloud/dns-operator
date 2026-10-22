@@ -82,6 +82,13 @@ spec:
         args: ["--role=control-plane","--config=/etc/internal-dns/config.json","--kubeconfig=/var/run/internal-dns/platform/kubeconfig"]
         ports:
         - {name: admission, containerPort: 9443}
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {memory: 2Gi}
+        readinessProbe:
+          httpGet: {scheme: HTTPS, path: /readyz, port: admission}
+          periodSeconds: 5
+          timeoutSeconds: 2
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true

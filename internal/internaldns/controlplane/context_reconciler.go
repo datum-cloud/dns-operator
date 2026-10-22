@@ -111,7 +111,13 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 	if err := r.List(ctx, &contexts, client.InNamespace(ns)); err != nil {
 		return err
 	}
-	sort.Slice(contexts.Items, func(i, j int) bool { return contexts.Items[i].Name < contexts.Items[j].Name })
+	sort.Slice(contexts.Items, func(i, j int) bool {
+		left, right := contexts.Items[i], contexts.Items[j]
+		if !left.CreationTimestamp.Equal(&right.CreationTimestamp) {
+			return left.CreationTimestamp.Before(&right.CreationTimestamp)
+		}
+		return left.UID < right.UID
+	})
 	consumerOwners := map[string]types.UID{}
 	for i := range contexts.Items {
 		c := &contexts.Items[i]
@@ -617,7 +623,7 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
 		return false, err
 	}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}, Managed: true}}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: zone.Name, UID: zone.UID}, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: c.Name, UID: c.UID}}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err

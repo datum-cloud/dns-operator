@@ -360,3 +360,36 @@ func TestUnobservedProjectIdentityPreventsSourceCompilation(t *testing.T) {
 		t.Fatal("unobserved identity changed source state")
 	}
 }
+
+func TestNewContextCannotDisplaceExistingConsumerOwner(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	older := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "z-established", Namespace: "project", UID: "old", CreationTimestamp: metav1.NewTime(now.Add(-time.Hour)), Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(older).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{PlatformNamespace: "platform"}}
+	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	newer := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "a-new", Namespace: "project", UID: "new", CreationTimestamp: metav1.NewTime(now), Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer"}}
+	if err := c.Create(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []*dnsv1alpha1.DNSResolverContext{older, newer} {
+		if err := c.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if condition := apimeta.FindStatusCondition(older.Status.Conditions, "Ready"); condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatal("new context displaced established consumer ownership")
+	}
+	if condition := apimeta.FindStatusCondition(newer.Status.Conditions, "Ready"); condition == nil || condition.Reason != "DuplicateConsumerID" || condition.Status != metav1.ConditionFalse {
+		t.Fatal("duplicate consumer was not rejected")
+	}
+}

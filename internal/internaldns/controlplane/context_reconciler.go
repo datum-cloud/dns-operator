@@ -449,6 +449,10 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
+	return r.releaseDestinations(ctx, held)
+}
+
+func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
 	if r.Options.AddressAllocator == nil {
 		return nil
 	}

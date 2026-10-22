@@ -14,7 +14,6 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -579,6 +578,7 @@ func TestPublicationProjectionOnlyReadsOwningProject(t *testing.T) {
 
 type heldManifestRead struct {
 	client.Client
+	once    sync.Once
 	read    chan struct{}
 	release chan struct{}
 }
@@ -588,7 +588,7 @@ func (c *heldManifestRead) Get(ctx context.Context, key client.ObjectKey, object
 		return err
 	}
 	if _, ok := object.(*dnsv1alpha1.DNSPublicationManifest); ok {
-		close(c.read)
+		c.once.Do(func() { close(c.read) })
 		select {
 		case <-c.release:
 		case <-ctx.Done():
@@ -633,8 +633,8 @@ func TestConcurrentAckProjectionPreservesNewerObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(held.release)
-	if err := <-done; !apierrors.IsConflict(err) {
-		t.Fatalf("racing older projection did not reject stale write: %v", err)
+	if err := <-done; err != nil {
+		t.Fatalf("racing older projection did not retry the optimistic conflict: %v", err)
 	}
 	if err := sink.Apply(ctx, subject, older); err != nil {
 		t.Fatalf("older acknowledgement redelivery failed: %v", err)

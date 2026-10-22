@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -46,6 +47,15 @@ type AckSink struct {
 }
 
 func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.apply(ctx, subject, env)
+	})
+}
+
+func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope) error {
 	if env.Kind != model.KindMemberAck || env.Region != s.Region || env.Shard != s.Shard {
 		return fmt.Errorf("ack belongs to another kind, region or shard")
 	}
@@ -127,6 +137,9 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
 	complete := s.publicationVerified(&m, now)
 	condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
+	if jsonEqualStatus(base.Status, m.Status) {
+		return nil
+	}
 	if err := s.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
@@ -173,6 +186,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 				binding.Status.Phase = dnsValuePending
 			}
 			s.bindingConditions(binding, e, snapshot, now, complete)
+			if jsonEqualStatus(base.Status, binding.Status) {
+				continue
+			}
 			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}

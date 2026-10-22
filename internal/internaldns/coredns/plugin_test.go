@@ -169,7 +169,7 @@ func TestPublicCachesRemainIsolatedAndPrivateMissesStayLocal(t *testing.T) {
 	}
 }
 
-func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
+func TestTrustedPROXYDestinationSurvivesTCP(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -209,7 +209,7 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 			t.Error("CoreDNS did not stop")
 		}
 	})
-	for _, network := range []string{"udp", "tcp"} {
+	for _, network := range []string{"tcp"} {
 		for _, tc := range []struct{ destination, want string }{{"fd53::a", "192.0.2.10"}, {"fd53::b", "192.0.2.20"}} {
 			deadline := time.Now().Add(3 * time.Second)
 			for {
@@ -228,11 +228,14 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 			}
 		}
 	}
+	if reply, err := proxyQuery("udp", c.ListenAddress, "fd53::b"); err == nil {
+		t.Fatalf("UDP PROXY reached a tenant context: %v", reply)
+	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	m, err := proxyQuery("udp", c.ListenAddress, "fd53::a")
+	m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")
 	if err != nil || address(m) != "192.0.2.10" {
 		t.Fatal("missing delivery file disturbed accepted state", m, err)
 	}
@@ -240,7 +243,7 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 	write(c)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		m, err := proxyQuery("udp", c.ListenAddress, "fd53::a")
+		m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")
 		if err == nil && address(m) == "192.0.2.30" {
 			break
 		}

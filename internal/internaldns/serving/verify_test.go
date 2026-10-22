@@ -67,7 +67,7 @@ func TestResolverVerifierBoundsWarmupRetries(t *testing.T) {
 	}
 }
 
-func TestPublicationVerifierProvesMemberContextAndFingerprintOverBothTransports(t *testing.T) {
+func TestPublicationVerifierProvesMemberContextAndFingerprintOverTCP(t *testing.T) {
 	for _, wrong := range []bool{false, true} {
 		t.Run(fmt.Sprint(wrong), func(t *testing.T) {
 			tcp, err := net.Listen("tcp", "127.0.0.1:0")
@@ -148,8 +148,8 @@ func TestPublicationVerifierProvesMemberContextAndFingerprintOverBothTransports(
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(seen) != 2 {
-				t.Fatal("both DNS transports were not proved")
+			if len(seen) != 1 || <-seen != "tcp" {
+				t.Fatal("protected TCP transport was not proved")
 			}
 		})
 	}
@@ -232,7 +232,7 @@ func TestPublicationVerifierHasOneDeadlineForAllContextsAndTransports(t *testing
 	}
 }
 
-func TestPublicationVerifierRetriesExactVersionOnBothTransports(t *testing.T) {
+func TestPublicationVerifierRetriesExactVersionOverTCP(t *testing.T) {
 	t.Parallel()
 	view := PublicationView{View: "context-a", Serial: 7, FingerprintMailbox: "new.publication.internal."}
 	attempts := map[string]int{}
@@ -254,8 +254,8 @@ func TestPublicationVerifierRetriesExactVersionOnBothTransports(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attempts["udp"] != 4 || attempts["tcp"] != 4 {
-		t.Fatalf("exact proof retries = %v, want nil + old serial + old fingerprint + success per transport", attempts)
+	if attempts["udp"] != 0 || attempts["tcp"] != 4 {
+		t.Fatalf("exact proof retries = %v, want nil + old serial + old fingerprint + success over TCP", attempts)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestPublicationVerifierBoundsRepeatedMismatchesAndReportsContext(t *testing
 		func(context.Context, string, string, string, PublicationView, time.Duration) (*dns.Msg, error) {
 			return &dns.Msg{MsgHdr: dns.MsgHdr{Authoritative: true}, Answer: []dns.RR{&dns.SOA{Serial: 6, Mbox: "old.publication.internal."}}}, nil
 		})
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "context-stale over udp") || !strings.Contains(err.Error(), "last response") {
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "context-stale over tcp") || !strings.Contains(err.Error(), "last response") {
 		t.Fatalf("mismatch deadline diagnostics = %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {

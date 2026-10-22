@@ -210,7 +210,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	fmt.Fprint(&out, "})\nsetSecurityPollSuffix(\"\")\n\n")
 	for _, b := range backends {
-		fmt.Fprintf(&out, "local server = newServer({address=%q, name=%q, pool=%q, useProxyProtocol=true, checkName=\".\", checkType=\"SOA\", mustResolve=false})\n", net.JoinHostPort(b.Address, strconv.Itoa(int(b.Port))), "b_"+model.OpaqueToken(b.MemberID), c.PoolName)
+		fmt.Fprintf(&out, "local server = newServer({address=%q, name=%q, pool=%q, useProxyProtocol=true, tcpOnly=true, checkTCP=true, checkName=\".\", checkType=\"SOA\", mustResolve=false})\n", net.JoinHostPort(b.Address, strconv.Itoa(int(b.Port))), "b_"+model.OpaqueToken(b.MemberID), c.PoolName)
 		if cluster {
 			for _, binding := range bindings {
 				for _, zone := range binding.Zones {

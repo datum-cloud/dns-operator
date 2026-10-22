@@ -211,6 +211,7 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 	if d.Runner == nil {
 		d.Runner = ExecRunner{}
 	}
+	d.Runner = newSerialRunner(d.Runner)
 	d.AckPublisher = newBoundedAckPublisher(d.AckPublisher)
 	if (c.Mode == ModeResolver || c.Mode == ModeCombined) && c.Render.Role != RenderRegionalCoreDNS && d.Verifier == nil && !c.UnsafeAllowNoDNSVerify {
 		probeConfig := c.ResolverDNSProbe

@@ -6,16 +6,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func testClient(t *testing.T, objects ...client.Object) client.Client {
@@ -174,5 +179,62 @@ func TestServiceDestinationRejectsZonedAddresses(t *testing.T) {
 	}
 	if len(claims.Items) != 0 {
 		t.Fatalf("zoned destination left %d claims", len(claims.Items))
+	}
+}
+
+func TestRegionalAllocationSkipsClaimedServiceDestination(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	prefix := netip.MustParsePrefix("fd54::/64")
+	taken := addressInPrefix(prefix, "project-a/context-a/cluster", 0)
+	other := Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd80::/96"}
+	if err := other.ClaimDestination(ctx, "project-b", "context-b", "region", taken, 53); err != nil {
+		t.Fatal(err)
+	}
+	address, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project-a", "context-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if address == taken {
+		t.Fatal("regional allocation reused a claimed service destination")
+	}
+	var claim corev1.ConfigMap
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "platform", Name: "dns-address-claim-" + model.OpaqueToken(taken)}, &claim); !apierrors.IsNotFound(err) {
+		t.Fatalf("skipped candidate kept its regional claim: %v", err)
+	}
+}
+
+func TestServiceDestinationYieldsToRacingRegionalClaim(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	const address = "fd70::53"
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		if err := c.Create(ctx, obj, opts...); err != nil {
+			return err
+		}
+		if strings.HasPrefix(obj.GetName(), "dns-destination-claim-") {
+			regional := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: "platform"}, Data: map[string]string{"owner": "project-a/context-a", "address": address}}
+			return c.Create(ctx, regional)
+		}
+		return nil
+	}}).Build()
+	allocator := Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd80::/96"}
+	if err := allocator.ClaimDestination(ctx, "project-b", "context-b", "region", address, 53); !errors.Is(err, model.ErrDestinationRefused) {
+		t.Fatalf("destination claim ignored a racing regional claim: %v", err)
+	}
+	var claims corev1.ConfigMapList
+	if err := cl.List(ctx, &claims, client.InNamespace("platform")); err != nil {
+		t.Fatal(err)
+	}
+	for _, claim := range claims.Items {
+		if strings.HasPrefix(claim.Name, "dns-destination-claim-") {
+			t.Fatal("refused destination kept its claim")
+		}
 	}
 }

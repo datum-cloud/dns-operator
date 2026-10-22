@@ -70,7 +70,19 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 	}
 	owner := string(projectUID) + "/" + string(contextUID)
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
-	if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
+	err = a.Client.Create(ctx, claim)
+	if err == nil {
+		if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
+			if err := a.deleteClaim(ctx, claim); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: service destination is reserved for regional resolution", model.ErrDestinationRefused)
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+	if apierrors.IsAlreadyExists(err) {
 		var existing corev1.ConfigMap
 		if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
 			return err
@@ -94,9 +106,30 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 			return fmt.Errorf("%w: service destination is already reserved", model.ErrDestinationRefused)
 		}
 		return nil
-	} else {
-		return err
 	}
+	return err
+}
+
+func (a *Allocator) destinationClaimed(ctx context.Context, address string) (bool, error) {
+	var claims corev1.ConfigMapList
+	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true"}); err != nil {
+		return false, err
+	}
+	for _, claim := range claims.Items {
+		if claim.Data["region"] != "" && claim.Data["address"] == address {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (a *Allocator) deleteClaim(ctx context.Context, claim *corev1.ConfigMap) error {
+	uid, version := claim.UID, claim.ResourceVersion
+	err := a.Client.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version})
+	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+		return nil
+	}
+	return err
 }
 
 func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) (AddressLease, error) {
@@ -122,15 +155,27 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) 
 		candidate.ClusterAddress = addressInPrefix(parsed, owner+"/cluster", salt)
 		claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(candidate.ClusterAddress), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": candidate.ClusterAddress}}
 		if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
-			var existing corev1.ConfigMap
-			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
+			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
 				return AddressLease{}, err
 			}
-			if existing.Data["owner"] != owner || existing.Data["address"] != candidate.ClusterAddress {
+			if claim.Data["owner"] != owner || claim.Data["address"] != candidate.ClusterAddress {
 				continue
 			}
 		} else if err != nil {
 			return AddressLease{}, err
+		}
+		// Destination claims are checked after the regional claim exists, and
+		// ClaimDestination checks regional claims after its own exists, so two
+		// racing claimants cannot both miss each other.
+		claimed, err := a.destinationClaimed(ctx, candidate.ClusterAddress)
+		if err != nil {
+			return AddressLease{}, err
+		}
+		if claimed {
+			if err := a.deleteClaim(ctx, claim); err != nil {
+				return AddressLease{}, err
+			}
+			continue
 		}
 		b, err := json.Marshal(candidate)
 		if err != nil {

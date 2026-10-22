@@ -97,6 +97,9 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return ctrl.Result{}, nil
+	}
 	if zone.Spec.DNSZoneClassName == "" || zone.Spec.DNSZoneClassName != r.DNSHandler.Client.Name {
 		logger.V(1).Info("Resource belongs to a different class. Not Reconciling")
 		return ctrl.Result{}, nil

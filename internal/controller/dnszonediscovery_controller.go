@@ -75,6 +75,11 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Private zone names must not be sent to public discovery resolvers.
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return ctrl.Result{}, nil
+	}
+
 	// Ensure OwnerReference to referenced DNSZone early
 	if !metav1.IsControlledBy(&dzd, &zone) {
 		base := dzd.DeepCopy()

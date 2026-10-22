@@ -66,6 +66,18 @@ spec:
                   rule: oldSelf == '' || self == oldSelf
                 - message: Must have at least two segments separated by dots
                   rule: self.indexOf('.') != -1
+              visibility:
+                default: Public
+                description: |-
+                  Visibility selects public publication or private resolver context serving.
+                  Existing zones default to Public. Changing visibility requires a new zone.
+                enum:
+                - Public
+                - Private
+                type: string
+                x-kubernetes-validations:
+                - message: visibility is immutable
+                  rule: oldSelf == self
             required:
             - dnsZoneClassName
             - domainName

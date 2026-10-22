@@ -19,6 +19,13 @@ import (
 
 const APIVersion = "internal.dns.networking.miloapis.com/v1alpha6"
 
+var ErrUnsupportedEnvelope = errors.New("unsupported DNS envelope")
+
+// ErrDestinationRefused marks a service destination claim that was refused on
+// its merits (invalid, reserved or owned by another binding), as opposed to a
+// transient failure to reach the API.
+var ErrDestinationRefused = errors.New("service destination refused")
+
 type Kind string
 
 const (
@@ -30,6 +37,11 @@ const (
 
 // Envelope is the only value written to JetStream. Epoch and Revision are
 // repeated outside Payload so consumers can reject stale events before decode.
+//
+// The header (every field except Payload) is frozen across wire versions: a
+// future APIVersion may change Payload but must keep these fields, names and
+// meanings, so that older consumers can still fence and park it. Changing the
+// header requires a new stream, not a new APIVersion.
 type Envelope struct {
 	APIVersion  string          `json:"apiVersion"`
 	Kind        Kind            `json:"kind"`
@@ -52,20 +64,25 @@ func NewEnvelope(kind Kind, eventID, region, shard, uid string, epoch, revision 
 	return e, e.Validate()
 }
 
+// Validate applies the header rules before the version gate. That is
+// deliberate: the Envelope header is frozen across wire versions (see
+// Envelope), so a header that breaks these rules is malformed in every
+// version and is terminated, while a well-formed header with an unknown
+// apiVersion or kind is reported as ErrUnsupportedEnvelope and parked.
 func (e Envelope) Validate() error {
+	if e.APIVersion == "" || e.Kind == "" || e.EventID == "" || e.Region == "" || e.Shard == "" || e.ResourceUID == "" || e.Epoch == 0 || e.Revision == 0 || e.PublishedAt.IsZero() || !json.Valid(e.Payload) {
+		return errors.New("envelope version, kind, identity, epoch, revision, timestamp, and JSON payload are required")
+	}
+	if SafeToken(e.Region) != e.Region || SafeToken(e.Shard) != e.Shard {
+		return errors.New("region and shard must be safe lowercase identifiers")
+	}
 	if e.APIVersion != APIVersion {
-		return fmt.Errorf("unsupported apiVersion %q", e.APIVersion)
+		return fmt.Errorf("%w: apiVersion %q", ErrUnsupportedEnvelope, e.APIVersion)
 	}
 	switch e.Kind {
 	case KindServingSnapshot, KindPublicationChunk, KindPublicationManifest, KindMemberAck:
 	default:
-		return fmt.Errorf("unsupported kind %q", e.Kind)
-	}
-	if e.EventID == "" || e.Region == "" || e.Shard == "" || e.ResourceUID == "" || e.Epoch == 0 || e.Revision == 0 || e.PublishedAt.IsZero() || len(e.Payload) == 0 {
-		return errors.New("envelope identity, epoch, revision, timestamp, and payload are required")
-	}
-	if SafeToken(e.Region) != e.Region || SafeToken(e.Shard) != e.Shard {
-		return errors.New("region and shard must be safe lowercase identifiers")
+		return fmt.Errorf("%w: kind %q", ErrUnsupportedEnvelope, e.Kind)
 	}
 	return nil
 }
@@ -89,6 +106,7 @@ type Backend struct {
 }
 
 type ZoneAttachment struct {
+	Pending                     bool   `json:"pending,omitempty"`
 	ZoneUID                     string `json:"zoneUID"`
 	Apex                        string `json:"apex"`
 	RequiredPublicationEpoch    uint64 `json:"requiredPublicationEpoch"`
@@ -111,6 +129,9 @@ type Binding struct {
 	ClusterBackends       []Backend        `json:"clusterBackends"`
 	Version               AccessVersion    `json:"version"`
 	Tombstone             bool             `json:"tombstone,omitempty"`
+	// ConfigurationPending gates queries while attached publications are absent.
+	// It does not revoke or advance the access version.
+	ConfigurationPending bool `json:"configurationPending,omitempty"`
 }
 
 func (b Binding) ViewName() string {
@@ -190,6 +211,9 @@ func (s ServingSnapshot) Validate() error {
 		}
 		if b.Port == 0 || len(b.Transports) == 0 || b.Version.Epoch == 0 || b.Version.Sequence == 0 {
 			return fmt.Errorf("binding %q has incomplete transport or access version", b.BindingUID)
+		}
+		if b.ConfigurationPending && len(b.Zones) != 0 {
+			return fmt.Errorf("binding %q pending configuration must not expose partial zones", b.BindingUID)
 		}
 		if err := validateTransports(b.Transports); err != nil {
 			return fmt.Errorf("binding %q: %w", b.BindingUID, err)
@@ -390,11 +414,22 @@ func (p PublicationPlan) Validate() error {
 		}
 	}
 	seen := map[string]struct{}{}
+	ownerTypes := map[string]string{}
 	for _, rr := range p.RRSets {
 		owner := strings.ToLower(AbsoluteName(rr.Name))
 		rrType := strings.ToUpper(rr.Type)
 		key := owner + "\x00" + rrType
-		if rr.TTL == 0 || len(rr.Records) == 0 || rr.Type == "" {
+		if err := ValidatePrivateRecordOwner(owner, apex, rrType); err != nil {
+			return err
+		}
+		if other := ownerTypes[owner]; other != "" && (other == recordTypeCNAME || rrType == recordTypeCNAME) {
+			return fmt.Errorf("CNAME cannot coexist with other records at %s", owner)
+		}
+		ownerTypes[owner] = rrType
+		if rrType == recordTypeCNAME && len(rr.Records) != 1 {
+			return fmt.Errorf("CNAME at %s must contain one target", owner)
+		}
+		if len(rr.Records) == 0 || rr.Type == "" {
 			return fmt.Errorf("RRset %q is incomplete", key)
 		}
 		if _, ok := dns.IsDomainName(owner); !ok || !dns.IsSubDomain(apex, owner) {

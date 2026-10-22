@@ -39,6 +39,7 @@ type DNSZoneAssociationStatus struct {
 // DNSResolverContext is the DNS-owned serving and namespace boundary created by
 // a trusted network integration. consumerID is opaque to DNS and immutable.
 // +kubebuilder:validation:XValidation:rule="oldSelf.consumerID == self.consumerID",message="consumerID is immutable"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.managedNamespace) || !has(oldSelf.managedNamespace.domainSuffix) || (has(self.managedNamespace) && has(self.managedNamespace.domainSuffix) && self.managedNamespace.domainSuffix == oldSelf.managedNamespace.domainSuffix)",message="managed namespace domainSuffix is immutable"
 type DNSResolverContextSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
@@ -46,8 +47,14 @@ type DNSResolverContextSpec struct {
 	ManagedNamespace DNSResolverContextManagedNamespace `json:"managedNamespace,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.domainSuffix) && self.domainSuffix.size() > 0)",message="domainSuffix is required when the managed namespace is enabled"
 type DNSResolverContextManagedNamespace struct {
 	Enabled bool `json:"enabled,omitempty"`
+	// DomainSuffix is the zone apex requested by the trusted consumer integration.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`
+	DomainSuffix string `json:"domainSuffix,omitempty"`
 }
 
 type DNSResolverContextManagedNamespaceStatus struct {

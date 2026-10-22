@@ -1,0 +1,577 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package controlplane
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+)
+
+// PublicationPlan is the canonical record configuration serialized into publication chunks.
+type PublicationPlan struct {
+	ZoneUID       types.UID           `json:"zoneUID"`
+	ZoneApex      string              `json:"zoneApex"`
+	ContextUIDs   []types.UID         `json:"contextUIDs"`
+	Owners        []PublicationOwner  `json:"owners"`
+	RRsets        []PublicationRRSet  `json:"rrsets"`
+	Contributions []ContributionFence `json:"contributions,omitempty"`
+	Registrations []RegistrationFence `json:"registrations,omitempty"`
+}
+
+type PublicationOwner struct {
+	Name            string               `json:"name"`
+	RecordTypes     []dnsv1alpha1.RRType `json:"recordTypes"`
+	RegistrationUID types.UID            `json:"registrationUID,omitempty"`
+	StaticRecordUID types.UID            `json:"staticRecordUID,omitempty"`
+}
+
+type PublicationRRSet struct {
+	Name             string                    `json:"name"`
+	RecordType       dnsv1alpha1.RRType        `json:"recordType"`
+	TTLSeconds       int32                     `json:"ttlSeconds"`
+	Records          []dnsv1alpha1.RecordEntry `json:"records"`
+	ContributionUIDs []types.UID               `json:"contributionUIDs,omitempty"`
+}
+
+type ContributionFence struct {
+	UID        types.UID `json:"uid"`
+	Generation int64     `json:"generation"`
+	Sequence   int64     `json:"sequence"`
+	Retired    bool      `json:"retired,omitempty"`
+	SourceName string    `json:"sourceName,omitempty"`
+}
+
+type RegistrationFence struct {
+	UID        types.UID `json:"uid"`
+	Generation int64     `json:"generation"`
+}
+
+type CompileInput struct {
+	Zone          *dnsv1alpha1.DNSZone
+	Associations  []dnsv1alpha1.DNSZoneAssociation
+	Registrations []dnsv1alpha1.DNSRegistration
+	Contributions []dnsv1alpha1.DNSRecordContribution
+	StaticRecords []dnsv1alpha1.DNSRecordSet
+	Previous      *PublicationPlan
+	Now           time.Time
+}
+
+type CompileResult struct {
+	Plan     PublicationPlan
+	Accepted map[types.UID]bool
+	Reasons  map[types.UID]string
+}
+
+type ownershipKey struct {
+	name   string
+	rrtype dnsv1alpha1.RRType
+}
+
+// Compile builds a canonical plan and applies the same ownership and fencing
+// checks even when an admission webhook was unavailable.
+func Compile(in CompileInput) (CompileResult, error) {
+	rejected := map[types.UID]string{}
+	for {
+		result, err := compileInputs(in, rejected)
+		if err != nil {
+			return result, err
+		}
+		invalid := invalidSRVSources(result.Plan)
+		if len(invalid) == 0 {
+			return result, nil
+		}
+		for uid := range invalid {
+			rejected[uid] = "MissingSRVTargetAddress"
+		}
+	}
+}
+
+func compileInputs(in CompileInput, rejected map[types.UID]string) (CompileResult, error) {
+	if err := validatePrivateZone(in.Zone); err != nil {
+		return CompileResult{}, err
+	}
+
+	result := CompileResult{Accepted: map[types.UID]bool{}, Reasons: map[types.UID]string{}}
+	for uid, reason := range rejected {
+		result.Reasons[uid] = reason
+	}
+	result.Plan.ZoneUID = in.Zone.UID
+	result.Plan.ZoneApex = canonicalName(in.Zone.Spec.DomainName)
+
+	result.Plan.ContextUIDs = associatedContextUIDs(in.Zone, in.Associations)
+
+	claims := map[ownershipKey]types.UID{}
+	staticClaim := map[ownershipKey]types.UID{}
+	validStatic, staticTTLs := collectStaticClaims(in, result.Plan.ZoneApex, claims, staticClaim, result.Reasons)
+	for uid := range validStatic {
+		result.Accepted[uid] = true
+	}
+
+	regs := map[types.UID]*dnsv1alpha1.DNSRegistration{}
+	in.Registrations = append([]dnsv1alpha1.DNSRegistration(nil), in.Registrations...)
+	sort.Slice(in.Registrations, func(i, j int) bool {
+		a, b := in.Registrations[i], in.Registrations[j]
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			return a.CreationTimestamp.Before(&b.CreationTimestamp)
+		}
+		return a.UID < b.UID
+	})
+	for i := range in.Registrations {
+		reg := &in.Registrations[i]
+		if !reg.DeletionTimestamp.IsZero() {
+			result.Reasons[reg.UID] = dnsValueTerminating
+			continue
+		}
+		if reg.Spec.TTLSeconds < 1 || reg.Spec.TTLSeconds > dnsv1alpha1.DNSRegistrationMaxTTLSeconds {
+			result.Reasons[reg.UID] = "InvalidTTL"
+			continue
+		}
+		if !refMatches(reg.Spec.DNSZoneRef, in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
+			continue
+		}
+		if reg.UID == "" {
+			result.Reasons[reg.UID] = "MissingUID"
+			continue
+		}
+		name := zoneOwner(reg.Spec.Name, result.Plan.ZoneApex)
+		valid := true
+		for _, rt := range reg.Spec.RecordTypes {
+			if model.ValidatePrivateRecordOwner(name, result.Plan.ZoneApex, string(rt)) != nil {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			result.Reasons[reg.UID] = dnsValueUnsupportedPrivateRecord
+			continue
+		}
+
+		for _, rt := range uniqueTypes(reg.Spec.RecordTypes) {
+			key := ownershipKey{name, rt}
+			if old, ok := conflictingClaim(claims, key); ok && old != reg.UID {
+				result.Reasons[reg.UID] = "NameConflict"
+				break
+			}
+		}
+		if result.Reasons[reg.UID] == "" {
+			for _, rt := range uniqueTypes(reg.Spec.RecordTypes) {
+				claims[ownershipKey{name, rt}] = reg.UID
+			}
+			regs[reg.UID] = reg
+			result.Accepted[reg.UID] = true
+			result.Plan.Registrations = append(result.Plan.Registrations, RegistrationFence{UID: reg.UID, Generation: reg.Generation})
+		}
+	}
+	sort.Slice(result.Plan.Registrations, func(i, j int) bool { return result.Plan.Registrations[i].UID < result.Plan.Registrations[j].UID })
+
+	keys := make([]ownershipKey, 0, len(claims))
+	for key := range claims {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].name == keys[j].name {
+			return keys[i].rrtype < keys[j].rrtype
+		}
+		return keys[i].name < keys[j].name
+	})
+	for _, key := range keys {
+		owner := PublicationOwner{Name: key.name, RecordTypes: []dnsv1alpha1.RRType{key.rrtype}}
+		if uid, ok := staticClaim[key]; ok {
+			owner.StaticRecordUID = uid
+		} else {
+			owner.RegistrationUID = claims[key]
+		}
+		result.Plan.Owners = append(result.Plan.Owners, owner)
+	}
+
+	previousSeq := map[types.UID]ContributionFence{}
+	if in.Previous != nil {
+		for _, f := range in.Previous.Contributions {
+			previousSeq[f.UID] = f
+		}
+	}
+	// Publication fences are lifetime high-water marks. Keep fences for absent,
+	// retired, invalid, and rolled-back observations so a later reconcile or
+	// controller takeover cannot resurrect an older contribution.
+	publicationFences := make(map[types.UID]ContributionFence, len(previousSeq))
+	currentContributions := map[types.UID]bool{}
+	for _, c := range in.Contributions {
+		currentContributions[c.UID] = true
+	}
+	for uid, fence := range previousSeq {
+		if !currentContributions[uid] {
+			fence.Retired = true
+		}
+		publicationFences[uid] = fence
+	}
+	type aggregate struct {
+		ttl     int32
+		records []dnsv1alpha1.RecordEntry
+		uids    []types.UID
+	}
+	aggregates := map[ownershipKey]*aggregate{}
+	for i := range in.Contributions {
+		c := &in.Contributions[i]
+		reg := regs[c.Spec.RegistrationRef.UID]
+		reason := validateContribution(c, reg, previousSeq[c.UID])
+		if reason != "" {
+			result.Reasons[c.UID] = reason
+			continue
+		}
+		currentFence := ContributionFence{UID: c.UID, Generation: c.Generation, Sequence: c.Generation, Retired: !c.DeletionTimestamp.IsZero(), SourceName: c.Name}
+		previousFence := previousSeq[c.UID]
+		if previousFence.UID == "" || currentFence.Generation > previousFence.Generation || currentFence.Retired {
+			publicationFences[c.UID] = currentFence
+		}
+		if rejected[c.UID] != "" {
+			continue
+		}
+		if !c.DeletionTimestamp.IsZero() {
+			result.Reasons[c.UID] = dnsValueTerminating
+			continue
+		}
+		if !c.Spec.Eligible {
+			result.Reasons[c.UID] = "Ineligible"
+			continue
+		}
+		validBundle := true
+		for _, set := range c.Spec.RecordSets {
+			if len(set.Records) == 0 || !containsType(reg.Spec.RecordTypes, set.RecordType) {
+				validBundle = false
+				break
+			}
+			for _, record := range set.Records {
+				key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), set.RecordType}
+				if model.ValidatePrivateRecordOwner(key.name, result.Plan.ZoneApex, string(set.RecordType)) != nil || !registrationOwns(reg, key, result.Plan.ZoneApex, claims) || !recordAllowed(reg, key, result.Plan.ZoneApex) {
+					validBundle = false
+					break
+				}
+				if _, err := recordContent(set.RecordType, record); err != nil {
+					validBundle = false
+					break
+				}
+			}
+			if !validBundle {
+				break
+			}
+		}
+		if !validBundle {
+			result.Reasons[c.UID] = "NameOrTypeOutsideRegistration"
+			continue
+		}
+		result.Accepted[c.UID] = true
+		for _, set := range c.Spec.RecordSets {
+			for _, record := range set.Records {
+				key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), set.RecordType}
+				a := aggregates[key]
+				if a == nil {
+					a = &aggregate{ttl: reg.Spec.TTLSeconds}
+					aggregates[key] = a
+				}
+				record.Name = key.name
+				a.records = append(a.records, record)
+				a.uids = append(a.uids, c.UID)
+			}
+		}
+	}
+	result.Plan.Contributions = make([]ContributionFence, 0, len(publicationFences))
+	for _, fence := range publicationFences {
+		result.Plan.Contributions = append(result.Plan.Contributions, fence)
+	}
+
+	for i := range in.StaticRecords {
+		rs := &in.StaticRecords[i]
+		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !validStatic[rs.UID] {
+			continue
+		}
+		for _, record := range rs.Spec.Records {
+			key := ownershipKey{zoneOwner(record.Name, result.Plan.ZoneApex), rs.Spec.RecordType}
+			a := aggregates[key]
+			if a == nil {
+				a = &aggregate{ttl: staticTTLs[key]}
+				aggregates[key] = a
+			}
+			record.Name = key.name
+			a.records = append(a.records, record)
+		}
+	}
+	for key, a := range aggregates {
+		sortAggregate(a.records, a.uids)
+		result.Plan.RRsets = append(result.Plan.RRsets, PublicationRRSet{Name: key.name, RecordType: key.rrtype, TTLSeconds: a.ttl, Records: a.records, ContributionUIDs: a.uids})
+	}
+	sort.Slice(result.Plan.RRsets, func(i, j int) bool {
+		if result.Plan.RRsets[i].Name == result.Plan.RRsets[j].Name {
+			return result.Plan.RRsets[i].RecordType < result.Plan.RRsets[j].RecordType
+		}
+		return result.Plan.RRsets[i].Name < result.Plan.RRsets[j].Name
+	})
+	sort.Slice(result.Plan.Contributions, func(i, j int) bool { return result.Plan.Contributions[i].UID < result.Plan.Contributions[j].UID })
+	return result, nil
+}
+
+func invalidSRVSources(plan PublicationPlan) map[types.UID]bool {
+	addresses := map[string]bool{}
+	for _, set := range plan.RRsets {
+		if set.RecordType == dnsv1alpha1.RRTypeA || set.RecordType == dnsv1alpha1.RRTypeAAAA {
+			addresses[absoluteOwner(set.Name, plan.ZoneApex)] = true
+		}
+	}
+	invalid := map[types.UID]bool{}
+	for _, set := range plan.RRsets {
+		if set.RecordType != dnsv1alpha1.RRTypeSRV {
+			continue
+		}
+		for i, entry := range set.Records {
+			if entry.SRV == nil || addresses[srvTargetOwner(entry.SRV.Target, plan.ZoneApex)] {
+				continue
+			}
+			if i < len(set.ContributionUIDs) {
+				invalid[set.ContributionUIDs[i]] = true
+			} else {
+				for _, owner := range plan.Owners {
+					if owner.Name == set.Name && owner.StaticRecordUID != "" {
+						invalid[owner.StaticRecordUID] = true
+					}
+				}
+			}
+		}
+	}
+	return invalid
+}
+
+func validateContribution(c *dnsv1alpha1.DNSRecordContribution, reg *dnsv1alpha1.DNSRegistration, previous ContributionFence) string {
+	if reg == nil || c.Spec.RegistrationRef.Name != reg.Name || c.Spec.RegistrationRef.Generation != reg.Generation {
+		return dnsValueStaleRegistrationGeneration
+	}
+	if previous.Retired {
+		return "RetiredContribution"
+	}
+	if c.Generation < 1 {
+		return "InvalidContributionGeneration"
+	}
+	if previous.UID != "" {
+		if c.Generation < previous.Generation {
+			return "StaleContributionGeneration"
+		}
+	}
+	return ""
+}
+
+func recordAllowed(reg *dnsv1alpha1.DNSRegistration, key ownershipKey, apex string) bool {
+	if !containsType(reg.Spec.RecordTypes, key.rrtype) {
+		return false
+	}
+	name := zoneOwner(reg.Spec.Name, apex)
+	allowedName := key.name == name
+	for _, scope := range reg.Spec.ReservedDescendants {
+		s := zoneOwner(scope, apex)
+		if key.name == s || strings.HasSuffix(key.name, "."+s) {
+			allowedName = true
+		}
+	}
+	if !allowedName {
+		return false
+	}
+	return allowedName
+}
+
+func srvTargetOwner(name, apex string) string {
+	if strings.HasSuffix(strings.TrimSpace(name), ".") {
+		return canonicalName(name)
+	}
+	return absoluteOwner(name, apex)
+}
+
+func zoneOwner(s, apex string) string {
+	n := canonicalName(s)
+	a := canonicalName(apex)
+	if n == a {
+		return "@"
+	}
+	if strings.HasSuffix(n, "."+a) {
+		return strings.TrimSuffix(n, "."+a)
+	}
+	return n
+}
+
+func conflictingClaim(claims map[ownershipKey]types.UID, key ownershipKey) (types.UID, bool) {
+	if uid, ok := claims[key]; ok {
+		return uid, true
+	}
+	if key.rrtype == dnsv1alpha1.RRTypeCNAME {
+		for k, uid := range claims {
+			if k.name == key.name {
+				return uid, true
+			}
+		}
+	} else if uid, ok := claims[ownershipKey{key.name, dnsv1alpha1.RRTypeCNAME}]; ok {
+		return uid, true
+	}
+	return "", false
+}
+
+func registrationOwns(reg *dnsv1alpha1.DNSRegistration, key ownershipKey, apex string, claims map[ownershipKey]types.UID) bool {
+	if uid, ok := conflictingClaim(claims, key); ok && uid != reg.UID {
+		return false
+	}
+	if key.name == zoneOwner(reg.Spec.Name, apex) {
+		return true
+	}
+	for _, scope := range reg.Spec.ReservedDescendants {
+		s := zoneOwner(scope, apex)
+		if key.name == s || strings.HasSuffix(key.name, "."+s) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsType(xs []dnsv1alpha1.RRType, x dnsv1alpha1.RRType) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueTypes(xs []dnsv1alpha1.RRType) []dnsv1alpha1.RRType {
+	m := map[dnsv1alpha1.RRType]bool{}
+	var out []dnsv1alpha1.RRType
+	for _, x := range xs {
+		if !m[x] {
+			m[x] = true
+			out = append(out, x)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func sortRecords(records []dnsv1alpha1.RecordEntry) {
+	sort.Slice(records, func(i, j int) bool {
+		a, _ := json.Marshal(records[i])
+		b, _ := json.Marshal(records[j])
+		return string(a) < string(b)
+	})
+}
+
+func sortAggregate(records []dnsv1alpha1.RecordEntry, uids []types.UID) {
+	if len(uids) != len(records) {
+		sortRecords(records)
+		return
+	}
+	type pair struct {
+		record dnsv1alpha1.RecordEntry
+		uid    types.UID
+		key    string
+	}
+	pairs := make([]pair, len(records))
+	for i := range records {
+		b, _ := json.Marshal(records[i])
+		pairs[i] = pair{records[i], uids[i], string(b) + "\x00" + string(uids[i])}
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].key < pairs[j].key })
+	for i := range pairs {
+		records[i] = pairs[i].record
+		uids[i] = pairs[i].uid
+	}
+}
+
+func associatedContextUIDs(zone *dnsv1alpha1.DNSZone, associations []dnsv1alpha1.DNSZoneAssociation) []types.UID {
+	contextsByUID := map[types.UID]struct{}{}
+	for i := range associations {
+		a := &associations[i]
+		accepted := apimeta.FindStatusCondition(a.Status.Conditions, "Accepted")
+		consumerUID := a.Status.ResolvedResolverContextRef.UID
+		if a.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && refMatches(a.Status.ResolvedDNSZoneRef, zone.Name, zone.UID, zone.Generation) && consumerUID != "" {
+			contextsByUID[consumerUID] = struct{}{}
+		}
+	}
+	if len(contextsByUID) == 0 {
+		return nil
+	}
+	contexts := make([]types.UID, 0, len(contextsByUID))
+	for uid := range contextsByUID {
+		contexts = append(contexts, uid)
+	}
+	sort.Slice(contexts, func(i, j int) bool { return contexts[i] < contexts[j] })
+
+	return contexts
+}
+
+func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
+	if zone == nil || zone.UID == "" {
+		return fmt.Errorf("zone and API-assigned UID are required")
+	}
+	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
+		return fmt.Errorf("zone %s is not private", zone.Name)
+	}
+	return nil
+}
+
+func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32) {
+	validStatic := map[types.UID]bool{}
+	staticTTLs := map[ownershipKey]int32{}
+	records := append([]dnsv1alpha1.DNSRecordSet(nil), in.StaticRecords...)
+	sort.Slice(records, func(i, j int) bool {
+		a, b := records[i], records[j]
+		if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+			return a.CreationTimestamp.Before(&b.CreationTimestamp)
+		}
+		return a.UID < b.UID
+	})
+	for i := range records {
+		rs := &records[i]
+		if rs.Spec.DNSZoneRef.Name != in.Zone.Name || !rs.DeletionTimestamp.IsZero() || reasons[rs.UID] != "" {
+			continue
+		}
+		pending := map[ownershipKey]int32{}
+		for _, record := range rs.Spec.Records {
+			key := ownershipKey{zoneOwner(record.Name, apex), rs.Spec.RecordType}
+			if model.ValidatePrivateRecordOwner(key.name, apex, string(key.rrtype)) != nil {
+				reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
+				break
+			}
+			if _, err := recordContent(rs.Spec.RecordType, record); err != nil {
+				reasons[rs.UID] = "InvalidRecord"
+				break
+			}
+			ttl := int64(300)
+			if record.TTL != nil {
+				ttl = *record.TTL
+			}
+			if ttl < 0 || ttl > 2147483647 {
+				reasons[rs.UID] = "InvalidTTL"
+				break
+			}
+			if previous, ok := pending[key]; ok && previous != int32(ttl) {
+				reasons[rs.UID] = "ConflictingTTL"
+				break
+			}
+			if old, ok := conflictingClaim(claims, key); ok && old != rs.UID {
+				reasons[rs.UID] = "NameConflict"
+				break
+			}
+			pending[key] = int32(ttl)
+		}
+		if reasons[rs.UID] != "" {
+			continue
+		}
+		validStatic[rs.UID] = true
+		for key, ttl := range pending {
+			staticTTLs[key] = ttl
+			claims[key], staticClaim[key] = rs.UID, rs.UID
+		}
+	}
+	return validStatic, staticTTLs
+}

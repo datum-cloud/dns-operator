@@ -899,8 +899,8 @@ func TestPDNS_LMDB_AZoneDeleteThatFailsKeepsTheRecords(t *testing.T) {
 		forward.ServeHTTP(w, r)
 	}))
 	defer proxy.Close()
-
-	client := NewClient(proxy.URL, apiKey)
+	forward.Transport = proxy.Client().Transport
+	client := newPDNSTestClient(proxy, apiKey)
 	ctx := context.Background()
 	const zoneName = "refused.test"
 	zone := dnsv1alpha1.DNSZone{Spec: dnsv1alpha1.DNSZoneSpec{DomainName: zoneName}}

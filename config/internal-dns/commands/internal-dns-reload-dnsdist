@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+case "$1" in
+  node) config=/etc/internal-dns/node-dnsdist.conf ;;
+  regional) config=/etc/internal-dns/cluster-dnsdist.conf ;;
+  *) echo 'unknown dnsdist role' >&2; exit 2 ;;
+esac
+output=$(timeout 5s dnsdist -C "$config" -c -e "dofile(\"$config\"); return \"INTERNAL_DNS_APPLIED\"")
+[ "$output" = 'INTERNAL_DNS_APPLIED' ] || { printf '%s\n' "$output" >&2; exit 1; }

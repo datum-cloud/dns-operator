@@ -51,5 +51,6 @@ go.work.sum
 .claude/worktrees/
 .mcp.json
 
-# Local kind output from the internal DNS end-to-end harness (includes kubeconfigs)
-.internal-dns-e2e/
+# Local output from the internal DNS end-to-end harness (includes kubeconfigs)
+/.internal-dns-e2e/
+/test/internaldns/results/

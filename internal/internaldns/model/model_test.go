@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -89,5 +90,41 @@ func TestEnvelopeRejectsObsoleteWireVersion(t *testing.T) {
 	current.APIVersion = "internal.dns.networking.miloapis.com/v1alpha1"
 	if current.Validate() == nil {
 		t.Fatal("obsolete transport version accepted")
+	}
+}
+
+func TestPendingConfigurationCannotExposePartialZoneAttachments(t *testing.T) {
+	now := time.Now().UTC()
+	binding := Binding{BindingUID: "binding", ProjectUID: "project", ContextUID: "context", BindingGeneration: 1, ConfigurationRevision: 1, ConsumerAddress: "fd53::a", ClusterAddress: "fd54::a", Port: 53, Transports: []Transport{TransportUDP}, Version: AccessVersion{Epoch: 1, Sequence: 1}, ConfigurationPending: true, Zones: []ZoneAttachment{{ZoneUID: "zone", Apex: "private.internal", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1}}}
+	snapshot := ServingSnapshot{Region: "east", Shard: "shared", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: now, Bindings: []Binding{binding}}
+	if err := snapshot.Validate(); err == nil {
+		t.Fatal("partial pending context accepted")
+	}
+	snapshot.Bindings[0].Zones = nil
+	if err := snapshot.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	event, err := NewEnvelope(KindServingSnapshot, "pending", "east", "shared", "shard", 1, 1, now, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.APIVersion = "internal.dns.networking.miloapis.com/v1alpha2"
+	if err := event.Validate(); err == nil {
+		t.Fatal("pre-pending wire format accepted")
+	}
+}
+
+func TestEnvelopeHeaderIsFrozenAcrossVersions(t *testing.T) {
+	future, err := NewEnvelope(KindMemberAck, "event", "central", "shared", "uid", 1, 1, time.Now(), MemberAck{MemberID: "member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	future.APIVersion = "internal.dns.networking.miloapis.com/v1beta1"
+	if err := future.Validate(); !errors.Is(err, ErrUnsupportedEnvelope) {
+		t.Fatalf("future envelope with the frozen header was not parked: %v", err)
+	}
+	future.EventID = ""
+	if err := future.Validate(); err == nil || errors.Is(err, ErrUnsupportedEnvelope) {
+		t.Fatalf("future envelope that breaks the frozen header must be malformed, got %v", err)
 	}
 }

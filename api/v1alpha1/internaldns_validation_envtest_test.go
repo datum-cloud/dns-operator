@@ -164,6 +164,7 @@ func TestPrivateDNSValidationAtAPIServer(t *testing.T) {
 			t.Fatal("status write changed producer desired state")
 		}
 	})
+	validateServiceDNSContracts(t, cl)
 	validateReferenceIdentity(t, cl, requireInvalid)
 	validateRegistrationBounds(t, cl, requireInvalid)
 }

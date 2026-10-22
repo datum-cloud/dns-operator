@@ -1,0 +1,6 @@
+**
+!**/*.go
+**/*_test.go
+!go.mod
+!go.sum
+!config/internal-dns/commands/**

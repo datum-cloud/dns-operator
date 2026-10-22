@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-dns-control-plane
+  namespace: internal-dns-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internal-dns-fleet
+  namespace: internal-dns-system
+automountServiceAccountToken: false
+---
+# Bind this Role only to the separately deployed VPC integration principal.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-vpc-integration
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts, dnsresolveraccessbindings]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts/status, dnsresolveraccessbindings/status]
+  verbs: [get, list, watch]
+---
+# Project products atomically publish endpoint records and eligibility.
+# Product writers cannot modify resolver access or publication artifacts.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-product-writer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsregistrations, dnsrecordcontributions]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts, dnsnamingpolicies]
+  verbs: [get, list, watch]
+---
+# Customers configure private zones and naming within their project namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-customer
+  namespace: example-project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnszones, dnsrecordsets, dnszoneassociations, dnsnamingpolicies, dnsregistrations]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsresolvercontexts]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: internal-dns-control-plane
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnszones
+  - dnsrecordsets
+  - dnszoneassociations
+  - dnsregistrations
+  - dnsrecordcontributions
+  - dnsnamingpolicies
+  - dnsresolvercontexts
+  - dnsresolveraccessbindings
+  verbs: [get, list, watch]
+# Managed zone creation and the private-zone publication finalizer.
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnszones, dnszoneassociations]
+  verbs: [create, patch]
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnsresolverbindings
+  - dnspublicationmanifests
+  - dnspublicationchunks
+  - dnstransportoutboxes
+  - dnspublicationownerships
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [dns.networking.miloapis.com]
+  resources:
+  - dnsresolverbindings/status
+  - dnspublicationmanifests/status
+  - dnstransportoutboxes/status
+  - dnspublicationownerships/status
+  - dnszones/status
+  - dnszoneassociations/status
+  - dnsnamingpolicies/status
+  - dnsregistrations/status
+  - dnsrecordcontributions/status
+  - dnsresolvercontexts/status
+  - dnsresolveraccessbindings/status
+  verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: internal-dns-control-plane
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: internal-dns-control-plane
+subjects:
+- kind: ServiceAccount
+  name: internal-dns-control-plane
+  namespace: internal-dns-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internal-dns-control-plane-state
+  namespace: internal-dns-system
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch]
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: internal-dns-control-plane-state
+  namespace: internal-dns-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: internal-dns-control-plane-state
+subjects:
+- kind: ServiceAccount
+  name: internal-dns-control-plane
+  namespace: internal-dns-system

@@ -1,0 +1,141 @@
+package runtime
+
+import (
+	"bytes"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	appsv1 "k8s.io/api/apps/v1"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+)
+
+func TestDeploymentExampleConfigsValidate(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join("..", "..", "..", "config", "internal-dns")
+	cases := []struct {
+		file       string
+		namePrefix string
+		roles      []string
+	}{
+		{file: "control-plane.example.yaml", namePrefix: "internal-dns-control-plane-config", roles: []string{"control-plane"}},
+		{file: "fleet.example.yaml", namePrefix: "internal-dns-", roles: []string{"agent", "readiness"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			contents, err := os.ReadFile(filepath.Join(root, tc.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(contents), 4096)
+			found := 0
+			for {
+				var object map[string]any
+				if err := decoder.Decode(&object); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if object["kind"] != "ConfigMap" {
+					continue
+				}
+				metadata, _ := object["metadata"].(map[string]any)
+				name, _ := metadata["name"].(string)
+				if !strings.HasPrefix(name, tc.namePrefix) {
+					continue
+				}
+				data, _ := object["data"].(map[string]any)
+				raw, _ := data["config.json"].(string)
+				if raw == "" {
+					continue
+				}
+				found++
+				for _, role := range tc.roles {
+					configPath := filepath.Join(t.TempDir(), "config.json")
+					if err := os.WriteFile(configPath, []byte(raw), 0600); err != nil {
+						t.Fatal(err)
+					}
+					config, err := LoadConfig(configPath)
+					if err != nil {
+						t.Fatalf("%s config JSON: %v", name, err)
+					}
+					if err := config.Validate(role); err != nil {
+						t.Errorf("%s role %s: %v", name, role, err)
+					}
+				}
+			}
+			if found == 0 {
+				t.Fatal("no example runtime ConfigMaps found")
+			}
+		})
+	}
+}
+
+func TestNATSExampleUsesExactMemberAckSubjects(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "..", "config", "internal-dns", "nats-server.conf.example")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, memberID := range []string{"node-us-central1-0", "regional-front-us-central1-0", "regional-coredns-us-central1-0", "regional-coredns-us-central1-1"} {
+		subject := model.AckSubject("us-central1", "shared-0", memberID)
+		if !bytes.Contains(contents, []byte(`"`+subject+`"`)) {
+			t.Errorf("NATS policy is missing exact ACK subject %q", subject)
+		}
+	}
+}
+
+func TestQueryDaemonsCannotShareCredentialAgentIdentity(t *testing.T) {
+	for _, file := range []string{"fleet.example.yaml", "routers.example.yaml"} {
+		contents, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "internal-dns", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(contents), 4096)
+		count := 0
+		for {
+			var deployment appsv1.Deployment
+			if err := decoder.Decode(&deployment); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if deployment.Kind != "Deployment" {
+				continue
+			}
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				if container.Name != "agent" && container.Name != "serving" && container.Name != "dnsdist" {
+					continue
+				}
+				count++
+				expected := int64(65533)
+				if container.Name == "agent" {
+					expected = 65532
+				}
+				sc := container.SecurityContext
+				if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != expected {
+					t.Fatalf("%s/%s must use UID %d", deployment.Name, container.Name, expected)
+				}
+				for _, capability := range sc.Capabilities.Add {
+					if capability == "SYS_PTRACE" {
+						t.Fatal("query Pods must not grant process inspection")
+					}
+				}
+				if container.Name != "agent" {
+					for _, mount := range container.VolumeMounts {
+						if mount.Name == "nats" {
+							t.Fatal("query daemon mounts broker credentials")
+						}
+					}
+				}
+			}
+		}
+		if count == 0 {
+			t.Fatalf("no query containers in %s", file)
+		}
+	}
+}

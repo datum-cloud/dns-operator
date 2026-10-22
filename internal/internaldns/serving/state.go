@@ -126,7 +126,7 @@ func (s stateStore) Save(state checkpoint) error {
 		return err
 	}
 	temp := s.path + ".tmp"
-	if err := writeDurable(temp, b, 0o600); err != nil {
+	if err := writeDurable(temp, b, 0o640); err != nil {
 		return err
 	}
 	if err := os.Rename(temp, s.path); err != nil {
@@ -141,3 +141,24 @@ func (s stateStore) Save(state checkpoint) error {
 }
 
 func chunkKey(index int) string { return fmt.Sprint(index) }
+
+func prepareServingState(dir string) error {
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(activationMarkerPath(dir)+".lock", os.O_CREATE|os.O_RDWR, 0640)
+	if err != nil {
+		return err
+	}
+	if err := lock.Chmod(0640); err != nil {
+		_ = lock.Close()
+		return err
+	}
+	if err := lock.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Join(dir, "checkpoint.json"), 0640); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}

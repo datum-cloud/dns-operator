@@ -169,7 +169,7 @@ func TestPublicCachesRemainIsolatedAndPrivateMissesStayLocal(t *testing.T) {
 	}
 }
 
-func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
+func TestTrustedPROXYDestinationSurvivesTCP(t *testing.T) {
 	t.Parallel()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -209,7 +209,7 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 			t.Error("CoreDNS did not stop")
 		}
 	})
-	for _, network := range []string{"udp", "tcp"} {
+	for _, network := range []string{"tcp", "tcp-udp"} {
 		for _, tc := range []struct{ destination, want string }{{"fd53::a", "192.0.2.10"}, {"fd53::b", "192.0.2.20"}} {
 			deadline := time.Now().Add(3 * time.Second)
 			for {
@@ -228,11 +228,14 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 			}
 		}
 	}
+	if reply, err := proxyQuery("udp", c.ListenAddress, "fd53::b"); err == nil {
+		t.Fatalf("UDP PROXY reached a tenant context: %v", reply)
+	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	m, err := proxyQuery("udp", c.ListenAddress, "fd53::a")
+	m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")
 	if err != nil || address(m) != "192.0.2.10" {
 		t.Fatal("missing delivery file disturbed accepted state", m, err)
 	}
@@ -240,7 +243,7 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 	write(c)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		m, err := proxyQuery("udp", c.ListenAddress, "fd53::a")
+		m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")
 		if err == nil && address(m) == "192.0.2.30" {
 			break
 		}
@@ -252,6 +255,10 @@ func TestTrustedPROXYDestinationSurvivesUDPAndTCP(t *testing.T) {
 }
 
 func proxyQuery(network, server, destination string, names ...string) (*dns.Msg, error) {
+	originalUDP := network == "tcp-udp"
+	if originalUDP {
+		network = "tcp"
+	}
 	conn, err := net.DialTimeout(network, server, 200*time.Millisecond)
 	if err != nil {
 		return nil, err
@@ -260,7 +267,7 @@ func proxyQuery(network, server, destination string, names ...string) (*dns.Msg,
 	_ = conn.SetDeadline(time.Now().Add(300 * time.Millisecond))
 	header := append([]byte(nil), proxySignature...)
 	family := byte(0x22)
-	if network == "tcp" {
+	if network == "tcp" && !originalUDP {
 		family = 0x21
 	}
 	header = append(header, 0x21, family, 0, 36)
@@ -307,9 +314,14 @@ func TestMalformedAndWrongTransportHeadersAreRejected(t *testing.T) {
 	header = append(header, net.ParseIP("192.0.2.1").To4()...)
 	header = append(header, net.ParseIP("192.0.2.2").To4()...)
 	header = append(header, 0, 53, 0, 53)
-	if _, _, _, err := parseHeader(header, true); err == nil {
-		t.Fatal("UDP header accepted on TCP connection")
+	if _, _, _, err := parseHeader(header, true); err != nil {
+		t.Fatalf("forwarded UDP metadata rejected on TCP connection: %v", err)
 	}
+	header[13] = 0x13
+	if _, _, _, err := parseHeader(header, true); err == nil {
+		t.Fatal("unknown client protocol accepted")
+	}
+	header[13] = 0x12
 	binary.BigEndian.PutUint16(header[14:16], 65535)
 	if _, _, _, err := parseHeader(header, false); err == nil {
 		t.Fatal("truncated PROXY header accepted")

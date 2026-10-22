@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -183,6 +184,9 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 			ClientForRequest: directory.selectProject,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
+		admissionManager.GetWebhookServer().Register("/readyz", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
 	}
 
 	errCh := make(chan error, len(projects)+len(planners)*3+8)

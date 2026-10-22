@@ -51,6 +51,13 @@ workload template. Give every member independent configuration and checkpoint
 storage. CoreDNS process activation uses the serving role; dnsdist runs directly
 as its container process.
 
+The agent runs as UID 65532; CoreDNS and dnsdist run as UID 65533. Query
+containers do not mount broker credentials and cannot inspect the agent's
+filesystem through the shared process namespace. Group 65532 can read accepted
+configuration, checkpoints, and the pod-local console key. Only agents that
+manage CoreDNS receive `KILL` to stop query processes during activation; no
+container receives `SYS_PTRACE`.
+
 ## Control-plane and API boundaries
 
 

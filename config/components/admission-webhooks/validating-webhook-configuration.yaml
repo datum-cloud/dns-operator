@@ -29,3 +29,34 @@ webhooks:
         resources:
           - dnsrecordsets
         scope: "*"
+  # Private DNS reference checks. Unlike the owner name guard, these decide
+  # tenant and lifetime boundaries nothing downstream re-checks, so a write
+  # must not be admitted without them.
+  - name: vinternaldns.kb.io
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: dns-operator-webhook-service
+        namespace: datum-dns-system
+        path: /validate-internal-dns
+        port: 443
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    sideEffects: None
+    timeoutSeconds: 10
+    rules:
+      - apiGroups:
+          - dns.networking.miloapis.com
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - dnszoneassociations
+          - dnsregistrations
+          - dnsrecordcontributions
+          - dnsnamingpolicies
+          - dnsresolveraccessbindings
+        scope: Namespaced

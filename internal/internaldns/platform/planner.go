@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const shardOwnerLabel = "internal-dns.miloapis.com/shard-owner"
@@ -132,6 +133,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			return err
 		}
 	}
+	activations := map[string]string{}
 	priorBindings := map[string]model.Binding{}
 	for _, b := range prior.Bindings {
 		priorBindings[b.BindingUID] = b
@@ -187,6 +189,7 @@ func (p *Planner) Step(ctx context.Context) error {
 					}
 				}
 			}
+			activations[string(uid)] = model.PublicationActivationName(m.Name, c.Region, c.Shard)
 			view.Zones = append(view.Zones, attachment)
 		}
 		if !complete {
@@ -210,9 +213,19 @@ func (p *Planner) Step(ctx context.Context) error {
 		maxBytes = 512 * 1024
 	}
 	var rejected map[string]bool
-	snapshot, rejected = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
-	if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
+	var fitErr error
+	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
+	if fitErr != nil {
+		return fitErr
+	}
+	dependsOn, err := publicationDependencies(&snapshot, activations)
+	if err != nil {
 		return err
+	}
+	report := func() {
+		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
+			log.FromContext(ctx).Error(err, "report shard capacity")
+		}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return err
@@ -225,27 +238,22 @@ func (p *Planner) Step(ctx context.Context) error {
 	hash := model.Hash(b)
 	if state.ContentHash == hash {
 		if state.LeaseUntil.Sub(now) > lease/2 {
+			report()
 			return nil
 		}
 		state.LeaseUntil = now.Add(lease)
 		b, _ := json.Marshal(state)
 		owner.Data["state"] = string(b)
-		return p.Client.Update(ctx, &owner)
+		if err := p.Client.Update(ctx, &owner); err != nil {
+			return err
+		}
+		report()
+		return nil
 	}
 	if !state.LeaseUntil.After(now) {
 		return fmt.Errorf("shared planner lost its lease while staging snapshot")
 	}
-	// Reserve the revision before writing immutable artifacts. A crash after
-	// staging leaves an orphan, and retry uses a fresh revision instead of trying
-	// to rewrite an immutable event with a different timestamp or desired state.
 	revision := state.NextRevision
-	state.NextRevision++
-	state.LeaseUntil = now.Add(lease)
-	reserved, _ := json.Marshal(state)
-	owner.Data["state"] = string(reserved)
-	if err := p.Client.Update(ctx, &owner); err != nil {
-		return err
-	}
 	name := fmt.Sprintf("dns-serving-%s-e%d-r%d", model.OpaqueToken(c.Region+"/"+c.Shard), state.Epoch, revision)
 	env, err := model.NewEnvelope(model.KindServingSnapshot, name, c.Region, c.Shard, string(owner.UID), state.Epoch, revision, now, snapshot)
 	if err != nil {
@@ -255,7 +263,17 @@ func (p *Planner) Step(ctx context.Context) error {
 	if len(payload) > maxBytes {
 		return fmt.Errorf("shard serving envelope exceeds configured transport budget: %d > %d", len(payload), maxBytes)
 	}
-	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.Namespace, Labels: map[string]string{shardOwnerLabel: owner.Name, "internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: model.ServingSubject(c.Region, c.Shard), ResourceUID: owner.UID, WriterEpoch: int64(state.Epoch), Revision: int64(revision), PayloadHash: model.Hash(payload), Payload: payload, Activation: true, DependsOn: nil}}
+	// Reserve the revision before writing immutable artifacts. A crash after
+	// staging leaves an orphan, and retry uses a fresh revision instead of trying
+	// to rewrite an immutable event with a different timestamp or desired state.
+	state.NextRevision++
+	state.LeaseUntil = now.Add(lease)
+	reserved, _ := json.Marshal(state)
+	owner.Data["state"] = string(reserved)
+	if err := p.Client.Update(ctx, &owner); err != nil {
+		return err
+	}
+	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: c.Namespace, Labels: map[string]string{shardOwnerLabel: owner.Name, "internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: model.ServingSubject(c.Region, c.Shard), ResourceUID: owner.UID, WriterEpoch: int64(state.Epoch), Revision: int64(revision), PayloadHash: model.Hash(payload), Payload: payload, Activation: true, DependsOn: dependsOn}}
 	if err := p.Client.Create(ctx, out); apierrors.IsAlreadyExists(err) {
 		var existing dnsv1alpha1.DNSTransportOutbox
 		if err := p.Client.Get(ctx, client.ObjectKeyFromObject(out), &existing); err != nil {
@@ -273,5 +291,43 @@ func (p *Planner) Step(ctx context.Context) error {
 	b, _ = json.Marshal(state)
 	owner.Data["state"] = string(b)
 	// Publication is enabled only after this resourceVersion-checked commit.
-	return p.Client.Update(ctx, &owner)
+	if err := p.Client.Update(ctx, &owner); err != nil {
+		return err
+	}
+	report()
+	return nil
+}
+
+func publicationDependencies(snapshot *model.ServingSnapshot, activations map[string]string) ([]string, error) {
+	dependencies := map[string]bool{}
+	requirements := map[string]model.PublicationRequirement{}
+	for _, binding := range snapshot.Bindings {
+		for _, zone := range binding.Zones {
+			if zone.Pending {
+				continue
+			}
+			activation := activations[zone.ZoneUID]
+			if activation == "" {
+				return nil, fmt.Errorf("zone %s has no publication activation", zone.ZoneUID)
+			}
+			dependencies[activation] = true
+			requirement := model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: zone.RequiredPublicationEpoch, Revision: zone.RequiredPublicationRevision}
+			old := requirements[zone.ZoneUID]
+			if model.Compare(requirement.Epoch, requirement.Revision, old.Epoch, old.Revision) > 0 {
+				requirements[zone.ZoneUID] = requirement
+			}
+		}
+	}
+	var dependsOn []string
+	for dependency := range dependencies {
+		dependsOn = append(dependsOn, dependency)
+	}
+	sort.Strings(dependsOn)
+	for _, requirement := range requirements {
+		snapshot.RequiredPublications = append(snapshot.RequiredPublications, requirement)
+	}
+	sort.Slice(snapshot.RequiredPublications, func(i, j int) bool {
+		return snapshot.RequiredPublications[i].ZoneUID < snapshot.RequiredPublications[j].ZoneUID
+	})
+	return dependsOn, nil
 }

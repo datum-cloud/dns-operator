@@ -121,3 +121,38 @@ func TestDestinationClaimConversionRequiresPinnedBinding(t *testing.T) {
 		t.Fatal("converted claim returned to access lifetime")
 	}
 }
+
+func TestServiceDestinationsCannotOverlapRegionalAddressPool(t *testing.T) {
+	ctx := context.Background()
+	for _, prefix := range []string{"", "fd80::/96"} {
+		allocator := Allocator{Client: testClient(t), Namespace: "platform", ClusterPrefix: prefix}
+		address, err := allocator.Allocate(ctx, "project-a", "context-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := allocator.ClaimDestination(ctx, "project-b", "context-b", "region", address, 53); err == nil {
+			t.Fatal("service destination reused another context's regional address")
+		}
+		for _, address := range []string{"127.0.0.1", "::1", "fe80::1", "169.254.1.1", "ff02::1", "224.0.0.1", "::"} {
+			if err := allocator.ClaimDestination(ctx, "project-a", "context-a", "region", address, 53); err == nil {
+				t.Fatalf("non-unicast service destination accepted: %s", address)
+			}
+		}
+		if err := allocator.ClaimDestination(ctx, "project-a", "context-a", "region", "fd70::1", 53); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestServiceDestinationCannotReuseRetainedRegionalClaim(t *testing.T) {
+	ctx := context.Background()
+	allocator := Allocator{Client: testClient(t), Namespace: "platform"}
+	address, err := allocator.Allocate(ctx, "project-a", "context-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocator.ClusterPrefix = "fd80::/96"
+	if err := allocator.ClaimDestination(ctx, "project-b", "context-b", "region", address, 53); err == nil {
+		t.Fatal("service destination reused a retained regional allocation")
+	}
+}

@@ -5,6 +5,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -57,6 +58,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 	var earliest time.Time
+	var zoneErrors []error
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -66,29 +68,31 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			base := z.DeepCopy()
 			controllerutil.AddFinalizer(z, privateZoneFinalizer)
 			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
-				return ctrl.Result{}, err
+				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
-			return ctrl.Result{Requeue: true}, nil
+			continue
 		}
 		result, next, err := r.compileZone(ctx, z, assocs.Items, regs.Items, contributions.Items, records.Items, now)
 		if err != nil {
-			return ctrl.Result{}, err
+			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
+			continue
 		}
 		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
 		}
 		if err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now); err != nil {
-			return ctrl.Result{}, err
+			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
+			continue
 		}
 		if !z.DeletionTimestamp.IsZero() && result {
 			base := z.DeepCopy()
 			controllerutil.RemoveFinalizer(z, privateZoneFinalizer)
 			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
-				return ctrl.Result{}, err
+				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 		}
 	}
-	return ctrl.Result{RequeueAfter: nextProjectRequeue(now, earliest, r.Options.LeaseDuration)}, nil
+	return ctrl.Result{RequeueAfter: nextProjectRequeue(now, earliest, r.Options.LeaseDuration)}, errors.Join(zoneErrors...)
 }
 
 // nextProjectRequeue never lets a later scheduled reconciliation
@@ -223,7 +227,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		if err != nil {
 			return false, time.Time{}, err
 		}
-		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, now); err != nil {
+		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
 			return false, time.Time{}, err
 		}
 	}
@@ -493,7 +497,24 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	return p, nil
 }
 
-func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.DNSZone, result CompileResult, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, now time.Time) error {
+func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.DNSZone, result CompileResult, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) error {
+	for i := range records {
+		record := &records[i]
+		if record.Spec.DNSZoneRef.Name != zone.Name || !record.DeletionTimestamp.IsZero() {
+			continue
+		}
+		base := record.DeepCopy()
+		reason := result.Reasons[record.UID]
+		if reason == "" {
+			reason = dnsValueAccepted
+		}
+		setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
+		if !reflect.DeepEqual(base.Status, record.Status) {
+			if err := r.Status().Patch(ctx, record, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
 	relevant := map[types.UID]bool{}
 	for i := range regs {
 		reg := &regs[i]
@@ -504,7 +525,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		accepted := result.Accepted[reg.UID]
 		reason := result.Reasons[reg.UID]
 		if reason == "" {
-			reason = "Accepted"
+			reason = dnsValueAccepted
 		}
 		base := reg.DeepCopy()
 		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
@@ -515,7 +536,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
 		}
 		reg.Status.ObservedGeneration = reg.Generation
-		setCondition(&reg.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, reg.Generation, now)
+		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -528,11 +549,11 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		accepted := result.Accepted[c.UID]
 		reason := result.Reasons[c.UID]
 		if reason == "" {
-			reason = "Accepted"
+			reason = dnsValueAccepted
 		}
 		base := c.DeepCopy()
 		c.Status.ObservedGeneration = c.Generation
-		setCondition(&c.Status.Conditions, "Accepted", boolCondition(accepted), reason, reason, c.Generation, now)
+		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}

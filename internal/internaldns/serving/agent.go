@@ -227,6 +227,9 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 		}
 	}
 	store := stateStore{path: filepath.Join(c.StateDir, "checkpoint.json")}
+	if err := prepareServingState(c.StateDir); err != nil {
+		return nil, err
+	}
 	state, err := store.Load()
 	if err != nil {
 		gateErr := (FileTransaction{Config: c.Transaction, Runner: d.Runner}).FailClosed(context.Background())
@@ -298,7 +301,7 @@ func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return errors.Join(a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
+	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
 }
 
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {

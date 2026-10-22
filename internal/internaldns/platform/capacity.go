@@ -5,6 +5,8 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -13,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool) {
+func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool, error) {
 	previous := map[string]model.Binding{}
 	for _, binding := range prior.Bindings {
 		previous[binding.BindingUID] = binding
@@ -27,20 +29,34 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		}
 		return candidates[i].BindingUID < candidates[j].BindingUID
 	})
-	snapshot.Bindings = nil
+	snapshot.Bindings = []model.Binding{}
 	rejected := map[string]bool{}
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken(snapshot.Region+"/"+snapshot.Shard)+"-e18446744073709551615-r18446744073709551615", snapshot.Region, snapshot.Shard, "00000000-0000-0000-0000-000000000000", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, time.Now(), snapshot)
+	if err != nil {
+		return snapshot, rejected, err
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return snapshot, rejected, err
+	}
+	used := len(payload)
 	fits := func(binding model.Binding) bool {
 		if len(snapshot.Bindings) >= maxBindings {
 			return false
 		}
-		candidate := snapshot
-		candidate.Bindings = append(append([]model.Binding(nil), snapshot.Bindings...), binding)
-		envelope, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken(candidate.Region+"/"+candidate.Shard)+"-e18446744073709551615-r18446744073709551615", candidate.Region, candidate.Shard, "00000000-0000-0000-0000-000000000000", candidate.ConfigurationEpoch, candidate.ConfigurationRevision, time.Now(), candidate)
+		data, err := json.Marshal(binding)
 		if err != nil {
 			return false
 		}
-		payload, err := json.Marshal(envelope)
-		return err == nil && len(payload) <= maxBytes
+		size := len(data)
+		if len(snapshot.Bindings) > 0 {
+			size++
+		}
+		if used+size > maxBytes {
+			return false
+		}
+		used += size
+		return true
 	}
 	for _, binding := range candidates {
 		if fits(binding) {
@@ -53,15 +69,11 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 				snapshot.Bindings = append(snapshot.Bindings, old)
 				continue
 			}
-			binding.ConfigurationPending = true
-			binding.Zones = nil
-			if fits(binding) {
-				snapshot.Bindings = append(snapshot.Bindings, binding)
-			}
+			return prior, rejected, fmt.Errorf("capacity cannot preserve established binding %s", binding.BindingUID)
 		}
 	}
 	sort.Slice(snapshot.Bindings, func(i, j int) bool { return snapshot.Bindings[i].BindingUID < snapshot.Bindings[j].BindingUID })
-	return snapshot, rejected
+	return snapshot, rejected, nil
 }
 
 func safeExpansion(old, candidate model.Binding) bool {
@@ -83,6 +95,7 @@ func safeExpansion(old, candidate model.Binding) bool {
 }
 
 func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, rejected map[string]bool, now time.Time) error {
+	var failures []error
 	for i := range bindings {
 		binding := &bindings[i]
 		if binding.Spec.Placement.Region != p.Config.Region || binding.Spec.Placement.Shard != p.Config.Shard {
@@ -92,9 +105,9 @@ func (p *Planner) reportCapacity(ctx context.Context, bindings []dnsv1alpha1.DNS
 		condition(&binding.Status.Conditions, "CapacityAvailable", !rejected[string(binding.UID)], "ShardCapacity", binding.Generation, now)
 		if !jsonEqualStatus(base.Status, binding.Status) {
 			if err := p.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
+				failures = append(failures, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }

@@ -287,6 +287,10 @@ func writeDurable(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if _, err = f.Write(data); err != nil {
 		_ = f.Close()
 		return err

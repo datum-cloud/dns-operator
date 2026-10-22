@@ -26,3 +26,25 @@ func TestResolveNamingReturnsCanonicalThenAuthorizedAliases(t *testing.T) {
 		t.Fatalf("unexpected names: %#v", names)
 	}
 }
+
+func TestResolveNamingRequiresCurrentManagedNamespace(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*dnsv1alpha1.DNSResolverContext){
+		"managed namespace disabled": func(c *dnsv1alpha1.DNSResolverContext) {
+			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+		},
+		"ready for an older generation": func(c *dnsv1alpha1.DNSResolverContext) {
+			c.Status.Conditions[0].ObservedGeneration = c.Generation - 1
+		},
+	} {
+		managed := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a", Generation: 2}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "zone-c"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: 2}}}}
+		mutate(managed)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(managed).Build()
+		if names, err := ResolveNaming(context.Background(), c, "project", "project-a", "vpc-a", nil, "web"); err == nil {
+			t.Fatalf("%s: resolved %#v", name, names)
+		}
+	}
+}

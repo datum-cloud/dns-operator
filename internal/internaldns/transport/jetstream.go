@@ -295,7 +295,11 @@ func (c *Consumer) Next(ctx context.Context) (Message, error) {
 		return nil, fmt.Errorf("decode envelope: %w", err)
 	}
 	if err := env.Validate(); err != nil {
-		_ = m.TermWithReason("invalid DNS envelope")
+		if errors.Is(err, model.ErrUnsupportedEnvelope) {
+			_ = m.NakWithDelay(time.Minute)
+		} else {
+			_ = m.TermWithReason("invalid DNS envelope")
+		}
 		return nil, err
 	}
 	meta, err := m.Metadata()

@@ -21,6 +21,11 @@ const APIVersion = "internal.dns.networking.miloapis.com/v1alpha6"
 
 var ErrUnsupportedEnvelope = errors.New("unsupported DNS envelope")
 
+// ErrDestinationRefused marks a service destination claim that was refused on
+// its merits (invalid, reserved or owned by another binding), as opposed to a
+// transient failure to reach the API.
+var ErrDestinationRefused = errors.New("service destination refused")
+
 type Kind string
 
 const (

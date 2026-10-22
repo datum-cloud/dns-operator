@@ -47,12 +47,11 @@ Scope: G-4, the NATS row, and the `internal-dns-control-plane` dashboard. Code r
 
 ## 2. Proposed design
 
-### Prefix: `datum_dns_internal_`
+### Prefix: `internal_dns_`
 
-- In-process metrics in `internal-dns-system` already route through `namespace:datum_service:info`.
-- The agent runs in the edge namespace `ns-<uuid>`, which maps to no service.
-- `datum_dns_` routes to `dns` through `metric-prefixes.yaml`. One prefix for control plane, agent (G-3) and exporter families (G-5) routes correctly wherever the series lands.
-- Rename now. Nothing consumes `internal_dns_*` yet.
+- Self-emitted metrics keep the existing `internal_dns_` prefix. They route through `namespace:datum_service:info`, which maps both `internal-dns-system` and the fleet namespace to `dns`/`delivery`.
+- `datum_dns_internal_*` is only for exporter-produced resource-state families (appendix 03), per `metric-prefixes.yaml`.
+- `loop_runs_total` replaces `internal_dns_operations_total`, and `loop_last_success_timestamp_seconds` replaces `internal_dns_operation_last_success_timestamp_seconds`. Nothing consumes either yet.
 
 ### Endpoints, always on
 
@@ -70,13 +69,14 @@ NATS and the writer stay out of the kubelet probe. Admission does not depend on 
 
 ### Catalogue
 
-Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest,ack}`, `result ∈ {success,error,conflict}`. Never project, binding or zone. Inventory gauges come only from the shard writer. Dashboards use `max by` for gauges and `sum` for counters.
+`…` stands for `internal_dns_`. Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest,ack}`, `result ∈ {success,error,conflict}`. Never project, binding or zone. Inventory gauges come only from the shard writer. Dashboards use `max by` for gauges and `sum` for counters.
 
 | Metric | Type | Labels | Buckets / notes |
 |---|---|---|---|
 | `…_loop_runs_total` | counter | loop, region, shard, result | replaces `internal_dns_operations_total`; `conflict` separates optimistic-lock losses |
 | `…_loop_duration_seconds` | histogram | loop, region | .01 .05 .1 .25 .5 1 2.5 5 10 30 |
-| `…_loop_last_success_timestamp_seconds` | gauge | loop, region, shard | |
+| `…_loop_last_success_timestamp_seconds` | gauge | loop, region, shard | replaces `internal_dns_operation_last_success_timestamp_seconds` |
+| `…_loop_consecutive_failures` | gauge | loop, region, shard | reset to 0 on success; catches a loop failing hot on a fixed ticker, which a rate of errors hides |
 | `…_publication_lag_seconds` | histogram | region, shard, kind | outbox `creationTimestamp` → `AckSink` flips Serving/Published; 0.5 1 2 5 10 20 30 60 120 300 600 |
 | `…_outbox_pending` | gauge | region, kind | non-acknowledged, non-superseded |
 | `…_outbox_oldest_pending_age_seconds` | gauge | region | |
@@ -92,6 +92,8 @@ Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest
 | `…_projects` | gauge | source (`static`,`discovered`), state (`running`,`failed`) | |
 | `…_withdrawal_seconds` | histogram | region, kind (`binding`,`zone`) | tombstone outbox create → last required ACK; 1 5 15 30 60 120 300 900 |
 | `…_activation_failures_total` | counter | region, shard, reason | |
+| `…_naming_rejections_total` | counter | region, reason | zone or record refused by naming policy or a refused suffix |
+| `…_snapshot_unaccepted_zones` | gauge | region, shard | zones in the compiled snapshot whose association or naming policy is not `Accepted`; must be 0 |
 | `…_shard_writer` | gauge 0/1 | region, shard | |
 | `…_shard_writer_epoch`, `…_shard_writer_lease_remaining_seconds` | gauge | region, shard | |
 | `…_shard_writer_transitions_total` | counter | region, shard | |
@@ -121,10 +123,10 @@ Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest
 | # | Repo | Change | Files | Depends on |
 |---|---|---|---|---|
 | 1 | infra | Amend **#7479**: drop the `metricsBindAddress` config key, keep the `metrics` port and the VMPodScrape, and switch readiness to HTTPS `/readyz`. Merge only after PR 2's image lands. The probe-only part can merge immediately as its own small PR. | `apps/dns-operator/internal-dns/staging/runtime/{controller,config,metrics}.yaml/json` | 2, probe part none |
-| 2 | dns-operator | Add flags `--metrics-bind-address :8080` and `--health-probe-bind-address :8081`, keeping a deprecated `metricsBindAddress` key. Add healthz/readyz checks. Rename to `datum_dns_internal_loop_*` with `{loop,region,shard,result}` and a duration histogram. Route stdlib log through zap. | `cmd/internal-dns/main.go`, `runtime/{run,config,metrics}.go` | — |
+| 2 | dns-operator | Add flags `--metrics-bind-address :8080` and `--health-probe-bind-address :8081`, keeping a deprecated `metricsBindAddress` key. Add healthz/readyz checks. Replace `internal_dns_operations_total` with `internal_dns_loop_*` (`{loop,region,shard,result}`, a duration histogram, `loop_consecutive_failures`), and replace `internal_dns_operation_last_success_timestamp_seconds` with `internal_dns_loop_last_success_timestamp_seconds`. Route stdlib log through zap. | `cmd/internal-dns/main.go`, `runtime/{run,config,metrics}.go` | — |
 | 3 | dns-operator | Versioned config and duplicate-key rejection | `runtime/config.go` | 2 |
 | 4 | dns-operator | Controller-name fix | `controlplane/reconciler.go`, `runtime/run.go` | — |
-| 5 | dns-operator | Pipeline metrics: outbox, publish latency, ACK projection, shard fill, writer, inventory, lag and withdrawal | `platform/{outbox,planner,acks}.go`, `transport/jetstream.go` | 2 |
+| 5 | dns-operator | Pipeline metrics: outbox, publish latency, ACK projection, shard fill, writer, inventory, lag, withdrawal, naming rejections and unaccepted zones in the snapshot | `platform/{outbox,planner,acks}.go`, `transport/jetstream.go` | 2 |
 | 6 | dns-operator | Cached platform manager and watches. Outbox and refresh become event-driven. Leader election. | `runtime/run.go`, `platform/*` | 5 |
 | 7 | dns-operator | ACK redesign (a)–(e). Wire compatible: the CP accepts both shapes for one release. | `serving/agent.go`, `platform/acks.go`, `model/`, `runtime/run.go` | 5 |
 | 8 | infra | NATS ACL and stream updates for the split subjects and `DNS_PRIVATE_ACKS` | `apps/dns-operator/internal-dns/staging/*nats*` | 7 |

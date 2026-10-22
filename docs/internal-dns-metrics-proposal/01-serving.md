@@ -48,7 +48,7 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 | Component | Expose (upstream first) | Custom | Port / path | Series per pod |
 |---|---|---|---|---|
 | CoreDNS plugin | `metrics.New` in front of `ContextPlugin`: `coredns_dns_requests_total`, `_responses_total{rcode}`, `_request_duration_seconds`, `_request/response_size_bytes`. `coredns_forward_*`, which the embedded forwarders already register (`to` = 1–3 upstreams). Go and process collectors (`process_start_time_seconds` exposes the silent respawns). `/health` and `/ready` with upstream semantics. | See below | `POD_IP:9153/metrics`, `:8080/health`, `:8181/ready` | ~250 |
-| dnsdist (node, regional) | Built-in webserver: `dnsdist_queries`, `_responses`, `_servfail_responses`, `_rule_refused`, `_rule_servfail`, `_latency_*`, `_frontend_*`, `_server_state/_queries/_latency{server}`, `_pool_*` | `declareMetric` with prometheusName `internal_dns_dnsdist_context_queries_total{outcome}` (`unknown_context`, `context_unready`, `pool_unavailable`, `routed`), incremented in `classifyContext` and the SERVFAIL rules | `webserver(POD_IP..":8083")`, `setWebserverConfig{acl="10.244.0.0/16", statsRequireAuthentication=false, password/apiKey=random}` | ~400 |
+| dnsdist (node, regional) | Built-in webserver: `dnsdist_queries`, `_responses`, `_servfail_responses`, `_rule_refused`, `_rule_servfail`, `_latency_*`, `_frontend_*`, `_server_state/_queries/_latency{server}`. `dnsdist_pool_*` is dropped at scrape (see the cardinality budget). | `declareMetric` with prometheusName `internal_dns_dnsdist_context_queries_total{outcome}` (`unknown_context`, `context_unready`, `pool_unavailable`, `routed`), incremented in `classifyContext` and the SERVFAIL rules | `webserver(POD_IP..":8083")`, `setWebserverConfig{acl="10.244.0.0/16", statsRequireAuthentication=false, password/apiKey=random}` | ~400 |
 | Recursor | `pdns_recursor_*`, the same families as `datum-managed-dns-cache` (183 families and ~256 series per pod observed) | none | `--webserver=yes --webserver-address=$(POD_IP) --webserver-port=8083 --webserver-allow-from=10.244.0.0/16`, port name `recursor` (matches prior art) | ~260 |
 | Agent | controller-runtime `metricsserver` plus Go collectors | See below | `POD_IP:9090/metrics`, `/healthz`, `/readyz` | ~60 |
 
@@ -67,10 +67,13 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 |---|---|---|
 | `internal_dns_agent_serving_fence` | gauge | `state` ∈ `target`, `applied`; `part` ∈ `epoch`, `revision`. Lag is only valid when the epochs match: `Compare` orders by (epoch, revision). |
 | `internal_dns_agent_events_total` | counter | `kind` (envelope kind, ≤6), `result` ∈ `applied`, `stale`, `rejected`, `error` |
-| `internal_dns_agent_activations_total` | counter | `result` ∈ `success`, `validate_failed`, `reload_failed`, `verify_failed` |
-| `internal_dns_agent_activation_duration_seconds` | histogram | .05, .1, .25, .5, 1, 2.5, 5, 10, 30 |
+| `internal_dns_agent_activations_total` | counter | `daemon` ∈ `coredns`, `dnsdist`; `result` ∈ `success`, `validate_failed`, `reload_failed`, `reload_reported_errors`, `verify_failed`. `reload_reported_errors` counts a reload that exited 0 but wrote errors, so a silent partial reload is visible per daemon. |
+| `internal_dns_agent_activation_duration_seconds` | histogram | `daemon`; .05, .1, .25, .5, 1, 2.5, 5, 10, 30 |
 | `internal_dns_agent_fail_closed` | gauge | — |
 | `internal_dns_agent_checkpoint_timestamp_seconds` | gauge | — |
+| `internal_dns_agent_checkpoint_restored` | gauge | 1 while the agent serves state restored from its checkpoint and has not yet confirmed a fence with the control plane, else 0 |
+| `internal_dns_agent_fence_confirmed_timestamp_seconds` | gauge | —. Last time the control plane confirmed the serving fence. `time() -` this shows how long a member has served without control-plane contact. |
+| `internal_dns_agent_loop_consecutive_failures` | gauge | `loop` (fixed set: transport, activation, ack, watchdog); reset to 0 on success |
 | `internal_dns_agent_bindings` | gauge | `state` ∈ `active`, `pending`, `unverified` (≤ `maxBindings` = 200, count only) |
 | `internal_dns_agent_publications` | gauge | `state` ∈ `verified`, `pending`, `rejected`, `tombstone` |
 | `internal_dns_agent_acks_published_total` | counter | `result` ∈ `success`, `error` |
@@ -79,7 +82,8 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 **Cardinality budget.**
 - At most 1,000 series per member pod. The fleet total, about 4 members and 2 recursors, stays under 6,000.
 - Forbidden: context, binding, VPC, zone, qname and client labels.
-- dnsdist `server` (≤ backends) and `pool` (≤ 2^backends−1) are allowed. Add a `metricRelabelConfigs` drop on `dnsdist_pool_.*` if backends ever exceed 4.
+- dnsdist `server` (≤ backends) is allowed.
+- dnsdist `pool` is not. Pools number up to 2^backends−1 and are never pruned, so the PodMonitor drops `dnsdist_pool_.*` with `metricRelabelConfigs` from the start. Pool availability comes from `internal_dns_dnsdist_context_queries_total{outcome="pool_unavailable"}` and `dnsdist_server_state`.
 
 ## 3. Architecture fixes the dashboards depend on
 
@@ -110,10 +114,10 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 | S2 | dns-operator `coredns/server.go`, `plugin.go`, `cmd/internal-dns-coredns/main.go`, `serving/daemons.go` | `metrics.New` chain, outcome counter, snapshot gauges, `/health` and `/ready`, `--metrics-address` from `POD_IP`, slog | — |
 | S3 | dns-operator `coredns/plugin.go`, `serving/readiness.go`, `render.go` (canary rule) | Canary plus NOERROR-only readiness (#261) | S2 |
 | S4 | dns-operator `serving/render.go`, `render_test.go` | dnsdist webserver on `POD_IP`, ACL, random key, `declareMetric`. Put it in the init block, because the topology fingerprint asserts there (`render.go:229`). | — |
-| S5 | dns-operator `runtime/run.go` (`runAgent`), `serving/agent.go`, new `serving/metrics.go` | Agent metrics server and G-3 metrics, `/healthz`, `/readyz` | — |
+| S5 | dns-operator `runtime/run.go` (`runAgent`), `serving/agent.go`, new `serving/metrics.go` | Agent metrics server and G-3 metrics (including the per-daemon activation result, checkpoint-restored, fence-confirmed and consecutive-failure gauges), `/healthz`, `/readyz` | — |
 | S6 | dns-operator `serving/daemons.go` | `--role=serving` HTTP `/readyz` | S3 |
 | S7 | infra `edge-staging/members.yaml`, `public-recursors.yaml` | Container ports, HTTP readiness, liveness and startup probes, recursor webserver flags | S1, S2, S4–S6 images |
-| S8 | infra `edge-staging/podmonitor.yaml`, `network-policy.yaml`, `kustomization.yaml` | Scrape objects with `podTargetLabels` and relabel; NetworkPolicy | S1, S7 |
+| S8 | infra `edge-staging/podmonitor.yaml`, `network-policy.yaml`, `kustomization.yaml` | Scrape objects with `podTargetLabels` and relabel, a `dnsdist_pool_.*` drop; NetworkPolicy | S1, S7 |
 | S9 | dns-operator `config/internal-dns/fleet.example.yaml`, `routers.example.yaml`, `docs/architecture/internal-dns/` | Mirror S1/S7/S8 in the examples | S7 |
 | S10 | dns-operator `coredns/transport.go` | Optional: upstream proxyproto | spike |
 
@@ -131,6 +135,6 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 - **Recursor:** the prior-art port is 8083, named `recursor`, not `:8082`. The recursor runs from the serving image, not `pdns-recursor-54`.
 - **dnsdist bind:** `webserver("[::]:8083")` would also listen on net1. Bind `POD_IP` instead.
 - **Member identity:** "Per-member identity comes from `pod`" breaks on every rollout because of the ReplicaSet hash. Use pod labels instead.
-- **Per-rule counters:** dnsdist doesn't emit per-rule counters on `/metrics`. The real cardinality risk is `dnsdist_pool_*`.
+- **Per-rule counters:** dnsdist doesn't emit per-rule counters on `/metrics`. The real cardinality risk is `dnsdist_pool_*`, which we drop.
 - **UID separation:** the strategy (and the brief) assume it exists. It doesn't in staging.
 - **Revision lag:** `target − applied` revision ignores epoch.

@@ -12,7 +12,7 @@ Code references are to dns-operator `fix/internal-dns-name-references` at `1b90c
 | [04-probes-slos.md](04-probes-slos.md) | Synthetic probes, SLIs, alerting |
 
 > [!NOTE]
-> Where an appendix disagrees with this page, this page wins. The main case is the metric prefix: appendix 02 proposes `datum_dns_internal_` for everything. That was based on the fleet namespace mapping to no service, but we verified it maps to `dns`/`delivery`.
+> Where an appendix disagrees with this page, this page wins.
 
 ## What we found
 
@@ -45,8 +45,8 @@ These findings change the plan. Each one was checked against code or live data.
 | CoreDNS | Keep the Go-built server, which keeps the atomic snapshot swap that makes serving fail closed. Wire in upstream `metrics.New`, and reimplement `/health` and `/ready`. | We get the standard `coredns_*` families without giving up the fail-closed design. |
 | Readiness | Ready means "can answer". A fixed `CH TXT ready.internal-dns.` canary must return NOERROR through dnsdist and the backend pool. Liveness is a separate, lenient, process-local check. | Fixes F2 and F3. The canary doesn't depend on any context, so a node with zero contexts is still Ready. |
 | Freshness canary | The planner adds a `_canary.<suffix>` TXT record (`rev=…`) to every context. Probes and the member self-test use it. | One positive name per context, and end-to-end freshness without churn. |
-| Cardinality | No context, binding, VPC, zone, qname or client labels on server metrics. At most about 1,000 series per member pod. Per-member ACK series are exported only while not acknowledged, or as a per-binding max. | Context count grows with tenants. |
-| Server-side alerts | Aggregate `without (cluster)`, or add an explicit route ahead of `lab-clusters`. | F13 |
+| Cardinality | No context, binding, VPC, zone, qname or client labels on server metrics. At most about 1,000 series per member pod. dnsdist `pool` series are dropped at scrape. Resource-state families carry no `zone`, and carry `name` only for objects that are not Ready or are stale. Per-member ACK series are exported only while not acknowledged, or as a per-binding max. | Context, record and pool counts grow with tenants or backends and are never pruned. |
+| Server-side alerts | Keep the `cluster` label. Either add a dedicated route for `service=dns` lab alerts, or keep them at `warning` in labs (decision 8). | F13. The standard keeps labs out of paging on purpose, so aggregating `cluster` away to dodge the route is not an option. |
 | SLOs | Use burn rates in the house `KubeAPIErrorBudgetBurn` shape. Set targets only after 2–4 weeks of baseline. Isolation leaks are a zero-tolerance alert, not an SLO. | The insider probe's own floor is 98.8%, so a fixed "99% over 10 m" rule would page constantly. |
 
 ## Signals, by layer
@@ -56,14 +56,25 @@ The full catalogue (names, types, labels, buckets) is in the appendices. This ta
 | Layer | Upstream families | Custom families (prefix `internal_dns_`) | Appendix |
 |---|---|---|---|
 | CoreDNS plugin | `coredns_dns_requests_total`, `_responses_total{rcode}`, `_request_duration_seconds`, `coredns_forward_*` | `context_queries_total{outcome}`, `context_snapshot_contexts{state}`, `context_snapshot_reloads_total`, `context_snapshot_applied_timestamp_seconds` | 01 |
-| dnsdist | `dnsdist_queries`, `_responses`, `_servfail_responses`, `_latency_*`, `_server_state{server}`, `_pool_*` | `dnsdist_context_queries_total{outcome}` | 01 |
+| dnsdist | `dnsdist_queries`, `_responses`, `_servfail_responses`, `_latency_*`, `_server_state{server}` (`dnsdist_pool_*` dropped) | `dnsdist_context_queries_total{outcome}` | 01 |
 | Recursor | `pdns_recursor_*`, as `datum-managed-dns-cache` does | none | 01 |
-| Agent | Go, process | `agent_serving_fence{state,part}`, `agent_events_total`, `agent_activations_total`, `agent_activation_duration_seconds`, `agent_fail_closed`, `agent_checkpoint_timestamp_seconds`, `agent_bindings{state}`, `agent_transport_connected`, `selftest_*` | 01, 04 |
-| Control plane | controller-runtime, workqueue, webhook | `loop_runs_total{loop,region,shard,result}` (replaces `operations_total`), `loop_duration_seconds`, `publication_lag_seconds`, `withdrawal_seconds`, `outbox_pending`, `outbox_oldest_pending_age_seconds`, `nats_publish_duration_seconds`, `nats_connected`, `ack_projection_seconds`, `shard_bindings` / `_limit`, `shard_writer`, `build_info` | 02 |
+| Agent | Go, process | `agent_serving_fence{state,part}`, `agent_events_total`, `agent_activations_total{daemon,result}`, `agent_activation_duration_seconds{daemon}`, `agent_fail_closed`, `agent_checkpoint_timestamp_seconds`, `agent_checkpoint_restored`, `agent_fence_confirmed_timestamp_seconds`, `agent_loop_consecutive_failures{loop}`, `agent_bindings{state}`, `agent_transport_connected`, `selftest_*` | 01, 04 |
+| Control plane | controller-runtime, workqueue, webhook | `loop_runs_total{loop,region,shard,result}` (replaces `operations_total`), `loop_last_success_timestamp_seconds` (replaces `operation_last_success_timestamp_seconds`), `loop_consecutive_failures`, `loop_duration_seconds`, `naming_rejections_total{reason}`, `snapshot_unaccepted_zones`, `publication_lag_seconds`, `withdrawal_seconds`, `outbox_pending`, `outbox_oldest_pending_age_seconds`, `nats_publish_duration_seconds`, `nats_connected`, `ack_projection_seconds`, `shard_bindings` / `_limit`, `shard_writer`, `build_info` | 02 |
 | NATS | existing exporter (`nats_stream_*`, `nats_consumer_*`) | none. Alert on failure to drain (`min_over_time(num_pending[2m]) > 0`), not on a pending threshold. | 02 |
-| Resource state | — | `datum_dns_internal_<kind>_{info,owner,status_condition,status_condition_last_transition_time,condition_generation_lag}`, `datum_dns_internal_resolver_binding_ack_*`, `datum_cloud_network_context_status_condition` (deploy the existing policy), `datum_cloud_compute_instance_dns_status_condition` | 03 |
+| Resource state | — | `datum_dns_internal_<kind>_{info,owner,status_condition,status_condition_last_transition_time,condition_generation_lag}` (non-Ready or stale objects only), `datum_dns_internal_resolver_binding_ack_*`, `datum_cloud_network_context_status_condition` (deploy the existing policy), `datum_cloud_compute_instance_dns_status_condition` | 03 |
 | Producers | controller-runtime | `datum_cloud_compute_internal_dns_publications_total{result,reason}`, `_publication_latency_seconds`, `datum_cloud_network_internal_dns_ready_latency_seconds` | 03 |
 | Probes | — | `qa_internal_dns_queries_total{case,transport}`, `_query_failures_total{reason}`, `_query_duration_seconds`, `_churn_seconds{phase}`, `qa_internal_dns_lifecycle_*` (counters, not per-minute gauges) | 04 |
+
+### Signals for known failure modes
+
+Recent reviews found four failures that the catalogue above would not have caught. Each now has a signal.
+
+| Failure | Signal | Alert shape |
+|---|---|---|
+| A daemon reload writes errors but exits 0 | `internal_dns_agent_activations_total{daemon,result="reload_reported_errors"}` | `increase(...[10m]) > 0` per member and daemon |
+| A member serves a restored checkpoint without ever reaching the control plane | `internal_dns_agent_checkpoint_restored`, `internal_dns_agent_fence_confirmed_timestamp_seconds` | restored `== 1` for 5m, or `time() - fence_confirmed` above the ACK lease |
+| Zones under a refused suffix stay in the snapshot | `internal_dns_naming_rejections_total{reason}`, `internal_dns_snapshot_unaccepted_zones` | unaccepted zones `> 0` for 5m. Rejections go on a panel, not an alert. |
+| A loop fails hot on a fixed ticker | `internal_dns_loop_consecutive_failures`, `internal_dns_agent_loop_consecutive_failures` | `>= 5` for 5m |
 
 ## Architecture fixes
 
@@ -89,19 +100,20 @@ Every phase is useful on its own, and later phases don't block earlier dashboard
 | **0 — now** | infra: switch the control-plane readiness probe to HTTPS `/readyz` (no code change). infra: deploy NSO's `networking-metrics` policy and scrape the NSO cell manager. compute: land #517. infra: rework #7479 (drop the config key, keep the scrape) and hold it for phase 1. Strategy doc: fix O11 (`sum_over_time`) and the corrections below. | `DNSReady` panel, NSO cell controller panels, quiet logs, a clean publisher error ratio | Low |
 | **1 — control plane** | dns-operator: endpoint flags, health checks, reshaped `loop_*` metrics, stable controller names, versioned config. infra: #7479 as reworked. | Control-plane dashboard, overview O6 | Low |
 | **2 — security and serving** | infra: UID split and pod labels (**gate for the rest of this phase**). dns-operator: CoreDNS metrics and canary readiness, dnsdist webserver, agent metrics. infra: ports, probes, PodMonitors, NetworkPolicy, recursor webserver. | Serving dashboard, overview O3/O4/O9 that tell the truth | Medium: readiness semantics change |
-| **3 — state and producers** | dns-operator: condition consistency, then the `internal-dns-metrics.yaml` policy. compute: `instance_dns_status_condition` plus publisher hygiene. NSO: pending-as-status, watches, Events. | Producers dashboard, overview O8 | Medium: API status changes |
+| **3 — state and producers** | **Gate: decision 7 settled.** dns-operator: condition consistency, then the `internal-dns-metrics.yaml` policy. compute: `instance_dns_status_condition` plus publisher hygiene. NSO: pending-as-status, watches, Events. | Producers dashboard, overview O8 | Medium: API status changes |
 | **4 — probes and SLOs** | Canary project with two VPCs. qa-synthetics `probes/internal-dns` (resolve, isolation, NAT64, churn). Lifecycle canary. dns-operator `_canary` record and member self-test. infra: probe alerts, then burn-rate rules after the baseline. | Overview O10, the SLOs, and detection of a #7513-class incident within about 15 min | Low |
 | **5 — efficiency** | dns-operator: cached platform manager, leader election, ACK redesign (wire-compatible for one release). infra: NATS stream and ACL changes. | Scales to the shard cap; less noise in transport panels | Medium: protocol change |
 
 ## Decisions needed
 
-1. **Prefix rule.** Approve `internal_dns_*` for self-emitted metrics and `datum_dns_internal_*` for exporter families. This overrides appendix 02.
+1. **Prefix rule.** Approve `internal_dns_*` for self-emitted metrics and `datum_dns_internal_*` for exporter families.
 2. **#7479.** Rework as described, or merge it as-is and accept the coupling until phase 1?
 3. **Probe and alert ownership.** Proposed: DNS (delivery) owns the probe and its alerts, and QA (observability) owns the harness. Also needed: a staging paging policy for internal DNS critical alerts.
 4. **ACK series cardinality.** Per-binding max (recommended) or per-member series only while unacknowledged?
 5. **A `_canary` TXT in every context.** Acceptable in the API? Should tenants be able to see it?
 6. **Supervision.** Should CoreDNS move out of the `serving` supervisor into its own container? Crashes would become visible, but the fail-closed gating would need rework.
-7. **ResourceMetricsPolicy scope.** It has no project selector, so adding nine kinds opens informers on every project control plane. Is that acceptable, or should resource-metrics gain a selector first?
+7. **ResourceMetricsPolicy scope.** It has no project selector, so adding nine kinds opens informers on every project control plane. Is that acceptable, or should resource-metrics gain a selector first? This must be settled before phase 3 starts; the reviewer (ecv) asked for that ordering. Phase 1, 2 and 4 don't depend on it.
+8. **Lab alert routing.** Server-side fleet alerts keep `cluster`, so lab series hit the `lab-clusters` route. Pick one: (a) a dedicated route for `service=dns` lab alerts ahead of `lab-clusters`, so internal DNS can page while the fleet is lab-only, or (b) keep these alerts at `warning` in labs and accept that nothing pages until the fleet runs outside labs.
 
 ## Corrections to the dashboard strategy
 

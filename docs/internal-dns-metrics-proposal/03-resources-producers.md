@@ -71,13 +71,15 @@ All families are `ResourceMetricsPolicy` generators. Labels `milo.project.name` 
 
 | Kind(s) | Families | Labels | Owner repo |
 |---|---|---|---|
-| Each internal DNS kind `<k>` ∈ {`resolver_context`, `access_binding`, `zone_association`, `naming_policy`, `registration`, `contribution`, `resolver_binding`, `publication_manifest`} | `datum_dns_internal_<k>_info`, `_owner`, `_status_condition` (forEach), `_status_condition_last_transition_time` (forEach), `_condition_generation_lag` (forEach, value `metadata.generation - item.observedGeneration`) | `name, namespace, condition, status, reason`. Info adds `region` (binding/access), `zone` (registration/contribution), `owner_kind` | dns-operator, new `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` |
+| Each internal DNS kind `<k>` ∈ {`resolver_context`, `access_binding`, `zone_association`, `naming_policy`, `registration`, `contribution`, `resolver_binding`, `publication_manifest`} | `datum_dns_internal_<k>_info`, `_owner`, `_status_condition` (forEach), `_status_condition_last_transition_time` (forEach), `_condition_generation_lag` (forEach, value `metadata.generation - item.observedGeneration`) | `name, namespace, condition, status, reason`. Info adds `region` (binding/access) and `owner_kind`. No `zone` label. **Per-object series exist only while the object is not Ready, or its `observedGeneration` is behind** (see below). | dns-operator, new `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` |
 | ResolverBinding ACKs | `datum_dns_internal_resolver_binding_ack_observed_timestamp_seconds`, `_ack_revision`, `_ack_valid_until_timestamp_seconds` (forEach `status.memberAcknowledgements`) | `name, member, phase` plus `has_error` (bool, not the text) | dns-operator |
-| ResolverBinding revision | `datum_dns_internal_resolver_binding_configuration_revision` (spec) and `_observed_configuration_revision` | `name, region, shard` | dns-operator |
+| ResolverBinding revision | `datum_dns_internal_resolver_binding_configuration_revision` (spec) and `_observed_configuration_revision`, emitted only while the two differ | `name, region, shard` | dns-operator |
 | TransportOutbox | `datum_dns_internal_transport_outbox_state` (value 1) | `state` only, aggregated: no `name` label | dns-operator |
 | public DNSZone/RecordSet | Switch to `forEach` so `Published` is exported. Leave the names unchanged so existing alerts keep working. | — | dns-operator |
 | NetworkContext | Ship the existing `datum_cloud_network_context_status_condition`; `DNSReady` comes free. Add `_last_transition_time`. | existing | NSO bundle path and infra Flux Kustomization |
 | Instance DNS | `datum_cloud_compute_instance_dns_status_condition`, forEach `has(object.status.dns) ? object.status.dns : []`, value `Ready=='True'` | `name, namespace, network` (= `item.network.name`), `reason, status`. No FQDN. | Compute `compute-metrics.yaml` |
+
+**Name only on unhealthy objects.** These families would otherwise carry `name` and `namespace` for every object in every project, so cardinality would grow per tenant and per record. Each per-object family therefore filters in CEL: it emits nothing for an object that is Ready with `observedGeneration` current. Healthy objects cost zero series, and the alertable set (not Ready, or stale) keeps its `name`. Totals by state come from the control plane's own inventory gauges (`internal_dns_contexts`, `_private_zones`, `_bindings`, appendix 02), not from per-object series. Kinds without a `Ready` rollup can't be filtered this way, which is one reason phase 3 lands the rollup (§3) before this policy.
 
 Sketch, with each family following the same shape:
 
@@ -88,7 +90,11 @@ Sketch, with each family following the same shape:
   - name: datum_dns_internal_registration_status_condition
     type: gauge
     metrics:
-    - forEach: "has(object.status) && has(object.status.conditions) ? object.status.conditions : []"
+    - forEach: >-
+        has(object.status) && has(object.status.conditions) &&
+        !(object.status.conditions.exists(c, c.type == 'Ready' && c.status == 'True') &&
+          object.status.conditions.all(c, c.observedGeneration == object.metadata.generation))
+        ? object.status.conditions : []
       value: "item.status == 'True' ? 1.0 : 0.0"
       labels: [{name: name, value: object.metadata.name}, {name: namespace, value: object.metadata.namespace},
                {name: condition, value: item.type}, {name: reason, value: item.reason}, {name: status, value: item.status}]
@@ -111,12 +117,12 @@ These are self-emitted, so they route by namespace. The prefix is a safeguard.
 
 | Source | Staging | Production estimate |
 |---|---|---|
-| Project kinds: 5 condition series per object | 5 × objects | linear in names published |
+| Project kinds: 5 series per object, only while not Ready or stale | 5 × unhealthy objects | linear in unhealthy objects, about 0 in steady state |
 | Instance DNS | ~90 (87 instances) | 1 per instance × network |
 | NetworkContext | ~73 per condition | 1 per network × location |
 | ACKs | 3 families × bindings × members, up to 2,400 at a 200 × 4 cap | **options:** (a) keep, guarded by a shard limit; (b) **recommended:** keep per-member ACKs only on the binding status condition, and expose `datum_dns_internal_resolver_binding_ack_lag_seconds` as a per-binding max through the planner's own metric (G-4), not per member; (c) emit per-member series only while `phase!=Acknowledged` (CEL filter in forEach) |
 
-`resource-metrics` memory scales with projects × resource types. Adding 9 kinds opens 9 informers on every project control plane, including projects without DNS. See open question 1.
+`resource-metrics` memory scales with projects × resource types. Adding 9 kinds opens 9 informers on every project control plane, including projects without DNS. The staging manager already peaks at about 2.7 of 4 GiB after the NSO policy added its generators. See open question 1. That question (README decision 7) must be settled before phase 3 ships this policy.
 
 ## 3. Architecture fixes
 
@@ -148,13 +154,13 @@ These are self-emitted, so they route by namespace. The prefix is a safeguard.
 | 4 | infra `apps/network-services-operator/cell`, NSO `config/cell` | Scrape the cell controller manager | — |
 | 5 | NSO `internal/controller/internaldns_controller.go`, `internaldns_cell_controller.go` | Pending as status, no error+RequeueAfter, watches, logs, Events | — |
 | 6 | dns-operator `api/v1alpha1/internaldns_*_types.go`, `internal/internaldns/{controlplane,platform}` | Ready rollup, `observedGeneration`, conditions replacing phases, messages | — |
-| 7 | dns-operator `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` | Families from §2 (ACKs as chosen in the options) | 6 for the Ready panels |
+| 7 | dns-operator `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` | Families from §2 (ACKs as chosen in the options) | 6 (the non-Ready filter needs the rollup); README decision 7 |
 | 8 | compute and NSO `internal/metrics` | Publication counters and latency histograms | 1, 5 |
 | 9 | infra dashboards `internal-dns-producers` | Panels with corrected names | 2, 3, 7 |
 
 ## 5. Open questions
 
-1. Can `ResourceMetricsPolicy` be scoped to projects, so the service-scoped generators read only `internal-dns-service`? The schema (`milo-os/resource-metrics api/v1alpha1/custom_resource_metrics_types.go`) has no selector. What does the operator do when a CRD is absent from a project?
+1. (README decision 7, blocks phase 3.) Can `ResourceMetricsPolicy` be scoped to projects, so the service-scoped generators read only `internal-dns-service`? The schema (`milo-os/resource-metrics api/v1alpha1/custom_resource_metrics_types.go`) has no selector. What does the operator do when a CRD is absent from a project?
 2. ACK cardinality: option (b) or (c)?
 3. Should NSO's `DNSReady` be split, so that project-side pending and data-plane reasons are not reported under the same type?
 4. Does #7513 fully explain the error rate? Errors persist at 248/h now.

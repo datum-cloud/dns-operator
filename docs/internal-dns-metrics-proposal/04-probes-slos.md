@@ -32,7 +32,7 @@ So nothing exercises "a private name resolves through `fd53::53`" or "a new inst
 1. **The QA metrics are per-minute gauges, not counters.** The strategy's O11 query `increase(qa_compute_dns_failed_lookups[15m])` is therefore wrong. Over 24h it returns 28 failures for `general-purpose`, while `sum_over_time` gives the true 32. Use `sum_over_time`.
 2. **The strategy's Phase 3 "probe success <99% over 10m (paging)" would page all the time.** The insider check's 24h pass rate is 98.8% (general-purpose) and 98.6% (unikernel), and one failed minute out of 10 already drops below 99%. Use burn rates instead.
 3. **The QA alerts use a `dashboard` annotation.** The standard is `dashboard_url`.
-4. **Fleet series are labelled `cluster="us-central-1-staging-lab"` and `environment="edge"`.** The standard says `lab`. Because of the prepended lab route, any server-side alert that keeps `cluster` will go to `slack-labs` and never page. Probe series pushed via `metrics-qa` carry no `cluster` at all.
+4. **Fleet series are labelled `cluster="us-central-1-staging-lab"` and `environment="edge"`.** The standard says `lab`. Because of the prepended lab route, any server-side alert that keeps `cluster` goes to `slack-labs` and never pages. That is the standard working as intended, so the fix is a route or a severity choice (README decision 8), not dropping `cluster`. Probe series pushed via `metrics-qa` carry no `cluster` at all.
 5. **Fleet readiness does not check that a member can answer.** `serving.Readiness` sends a DNS query for `.` to each local daemon and accepts any response, whatever its rcode (`dns-operator-244:internal/internaldns/serving/readiness.go`). A member that SERVFAILs every private name stays Ready. The per-binding SOA proof (`verify.go: DNSVerifier.Verify`) runs only at activation.
 6. **The publisher error signal is not clean.** `internal-dns-instance-publisher` still logs 234 errors, 20 successes and 6,446 `requeue_after` per hour after #7513 (merged 16:03Z). An error-ratio alert alone cannot detect an incident like #7513, so a canary is required.
 7. **The insider probe is deployed from a personal account into `project-8b278`.** That is not owned infrastructure.
@@ -76,12 +76,13 @@ The labels on every series are `service="internal_dns"`, `check="probe-internal-
 | `qa_internal_dns_queries_total` | `case`, `transport` | counter |
 | `qa_internal_dns_query_failures_total` | `case`, `transport`, `reason` (`timeout`, `rcode`, `answer`, `leak`) | counter |
 | `qa_internal_dns_query_duration_seconds` | `case` | histogram, buckets 0.005–5 |
-| `qa_internal_dns_churn_seconds` | `phase` (`publish`, `withdraw`) | histogram |
-| `qa_internal_dns_churn_result_total` | `phase`, `result` (`ok`, `timeout`, `api_error`) | counter |
+| `qa_internal_dns_churn_seconds` | `phase` (`publish`, `withdraw`) | histogram, completed runs only; buckets 1 2 5 10 20 30 60 120 300 |
+| `qa_internal_dns_churn_result_total` | `phase`, `result` (`ok`, `timeout`, `api_error`) | counter. A run that never sees its change within 300 s is `timeout` and never reaches the histogram. |
 | `qa_internal_dns_lifecycle_stage_seconds` / `_stage_result` | `stage` (`ready`, `status_dns`, `resolves`, `withdrawn`), `result` | house lifecycle shape |
 
 These diverge from the insider probe on purpose:
 - They use **cumulative `_total` counters and histograms**, so `rate`/`increase` and burn-rate math work.
+- The probe initialises every `reason` series of `_query_failures_total` (and every `result` of `_churn_result_total`) at 0 on start. Without that, the first `reason="leak"` creates the series, and `increase()` over a series that didn't exist before returns nothing, so the first leak would be missed.
 - Labels are bounded: there is no instance, qname or address label.
 - `qa-synthetics-overview` must add an `internal_dns` row. It renders only `compute`, `compute_dns`, `dns` and `cloud_console` automatically.
 
@@ -93,10 +94,12 @@ The windows below follow the PromQL range-vector syntax. `$P` is `service="inter
 |---|---|---|---|
 | Private-name availability | `1 - sum(rate(qa_internal_dns_query_failures_total{$P,case=~"static_.*\|nxdomain"}[w])) / sum(rate(qa_internal_dns_queries_total{$P,case=~"static_.*\|nxdomain"}[w]))` | `1 - sum(rate(coredns_dns_responses_total{rcode="SERVFAIL"}[w])) / sum(rate(coredns_dns_responses_total[w]))` | 99.5% |
 | Latency | `sum(rate(qa_internal_dns_query_duration_seconds_bucket{$P,le="0.1"}[w])) / sum(rate(..._count[w]))` | `coredns_dns_request_duration_seconds_bucket{le="0.128"}` (CoreDNS buckets are 0.00025×2ⁿ, so there is no 0.1) | 99% under 100 ms |
-| Publication lag | `histogram_quantile(0.99, sum by (le)(rate(qa_internal_dns_churn_seconds_bucket{phase="publish"}[w])))` | `internal_dns_publication_lag_seconds` p99 | 99% within 60s |
-| Withdrawal delay | the same with `phase="withdraw"` | `internal_dns_withdrawal_seconds`; `max(time() - datum_dns_internal_resolver_binding_ack_observed_timestamp_seconds)` must stay under the lease | 99% within 120s |
-| Isolation | `sum(increase(qa_internal_dns_query_failures_total{reason="leak"}[5m])) > 0` | `internal_dns_context_queries_total{outcome="refused_unknown_context"}` (expected nonzero is fine) | **Zero.** No budget; this is not an SLO. |
+| Publication lag | `sum(rate(qa_internal_dns_churn_seconds_bucket{$P,phase="publish",le="60"}[w])) / sum(rate(qa_internal_dns_churn_result_total{$P,phase="publish",result=~"ok\|timeout"}[w]))`: runs that published within 60 s over all runs, so timeouts count as failures. `api_error` is the probe's own fault and is alerted on separately. | `internal_dns_publication_lag_seconds` p99 | 99% within 60s |
+| Withdrawal delay | the same ratio with `phase="withdraw"` and `le="120"` | `internal_dns_withdrawal_seconds`; `max(time() - datum_dns_internal_resolver_binding_ack_observed_timestamp_seconds)` must stay under the lease | 99% within 120s |
+| Isolation | `sum(increase(qa_internal_dns_query_failures_total{reason="leak"}[5m])) > 0` (the series is initialised at 0, §2) | `internal_dns_context_queries_total{outcome="refused_unknown_context"}` (expected nonzero is fine) | **Zero.** No budget; this is not an SLO. |
 | Public and NAT64 | availability with `case=~"public\|nat64"` | `dnsdist_servfail_responses` | 99.5% |
+
+**Churn sample counts.** One churn every 5 minutes gives 12 runs an hour per probe, so a 1 h window holds about 12 samples and one failure is an 8% error. A p99 over that is meaningless, which is why the SLI is a good-over-total ratio. Even so, churn SLOs alert only on the 6h, 1d and 3d windows (at least 72 runs), never 5m/30m/1h. To get faster detection, run churn every minute or add probe instances per region, and let the lifecycle canary and `InternalDNSPrivateNameDown` cover fast failures.
 
 **How to baseline the targets.**
 - Run the probe for 2–4 weeks in `warning` mode.
@@ -121,17 +124,18 @@ This mirrors the house `KubeAPIErrorBudgetBurn` shape, for a 99.5% target where 
   labels: {severity: critical, service: dns, team: delivery, plane: data, slo: private-name-availability, long: 1h, short: 5m}
   annotations:
     summary: "Private names in {{ $labels.region }} burn availability budget at 14x"
+    description: "The private-name probe error ratio in {{ $labels.region }} is {{ $value | humanizePercentage }} over 1h and 5m, against a 0.5% budget. At this rate the 28-day budget is gone in about 2 days."
     impact: "Guests cannot resolve private names"
     runbook_url: https://github.com/datum-cloud/infra/blob/main/docs/runbooks/dns/internal-dns-availability-burn.md
     dashboard_url: "https://grafana.{{ if eq $labels.environment \"production\" }}prod{{ else }}staging{{ end }}.env.datum.net/d/internal-dns-overview"
 # plus 6h/30m ×6 (critical), 1d/2h ×3 and 3d/6h ×1 (warning)
 ```
 
-Server-side SLI rules must aggregate `without (cluster)`, or add an explicit route, so the lab route does not swallow them.
+Server-side rules keep the `cluster` label. The alerting standard keeps lab clusters out of paging on purpose, so these rules must not aggregate it away to dodge the `lab-clusters` route. Either add a dedicated route for `service=dns` lab alerts, or keep these alerts at `warning` while the fleet runs only in labs. That choice is README decision 8.
 
 ### Staged alerts
 
-All of these route on `service: dns` to the deliver channel. `critical` also pages through `grafana-oncall`. In staging they stay `warning` until the baseline exists (open question 4).
+All of these route on `service: dns` to the deliver channel. `critical` also pages through `grafana-oncall`. In staging they stay `warning` until the baseline exists (open question 4). Series that carry a lab `cluster` follow README decision 8.
 
 | Phase | Alert | Condition | Severity | Panel |
 |---|---|---|---|---|
@@ -140,7 +144,7 @@ All of these route on `service: dns` to the deliver channel. `critical` also pag
 | 3c-a | `InternalDNSPrivateNameDown` | all `static_*` cases failing for 5m in a region | critical | O10 |
 | 3c-a | `InternalDNSNAT64Failing`, `InternalDNSPublicRecursionFailing` | case failure ratio > 10% for 10m | warning | O10, serving recursor row |
 | 3c-b | `InternalDNSLifecycleCanaryFailing` | stage `status_dns` or `resolves` failed in 2 consecutive runs | critical | O10, producers |
-| 3c-b | `InternalDNSPublicationSlow` / `InternalDNSWithdrawalSlow` | churn p99 above its SLO for 30m, or ≥2 `timeout` results per hour | warning | O8, publication-lag panel |
+| 3c-b | `InternalDNSPublicationSlow` / `InternalDNSWithdrawalSlow` | good-over-total churn ratio below its SLO over 6h, or ≥2 `timeout` results per hour | warning | O8, publication-lag panel |
 | 3c-c | `InternalDNSAvailabilityBudgetBurn`, `InternalDNSLatencyBudgetBurn` | 4-window burn | critical/warning | O9, O10 |
 | 3c-c | `InternalDNSMemberSelfTestFailing` | §4.2 self-test failing for 2m on any member | warning | O4 |
 

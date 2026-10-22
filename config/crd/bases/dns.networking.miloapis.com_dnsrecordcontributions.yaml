@@ -279,11 +279,13 @@ spec:
                         required:
                         - name
                         type: object
+                      maxItems: 256
                       type: array
                   required:
                   - recordType
                   - records
                   type: object
+                maxItems: 14
                 type: array
               registrationRef:
                 description: |-

@@ -56,6 +56,11 @@ spec:
                   value: "object.metadata.uid"
                 - name: domain_name
                   value: "object.spec.domainName"
+                - name: visibility
+                  value: |
+                    has(object.spec.visibility) ? object.spec.visibility : 'Public'
+                - name: dns_zone_class_name
+                  value: "object.spec.dnsZoneClassName"
 
     - name: dns-zone-created
       resource:

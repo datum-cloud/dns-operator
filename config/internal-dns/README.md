@@ -226,3 +226,21 @@ reports `CapacityAvailable=False` for the affected binding while healthy
 contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
+
+### Control-plane monitoring
+
+Set `metricsBindAddress` to an internal listener, such as `:8080`, to expose
+`/metrics` on the control-plane process. The endpoint is disabled when the
+setting is omitted or set to `0`. Restrict access to the monitoring network.
+
+The endpoint includes controller-runtime reconciliation metrics and:
+
+- `internal_dns_operations_total{operation,result}`: completed operations,
+  with `result` set to `success` or `error`.
+- `internal_dns_operation_last_success_timestamp_seconds{operation}`: the
+  latest successful completion time. Errors do not advance this timestamp.
+
+Operations identify configured discovery, planner, acknowledgement refresh,
+transport outbox, and acknowledgement processing loops. A successful loop
+can be idle; it does not prove that an endpoint is serving. Combine these
+metrics with binding conditions, broker backlog, and DNS queries from a VPC.

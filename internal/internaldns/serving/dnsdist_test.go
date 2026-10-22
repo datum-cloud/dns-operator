@@ -65,14 +65,27 @@ func TestDNSDistBootstrapPublishesOnlyCompleteConfiguration(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "DNSAction.Refused") || !strings.Contains(string(data), "setRules(rules)") {
 		t.Fatal("bootstrap must refuse unknown contexts", err)
 	}
-	if err := os.WriteFile(router.Path, []byte("accepted snapshot"), 0644); err != nil {
+	accepted := strings.Replace(string(data), "local bindings = {", "local bindings = {\n  [\"fd53::a\"] = {context=\"tenant-a\", ready=true},", 1)
+	accepted = strings.ReplaceAll(accepted, "tcpOnly=true,checkTCP=true,", "")
+	if err := os.WriteFile(router.Path, []byte(accepted), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := prepareDNSDistRouter(router); err != nil {
 		t.Fatal(err)
 	}
 	retained, err := os.ReadFile(router.Path)
-	if err != nil || string(retained) != "accepted snapshot" {
-		t.Fatal("bootstrap replaced accepted routing", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, acceptedRules, _ := strings.Cut(accepted, dnsdistRulesBoundary)
+	_, retainedRules, _ := strings.Cut(string(retained), dnsdistRulesBoundary)
+	if retainedRules != acceptedRules || !strings.Contains(string(retained), "tcpOnly=true,checkTCP=true") {
+		t.Fatal("startup must refresh transport and preserve accepted tenant rules")
+	}
+	if err := os.WriteFile(router.Path, []byte("incomplete configuration"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDNSDistRouter(router); err == nil {
+		t.Fatal("incomplete retained rules must block startup")
 	}
 }

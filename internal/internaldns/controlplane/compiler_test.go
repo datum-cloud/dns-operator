@@ -347,6 +347,8 @@ func TestCompileRejectedRegistrationDoesNotClaimOtherTypes(t *testing.T) {
 	valid.CreationTimestamp = metav1.NewTime(time.Unix(3, 0))
 	valid.Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}
 	in.Registrations = []dnsv1alpha1.DNSRegistration{rejected, valid, original}
+	in.RegistrationZoneReferences[rejected.UID] = in.RegistrationZoneReferences[original.UID]
+	in.RegistrationZoneReferences[valid.UID] = in.RegistrationZoneReferences[original.UID]
 	got, err := Compile(in)
 	if err != nil {
 		t.Fatal(err)
@@ -369,6 +371,7 @@ func TestCompileInvalidSRVDoesNotBlockWithdrawal(t *testing.T) {
 	reg.Name, reg.UID, reg.Spec.Name = "srv", "srv", "_grpc._tcp.svc"
 	reg.Spec.RecordTypes = []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeSRV}
 	in.Registrations = append(in.Registrations, reg)
+	in.RegistrationZoneReferences[reg.UID] = in.RegistrationZoneReferences[in.Registrations[0].UID]
 	c := *in.Contributions[0].DeepCopy()
 	c.Name, c.UID, c.Spec.Eligible = "srv", "srv-contribution", true
 	c.Spec.RegistrationRef = dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}

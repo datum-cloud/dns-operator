@@ -365,7 +365,7 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 func TestProjectContinuesAfterZonePublicationFailure(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+	if err := addReferenceStateToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	bad := fixture(time.Now()).Zone.DeepCopy()

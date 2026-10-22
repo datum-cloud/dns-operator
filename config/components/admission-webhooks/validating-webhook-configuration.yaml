@@ -29,3 +29,8 @@ webhooks:
         resources:
           - dnsrecordsets
         scope: "*"
+  # No /validate-internal-dns entry: in deployed environments the internal-dns
+  # control plane serves and registers the private DNS reference checks
+  # (config/internal-dns admission from #238, infra's internal-dns-admission). A second
+  # fail-closed registration here would block those writes whenever either
+  # server is unavailable. config/webhook keeps it for kind and e2e.

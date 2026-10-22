@@ -24,5 +24,21 @@ spec:
     - dns.networking.miloapis.com/dnszonediscoveries.get
     - dns.networking.miloapis.com/dnszonediscoveries/status.get
     - dns.networking.miloapis.com/dnszonediscoveries.watch
-
-
+    - dns.networking.miloapis.com/dnszoneassociations.list
+    - dns.networking.miloapis.com/dnszoneassociations.get
+    - dns.networking.miloapis.com/dnszoneassociations.watch
+    - dns.networking.miloapis.com/dnsnamingpolicies.list
+    - dns.networking.miloapis.com/dnsnamingpolicies.get
+    - dns.networking.miloapis.com/dnsnamingpolicies.watch
+    - dns.networking.miloapis.com/dnsregistrations.list
+    - dns.networking.miloapis.com/dnsregistrations.get
+    - dns.networking.miloapis.com/dnsregistrations.watch
+    - dns.networking.miloapis.com/dnsrecordcontributions.list
+    - dns.networking.miloapis.com/dnsrecordcontributions.get
+    - dns.networking.miloapis.com/dnsrecordcontributions.watch
+    - dns.networking.miloapis.com/dnsresolvercontexts.list
+    - dns.networking.miloapis.com/dnsresolvercontexts.get
+    - dns.networking.miloapis.com/dnsresolvercontexts.watch
+    - dns.networking.miloapis.com/dnsresolveraccessbindings.list
+    - dns.networking.miloapis.com/dnsresolveraccessbindings.get
+    - dns.networking.miloapis.com/dnsresolveraccessbindings.watch

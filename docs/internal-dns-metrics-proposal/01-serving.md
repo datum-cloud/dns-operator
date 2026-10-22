@@ -126,7 +126,7 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 1. Does dnsdist 2.0.10 `incMetric` accept labels, or do we need one counter per outcome?
 2. Is the pod network dual-stack on every edge cluster? If so, `POD_IP` (IPv4) still keeps metrics off net1, but it should be confirmed for IPv6-only cells.
 3. Should a node with zero contexts be Ready? This proposal says yes, because the canary is independent of contexts.
-4. Should the serving supervisor be removed, with CoreDNS as its own container and an `allow-coredns` gate as a startupProbe? That would make crashes visible to Kubernetes, but it changes the fail-closed gating.
+4. Deferred (README decision 6): should the serving supervisor be removed, with CoreDNS as its own container and an `allow-coredns` gate as a startupProbe? That would make crashes visible to Kubernetes, but it changes the fail-closed gating.
 5. The strategy doc names `dnsdist_rule_servfail` per pod. Confirm we want `_rule_*` totals: they're global, not per-rule, so they're safe.
 
 ## Corrections to the strategy doc

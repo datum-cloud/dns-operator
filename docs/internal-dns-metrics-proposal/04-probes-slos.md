@@ -32,7 +32,7 @@ So nothing exercises "a private name resolves through `fd53::53`" or "a new inst
 1. **The QA metrics are per-minute gauges, not counters.** The strategy's O11 query `increase(qa_compute_dns_failed_lookups[15m])` is therefore wrong. Over 24h it returns 28 failures for `general-purpose`, while `sum_over_time` gives the true 32. Use `sum_over_time`.
 2. **The strategy's Phase 3 "probe success <99% over 10m (paging)" would page all the time.** The insider check's 24h pass rate is 98.8% (general-purpose) and 98.6% (unikernel), and one failed minute out of 10 already drops below 99%. Use burn rates instead.
 3. **The QA alerts use a `dashboard` annotation.** The standard is `dashboard_url`.
-4. **Fleet series are labelled `cluster="us-central-1-staging-lab"` and `environment="edge"`.** The standard says `lab`. Because of the prepended lab route, any server-side alert that keeps `cluster` goes to `slack-labs` and never pages. That is the standard working as intended, so the fix is a route or a severity choice (README decision 8), not dropping `cluster`. Probe series pushed via `metrics-qa` carry no `cluster` at all.
+4. **Fleet series are labelled `cluster="us-central-1-staging-lab"` and `environment="edge"`.** The standard says `lab`. Because of the prepended lab route, any server-side alert that keeps `cluster` goes to `slack-labs` and never pages. That is the standard working as intended, so server-side lab alerts stay at `warning` (README decision 8) rather than dropping `cluster`. Probe series pushed via `metrics-qa` carry no `cluster` at all.
 5. **Fleet readiness does not check that a member can answer.** `serving.Readiness` sends a DNS query for `.` to each local daemon and accepts any response, whatever its rcode (`dns-operator-244:internal/internaldns/serving/readiness.go`). A member that SERVFAILs every private name stays Ready. The per-binding SOA proof (`verify.go: DNSVerifier.Verify`) runs only at activation.
 6. **The publisher error signal is not clean.** `internal-dns-instance-publisher` still logs 234 errors, 20 successes and 6,446 `requeue_after` per hour after #7513 (merged 16:03Z). An error-ratio alert alone cannot detect an incident like #7513, so a canary is required.
 7. **The insider probe is deployed from a personal account into `project-8b278`.** That is not owned infrastructure.
@@ -95,7 +95,7 @@ The windows below follow the PromQL range-vector syntax. `$P` is `service="inter
 | Private-name availability | `1 - sum(rate(qa_internal_dns_query_failures_total{$P,case=~"static_.*\|nxdomain"}[w])) / sum(rate(qa_internal_dns_queries_total{$P,case=~"static_.*\|nxdomain"}[w]))` | `1 - sum(rate(coredns_dns_responses_total{rcode="SERVFAIL"}[w])) / sum(rate(coredns_dns_responses_total[w]))` | 99.5% |
 | Latency | `sum(rate(qa_internal_dns_query_duration_seconds_bucket{$P,le="0.1"}[w])) / sum(rate(..._count[w]))` | `coredns_dns_request_duration_seconds_bucket{le="0.128"}` (CoreDNS buckets are 0.00025×2ⁿ, so there is no 0.1) | 99% under 100 ms |
 | Publication lag | `sum(rate(qa_internal_dns_churn_seconds_bucket{$P,phase="publish",le="60"}[w])) / sum(rate(qa_internal_dns_churn_result_total{$P,phase="publish",result=~"ok\|timeout"}[w]))`: runs that published within 60 s over all runs, so timeouts count as failures. `api_error` is the probe's own fault and is alerted on separately. | `internal_dns_publication_lag_seconds` p99 | 99% within 60s |
-| Withdrawal delay | the same ratio with `phase="withdraw"` and `le="120"` | `internal_dns_withdrawal_seconds`; `max(time() - datum_dns_internal_resolver_binding_ack_observed_timestamp_seconds)` must stay under the lease | 99% within 120s |
+| Withdrawal delay | the same ratio with `phase="withdraw"` and `le="120"` | `internal_dns_withdrawal_seconds`; `max(internal_dns_resolver_binding_ack_lag_seconds)` must stay under the lease | 99% within 120s |
 | Isolation | `sum(increase(qa_internal_dns_query_failures_total{reason="leak"}[5m])) > 0` (the series is initialised at 0, §2) | `internal_dns_context_queries_total{outcome="refused_unknown_context"}` (expected nonzero is fine) | **Zero.** No budget; this is not an SLO. |
 | Public and NAT64 | availability with `case=~"public\|nat64"` | `dnsdist_servfail_responses` | 99.5% |
 
@@ -131,11 +131,11 @@ This mirrors the house `KubeAPIErrorBudgetBurn` shape, for a 99.5% target where 
 # plus 6h/30m ×6 (critical), 1d/2h ×3 and 3d/6h ×1 (warning)
 ```
 
-Server-side rules keep the `cluster` label. The alerting standard keeps lab clusters out of paging on purpose, so these rules must not aggregate it away to dodge the `lab-clusters` route. Either add a dedicated route for `service=dns` lab alerts, or keep these alerts at `warning` while the fleet runs only in labs. That choice is README decision 8.
+Server-side rules keep the `cluster` label. The alerting standard keeps lab clusters out of paging on purpose, so these rules must not aggregate it away to dodge the `lab-clusters` route. Server-side alerts from lab clusters stay at `warning` (README decision 8). Probe series carry no `cluster`, so probe alerts still page.
 
 ### Staged alerts
 
-All of these route on `service: dns` to the deliver channel. `critical` also pages through `grafana-oncall`. In staging they stay `warning` until the baseline exists (open question 4). Series that carry a lab `cluster` follow README decision 8.
+All of these route on `service: dns` to the deliver channel. `critical` also pages through `grafana-oncall`. In staging, probe alerts page as listed (README decision 3). Burn-rate alerts (3c-c) stay `warning` until the baseline exists. Server-side alerts from lab clusters stay `warning` (README decision 8).
 
 | Phase | Alert | Condition | Severity | Panel |
 |---|---|---|---|---|
@@ -151,7 +151,7 @@ All of these route on `service: dns` to the deliver channel. `critical` also pag
 ## 4. Architecture improvements
 
 1. **Readiness that matches the ability to answer.** Make `serving.Readiness` require NOERROR plus the expected RRset for the member's `_canary` record through dnsdist over UDP and TCP, and require that the watchdog lease is unexpired. Keep the `.` check for liveness only.
-2. **A canary record baked into every context.** The planner synthesises `_canary.<context suffix>` TXT `"rev=<snapshot revision> ts=<compile unix>"` into each compiled snapshot. It adds one record per context, inside the shard caps. This gives:
+2. **A canary record baked into every context.** It is hidden from tenant-facing APIs and listings (README decision 5). The planner synthesises `_canary.<context suffix>` TXT `"rev=<snapshot revision> ts=<compile unix>"` into each compiled snapshot. It adds one record per context, inside the shard caps. This gives:
    - a universal positive name for probes and the self-test;
    - end-to-end freshness, by comparing `rev` with the control plane's revision, with no churn needed.
 3. **A continuous member self-test.** Run the activation-time `DNSVerifier` every 10s against a fixed sample of contexts and export:
@@ -182,6 +182,6 @@ All of these route on `service: dns` to the deliver channel. `critical` also pag
 1. May a guest hold a scoped write credential for churn? If not, the Nomad harness writes the change and the TXT `ts` carries the timestamp the probe measures against.
 2. `us-east-1-staging-lab` unikraft still uses public resolvers. Should probes run only where `fd53::53` is configured?
 3. Should probe series get `cluster` and `environment` labels that align with platform labels, for example `environment=lab`?
-4. What is the staging paging policy? Should critical alerts page before production?
-5. Is one synthesised `_canary` record per context acceptable in the API, and is it visible to tenants?
-6. Who owns the probe, DNS (delivery) or QA (observability)? This document proposes that DNS owns the probe and its alerts, and QA owns the harness.
+4. Staging paging policy: decided (README decisions 3 and 8). Probe alerts page; server-side lab alerts and burn-rate alerts stay `warning` until the baseline.
+5. `_canary` record per context: decided (README decision 5), hidden from tenants.
+6. Probe ownership: decided (README decision 3). DNS owns the probe and its alerts, and QA owns the harness.

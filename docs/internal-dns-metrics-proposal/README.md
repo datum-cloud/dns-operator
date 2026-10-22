@@ -24,7 +24,7 @@ These findings change the plan. Each one was checked against code or live data.
 | F2 | Fleet readiness accepts any DNS reply, including REFUSED and SERVFAIL. The dnsdist probe queries `. SOA`, which the context classifier always refuses, so it never tests the real path. | A member that fails every private name stays Ready. Dashboards and alerts built on Ready would lie. | `serving/readiness.go:63-99` |
 | F3 | No container in the fleet has a liveness or startup probe. `--role=serving` respawns CoreDNS every 50 ms. | CoreDNS crashes never show up as Kubernetes restarts. | `serving/daemons.go:58-124` |
 | F4 | CoreDNS is built in Go with one plugin, so it has no `metrics`, `health`, `ready`, `errors` or `log`. dnsdist and the recursor expose no webserver. | The query path has no rate, error or latency signal at all. | `coredns/server.go:36-55` |
-| F5 | Control-plane metrics are opt-in (`metricsBindAddress` config key, off in staging). Health probes are disabled. The only readiness probe is a `tcpSocket` probe against the TLS webhook port, which logs about 720 TLS handshake errors per hour per pod. | There's no control-plane signal, and the logs are mostly noise. Infra #7479 couples the scrape to a config key that crash-loops any image without it. | `runtime/run.go:187-199`, `config.go:65,98-110` |
+| F5 | Control-plane metrics are opt-in (`metricsBindAddress` config key, off in staging). Health probes are disabled. The only readiness probe is a `tcpSocket` probe against the TLS webhook port, which logs about 720 TLS handshake errors per hour per pod. | There's no control-plane signal, and the logs are mostly noise. Infra #7479 (merged 2026-10-22) turned the scrape on through that key. Main's runtime config accepts it, so it no longer couples rollouts. | `runtime/run.go:187-199`, `config.go:65,98-110` |
 | F6 | About 5.7 msg/s on `DNS_PRIVATE`, of which 99.7% is ACK heartbeats. It isn't a hot loop, but it's wasteful: one ACK per binding per member every 30 s, unique IDs, 24 h retention at R3 (about 300 MB), every member consuming every ACK, and an uncached LIST plus PATCH on the control plane per ACK. That is O(B²) per interval. | It doesn't scale to the 200-binding shard cap. The backlog lags on the **control plane's** ACK consumer, not on the members'. | `serving/agent.go:895-903,1145,1176-1230`; `platform/acks.go:152-197` |
 | F7 | Each project's controller is named after its project UID. controller-runtime v0.23.3 rejects duplicate names process-wide. | A project source manager that stops can never restart. The `controller` label also grows by one value per project. | `controlplane/reconciler.go:127` |
 | F8 | Both control-plane replicas run the outbox and ACK-refresh loops, so optimistic-lock conflicts show up as errors. | Error ratios are inflated. Lag is hard to read. | `runtime/run.go:215-230,329` |
@@ -34,19 +34,19 @@ These findings change the plan. Each one was checked against code or live data.
 | F12 | No probe exercises a private name through `fd53::53`. The insider probe resolves public names only, and its latency didn't move at the #7475 cutover, so it probably still uses the old resolvers. | That's why #7513 went unseen for about 14 hours. | appendix 04 §1 |
 | F13 | Series from lab clusters (`cluster=~".*-lab"`) hit a prepended route to `slack-labs`. | Server-side alerts from the fleet would never page. | infra `alert-routes.yaml` |
 
-## Decisions
+## Design choices
 
 | Topic | Decision | Reason |
 |---|---|---|
 | Metric prefix | Self-emitted series use `internal_dns_*` (control plane, agent, CoreDNS plugin, dnsdist custom). Exporter-produced resource-state families use `datum_dns_internal_*`. Producer metrics use their owner's prefix (`datum_cloud_compute_*`, `datum_cloud_network_*`). | House rule: `metric-prefixes.yaml` is for exporter families. Self-emitted series route by `namespace:datum_service:info`, which already maps `internal-dns-system` and the fleet namespace to `dns`/`delivery` (verified live). `datum_dns_zone_*` is taken. `datum_cloud_network_*` → alb → delivery is already the right owner. |
-| Endpoints | Every process serves `/metrics`, `/healthz` and `/readyz`, always on. Ports come from **flags with defaults**, not the config file. | Matches the kubebuilder convention. Removes the #7479 rollout coupling. |
+| Endpoints | Every process serves `/metrics`, `/healthz` and `/readyz`, always on. Ports come from **flags with defaults**, not the config file. | Matches the kubebuilder convention. Operational knobs stop riding in the versionless config file. |
 | Bind address | Metrics and probe ports bind `$(POD_IP)`, never `[::]`, plus a NetworkPolicy that admits only vmagent. | `[::]` would listen on `net1`, the producer network. |
 | Member identity | Pod labels `internal-dns.datum.net/{member,role,region}`, copied with PodMonitor `podTargetLabels`. Dashboards key on `member`. | `pod` changes on every rollout. `memberID` is an opaque token. |
 | CoreDNS | Keep the Go-built server, which keeps the atomic snapshot swap that makes serving fail closed. Wire in upstream `metrics.New`, and reimplement `/health` and `/ready`. | We get the standard `coredns_*` families without giving up the fail-closed design. |
 | Readiness | Ready means "can answer". A fixed `CH TXT ready.internal-dns.` canary must return NOERROR through dnsdist and the backend pool. Liveness is a separate, lenient, process-local check. | Fixes F2 and F3. The canary doesn't depend on any context, so a node with zero contexts is still Ready. |
-| Freshness canary | The planner adds a `_canary.<suffix>` TXT record (`rev=…`) to every context. Probes and the member self-test use it. | One positive name per context, and end-to-end freshness without churn. |
-| Cardinality | No context, binding, VPC, zone, qname or client labels on server metrics. At most about 1,000 series per member pod. dnsdist `pool` series are dropped at scrape. Resource-state families carry no `zone`, and carry `name` only for objects that are not Ready or are stale. Per-member ACK series are exported only while not acknowledged, or as a per-binding max. | Context, record and pool counts grow with tenants or backends and are never pruned. |
-| Server-side alerts | Keep the `cluster` label. Either add a dedicated route for `service=dns` lab alerts, or keep them at `warning` in labs (decision 8). | F13. The standard keeps labs out of paging on purpose, so aggregating `cluster` away to dodge the route is not an option. |
+| Freshness canary | The planner adds a `_canary.<suffix>` TXT record (`rev=…`) to every context, hidden from tenant-facing APIs and listings (decision 5). Probes and the member self-test use it. | One positive name per context, and end-to-end freshness without churn. |
+| Cardinality | No context, binding, VPC, zone, qname or client labels on server metrics. At most about 1,000 series per member pod. dnsdist `pool` series are dropped at scrape. Resource-state families carry no `zone`, and carry `name` only for objects that are not Ready or are stale. ACK freshness is a per-binding max across members, never a per-member series (decision 4). | Context, record and pool counts grow with tenants or backends and are never pruned. |
+| Server-side alerts | Keep the `cluster` label. Server-side alerts from lab clusters stay at `warning`; probe alerts, which carry no `cluster`, page (decisions 3 and 8). | F13. The standard keeps labs out of paging on purpose, so aggregating `cluster` away to dodge the route is not an option. |
 | SLOs | Use burn rates in the house `KubeAPIErrorBudgetBurn` shape. Set targets only after 2–4 weeks of baseline. Isolation leaks are a zero-tolerance alert, not an SLO. | The insider probe's own floor is 98.8%, so a fixed "99% over 10 m" rule would page constantly. |
 
 ## Signals, by layer
@@ -82,7 +82,7 @@ Recent reviews found four failures that the catalogue above would not have caugh
 |---|---|---|---|
 | Least privilege between agent and query daemons | Restore the UID split. Remove the `nats` mount from `serving` and `dnsdist`. | infra | 01 S1 |
 | Readiness reflects the ability to serve | NOERROR-only canary readiness. HTTP probes instead of a 2 s exec. Separate liveness and startup probes. | dns-operator, infra | 01 S3, S6, S7 |
-| Crashes are visible to Kubernetes | Liveness plus `process_start_time_seconds`. Consider running CoreDNS as its own container. | dns-operator | 01 Q4 |
+| Crashes are visible to Kubernetes | Liveness plus `process_start_time_seconds`. CoreDNS in its own container is deferred (decision 6). | dns-operator | 01 Q4 |
 | Operational knobs are flags, config is versioned | Flags for ports. `RuntimeConfig` gets `apiVersion`/`kind`. Reject duplicate keys. | dns-operator | 02 #2, #3 |
 | Probes don't spam logs | HTTPS `/readyz` on the admission port now, `:8081` later. Route stdlib `log` through zap. | infra, dns-operator | 02 #1 |
 | Controllers can restart | Stable controller names. | dns-operator | 02 #4 |
@@ -97,23 +97,28 @@ Every phase is useful on its own, and later phases don't block earlier dashboard
 
 | Phase | PRs | Unlocks | Risk |
 |---|---|---|---|
-| **0 — now** | infra: switch the control-plane readiness probe to HTTPS `/readyz` (no code change). infra: deploy NSO's `networking-metrics` policy and scrape the NSO cell manager. compute: land #517. infra: rework #7479 (drop the config key, keep the scrape) and hold it for phase 1. Strategy doc: fix O11 (`sum_over_time`) and the corrections below. | `DNSReady` panel, NSO cell controller panels, quiet logs, a clean publisher error ratio | Low |
-| **1 — control plane** | dns-operator: endpoint flags, health checks, reshaped `loop_*` metrics, stable controller names, versioned config. infra: #7479 as reworked. | Control-plane dashboard, overview O6 | Low |
+| **0 — now** | Done in staging: the control-plane readiness probe is HTTPS `/readyz`, NSO's `networking-metrics` policy is deployed, the NSO cell manager is scraped, and #7479 merged as-is. Remaining: compute #517, and the strategy doc fixes (O11 `sum_over_time` and the corrections below). | `DNSReady` panel, NSO cell controller panels, quiet logs, a clean publisher error ratio | Low |
+| **1 — control plane** | dns-operator: endpoint flags, health checks, reshaped `loop_*` metrics, stable controller names, versioned config. infra: switch the scrape and probes to the new flag-based ports. | Control-plane dashboard, overview O6 | Low |
 | **2 — security and serving** | infra: UID split and pod labels (**gate for the rest of this phase**). dns-operator: CoreDNS metrics and canary readiness, dnsdist webserver, agent metrics. infra: ports, probes, PodMonitors, NetworkPolicy, recursor webserver. | Serving dashboard, overview O3/O4/O9 that tell the truth | Medium: readiness semantics change |
-| **3 — state and producers** | **Gate: decision 7 settled.** dns-operator: condition consistency, then the `internal-dns-metrics.yaml` policy. compute: `instance_dns_status_condition` plus publisher hygiene. NSO: pending-as-status, watches, Events. | Producers dashboard, overview O8 | Medium: API status changes |
+| **3 — state and producers** | dns-operator: condition consistency, then the `internal-dns-metrics.yaml` policy for three kinds only: DNSResolverBinding, DNSRegistration and DNSResolverContext (decision 7). milo-os/resource-metrics: a project selector, before the remaining kinds are added. compute: `instance_dns_status_condition` plus publisher hygiene. NSO: pending-as-status, watches, Events. | Producers dashboard, overview O8 | Medium: API status changes |
 | **4 — probes and SLOs** | Canary project with two VPCs. qa-synthetics `probes/internal-dns` (resolve, isolation, NAT64, churn). Lifecycle canary. dns-operator `_canary` record and member self-test. infra: probe alerts, then burn-rate rules after the baseline. | Overview O10, the SLOs, and detection of a #7513-class incident within about 15 min | Low |
 | **5 — efficiency** | dns-operator: cached platform manager, leader election, ACK redesign (wire-compatible for one release). infra: NATS stream and ACL changes. | Scales to the shard cap; less noise in transport panels | Medium: protocol change |
 
-## Decisions needed
+## Decisions (recorded 2026-10-22)
 
-1. **Prefix rule.** Approve `internal_dns_*` for self-emitted metrics and `datum_dns_internal_*` for exporter families.
-2. **#7479.** Rework as described, or merge it as-is and accept the coupling until phase 1?
-3. **Probe and alert ownership.** Proposed: DNS (delivery) owns the probe and its alerts, and QA (observability) owns the harness. Also needed: a staging paging policy for internal DNS critical alerts.
-4. **ACK series cardinality.** Per-binding max (recommended) or per-member series only while unacknowledged?
-5. **A `_canary` TXT in every context.** Acceptable in the API? Should tenants be able to see it?
-6. **Supervision.** Should CoreDNS move out of the `serving` supervisor into its own container? Crashes would become visible, but the fail-closed gating would need rework.
-7. **ResourceMetricsPolicy scope.** It has no project selector, so adding nine kinds opens informers on every project control plane. Is that acceptable, or should resource-metrics gain a selector first? This must be settled before phase 3 starts; the reviewer (ecv) asked for that ordering. Phase 1, 2 and 4 don't depend on it.
-8. **Lab alert routing.** Server-side fleet alerts keep `cluster`, so lab series hit the `lab-clusters` route. Pick one: (a) a dedicated route for `service=dns` lab alerts ahead of `lab-clusters`, so internal DNS can page while the fleet is lab-only, or (b) keep these alerts at `warning` in labs and accept that nothing pages until the fleet runs outside labs.
+1. **Prefix rule.** Approved: `internal_dns_*` for self-emitted metrics, `datum_dns_internal_*` for exporter-produced families.
+2. **#7479.** Settled: merged as-is on 2026-10-22 at 20:28Z. Main's runtime config accepts `metricsBindAddress`, so no rollout coupling remains. Phase 1 still moves ports to flags.
+3. **Probe and alert ownership.** Approved: DNS (delivery) owns the probe and its alerts, and QA (observability) owns the harness. Staging paging: probe alerts page, because probe series carry no `cluster` label. Server-side alerts from lab clusters stay at `warning` (decision 8). SLO burn-rate alerts stay at `warning` until the 2–4 week baseline exists.
+4. **ACK series cardinality.** Per-binding max across members. No per-member ACK series.
+5. **A `_canary` TXT in every context.** Yes, hidden from tenants: it must not appear in tenant-facing APIs or listings.
+6. **Supervision.** Deferred. CoreDNS stays under the `serving` supervisor. Phase 2's health, liveness and `process_start_time_seconds` signals cover most of the crash-visibility gap. Revisit later.
+7. **ResourceMetricsPolicy scope.** Phase 3 starts with three kinds, which keeps the extra informers per project at three, not nine:
+   - **DNSResolverBinding.** It is the per-region serving state. A binding that isn't Serving means guests can't resolve.
+   - **DNSRegistration.** It is the instance-name publication path, where the #7513 incident failed.
+   - **DNSResolverContext.** It is a network's DNS context, and it already has a `Ready` rollup.
+
+   A project selector in milo-os/resource-metrics is a follow-up, and it lands before the remaining kinds are added.
+8. **Lab alert routing.** Option (b): server-side alerts from lab clusters stay at `warning`, and probe alerts page.
 
 ## Corrections to the dashboard strategy
 

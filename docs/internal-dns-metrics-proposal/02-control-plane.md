@@ -11,7 +11,7 @@ Scope: G-4, the NATS row, and the `internal-dns-control-plane` dashboard. Code r
 | 3 | Controller naming | Each project's controller is named `internal-dns-control-plane-<12 hex of project UID>`, so the `controller` label grows with the number of projects. A rebuilt source manager reuses the name, and controller-runtime v0.23.3 rejects duplicate names process-wide (`pkg/controller/name.go:37`). So a source manager that stops can never start again: `runProjectSource` keeps retrying a setup that always fails. | `controlplane/reconciler.go:127-128`, `run.go:249-267` |
 | 4 | `operation` label | Free text with region and shard folded in: `planner us-central-1/shared-0`, `ack refresh …`, `outbox us-central-1`, `ack read/apply/commit …`, `project discovery`. There is no duration metric and no backoff. | `run.go:222,226,329,512-526,482-501` |
 | 5 | Health | `HealthProbeBindAddress: "0"` everywhere. A `/readyz` handler that always returns 200 is already registered on the TLS webhook server, but staging probes the port with `tcpSocket`. Each probe produces `http: TLS handshake error … EOF`. Measured: 120 lines per 10 minutes per pod, so about 720 per hour per pod and 1,440 per hour in total. There is no liveness probe. | `run.go:187-189`, Deployment |
-| 6 | Config decoding | `DisallowUnknownFields` plus a single-object check. The reviewer's #7479 warning is correct, but the risk is limited in practice: `5e0148c`, which adds the key, is in the deployed `1b90c00` and exists only on this branch. Strict decoding does not reject duplicate keys. Two older ConfigMaps (`…-d2mtg24dh4` and `…-h5m66b9bb7`) contain `ownershipLeaseSeconds` twice (120, then 30), and the last value silently wins. Strict decoding is good. The problem is that operational knobs (ports) live in a versionless file that ships separately from the image. | `config.go:98-110` |
+| 6 | Config decoding | `DisallowUnknownFields` plus a single-object check. The #7479 warning was correct, but the risk was limited in practice (#7479 has since merged as-is, and main accepts the key): `5e0148c`, which adds the key, is in the deployed `1b90c00` and exists only on this branch. Strict decoding does not reject duplicate keys. Two older ConfigMaps (`…-d2mtg24dh4` and `…-h5m66b9bb7`) contain `ownershipLeaseSeconds` twice (120, then 30), and the last value silently wins. Strict decoding is good. The problem is that operational knobs (ports) live in a versionless file that ships separately from the image. | `config.go:98-110` |
 | 7 | Logging | zap JSON, but the TLS errors come from Go's stdlib `log` as plain text. Every failure on every tick logs one error at ERROR, and there is no backoff. A sample error has an empty project field (`"project  update zone …"`). | `cmd/internal-dns/main.go:25-31` |
 | 8 | Events | No `EventRecorder` anywhere under `internal/internaldns`. Capacity rejections, writer takeovers and activation failures leave no trace on the object. | grep |
 | 9 | Active-active | Both replicas run the outbox, ACK refresh and every planner loop. Only the planner is fenced, by the shard-owner ConfigMap lease. The outbox and refresh loops collide on optimistic locks. The logs show steady `Operation cannot be fulfilled` errors on outbox, manifest, zone and registration objects, which inflate `result="error"`. | `run.go:215-230,329` |
@@ -69,7 +69,7 @@ NATS and the writer stay out of the kubelet probe. Admission does not depend on 
 
 ### Catalogue
 
-`…` stands for `internal_dns_`. Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest,ack}`, `result ∈ {success,error,conflict}`. Never project, binding or zone. Inventory gauges come only from the shard writer. Dashboards use `max by` for gauges and `sum` for counters.
+`…` stands for `internal_dns_`. Labels are bounded: `region`, `shard`, `loop`, `kind ∈ {serving,chunk,manifest,ack}`, `result ∈ {success,error,conflict}`. Never project, binding or zone, with one bounded exception: ACK lag carries `binding` (at most 200 per shard; README decision 4). Inventory gauges come only from the shard writer. Dashboards use `max by` for gauges and `sum` for counters.
 
 | Metric | Type | Labels | Buckets / notes |
 |---|---|---|---|
@@ -85,6 +85,7 @@ NATS and the writer stay out of the kubelet probe. Admission does not depend on 
 | `…_nats_connected` / `…_nats_reconnects_total` | gauge / counter | region | from `nats.ConnectHandler`/`ReconnectHandler` (`jetstream.go:96`) |
 | `…_kv_put_total` | counter | result | snapshot bucket |
 | `…_acks_total` | counter | region, shard, kind, phase, result (`applied`,`stale`,`expired`,`rejected`,`error`) | |
+| `…_resolver_binding_ack_lag_seconds` | gauge | region, shard, binding | max across members of `now - ObservedAt` for that binding; replaces per-member ACK series |
 | `…_ack_projection_seconds` | histogram | region, shard, kind | ACK `ObservedAt` → status patch committed; .05 .1 .25 .5 1 2 5 10 30 60 |
 | `…_shard_bindings`, `…_shard_binding_limit`, `…_shard_snapshot_bytes`, `…_shard_snapshot_byte_limit`, `…_shard_rejected_bindings` | gauge | region, shard | `planner.go` fitSnapshot |
 | `…_bindings` | gauge | region, shard, phase | |
@@ -122,7 +123,7 @@ NATS and the writer stay out of the kubelet probe. Admission does not depend on 
 
 | # | Repo | Change | Files | Depends on |
 |---|---|---|---|---|
-| 1 | infra | Amend **#7479**: drop the `metricsBindAddress` config key, keep the `metrics` port and the VMPodScrape, and switch readiness to HTTPS `/readyz`. Merge only after PR 2's image lands. The probe-only part can merge immediately as its own small PR. | `apps/dns-operator/internal-dns/staging/runtime/{controller,config,metrics}.yaml/json` | 2, probe part none |
+| 1 | infra | Done: #7479 merged as-is and readiness is HTTPS `/readyz`. After PR 2's image lands, move the scrape and probes to the flag-based ports and drop `metricsBindAddress` from the config. | `apps/dns-operator/internal-dns/staging/runtime/{controller,config,metrics}.yaml/json` | 2 |
 | 2 | dns-operator | Add flags `--metrics-bind-address :8080` and `--health-probe-bind-address :8081`, keeping a deprecated `metricsBindAddress` key. Add healthz/readyz checks. Replace `internal_dns_operations_total` with `internal_dns_loop_*` (`{loop,region,shard,result}`, a duration histogram, `loop_consecutive_failures`), and replace `internal_dns_operation_last_success_timestamp_seconds` with `internal_dns_loop_last_success_timestamp_seconds`. Route stdlib log through zap. | `cmd/internal-dns/main.go`, `runtime/{run,config,metrics}.go` | — |
 | 3 | dns-operator | Versioned config and duplicate-key rejection | `runtime/config.go` | 2 |
 | 4 | dns-operator | Controller-name fix | `controlplane/reconciler.go`, `runtime/run.go` | — |

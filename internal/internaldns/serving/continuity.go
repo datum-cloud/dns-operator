@@ -119,13 +119,17 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	a.needsActivation = true
 	if err := a.tx.ApplyForce(ctx, files); err != nil {
 		return err
 	}
 	a.state.RenderedHash = hashFiles(files)
-	a.needsActivation = false
 	if err := a.store.Save(a.state); err != nil {
 		return err
 	}
-	return a.tx.commitActivation()
+	if err := a.tx.commitActivation(); err != nil {
+		return err
+	}
+	a.needsActivation = false
+	return nil
 }

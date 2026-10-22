@@ -298,7 +298,7 @@ func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return errors.Join(a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
+	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
 }
 
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {

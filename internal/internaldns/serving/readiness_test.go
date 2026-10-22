@@ -112,3 +112,31 @@ func TestAgentRestartAndStopPreserveApprovedConfiguration(t *testing.T) {
 		t.Fatal("agent stop shut down healthy DNS")
 	}
 }
+
+func TestFailClosedPersistsIncompleteActivationAcrossRestart(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+	if err := agent.failClosed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !activationPending(cfg.StateDir) {
+		t.Fatal("gated DNS must persist its incomplete activation")
+	}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), cfg); err == nil || err.Error() != "configuration installation is incomplete" {
+		t.Fatalf("gated DNS must not report readiness after restart: %v", err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if activationPending(cfg.StateDir) {
+		t.Fatal("successful activation must clear the gate marker")
+	}
+}

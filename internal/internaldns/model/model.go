@@ -32,6 +32,11 @@ const (
 
 // Envelope is the only value written to JetStream. Epoch and Revision are
 // repeated outside Payload so consumers can reject stale events before decode.
+//
+// The header (every field except Payload) is frozen across wire versions: a
+// future APIVersion may change Payload but must keep these fields, names and
+// meanings, so that older consumers can still fence and park it. Changing the
+// header requires a new stream, not a new APIVersion.
 type Envelope struct {
 	APIVersion  string          `json:"apiVersion"`
 	Kind        Kind            `json:"kind"`
@@ -54,6 +59,11 @@ func NewEnvelope(kind Kind, eventID, region, shard, uid string, epoch, revision 
 	return e, e.Validate()
 }
 
+// Validate applies the header rules before the version gate. That is
+// deliberate: the Envelope header is frozen across wire versions (see
+// Envelope), so a header that breaks these rules is malformed in every
+// version and is terminated, while a well-formed header with an unknown
+// apiVersion or kind is reported as ErrUnsupportedEnvelope and parked.
 func (e Envelope) Validate() error {
 	if e.APIVersion == "" || e.Kind == "" || e.EventID == "" || e.Region == "" || e.Shard == "" || e.ResourceUID == "" || e.Epoch == 0 || e.Revision == 0 || e.PublishedAt.IsZero() || !json.Valid(e.Payload) {
 		return errors.New("envelope version, kind, identity, epoch, revision, timestamp, and JSON payload are required")

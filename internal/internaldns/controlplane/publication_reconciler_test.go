@@ -361,3 +361,34 @@ func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 		t.Fatalf("missing durable contribution high-water: %#v", m.Spec.ContributionFences)
 	}
 }
+
+func TestProjectContinuesAfterZonePublicationFailure(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	bad := fixture(time.Now()).Zone.DeepCopy()
+	bad.Name, bad.Namespace, bad.UID = "a-bad", "project", "bad"
+	bad.Finalizers = []string{privateZoneFinalizer}
+	good := bad.DeepCopy()
+	good.Name, good.UID = "z-good", "good"
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken(string(bad.UID))[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: bad.UID, HolderIdentity: "writer", WriterEpoch: 1, ActiveManifestName: "missing"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bad, good, owner).Build()
+	r := &Reconciler{Client: cl, Scheme: scheme, Options: ReconcilerOptions{PlatformNamespace: "platform", Identity: "writer", LeaseDuration: time.Minute, ChunkSize: 1024, Now: time.Now}}
+	for i := 0; i < 2; i++ {
+		if _, err := r.reconcileProject(ctx, "project"); err == nil {
+			t.Fatal("missing manifest error was hidden")
+		}
+	}
+	var publications dnsv1alpha1.DNSPublicationManifestList
+	if err := cl.List(ctx, &publications); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range publications.Items {
+		if p.Spec.ZoneRef.UID == good.UID {
+			return
+		}
+	}
+	t.Fatal("one broken zone blocked the healthy zone publication")
+}

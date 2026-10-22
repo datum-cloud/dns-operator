@@ -53,6 +53,29 @@ func (p *daemonProcess) stop() error {
 	return nil
 }
 
+const daemonRuntimeDir = "/run/internal-dns"
+
+// A gate persists as an activation marker, so only an approved, fully
+// installed configuration with no activation pending regains start permission.
+func restoreDaemonPermissions(stateDir, runtimeDir string, names []string) error {
+	start, _, release := daemonPermission(stateDir)
+	defer release()
+	if !start || activationPending(stateDir) || !approvedConfigurationInstalled(stateDir) {
+		return nil
+	}
+	for _, name := range names {
+		if err := writeDurable(filepath.Join(runtimeDir, "allow-"+name), nil, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func approvedConfigurationInstalled(stateDir string) bool {
+	state, err := (stateStore{path: filepath.Join(stateDir, "checkpoint.json")}).Load()
+	return err == nil && state.Active != nil && installedFilesMatch(state.Active.Files)
+}
+
 // RunDaemons owns query processes independently of the configuration agent.
 // Only incomplete or abandoned activation blocks their lifecycle.
 func RunDaemons(ctx context.Context, config Config) error {
@@ -79,6 +102,13 @@ func RunDaemons(ctx context.Context, config Config) error {
 			_ = p.stop()
 		}
 	}()
+	names := make([]string, 0, len(processes))
+	for _, p := range processes {
+		names = append(names, p.name)
+	}
+	if err := restoreDaemonPermissions(config.StateDir, daemonRuntimeDir, names); err != nil {
+		fmt.Fprintf(os.Stderr, "restore approved DNS process permission: %v\n", err)
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -101,14 +131,11 @@ func RunDaemons(ctx context.Context, config Config) error {
 			if p.cmd != nil || !start {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join("/run/internal-dns", "allow-"+p.name)); err != nil {
+			if _, err := os.Stat(filepath.Join(daemonRuntimeDir, "allow-"+p.name)); err != nil {
 				continue
 			}
-			if !activationPending(config.StateDir) {
-				state, err := (stateStore{path: filepath.Join(config.StateDir, "checkpoint.json")}).Load()
-				if err != nil || state.Active == nil || !installedFilesMatch(state.Active.Files) {
-					continue
-				}
+			if !activationPending(config.StateDir) && !approvedConfigurationInstalled(config.StateDir) {
+				continue
 			}
 			if err := p.start(); err != nil && !errors.Is(err, os.ErrNotExist) {
 				release()

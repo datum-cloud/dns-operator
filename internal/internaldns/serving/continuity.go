@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -100,6 +101,21 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 	return a.tx.commitActivation()
 }
 
+const localDaemonStartGrace = 10 * time.Second
+
+func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
+	deadline := time.Now().Add(localDaemonStartGrace)
+	for {
+		err := a.probeLocalDaemons(ctx)
+		if err == nil || ctx.Err() != nil || !time.Now().Before(deadline) {
+			return err
+		}
+		if !waitRetry(ctx, 200*time.Millisecond) {
+			return ctx.Err()
+		}
+	}
+}
+
 // restoreActive preserves running daemons when their installed configuration
 // matches the approved checkpoint. Incomplete installation requires recovery.
 func (a *Agent) restoreActive(ctx context.Context) error {
@@ -108,7 +124,7 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 	}
 	files := a.state.Active.Files
 	if !activationPending(a.cfg.StateDir) && installedFilesMatch(files) {
-		if err := a.probeLocalDaemons(ctx); err == nil {
+		if err := a.awaitLocalDaemons(ctx); err == nil {
 			a.needsActivation = false
 			if actual := hashFiles(files); a.state.RenderedHash != actual {
 				a.state.RenderedHash = actual

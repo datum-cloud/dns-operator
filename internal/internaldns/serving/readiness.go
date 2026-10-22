@@ -83,11 +83,9 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	for _, bind := range binds {
 		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
 		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
-		for _, network := range []string{networkUDP, networkTCP} {
-			answer, err := exchangePublication(ctx, network, server, ".", view, 200*time.Millisecond)
-			if err != nil || answer == nil || !answer.Response {
-				return fmt.Errorf("local CoreDNS health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
-			}
+		answer, err := exchangePublication(ctx, networkTCP, server, ".", view, 200*time.Millisecond)
+		if err != nil || answer == nil || !answer.Response {
+			return fmt.Errorf("local CoreDNS health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
 		}
 	}
 	for _, dist := range dists {

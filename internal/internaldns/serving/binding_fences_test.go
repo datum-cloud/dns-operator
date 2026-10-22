@@ -3,6 +3,7 @@ package serving
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,4 +244,81 @@ func TestPendingConfigurationGatesQueriesAndRecoversWithoutAuthorizationRenewal(
 	if restarted.state.Snapshot.Bindings[0].ConfigurationPending {
 		t.Fatal("stale pending replay gated the recovered context")
 	}
+}
+
+func TestWithdrawalRenderFailureStopsServing(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	clock := now
+	cfg := regionalTestConfig(t)
+	runner := &recordingRunner{}
+	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return clock }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := testSnapshot(now)
+	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
+		t.Fatal(err)
+	}
+	chunk, manifest := testPublication(t, now)
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if a.state.Active == nil || a.needsActivation {
+		t.Fatalf("fixture did not approve serving: active=%t needsActivation=%t", a.state.Active != nil, a.needsActivation)
+	}
+	gatesBefore := gateCalls(runner)
+
+	a.render = func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error) {
+		return Rendered{}, errors.New("injected render failure")
+	}
+	clock = now.Add(11 * time.Second)
+	withdrawn := active
+	withdrawn.Bindings = append([]model.Binding(nil), active.Bindings...)
+	withdrawn.ConfigurationRevision = 2
+	withdrawn.Bindings[0].ConfigurationRevision = 2
+	withdrawn.Bindings[0].Tombstone = true
+	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, withdrawn)); err == nil {
+		t.Fatal("withdrawal with a failed render reported success")
+	}
+	if gateCalls(runner) == gatesBefore || !a.needsActivation {
+		t.Fatalf("withdrawal with a failed render kept serving withdrawn data: gates=%d needsActivation=%t", gateCalls(runner)-gatesBefore, a.needsActivation)
+	}
+
+	// A render failure that withdraws nothing keeps the approved configuration.
+	retained := &recordingRunner{}
+	b, err := NewAgent(regionalTestConfig(t), Dependencies{Runner: retained, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
+		t.Fatal(err)
+	}
+	retainedBefore := gateCalls(retained)
+	b.render = a.render
+	if err := b.reconcile(context.Background()); err == nil {
+		t.Fatal("injected render failure was not returned")
+	}
+	if gateCalls(retained) != retainedBefore || b.needsActivation {
+		t.Fatal("a render failure that withdraws nothing gated serving")
+	}
+}
+
+func gateCalls(r *recordingRunner) int {
+	n := 0
+	for _, c := range r.calls {
+		if c.Path == "gate" {
+			n++
+		}
+	}
+	return n
 }

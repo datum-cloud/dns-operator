@@ -9,7 +9,7 @@ deadline=$(($(date +%s) + ${INTERNAL_DNS_RELOAD_WAIT_SECONDS:-10}))
 while :; do
   output=$(timeout 5s dnsdist -C "$config" -c -e "dofile(\"$config\"); return \"INTERNAL_DNS_APPLIED\"" 2>&1)
   status=$?
-  [ "$status" -eq 0 ] && [ "$output" = 'INTERNAL_DNS_APPLIED' ] && exit 0
+  [ "$status" -eq 0 ] && [ "$(printf '%s\n' "$output" | tail -n 1)" = 'INTERNAL_DNS_APPLIED' ] && exit 0
   if [ "$(date +%s)" -ge "$deadline" ]; then
     printf 'dnsdist reload failed with status %s: %s\n' "$status" "${output:-no response from the dnsdist console}" >&2
     exit 1

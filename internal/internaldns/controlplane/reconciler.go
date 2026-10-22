@@ -31,6 +31,9 @@ type ReconcilerOptions struct {
 	Now                   func() time.Time
 	AddressAllocator      AddressAllocator
 	PrivateZoneClassName  string
+	// ManagedDomainSuffixes lists the suffixes a managed namespace domain must
+	// fall strictly below. Empty means DefaultManagedDomainSuffixes.
+	ManagedDomainSuffixes []string
 	ServingRegions        []ServingRegion
 }
 

@@ -32,7 +32,7 @@ func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
 		obj.SetGeneration(1)
 		return cl.Create(ctx, obj, opts...)
 	}}).Build()
-	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid"}}
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", ManagedDomainSuffixes: []string{"internal", "example.net"}}}
 	r.Options.defaults()
 	ctx := context.Background()
 	now := time.Now()
@@ -192,5 +192,49 @@ func TestManagedNamespaceStatusSurvivesPendingAssociation(t *testing.T) {
 	}
 	if ready := apimeta.FindStatusCondition(got.Status.Conditions, "Ready"); ready == nil || ready.Status != metav1.ConditionFalse {
 		t.Fatalf("pending association left the context ready: %#v", got.Status.Conditions)
+	}
+}
+
+func TestManagedDomainRequiresPermittedSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		domain    string
+		permitted []string
+		ok        bool
+	}{
+		{domain: "datum.internal", ok: true},
+		{domain: "vpc.datum.internal", ok: true},
+		{domain: "internal"},
+		{domain: "com"},
+		{domain: "example.com"},
+		{domain: "cluster.local"},
+		{domain: "svc.cluster.local"},
+		{domain: "notinternal"},
+		{domain: "vpc.corp.example", permitted: []string{"corp.example"}, ok: true},
+		{domain: "corp.example", permitted: []string{"corp.example"}},
+		{domain: "datum.internal", permitted: []string{"corp.example"}},
+	} {
+		t.Run(tc.domain, func(t *testing.T) {
+			s := runtime.NewScheme()
+			if err := dnsv1alpha1.AddToScheme(s); err != nil {
+				t.Fatal(err)
+			}
+			resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "consumer", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "opaque-consumer", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: tc.domain}}}
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver).WithStatusSubresource(resolver).Build()
+			r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ManagedDomainSuffixes: tc.permitted}}
+			if err := r.reconcileResolverContexts(context.Background(), "project", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(context.Background(), client.ObjectKeyFromObject(resolver), resolver); err != nil {
+				t.Fatal(err)
+			}
+			rejected := apimeta.FindStatusCondition(resolver.Status.Conditions, "Ready").Reason == "InvalidManagedDomain"
+			var zones dnsv1alpha1.DNSZoneList
+			if err := c.List(context.Background(), &zones); err != nil {
+				t.Fatal(err)
+			}
+			if rejected == tc.ok || (len(zones.Items) == 0) == tc.ok {
+				t.Fatalf("domain %q with permitted %v: rejected=%v zones=%d", tc.domain, tc.permitted, rejected, len(zones.Items))
+			}
+		})
 	}
 }

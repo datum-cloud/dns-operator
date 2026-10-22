@@ -15,6 +15,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -79,6 +80,7 @@ type Config struct {
 	Admission             AdmissionConfig           `json:"admission,omitempty"`
 	OwnershipLeaseSeconds int64                     `json:"ownershipLeaseSeconds,omitempty"`
 	PrivateZoneClassName  string                    `json:"privateZoneClassName,omitempty"`
+	ManagedDomainSuffixes []string                  `json:"managedDomainSuffixes,omitempty"`
 	Agent                 serving.Config            `json:"agent,omitempty"`
 	Shards                []platform.PlannerConfig  `json:"shards,omitempty"`
 }
@@ -214,6 +216,11 @@ func (c *Config) Validate(role string) error {
 	}
 	if err := validateKubeAPI("platformKubeAPI", c.PlatformKubeAPI); err != nil {
 		return err
+	}
+	for i, suffix := range c.ManagedDomainSuffixes {
+		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
+			return fmt.Errorf("managedDomainSuffixes[%d] must be a lowercase DNS subdomain: %q", i, suffix)
+		}
 	}
 	if c.ProjectDiscovery != nil {
 		if len(c.Projects) != 0 {

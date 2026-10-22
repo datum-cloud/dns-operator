@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -129,7 +130,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			consumerOwners[c.Spec.ConsumerID] = c.UID
 		}
 		valid = valid && !duplicate
-		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(c.Spec.ManagedNamespace.DomainSuffix)) > 0
+		invalidDomain := c.Spec.ManagedNamespace.Enabled && !r.managedDomainPermitted(c.Spec.ManagedNamespace.DomainSuffix)
 		valid = valid && !invalidDomain
 		c.Status.ServingTargets = nil
 		if valid {
@@ -155,7 +156,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
-				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a valid domainSuffix"
+				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
 			}
 		}
 		if valid && !ready {
@@ -169,6 +170,28 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		}
 	}
 	return nil
+}
+
+// DefaultManagedDomainSuffixes is used when ManagedDomainSuffixes is empty.
+// Only names reserved for private use belong here, so a managed zone cannot
+// shadow a public or cluster name.
+var DefaultManagedDomainSuffixes = []string{"internal"}
+
+func (r *Reconciler) managedDomainPermitted(domain string) bool {
+	if len(validation.IsDNS1123Subdomain(domain)) > 0 {
+		return false
+	}
+	permitted := r.Options.ManagedDomainSuffixes
+	if len(permitted) == 0 {
+		permitted = DefaultManagedDomainSuffixes
+	}
+	domain = canonicalName(domain)
+	for _, suffix := range permitted {
+		if suffix = canonicalName(suffix); suffix != "" && strings.HasSuffix(domain, "."+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alpha1.DNSZoneAssociation, zones map[string]*dnsv1alpha1.DNSZone, now time.Time) error {

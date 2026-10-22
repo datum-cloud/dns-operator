@@ -366,7 +366,7 @@ func main() {
 		}
 
 		if err := setupReplicatorWebhook(mcmgr); err != nil {
-			setupLog.Error(err, "unable to set up the DNSRecordSet webhook and its checks")
+			setupLog.Error(err, "unable to set up the admission webhooks and their checks")
 			os.Exit(1)
 		}
 
@@ -405,11 +405,11 @@ func newReplicatorManager(
 	return runnables, mcmgr, nil
 }
 
-// setupReplicatorWebhook registers the DNSRecordSet webhooks, the
-// replicator's health check, and a readiness check on its webhook server.
+// setupReplicatorWebhook registers the DNSRecordSet and private DNS webhooks,
+// the replicator's health check, and a readiness check on its webhook server.
 func setupReplicatorWebhook(mcmgr mcmanager.Manager) error {
-	if err := dnswebhook.SetupDNSRecordSetWebhook(mcmgr); err != nil {
-		return fmt.Errorf("unable to create the DNSRecordSet webhook: %w", err)
+	if err := dnswebhook.SetupWebhooks(mcmgr); err != nil {
+		return fmt.Errorf("unable to create the admission webhooks: %w", err)
 	}
 	if err := mcmgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to set up health check: %w", err)

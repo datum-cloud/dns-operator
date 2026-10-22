@@ -31,6 +31,8 @@ again. A guard that blocked every DNS write while the webhook was unreachable
 would trade a late condition for the outage in #69, and the per-record
 `NotOwner` condition still reports anything that slips through.
 
+The same `ValidatingWebhookConfiguration` registers `/validate-internal-dns` for the five private DNS resources that reference other objects: `DNSZoneAssociation`, `DNSRegistration`, `DNSRecordContribution`, `DNSNamingPolicy` and `DNSResolverAccessBinding`. It checks that each reference names a live object in the same project namespace with the pinned UID, that zones are private, and that record owners and types fit the registration. Its `failurePolicy` is `Fail`: nothing downstream re-checks these tenant and lifetime boundaries, so a write must not be admitted without them.
+
 This directory is **not** included in `config/default` or the replicator
 overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
 
@@ -39,7 +41,7 @@ overlay. Same-cluster packaging for kind/e2e stays under `config/webhook/`.
 | Kind | Name | Notes |
 | ---- | ---- | ----- |
 | `MutatingWebhookConfiguration` | `dns-operator-mutating-webhook-configuration` | `failurePolicy: Fail`; Service ref is `dns-operator-webhook-service` / `datum-dns-system` |
-| `ValidatingWebhookConfiguration` | `dns-operator-validating-webhook-configuration` | `failurePolicy: Ignore`; same Service ref |
+| `ValidatingWebhookConfiguration` | `dns-operator-validating-webhook-configuration` | `vdnsrecordset.kb.io` is `failurePolicy: Ignore`; `vinternaldns.kb.io` is `failurePolicy: Fail`; same Service ref |
 
 No Service and no kustomize `namespace` transformer: Flux `targetNamespace`
 must not rewrite `clientConfig.service.namespace`.

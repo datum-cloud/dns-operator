@@ -50,3 +50,27 @@ webhooks:
     resources:
     - dnsrecordsets
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-internal-dns
+  failurePolicy: Fail
+  name: vinternaldns.kb.io
+  rules:
+  - apiGroups:
+    - dns.networking.miloapis.com
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - dnszoneassociations
+    - dnsregistrations
+    - dnsrecordcontributions
+    - dnsnamingpolicies
+    - dnsresolveraccessbindings
+  sideEffects: None

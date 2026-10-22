@@ -59,6 +59,13 @@ rules:
 - apiGroups:
   - dns.networking.miloapis.com
   resources:
+  - dnsregistrations
+  - dnsresolvercontexts
+  verbs:
+  - get
+- apiGroups:
+  - dns.networking.miloapis.com
+  resources:
   - dnszoneclasses
   verbs:
   - get

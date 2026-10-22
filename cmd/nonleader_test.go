@@ -285,7 +285,9 @@ func annotatedWithin(ctx context.Context, t *testing.T, m *dnswebhook.DNSRecordS
 // the test ends.
 func startEnvtest(t *testing.T, dirs ...string) *rest.Config {
 	t.Helper()
-	env := &envtest.Environment{CRDDirectoryPaths: dirs, ErrorIfCRDPathMissing: true}
+	// A loaded CI runner can take longer than envtest's 20 second default to
+	// stop an API server that still holds the managers' watch connections.
+	env := &envtest.Environment{CRDDirectoryPaths: dirs, ErrorIfCRDPathMissing: true, ControlPlaneStopTimeout: time.Minute}
 	if dir := firstEnvTestBinaryDir(t); dir != "" {
 		env.BinaryAssetsDirectory = dir
 	}

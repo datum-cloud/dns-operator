@@ -318,3 +318,66 @@ func TestNewContextCannotDisplaceExistingConsumerOwner(t *testing.T) {
 		t.Fatal("duplicate consumer was not rejected")
 	}
 }
+
+func TestInvalidManagedDomainIsReported(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{PlatformNamespace: "platform", ManagedDomainSuffix: "not a domain"}}
+	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(contextObject), contextObject); err != nil {
+		t.Fatal(err)
+	}
+	if condition := apimeta.FindStatusCondition(contextObject.Status.Conditions, "Ready"); condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidManagedDomain" {
+		t.Fatalf("invalid managed domain was not reported: %#v", contextObject.Status.Conditions)
+	}
+}
+
+type claimAllocator struct {
+	testAllocator
+	err error
+}
+
+func (a claimAllocator) ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error {
+	return a.err
+}
+
+func TestDestinationClaimAPIErrorsAreNotRefusals(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	contextObject := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-uid"}}
+	setCondition(&contextObject.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", 1, now)
+	access := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access", Namespace: "project", UID: "access-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: "context-uid"}, Region: "central", DestinationAddress: "fd70:100::10"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(contextObject, access).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSResolverBinding{}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", PlatformNamespace: "platform", Region: "central", Shard: "shared", AddressAllocator: claimAllocator{err: fmt.Errorf("etcdserver: request timed out")}}}
+	if err := r.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, now); err == nil {
+		t.Fatal("transient destination claim failure was swallowed")
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
+		t.Fatal(err)
+	}
+	if ready := apimeta.FindStatusCondition(access.Status.Conditions, "Ready"); ready != nil && ready.Reason == "AccessRejected" {
+		t.Fatalf("transient claim failure rejected access: %#v", access.Status.Conditions)
+	}
+	r.Options.AddressAllocator = claimAllocator{err: fmt.Errorf("%w: service destination is already reserved", model.ErrDestinationRefused)}
+	if err := r.reconcileContextBindings(ctx, "project", nil, map[string]*dnsv1alpha1.DNSZone{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(access), access); err != nil {
+		t.Fatal(err)
+	}
+	if ready := apimeta.FindStatusCondition(access.Status.Conditions, "Ready"); ready == nil || ready.Reason != "AccessRejected" {
+		t.Fatalf("refused destination was not rejected: %#v", access.Status.Conditions)
+	}
+}

@@ -41,6 +41,7 @@ spec:
               eligible:
                 type: boolean
               reason:
+                maxLength: 1024
                 type: string
               recordSets:
                 items:
@@ -287,6 +288,9 @@ spec:
                   type: object
                 maxItems: 14
                 type: array
+                x-kubernetes-list-map-keys:
+                - recordType
+                x-kubernetes-list-type: map
               registrationRef:
                 description: |-
                   DNSObjectReference pins a namespaced object by API-assigned UID. Generation

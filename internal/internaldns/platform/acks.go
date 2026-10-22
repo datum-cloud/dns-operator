@@ -424,6 +424,10 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A conflicting write to one binding must not stop the rest of the pass:
+	// manifest publication status and project projections run after the
+	// bindings, and ack writes contend with this loop on every busy binding.
+	var refreshErrors error
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
@@ -436,7 +440,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		}
 		if !jsonEqualStatus(base.Status, b.Status) {
 			if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
+				refreshErrors = errors.Join(refreshErrors, err)
 			}
 		}
 	}
@@ -449,7 +453,6 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		complete bool
 	}
 	projections := make([]projection, 0, len(owners.Items))
-	var refreshErrors error
 	for _, owner := range owners.Items {
 		if owner.Spec.ActiveManifestName == "" {
 			continue

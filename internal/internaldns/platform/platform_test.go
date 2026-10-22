@@ -14,12 +14,14 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 type blockingListClient struct {
@@ -404,6 +406,47 @@ func TestReadinessExpiresWithoutAnotherAck(t *testing.T) {
 	}
 	if actual.Status.Phase == "Serving" {
 		t.Fatal("dead member retained ready status beyond its verification lease")
+	}
+}
+
+func TestRefreshContinuesPastConflictingBinding(t *testing.T) {
+	now := time.Now().UTC()
+	until := metav1.NewTime(now.Add(-time.Second))
+	labels := map[string]string{"internal-dns.miloapis.com/region": "east", "internal-dns.miloapis.com/shard": "shared"}
+	binding := func(name string) *dnsv1alpha1.DNSResolverBinding {
+		return &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "platform", Labels: labels}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 1}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}}, Status: dnsv1alpha1.DNSResolverBindingStatus{Phase: "Serving", MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{MemberID: "resolver", WriterEpoch: 1, Revision: 1, AccessEpoch: 1, AccessSequence: 1, Phase: string(model.AckVerified), ValidUntil: &until}}}}
+	}
+	contended, later := binding("binding-a"), binding("binding-b")
+	zoneUID := types.UID("zone-uid")
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: zoneUID}, WriterEpoch: 1, Revision: 1}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken(string(zoneUID))[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: zoneUID, WriterEpoch: 1, ActiveManifestName: manifest.Name}}
+	base := testClient(t, contended, later, manifest, owner)
+	// An ack write lands on the first binding between this pass's read and write.
+	cl := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			if obj.GetName() == contended.Name {
+				return apierrors.NewConflict(dnsv1alpha1.GroupVersion.WithResource("dnsresolverbindings").GroupResource(), obj.GetName(), fmt.Errorf("the object has been modified"))
+			}
+			return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+		},
+	})
+	s := AckSink{Client: cl, Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "resolver", Role: "resolver"}}, Now: func() time.Time { return now }}
+	if err := s.Refresh(context.Background()); !apierrors.IsConflict(err) {
+		t.Fatalf("expected the binding conflict to be reported, got %v", err)
+	}
+	var refreshed dnsv1alpha1.DNSResolverBinding
+	if err := base.Get(context.Background(), client.ObjectKeyFromObject(later), &refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Status.Phase == "Serving" {
+		t.Fatal("a conflict on one binding stopped the refresh of later bindings")
+	}
+	var published dnsv1alpha1.DNSPublicationManifest
+	if err := base.Get(context.Background(), client.ObjectKeyFromObject(manifest), &published); err != nil {
+		t.Fatal(err)
+	}
+	if apimeta.FindStatusCondition(published.Status.Conditions, "Published") == nil {
+		t.Fatal("a binding conflict stopped manifest publication status from refreshing")
 	}
 }
 

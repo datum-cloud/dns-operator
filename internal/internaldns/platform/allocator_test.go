@@ -98,3 +98,16 @@ func TestServiceDestinationsCannotOverlapRegionalAddressPool(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceDestinationCannotReuseRetainedRegionalClaim(t *testing.T) {
+	ctx := context.Background()
+	allocator := Allocator{Client: testClient(t), Namespace: "platform"}
+	address, err := allocator.Allocate(ctx, "project-a", "context-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocator.ClusterPrefix = "fd80::/96"
+	if err := allocator.ClaimDestination(ctx, "project-b", "context-b", "region", address, 53); err == nil {
+		t.Fatal("service destination reused a retained regional allocation")
+	}
+}

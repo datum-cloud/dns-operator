@@ -60,6 +60,13 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, accessUID 
 		return fmt.Errorf("service destination must be outside the regional resolver address pool")
 	}
 	address = parsed.String()
+	var regionalClaim corev1.ConfigMap
+	claimKey := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-claim-" + model.OpaqueToken(address)}
+	if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
+		return fmt.Errorf("service destination is reserved for regional resolution")
+	} else if !apierrors.IsNotFound(err) {
+		return err
+	}
 	owner := string(projectUID) + "/" + string(accessUID)
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
 	if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {

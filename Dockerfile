@@ -42,14 +42,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w" \
     -o dns-mcp ./cmd/dns-mcp
 
-# Use distroless as minimal base image to package the binaries
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-#
-# The nonroot variant has no shell and no package manager, which matters most
-# for dns-mcp: it is the process an untrusted model's tool calls reach. It
-# holds no credential of its own — an unbound ServiceAccount, a
-# credential-free kubeconfig — see config/components/dns-mcp/service_account.yaml.
-FROM gcr.io/distroless/static:nonroot
+FROM scratch
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /workspace/dns-mcp .

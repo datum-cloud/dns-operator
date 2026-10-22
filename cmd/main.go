@@ -13,6 +13,8 @@ import (
 	"os"
 	"time"
 
+	_ "golang.org/x/crypto/x509roots/fallback"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"golang.org/x/sync/errgroup"

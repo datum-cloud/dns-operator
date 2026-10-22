@@ -26,29 +26,27 @@ type ResolvedName struct {
 // additive policy names after it. It never selects an arbitrary associated
 // customer zone.
 // Selectors match DNSRegistration metadata labels supplied by the publisher.
-func ResolveNaming(ctx context.Context, c client.Client, namespace string, _ types.UID, contextUID types.UID, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
+func ResolveNaming(ctx context.Context, c client.Client, namespace string, projectUID types.UID, contextName string, registrationLabels map[string]string, allocatedName string) ([]ResolvedName, error) {
 	label := dnsLabel(allocatedName)
 	if label == "" {
 		return nil, fmt.Errorf("allocated name %q has no DNS-safe label", allocatedName)
 	}
-	var managed dnsv1alpha1.DNSResolverContextList
-	if err := c.List(ctx, &managed, client.InNamespace(namespace)); err != nil {
+	var resolver dnsv1alpha1.DNSResolverContext
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: contextName}, &resolver); err != nil {
 		return nil, err
 	}
-	var out []ResolvedName
-	for i := range managed.Items {
-		m := &managed.Items[i]
-		accepted := apimeta.FindStatusCondition(m.Status.Conditions, "Ready")
-		// A Ready context without a managed namespace, or whose Ready
-		// condition predates its spec, has no current canonical zone.
-		if m.UID == contextUID && m.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == m.Generation && m.Status.ManagedNamespace.DNSZoneRef.UID != "" {
-			out = append(out, ResolvedName{DNSZoneRef: m.Status.ManagedNamespace.DNSZoneRef, Name: label, Canonical: true})
-			break
-		}
+	ready := apimeta.FindStatusCondition(resolver.Status.Conditions, "Ready")
+	// A Ready context without a managed namespace, or whose Ready
+	// condition predates its spec, has no current canonical zone.
+	if !resolver.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != resolver.Generation || resolver.Status.ManagedNamespace.DNSZoneRef.Name == "" {
+		return nil, fmt.Errorf("managed DNS namespace for context %s is not ready", contextName)
 	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("managed DNS namespace for resolver context %s is not ready", contextUID)
+	var canonical dnsv1alpha1.DNSZone
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: resolver.Status.ManagedNamespace.DNSZoneRef.Name}, &canonical); err != nil {
+		return nil, err
 	}
+	out := []ResolvedName{{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: canonical.Name, UID: canonical.UID}, Name: label, Canonical: true}}
+	r := &Reconciler{Client: c, Options: Options{ProjectUID: projectUID}}
 	seen := map[string]bool{string(out[0].DNSZoneRef.UID) + "\x00" + out[0].Name: true}
 	var policies dnsv1alpha1.DNSNamingPolicyList
 	if err := c.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
@@ -63,7 +61,14 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, _ typ
 	for i := range policies.Items {
 		p := &policies.Items[i]
 		accepted := apimeta.FindStatusCondition(p.Status.Conditions, dnsValueAccepted)
-		if p.Status.ResolvedResolverContextRef.UID != contextUID || !p.DeletionTimestamp.IsZero() || accepted == nil || accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != p.Generation {
+		if p.Status.ResolvedResolverContextRef.Name != contextName || !p.DeletionTimestamp.IsZero() || accepted == nil || accepted.Status != metav1.ConditionTrue || accepted.ObservedGeneration != p.Generation {
+			continue
+		}
+		pins, err := r.readReferences(ctx, p)
+		if err != nil {
+			return nil, err
+		}
+		if pins["context"].UID != resolver.UID {
 			continue
 		}
 		for _, rule := range p.Status.ResolvedAdditionalNames {
@@ -72,9 +77,17 @@ func ResolveNaming(ctx context.Context, c client.Client, namespace string, _ typ
 				return nil, fmt.Errorf("naming policy %s has an invalid selector: %w", p.Name, err)
 			}
 			name := label + "." + canonicalName(rule.NamePrefix)
-			key := string(rule.DNSZoneRef.UID) + "\x00" + name
+			zoneRef := pins["zone/"+rule.DNSZoneRef.Name]
+			var zone dnsv1alpha1.DNSZone
+			if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: zoneRef.Name}, &zone); err != nil {
+				return nil, err
+			}
+			if !refMatches(zoneRef, zone.Name, zone.UID, zone.Generation) {
+				continue
+			}
+			key := string(zoneRef.UID) + "\x00" + name
 			if selector.Matches(labels.Set(registrationLabels)) && !seen[key] {
-				out = append(out, ResolvedName{DNSZoneRef: rule.DNSZoneRef, Name: name})
+				out = append(out, ResolvedName{DNSZoneRef: zoneRef, Name: name})
 				seen[key] = true
 			}
 		}

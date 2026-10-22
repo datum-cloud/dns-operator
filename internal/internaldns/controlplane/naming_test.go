@@ -12,13 +12,17 @@ import (
 
 func TestResolveNamingReturnsCanonicalThenAuthorizedAliases(t *testing.T) {
 	s := runtime.NewScheme()
-	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+	if err := addReferenceStateToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	managed := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "zone-c"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}}}
-	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: "project"}, Spec: dnsv1alpha1.DNSNamingPolicySpec{Priority: 10}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{{Selector: nil, DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "custom", UID: "zone-x"}, NamePrefix: "instances"}}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(managed, policy).Build()
-	names, err := ResolveNaming(context.Background(), c, "project", "project-a", "vpc-a", nil, "Web 01")
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "context-a"}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "canonical"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue}}}}
+	canonical := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "canonical", Namespace: "project", UID: "zone-c"}}
+	custom := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: "project", UID: "zone-x"}}
+	policy := &dnsv1alpha1.DNSNamingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "custom", Namespace: "project", UID: "policy-a"}, Spec: dnsv1alpha1.DNSNamingPolicySpec{Priority: 10}, Status: dnsv1alpha1.DNSNamingPolicyStatus{ResolvedResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}, ResolvedAdditionalNames: []dnsv1alpha1.DNSResolvedAdditionalNameRule{{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "custom"}, NamePrefix: "instances"}}, Conditions: []metav1.Condition{{Type: "Accepted", Status: metav1.ConditionTrue}}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, canonical, custom, policy).Build()
+	r := &Reconciler{Client: c, Options: Options{ProjectUID: "project-a"}}
+	seedReferenceState(t, r, policy, map[string]dnsv1alpha1.DNSObjectReference{"context": {Name: resolver.Name, UID: resolver.UID}, "zone/custom": {Name: custom.Name, UID: custom.UID}})
+	names, err := ResolveNaming(context.Background(), c, "project", "project-a", resolver.Name, nil, "Web 01")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,10 +44,10 @@ func TestResolveNamingRequiresCurrentManagedNamespace(t *testing.T) {
 			c.Status.Conditions[0].ObservedGeneration = c.Generation - 1
 		},
 	} {
-		managed := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a", Generation: 2}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSObjectReference{Name: "canonical", UID: "zone-c"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: 2}}}}
+		managed := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a", Generation: 2}, Status: dnsv1alpha1.DNSResolverContextStatus{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "canonical"}}, Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: 2}}}}
 		mutate(managed)
 		c := fake.NewClientBuilder().WithScheme(s).WithObjects(managed).Build()
-		if names, err := ResolveNaming(context.Background(), c, "project", "project-a", "vpc-a", nil, "web"); err == nil {
+		if names, err := ResolveNaming(context.Background(), c, "project", "project-a", managed.Name, nil, "web"); err == nil {
 			t.Fatalf("%s: resolved %#v", name, names)
 		}
 	}

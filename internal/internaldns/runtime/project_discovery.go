@@ -49,7 +49,7 @@ func (d *projectDirectory) scopes() []platform.ProjectScope {
 	sort.Strings(names)
 	for _, name := range names {
 		p := d.projects[name]
-		scopes = append(scopes, platform.ProjectScope{Client: p.direct, Namespace: p.config.Namespace, RequestTimeout: p.config.KubeAPI.requestTimeout()})
+		scopes = append(scopes, platform.ProjectScope{ProjectUID: string(p.config.ProjectUID), Client: p.direct, Namespace: p.config.Namespace, RequestTimeout: p.config.KubeAPI.requestTimeout()})
 	}
 	return scopes
 }

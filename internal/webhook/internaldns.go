@@ -41,10 +41,10 @@ func SetupInternalDNSWebhook(mgr mcmanager.Manager) {
 }
 
 // liveProjectClient selects the project control plane named by the request's
-// cluster context and reads it without a cache, since the checks compare UIDs
-// and generations a cache could serve stale. A request without project context
-// reads the local cluster. A named project that cannot be found fails the
-// request instead of falling back to another cluster.
+// cluster context and reads it without a cache, since the checks compare
+// lifetimes, UIDs, and generations a cache could serve stale. A request
+// without project context reads the local cluster. A named project that cannot
+// be found fails the request instead of falling back to another cluster.
 func liveProjectClient(mgr mcmanager.Manager) func(context.Context, admission.Request) (client.Client, error) {
 	return func(ctx context.Context, _ admission.Request) (client.Client, error) {
 		clusterName, ok := mccontext.ClusterFrom(ctx)

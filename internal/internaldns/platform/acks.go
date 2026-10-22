@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -26,6 +27,7 @@ const dnsValueNode = "node"
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
 type ProjectScope struct {
+	ProjectUID     string
 	Client         client.Client
 	Namespace      string
 	RequestTimeout time.Duration
@@ -34,7 +36,6 @@ type ProjectScope struct {
 type AckSink struct {
 	Client             client.Client
 	Namespace          string
-	ProjectNamespaces  []string
 	Projects           []ProjectScope
 	ProjectScopes      func() []ProjectScope
 	PublicationMembers []model.Member
@@ -46,6 +47,15 @@ type AckSink struct {
 }
 
 func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return s.apply(ctx, subject, env)
+	})
+}
+
+func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope) error {
 	if env.Kind != model.KindMemberAck || env.Region != s.Region || env.Shard != s.Shard {
 		return fmt.Errorf("ack belongs to another kind, region or shard")
 	}
@@ -127,6 +137,9 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
 	complete := s.publicationVerified(&m, now)
 	condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
+	if jsonEqualStatus(base.Status, m.Status) {
+		return nil
+	}
 	if err := s.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
@@ -173,6 +186,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 				binding.Status.Phase = dnsValuePending
 			}
 			s.bindingConditions(binding, e, snapshot, now, complete)
+			if jsonEqualStatus(base.Status, binding.Status) {
+				continue
+			}
 			if err := s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
@@ -186,11 +202,18 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 	if s.ProjectScopes != nil {
 		projects = append(projects, s.ProjectScopes()...)
 	}
-	for _, ns := range s.ProjectNamespaces {
-		projects = append(projects, ProjectScope{Client: s.Client, Namespace: ns})
-	}
 	results := make(chan error, len(projects))
+	started := 0
+	var projectErrors error
 	for _, project := range projects {
+		if m.Labels["internal-dns.miloapis.com/project-uid"] != "" && project.ProjectUID == "" {
+			projectErrors = errors.Join(projectErrors, fmt.Errorf("publication projection scope %q requires a project identity", project.Namespace))
+			continue
+		}
+		if owner := m.Labels["internal-dns.miloapis.com/project-uid"]; owner != "" && project.ProjectUID != owner {
+			continue
+		}
+		started++
 
 		go func() {
 			projectCtx := ctx
@@ -202,8 +225,7 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 			results <- s.projectPublicationForScope(projectCtx, project, m, complete, now)
 		}()
 	}
-	var projectErrors error
-	for range projects {
+	for i := 0; i < started; i++ {
 		projectErrors = errors.Join(projectErrors, <-results)
 	}
 	return projectErrors
@@ -402,6 +424,10 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A conflicting write to one binding must not stop the rest of the pass:
+	// manifest publication status and project projections run after the
+	// bindings, and ack writes contend with this loop on every busy binding.
+	var refreshErrors error
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
@@ -414,7 +440,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		}
 		if !jsonEqualStatus(base.Status, b.Status) {
 			if err := s.Client.Status().Patch(ctx, b, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
+				refreshErrors = errors.Join(refreshErrors, err)
 			}
 		}
 	}
@@ -427,7 +453,6 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		complete bool
 	}
 	projections := make([]projection, 0, len(owners.Items))
-	var refreshErrors error
 	for _, owner := range owners.Items {
 		if owner.Spec.ActiveManifestName == "" {
 			continue

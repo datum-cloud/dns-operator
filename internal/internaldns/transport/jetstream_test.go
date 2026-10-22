@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -60,6 +61,49 @@ func TestBrokerMessageIDIsNamespacedBySubject(t *testing.T) {
 	}
 	if publication != brokerMessageID("internaldns.pub.us-east.s1.manifest.zone-a", eventID) {
 		t.Fatal("message ID is not stable for an ambiguous retry")
+	}
+}
+
+type nextResultConsumer struct {
+	jetstream.Consumer
+	next func() (jetstream.Msg, error)
+}
+
+func (c nextResultConsumer) Next(...jetstream.FetchOpt) (jetstream.Msg, error) {
+	return c.next()
+}
+
+func TestConsumerWaitsThroughIdlePulls(t *testing.T) {
+	for _, finalError := range []error{jetstream.ErrNoHeartbeat, nats.ErrConnectionClosed} {
+		t.Run(finalError.Error(), func(t *testing.T) {
+			calls := 0
+			c := Consumer{c: nextResultConsumer{next: func() (jetstream.Msg, error) {
+				calls++
+				if calls == 1 {
+					return nil, nats.ErrTimeout
+				}
+				return nil, finalError
+			}}}
+			_, err := c.Next(context.Background())
+			if !errors.Is(err, finalError) || calls != 2 {
+				t.Fatalf("got %v after %d pulls; want %v after idle pull", err, calls, finalError)
+			}
+		})
+	}
+}
+
+func TestConsumerIdlePullHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	c := Consumer{c: nextResultConsumer{next: func() (jetstream.Msg, error) {
+		calls++
+		cancel()
+		return nil, nats.ErrTimeout
+	}}}
+	_, err := c.Next(ctx)
+	if !errors.Is(err, context.Canceled) || calls != 1 {
+		t.Fatalf("got %v after %d pulls; want cancellation", err, calls)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -49,7 +50,7 @@ type AddressAllocator interface {
 
 func (o *ReconcilerOptions) defaults() {
 	if o.PlatformNamespace == "" {
-		o.PlatformNamespace = "internal-dns-system"
+		o.PlatformNamespace = defaultPlatformNamespace
 	}
 	if o.Region == "" {
 		o.Region = "default"
@@ -121,14 +122,24 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	enqueue := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, o client.Object) []reconcile.Request {
-		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: "project"}}}
-	})
+	enqueue := handler.EnqueueRequestsFromMapFunc(projectRequest)
 	controllerName := "internal-dns-control-plane-" + model.OpaqueToken(string(r.Options.ProjectUID))[:12]
-	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).For(&dnsv1alpha1.DNSRecordContribution{}, builder.WithPredicates()).
+	// Every pass reconciles the whole project, so every event shares one key:
+	// the queue then holds at most one pending pass per project. Contribution
+	// status is written by this controller and never needs another pass.
+	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).
+		Watches(&dnsv1alpha1.DNSRecordContribution{}, enqueue, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&dnsv1alpha1.DNSZone{}, enqueue).Watches(&dnsv1alpha1.DNSZoneAssociation{}, enqueue).
-		Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue)
+		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue)
 
 	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 
+}
+
+// projectQueueKey names the single queue entry for each project namespace.
+const projectQueueKey = "project"
+
+// projectRequest maps any project object to the project's single queue key.
+func projectRequest(_ context.Context, o client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: o.GetNamespace(), Name: projectQueueKey}}}
 }

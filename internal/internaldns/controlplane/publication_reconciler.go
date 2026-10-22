@@ -54,6 +54,27 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	var sources []client.Object
+	for i := range assocs.Items {
+		sources = append(sources, &assocs.Items[i])
+	}
+	for i := range policies.Items {
+		sources = append(sources, &policies.Items[i])
+	}
+	for i := range regs.Items {
+		registration := &regs.Items[i]
+		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
+		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+			ref.UID, ref.Generation = zone.UID, zone.Generation
+		}
+		if _, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref}); err != nil {
+			return ctrl.Result{}, err
+		}
+		sources = append(sources, registration)
+	}
+	if err := r.collectReferenceStates(ctx, sources); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -140,7 +161,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 	}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, z.Name, z.UID, z.Generation) || registrationFences[reg.UID] != reg.Generation {
+		if reg.Spec.DNSZoneRef.Name != z.Name || registrationFences[reg.UID] != reg.Generation {
 			continue
 		}
 		regUIDs[reg.UID] = true
@@ -210,6 +231,18 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		return false, time.Time{}, err
 	}
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
+	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
+	for i := range regs {
+		refs, err := r.readReferences(ctx, &regs[i])
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
+	}
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -384,7 +417,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	for _, target := range servingTargets {
 		apiTargets = append(apiTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
 	if err := r.createImmutable(ctx, m); err != nil {
 		return nil, err
 	}
@@ -518,7 +551,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 	relevant := map[types.UID]bool{}
 	for i := range regs {
 		reg := &regs[i]
-		if !refMatches(reg.Spec.DNSZoneRef, zone.Name, zone.UID, zone.Generation) {
+		if reg.Spec.DNSZoneRef.Name != zone.Name {
 			continue
 		}
 		relevant[reg.UID] = true

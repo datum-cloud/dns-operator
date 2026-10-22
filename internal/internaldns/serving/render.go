@@ -199,16 +199,20 @@ func collectBackends(bindings []model.Binding, get func(model.Binding) []model.B
 	return out
 }
 
+const dnsdistRulesBoundary = "local rules = {}\n"
+
 func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
 	endpoint := dnsdistConsole(c.Path)
 	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
-		Listen   string
-		ACLs     []string
-		Backends []model.Backend
-	}{c.ListenAddress, c.ACLs, backends})
+		Listen    string
+		ACLs      []string
+		Backends  []model.Backend
+		Pool      string
+		Transport string
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, "proxy-v2-tcp"})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "setLocal(%q)\nsetACL({", c.ListenAddress)
@@ -223,7 +227,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,useProxyProtocol=true,tcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName)
 	}
 	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
-	fmt.Fprint(&out, "local rules = {}\nlocal function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n")
+	fmt.Fprint(&out, dnsdistRulesBoundary+"local function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n")
 	if cluster {
 		pools := map[string]map[string]bool{}
 		for _, binding := range bindings {

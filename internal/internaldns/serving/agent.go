@@ -227,6 +227,9 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 		}
 	}
 	store := stateStore{path: filepath.Join(c.StateDir, "checkpoint.json")}
+	if err := prepareServingState(c.StateDir); err != nil {
+		return nil, err
+	}
 	state, err := store.Load()
 	if err != nil {
 		gateErr := (FileTransaction{Config: c.Transaction, Runner: d.Runner}).FailClosed(context.Background())

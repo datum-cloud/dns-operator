@@ -31,8 +31,8 @@ func TestDNSDistKeyPersistsAcrossAgentRestarts(t *testing.T) {
 		t.Fatal("invalid control identity", err)
 	}
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatal("control key must be private", err)
+	if err != nil || info.Mode().Perm() != 0640 {
+		t.Fatal("control key must be readable only by its owner and serving group", err)
 	}
 	if err := os.WriteFile(path, []byte("invalid"), 0600); err != nil {
 		t.Fatal(err)

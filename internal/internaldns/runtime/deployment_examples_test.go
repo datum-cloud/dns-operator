@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	appsv1 "k8s.io/api/apps/v1"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 )
 
@@ -84,6 +85,57 @@ func TestNATSExampleUsesExactMemberAckSubjects(t *testing.T) {
 		subject := model.AckSubject("us-central1", "shared-0", memberID)
 		if !bytes.Contains(contents, []byte(`"`+subject+`"`)) {
 			t.Errorf("NATS policy is missing exact ACK subject %q", subject)
+		}
+	}
+}
+
+func TestQueryDaemonsCannotShareCredentialAgentIdentity(t *testing.T) {
+	for _, file := range []string{"fleet.example.yaml", "routers.example.yaml"} {
+		contents, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "internal-dns", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(contents), 4096)
+		count := 0
+		for {
+			var deployment appsv1.Deployment
+			if err := decoder.Decode(&deployment); err == io.EOF {
+				break
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if deployment.Kind != "Deployment" {
+				continue
+			}
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				if container.Name != "agent" && container.Name != "serving" && container.Name != "dnsdist" {
+					continue
+				}
+				count++
+				expected := int64(65533)
+				if container.Name == "agent" {
+					expected = 65532
+				}
+				sc := container.SecurityContext
+				if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != expected {
+					t.Fatalf("%s/%s must use UID %d", deployment.Name, container.Name, expected)
+				}
+				for _, capability := range sc.Capabilities.Add {
+					if capability == "SYS_PTRACE" {
+						t.Fatal("query Pods must not grant process inspection")
+					}
+				}
+				if container.Name != "agent" {
+					for _, mount := range container.VolumeMounts {
+						if mount.Name == "nats" {
+							t.Fatal("query daemon mounts broker credentials")
+						}
+					}
+				}
+			}
+		}
+		if count == 0 {
+			t.Fatalf("no query containers in %s", file)
 		}
 	}
 }

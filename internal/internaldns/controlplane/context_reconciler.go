@@ -169,6 +169,11 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
+		if invalidDomain {
+			if err := r.withdrawManagedZone(ctx, c); err != nil {
+				return err
+			}
+		}
 		if !c.Spec.ManagedNamespace.Enabled || invalidDomain {
 			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		}
@@ -693,9 +698,35 @@ func resolverContextReady(contextObject *dnsv1alpha1.DNSResolverContext) bool {
 	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == contextObject.Generation
 }
 
+func managedZoneName(c *dnsv1alpha1.DNSResolverContext) string {
+	return "managed-" + model.OpaqueToken(string(c.UID))[:12]
+}
+
+func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) error {
+	zoneName := managedZoneName(c)
+	for _, obj := range []client.Object{
+		&dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName + "-context"}},
+		&dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName}},
+	} {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); apierrors.IsNotFound(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if !metav1.IsControlledBy(obj, c) || !obj.GetDeletionTimestamp().IsZero() {
+			continue
+		}
+		uid := obj.GetUID()
+		if err := r.Delete(ctx, obj, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
-	zoneName := "managed-" + model.OpaqueToken(string(c.UID))[:12]
+	zoneName := managedZoneName(c)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, zone, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {

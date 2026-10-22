@@ -342,3 +342,30 @@ func TestReleaseDestinationsWaitsForWithdrawnSnapshot(t *testing.T) {
 		t.Fatal("withdrawn destination was not released")
 	}
 }
+
+func TestClaimDestinationLabelsEarlierClaimsForRelease(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := Allocator{Client: cl, Namespace: "platform"}
+	if err := allocator.ClaimDestination(ctx, "project-a", "context-a", "east", "fd70::1", 53); err != nil {
+		t.Fatal(err)
+	}
+	var claims corev1.ConfigMapList
+	if err := cl.List(ctx, &claims, client.InNamespace("platform")); err != nil || len(claims.Items) != 1 {
+		t.Fatalf("expected one claim: %v", err)
+	}
+	earlier := &claims.Items[0]
+	delete(earlier.Labels, destinationProjectLabel)
+	if err := cl.Update(ctx, earlier); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ClaimDestination(ctx, "project-a", "context-a", "east", "fd70::1", 53); err != nil {
+		t.Fatal(err)
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := destinationClaims(t, cl)["fd70::1"]; ok {
+		t.Fatal("a claim made before project labels was never released")
+	}
+}

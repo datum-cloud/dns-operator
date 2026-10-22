@@ -21,6 +21,7 @@ import (
 )
 
 const leaseLabel = "internal-dns.miloapis.com/address-lease"
+const destinationProjectLabel = "internal-dns.miloapis.com/destination-project"
 
 type AddressLease struct {
 	Owner          string    `json:"owner"`
@@ -68,7 +69,7 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return err
 	}
 	owner := string(projectUID) + "/" + string(contextUID)
-	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
 	err = a.Client.Create(ctx, claim)
 	if err == nil {
 		if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
@@ -99,10 +100,16 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 					existing.Data["region"] == region && existing.Data["address"] == address && existing.Data["port"] == fmt.Sprint(port) {
 					base := existing.DeepCopy()
 					existing.Data["owner"] = owner
+					existing.Labels = claim.Labels
 					return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 				}
 			}
 			return fmt.Errorf("%w: service destination is already reserved", model.ErrDestinationRefused)
+		}
+		if existing.Labels[destinationProjectLabel] != claim.Labels[destinationProjectLabel] {
+			base := existing.DeepCopy()
+			existing.Labels = claim.Labels
+			return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 		}
 		return nil
 	}
@@ -118,7 +125,7 @@ func (a *Allocator) ReleaseDestinations(ctx context.Context, projectUID types.UI
 		return fmt.Errorf("destination release requires a client, namespace, and project identity")
 	}
 	var claims corev1.ConfigMapList
-	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true"}); err != nil {
+	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}); err != nil {
 		return err
 	}
 	var bindings *dnsv1alpha1.DNSResolverBindingList
@@ -135,11 +142,7 @@ func (a *Allocator) ReleaseDestinations(ctx context.Context, projectUID types.UI
 				return err
 			}
 		}
-		routed, err := a.destinationRouted(ctx, bindings.Items, snapshots, region, address)
-		if err != nil {
-			return err
-		}
-		if routed {
+		if routed, err := a.destinationRouted(ctx, bindings.Items, snapshots, region, address); err != nil || routed {
 			continue
 		}
 		if err := a.deleteClaim(ctx, claim); err != nil {
@@ -207,7 +210,7 @@ func (a *Allocator) destinationClaimed(ctx context.Context, address string) (boo
 func (a *Allocator) deleteClaim(ctx context.Context, claim *corev1.ConfigMap) error {
 	uid, version := claim.UID, claim.ResourceVersion
 	err := a.Client.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version})
-	if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	return err

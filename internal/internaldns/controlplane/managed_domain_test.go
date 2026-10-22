@@ -248,3 +248,32 @@ func TestManagedDomainRequiresPermittedSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestRefusedManagedDomainWithdrawsExistingZone(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "consumer", Namespace: "project", UID: "context-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "opaque-consumer", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "corp.example"}}}
+	owner := []metav1.OwnerReference{*metav1.NewControllerRef(resolver, dnsv1alpha1.GroupVersion.WithKind("DNSResolverContext"))}
+	zoneName := managedZoneName(resolver)
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: "project", UID: "zone-uid", OwnerReferences: owner}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.example", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: "project", UID: "association-uid", OwnerReferences: owner}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zoneName}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
+	foreign := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "managed-other", Namespace: "project", UID: "other-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.example"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, zone, association, foreign).WithStatusSubresource(resolver).Build()
+	r := &Reconciler{Client: c, Scheme: s}
+	if err := r.reconcileResolverContexts(context.Background(), "project", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var zones dnsv1alpha1.DNSZoneList
+	var associations dnsv1alpha1.DNSZoneAssociationList
+	if err := c.List(context.Background(), &zones); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.List(context.Background(), &associations); err != nil {
+		t.Fatal(err)
+	}
+	if len(associations.Items) != 0 || len(zones.Items) != 1 || zones.Items[0].Name != foreign.Name {
+		t.Fatalf("refused domain kept publishing: zones=%v associations=%d", zones.Items, len(associations.Items))
+	}
+}

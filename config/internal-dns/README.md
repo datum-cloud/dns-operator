@@ -244,3 +244,11 @@ Operations identify configured discovery, planner, acknowledgement refresh,
 transport outbox, and acknowledgement processing loops. A successful loop
 can be idle; it does not prove that an endpoint is serving. Combine these
 metrics with binding conditions, broker backlog, and DNS queries from a VPC.
+
+### Reference-state recovery
+
+An observed association, naming policy, or registration requires its private
+reference state to retain the target object's identity. If that state is
+missing, DNS rejects the source instead of attaching it to a same-name target.
+The rejection persists across retries. Restore a verified reference-state
+backup, or recreate the source resource to select its targets explicitly.

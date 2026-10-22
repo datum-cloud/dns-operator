@@ -23,6 +23,15 @@ func addReferenceStateToScheme(scheme *runtime.Scheme) error {
 
 func seedReferenceState(t *testing.T, r *Reconciler, source client.Object, selected map[string]dnsv1alpha1.DNSObjectReference) {
 	t.Helper()
+	source = source.DeepCopyObject().(client.Object)
+	switch object := source.(type) {
+	case *dnsv1alpha1.DNSZoneAssociation:
+		object.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
+	case *dnsv1alpha1.DNSNamingPolicy:
+		object.Status = dnsv1alpha1.DNSNamingPolicyStatus{}
+	case *dnsv1alpha1.DNSRegistration:
+		object.Status = dnsv1alpha1.DNSRegistrationStatus{}
+	}
 	if _, valid, err := r.pinReferences(context.Background(), source, selected); err != nil || !valid {
 		t.Fatalf("reference state: valid=%t err=%v", valid, err)
 	}
@@ -78,5 +87,55 @@ func TestReferenceStateIsPrivateScopedAndCollected(t *testing.T) {
 	}
 	if err := cl.List(ctx, &states, client.InNamespace("platform")); err != nil || len(states.Items) != 0 {
 		t.Fatalf("deleted source retained private state: count=%d err=%v", len(states.Items), err)
+	}
+}
+
+func TestMissingReferenceStateDoesNotReattachObservedResource(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := addReferenceStateToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &Reconciler{Client: cl, Options: Options{ProjectUID: "project", PlatformNamespace: "platform"}}
+	source := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration"}, Status: dnsv1alpha1.DNSRegistrationStatus{CanonicalFQDN: "web.datum.internal."}}
+	selected := map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: "private", UID: "replacement-zone"}}
+	for range 2 {
+		pins, valid, err := r.pinReferences(ctx, source, selected)
+		if err != nil || valid || pins["zone"].UID != "" {
+			t.Fatalf("unverified reference reattached: pins=%v valid=%t err=%v", pins, valid, err)
+		}
+		source.Status = dnsv1alpha1.DNSRegistrationStatus{}
+	}
+	source.UID = "recreated-registration"
+	if _, valid, err := r.pinReferences(ctx, source, selected); err != nil || !valid {
+		t.Fatalf("new registration could not establish references: valid=%t err=%v", valid, err)
+	}
+}
+
+func TestReferenceCollectionSkipsMalformedOrForeignObjects(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := addReferenceStateToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &Reconciler{Client: cl, Options: Options{ProjectUID: "project", PlatformNamespace: "platform"}}
+	source := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "project", UID: "registration"}}
+	seedReferenceState(t, r, source, map[string]dnsv1alpha1.DNSObjectReference{"zone": {Name: "private", UID: "zone"}})
+	for name, data := range map[string]string{"broken": "not-json", "foreign": `{"sourceKind":"DNSRegistration","sourceNamespace":"project","source":{"name":"web","uid":"foreign"}}`, "unknown": `{"sourceKind":"Other"}`} {
+		object := r.referenceStateObject(source)
+		object.Name = name
+		object.Data = map[string]string{referenceStateDataKey: data}
+		if err := cl.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.collectReferenceStates(ctx, nil); err != nil {
+		t.Fatalf("unrelated reference state blocked collection: %v", err)
+	}
+	var states corev1.ConfigMapList
+	if err := cl.List(ctx, &states, client.InNamespace("platform")); err != nil || len(states.Items) != 3 {
+		t.Fatalf("valid retired state not collected, or foreign state deleted: count=%d err=%v", len(states.Items), err)
 	}
 }

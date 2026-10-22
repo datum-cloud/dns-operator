@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -23,6 +24,7 @@ const referenceStateDataKey = "references.json"
 const defaultPlatformNamespace = "internal-dns-system"
 
 type referenceState struct {
+	Unverified      bool                                `json:"unverified,omitempty"`
 	SourceNamespace string                              `json:"sourceNamespace"`
 	SourceKind      string                              `json:"sourceKind"`
 	Source          dnsv1.DNSObjectReference            `json:"source"`
@@ -63,6 +65,9 @@ func (r *Reconciler) loadReferenceState(ctx context.Context, source client.Objec
 	object := r.referenceStateObject(source)
 	state := referenceState{SourceKind: referenceKind(source), SourceNamespace: source.GetNamespace(), Source: dnsv1.DNSObjectReference{Name: source.GetName(), UID: source.GetUID()}, References: map[string]dnsv1.DNSObjectReference{}}
 	if err := r.Get(ctx, client.ObjectKeyFromObject(object), object); err != nil {
+		if apierrors.IsNotFound(err) {
+			state.Unverified = hasResolvedReferenceStatus(source)
+		}
 		return object, state, client.IgnoreNotFound(err)
 	}
 	if err := json.Unmarshal([]byte(object.Data[referenceStateDataKey]), &state); err != nil {
@@ -78,6 +83,19 @@ func (r *Reconciler) pinReferences(ctx context.Context, source client.Object, se
 	object, state, err := r.loadReferenceState(ctx, source)
 	if err != nil {
 		return nil, false, err
+	}
+	if state.Unverified {
+		if object.ResourceVersion == "" {
+			payload, err := json.Marshal(state)
+			if err != nil {
+				return nil, false, err
+			}
+			object.Data = map[string]string{referenceStateDataKey: string(payload)}
+			if err := r.Create(ctx, object); err != nil {
+				return nil, false, err
+			}
+		}
+		return state.References, false, nil
 	}
 	current := true
 	resolved := map[string]dnsv1.DNSObjectReference{}
@@ -122,7 +140,8 @@ func (r *Reconciler) collectReferenceStates(ctx context.Context, sources []clien
 		if !live[states.Items[i].Name] {
 			var state referenceState
 			if err := json.Unmarshal([]byte(states.Items[i].Data[referenceStateDataKey]), &state); err != nil {
-				return err
+				ctrl.LoggerFrom(ctx).Error(err, "skip malformed DNS reference state", "name", states.Items[i].Name)
+				continue
 			}
 			var source client.Object
 			switch state.SourceKind {
@@ -133,7 +152,15 @@ func (r *Reconciler) collectReferenceStates(ctx context.Context, sources []clien
 			case "DNSRegistration":
 				source = &dnsv1.DNSRegistration{}
 			default:
-				return fmt.Errorf("unknown DNS reference source kind %q", state.SourceKind)
+				ctrl.LoggerFrom(ctx).Error(fmt.Errorf("unknown source kind %q", state.SourceKind), "skip DNS reference state", "name", states.Items[i].Name)
+				continue
+			}
+			source.SetNamespace(state.SourceNamespace)
+			source.SetName(state.Source.Name)
+			source.SetUID(state.Source.UID)
+			if r.referenceStateObject(source).Name != states.Items[i].Name {
+				ctrl.LoggerFrom(ctx).Error(fmt.Errorf("source identity mismatch"), "skip DNS reference state", "name", states.Items[i].Name)
+				continue
 			}
 			err := r.Get(ctx, client.ObjectKey{Namespace: state.SourceNamespace, Name: state.Source.Name}, source)
 			if err != nil && !apierrors.IsNotFound(err) {
@@ -165,4 +192,17 @@ func (r *Reconciler) associationReferences(ctx context.Context, associations []d
 		result[associations[i].UID] = associationReferences{Zone: refs["zone"], Context: refs["context"]}
 	}
 	return result, nil
+}
+
+func hasResolvedReferenceStatus(source client.Object) bool {
+	switch object := source.(type) {
+	case *dnsv1.DNSZoneAssociation:
+		return object.Status.ResolvedDNSZoneRef.Name != "" || object.Status.ResolvedResolverContextRef.Name != "" || len(object.Status.Conditions) != 0
+	case *dnsv1.DNSNamingPolicy:
+		return object.Status.ResolvedResolverContextRef.Name != "" || len(object.Status.Conditions) != 0
+	case *dnsv1.DNSRegistration:
+		return object.Status.CanonicalFQDN != "" || object.Status.ObservedGeneration != 0 || len(object.Status.Conditions) != 0
+	default:
+		return false
+	}
 }

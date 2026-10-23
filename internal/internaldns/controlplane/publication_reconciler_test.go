@@ -34,7 +34,7 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 	}}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build()
 	writerB := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "platform", Identity: "writer-b", LeaseDuration: 30 * time.Second}}
-	acquired, err := writerB.acquireOwnership(ctx, zone, now)
+	acquired, _, err := writerB.acquireOwnership(ctx, zone, now)
 	if err != nil || acquired == nil {
 		t.Fatalf("takeover failed: owner=%#v err=%v", acquired, err)
 	}
@@ -42,12 +42,15 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 		t.Fatalf("takeover corrupted the durable fence: %#v", acquired.Spec)
 	}
 	writerA := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "platform", Identity: "writer-a", LeaseDuration: 30 * time.Second}}
-	resumed, err := writerA.acquireOwnership(ctx, zone, now.Add(time.Second))
+	resumed, retryAt, err := writerA.acquireOwnership(ctx, zone, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resumed != nil {
 		t.Fatalf("resumed old writer reacquired a live lease: %#v", resumed.Spec)
+	}
+	if !retryAt.Equal(now.Add(30 * time.Second)) {
+		t.Fatalf("standby retry is not the live lease expiry: got %s want %s", retryAt, now.Add(30*time.Second))
 	}
 	var current dnsv1alpha1.DNSPublicationOwnership
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "platform", Name: ownerName}, &current); err != nil {
@@ -130,8 +133,12 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 		if result.RequeueAfter > 5*time.Second {
 			t.Fatalf("survivor renewal %d scheduled too late: %s", i, result.RequeueAfter)
 		}
-		if _, err := writerA.Reconcile(ctx, request); err != nil {
+		standby, err := writerA.Reconcile(ctx, request)
+		if err != nil {
 			t.Fatalf("resumed writer reconcile %d: %v", i, err)
+		}
+		if standby.RequeueAfter <= time.Second {
+			t.Fatalf("standby %d polls a live lease every %s", i, standby.RequeueAfter)
 		}
 	}
 	var owner dnsv1alpha1.DNSPublicationOwnership

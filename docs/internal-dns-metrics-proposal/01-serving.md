@@ -67,7 +67,7 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 |---|---|---|
 | `internal_dns_agent_serving_fence` | gauge | `state` ∈ `target`, `applied`; `part` ∈ `epoch`, `revision`. Lag is only valid when the epochs match: `Compare` orders by (epoch, revision). |
 | `internal_dns_agent_events_total` | counter | `kind` (envelope kind, ≤6), `result` ∈ `applied`, `stale`, `rejected`, `error` |
-| `internal_dns_agent_activations_total` | counter | `daemon` ∈ `coredns`, `dnsdist`, taken from each validate and reload command's `daemon` field; `result` ∈ `success`, `validate_failed`, `reload_failed`, `reload_reported_errors`, `verify_failed`. `reload_reported_errors` counts a reload that exited 0 but wrote errors, so a silent partial reload is visible per daemon. |
+| `internal_dns_agent_activations_total` | counter | `daemon` ∈ `coredns`, `dnsdist`, `unnamed`, `all`. Validate and reload runs take it from the command's `daemon` field, or `unnamed` when the field is unset. `verify_failed` is not tied to one command and uses `all`; `result` ∈ `success`, `validate_failed`, `reload_failed`, `reload_reported_errors`, `verify_failed`. `reload_reported_errors` counts a reload that exited 0 but wrote errors, so a silent partial reload is visible per daemon. |
 | `internal_dns_agent_activation_duration_seconds` | histogram | `daemon`; .05, .1, .25, .5, 1, 2.5, 5, 10, 30 |
 | `internal_dns_agent_fail_closed` | gauge | — |
 | `internal_dns_agent_checkpoint_timestamp_seconds` | gauge | — |

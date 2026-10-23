@@ -28,7 +28,7 @@ const (
 )
 
 func (c TransactionConfig) validateDaemons() error {
-	for _, commands := range [][]Command{c.Validate, c.Reload, c.FailClosed} {
+	for _, commands := range [][]Command{c.Validate, c.Reload} {
 		for _, command := range commands {
 			switch command.Daemon {
 			case "", DaemonCoreDNS, DaemonDNSDist:

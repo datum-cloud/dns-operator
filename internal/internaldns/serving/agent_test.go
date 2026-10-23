@@ -745,7 +745,33 @@ func TestAckFromUnknownMemberIsDrainedWithoutStateChange(t *testing.T) {
 	if len(agent.state.Acks) != 0 || agent.state.Active != nil {
 		t.Fatalf("ACK from an unknown member changed state: acks=%#v", agent.state.Acks)
 	}
-	if len(reported) != 2 {
-		t.Fatalf("dropped ACKs were not reported: %v", reported)
+	if len(reported) != 1 {
+		t.Fatalf("want only the live ACK from an unknown member reported, got %v", reported)
+	}
+}
+
+func TestExpiredAckDrainsWhileAgentIsBusy(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	agent := &Agent{
+		cfg:  Config{Region: "east", Shard: "s1", Mode: ModeResolver},
+		deps: Dependencies{Clock: func() time.Time { return now }}, state: newCheckpoint(),
+		lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{},
+	}
+	snapshot := testSnapshot(now)
+	agent.state.Snapshot = &snapshot
+	ack := model.MemberAck{MemberID: "regional", ReplicaID: "r1", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now.Add(-2 * time.Minute), ValidUntil: now.Add(-time.Minute)}
+	env := envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- agent.Handle(context.Background(), env) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expired ACK was left for redelivery: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expired ACK waited for the agent lock")
 	}
 }

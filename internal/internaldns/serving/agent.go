@@ -180,6 +180,8 @@ type Agent struct {
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
 	installedPublications map[string]installedPublication
+	verifiedPaths         map[string]string
+	verifiedRestarts      uint64
 	restoredAt            time.Time
 	stateReceived         bool
 	checkpointWithdrawn   bool
@@ -308,6 +310,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
+	a.verifiedPaths = nil
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
@@ -955,13 +958,26 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	if a.deps.Verifier == nil {
 		return false
 	}
+	if a.verifiedRestarts != a.tx.restarts {
+		a.verifiedPaths = nil
+		a.verifiedRestarts = a.tx.restarts
+	}
+	verified := map[string]string{}
+	identities := map[string]string{}
 	eligible := make([]model.Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		if active[binding.BindingUID] {
 			binding.Zones = a.readyZones(binding)
+			identity := a.probeIdentity(binding)
+			if identity != "" && a.verifiedPaths[binding.BindingUID] == identity {
+				verified[binding.BindingUID] = identity
+				continue
+			}
+			identities[binding.BindingUID] = identity
 			eligible = append(eligible, binding)
 		}
 	}
+	a.verifiedPaths = verified
 	if len(eligible) == 0 {
 		return false
 	}
@@ -1015,6 +1031,8 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s after %s: %w", result.bindingUID, result.duration.Round(time.Millisecond), result.err))
 				delete(active, result.bindingUID)
 				probeFailed = true
+			} else {
+				a.verifiedPaths[result.bindingUID] = identities[result.bindingUID]
 			}
 		case <-probeCtx.Done():
 			for bindingUID := range pending {
@@ -1025,6 +1043,23 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 		}
 	}
 	return probeFailed
+}
+
+func (a *Agent) probeIdentity(b model.Binding) string {
+	members := make(map[string]map[string]bool, len(b.Zones))
+	for _, zone := range b.Zones {
+		private := b
+		private.Zones = []model.ZoneAttachment{zone}
+		members[zone.ZoneUID] = a.eligibleRegionalMembers(private)
+	}
+	data, err := json.Marshal(struct {
+		Binding model.Binding
+		Members map[string]map[string]bool
+	}{b, members})
+	if err != nil {
+		return ""
+	}
+	return model.Hash(data)
 }
 
 func (a *Agent) publicationsReady(b model.Binding) bool {

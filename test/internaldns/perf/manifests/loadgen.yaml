@@ -1,0 +1,39 @@
+# k6 load generators. Each instance queries its own node's resolver, so add
+# replicas to spread load over more nodes.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: idns-perf-k6
+  labels:
+    test.datum.net/owner: internal-dns-perf
+spec:
+  placements:
+  - name: default
+    locations:
+    - name: ${LOCATION}
+    scaleSettings:
+      # Parallel never creates instances today (datum-cloud/compute#524).
+      instanceManagementPolicy: OrderedReady
+      minReplicas: ${GENERATORS}
+  template:
+    spec:
+      networkInterfaces:
+      - name: eth0
+        ipFamilies: [IPv6]
+        network:
+          name: ${NETWORK}
+        reclaimPolicy: Delete
+      runtime:
+        class: general-purpose
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+          - name: k6
+            image: ${IMAGE}
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: [ALL]
+              seccompProfile:
+                type: RuntimeDefault

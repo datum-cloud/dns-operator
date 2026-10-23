@@ -1,0 +1,40 @@
+# A private zone attached to the VPC's resolver context, holding the TXT record
+# that run.sh propagate rewrites with the current time.
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZone
+metadata:
+  labels:
+    test.datum.net/owner: internal-dns-perf
+  name: idns-perf
+spec:
+  visibility: Private
+  domainName: ${ZONE_DOMAIN}
+  dnsZoneClassName: ${ZONE_CLASS}
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSZoneAssociation
+metadata:
+  labels:
+    test.datum.net/owner: internal-dns-perf
+  name: idns-perf
+spec:
+  dnsZoneRef:
+    name: idns-perf
+  resolverContextRef:
+    name: ${CONTEXT}
+---
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSRecordSet
+metadata:
+  labels:
+    test.datum.net/owner: internal-dns-perf
+  name: idns-perf-stamp
+spec:
+  dnsZoneRef:
+    name: idns-perf
+  recordType: TXT
+  records:
+  - name: stamp
+    ttl: 1
+    txt:
+      content: t=${STAMP}

@@ -136,12 +136,14 @@ func countLoop(id loopID, err error) {
 // loopLiveness fails only for a loop that stops completing runs; a loop that
 // fails every run is still alive.
 type loopLiveness struct {
-	mu    sync.Mutex
-	now   func() time.Time
-	loops map[loopID]loopTick
+	mu     sync.Mutex
+	now    func() time.Time
+	loops  map[loopID]loopTick
+	starts uint64
 }
 
 type loopTick struct {
+	run   uint64
 	last  time.Time
 	limit time.Duration
 }
@@ -152,35 +154,41 @@ func newLoopLiveness() *loopLiveness {
 	return &loopLiveness{now: time.Now, loops: map[loopID]loopTick{}}
 }
 
-func (l *loopLiveness) start(id loopID, interval time.Duration) {
+// start returns the run that tick and stop must name, so a restarted loop's
+// predecessor cannot refresh or remove the new run's entry.
+func (l *loopLiveness) start(id loopID, interval time.Duration) uint64 {
 	if l == nil {
-		return
+		return 0
 	}
 	limit := max(3*interval, minLoopStall)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.loops[id] = loopTick{last: l.now(), limit: limit}
+	l.starts++
+	l.loops[id] = loopTick{run: l.starts, last: l.now(), limit: limit}
+	return l.starts
 }
 
-func (l *loopLiveness) tick(id loopID) {
+func (l *loopLiveness) tick(id loopID, run uint64) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if t, ok := l.loops[id]; ok {
+	if t, ok := l.loops[id]; ok && t.run == run {
 		t.last = l.now()
 		l.loops[id] = t
 	}
 }
 
-func (l *loopLiveness) stop(id loopID) {
+func (l *loopLiveness) stop(id loopID, run uint64) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.loops, id)
+	if t, ok := l.loops[id]; ok && t.run == run {
+		delete(l.loops, id)
+	}
 }
 
 func (l *loopLiveness) check(*http.Request) error {

@@ -510,12 +510,12 @@ func retryLoop(ctx context.Context, interval time.Duration, id loopID, live *loo
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns").WithValues("loop", id.operation())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	live.start(id, interval)
-	defer live.stop(id)
+	run := live.start(id, interval)
+	defer live.stop(id, run)
 	for {
 		started := time.Now()
 		err := step(ctx)
-		live.tick(id)
+		live.tick(id, run)
 		if !errors.Is(err, context.Canceled) {
 			observeLoop(id, started, err)
 		}

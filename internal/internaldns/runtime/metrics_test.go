@@ -128,7 +128,7 @@ func TestLoopLivenessReportsStalledLoop(t *testing.T) {
 	live := newLoopLiveness()
 	live.now = func() time.Time { return now }
 	id := loopID{Loop: "outbox", Region: "r1"}
-	live.start(id, 500*time.Millisecond)
+	run := live.start(id, 500*time.Millisecond)
 	now = now.Add(minLoopStall)
 	if err := live.check(nil); err != nil {
 		t.Fatalf("loop within its limit reported stalled: %v", err)
@@ -137,12 +137,12 @@ func TestLoopLivenessReportsStalledLoop(t *testing.T) {
 	if err := live.check(nil); err == nil {
 		t.Fatal("stalled loop passed liveness")
 	}
-	live.tick(id)
+	live.tick(id, run)
 	if err := live.check(nil); err != nil {
 		t.Fatalf("loop that ticked reported stalled: %v", err)
 	}
 	now = now.Add(time.Hour)
-	live.stop(id)
+	live.stop(id, run)
 	if err := live.check(nil); err != nil {
 		t.Fatalf("stopped loop reported stalled: %v", err)
 	}
@@ -174,5 +174,25 @@ func TestFirstRunExportsEveryResultSoTheFirstErrorIsCounted(t *testing.T) {
 	countLoop(id, nil)
 	if got := testutil.CollectAndCount(loopRuns, "internal_dns_loop_runs_total"); got < 3 {
 		t.Fatalf("first run exported %d result series, want success, conflict and error", got)
+	}
+}
+
+func TestRestartedLoopOutlivesItsPredecessor(t *testing.T) {
+	now := time.Unix(1000, 0)
+	live := newLoopLiveness()
+	live.now = func() time.Time { return now }
+	id := loopID{Loop: "outbox", Region: "r1"}
+	old := live.start(id, 500*time.Millisecond)
+	current := live.start(id, 500*time.Millisecond)
+	live.stop(id, old)
+	now = now.Add(minLoopStall / 2)
+	live.tick(id, old)
+	now = now.Add(minLoopStall/2 + time.Second)
+	if err := live.check(nil); err == nil {
+		t.Fatal("the predecessor's stop or tick hid the restarted loop")
+	}
+	live.tick(id, current)
+	if err := live.check(nil); err != nil {
+		t.Fatalf("restarted loop that ticked reported stalled: %v", err)
 	}
 }

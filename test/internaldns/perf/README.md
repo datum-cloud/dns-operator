@@ -89,7 +89,8 @@ test/internaldns/perf/run.sh down
 `up` creates `idns-perf-target` (idle instances that give the test private
 names) and `idns-perf-k6` (the load generators), then waits until both are
 ready. `run` starts `dns.js` on every generator at once, prints each summary,
-and saves the text and full k6 JSON under `results/`. Each generator queries
+and saves the text, the k6 JSON summary, and a record of every query
+(`<generator>.csv.gz`) under `results/`. It then runs `analyze.sh` on them. Each generator queries
 the resolver on its own node, so more generators spread the load over more
 nodes rather than piling it onto one.
 
@@ -169,11 +170,34 @@ records). A non-zero `dropped iterations` count means the generator could not
 keep up with the requested rate, so add generators before trusting higher
 rates. xk6-dns reports latency in whole milliseconds.
 
-To see when failures happened rather than how many, add `--out
-csv=/tmp/ts.csv` to the `k6 run` command and count `idns_expected` samples with
-value `0` per second. Failures spread evenly across a run point at capacity;
-failures that both generators see in the same seconds point at a node-wide
-outage such as a resolver restart.
+With `RAMP`, the summary has one line per step, so a step that failed is not
+averaged away by the steps that passed. Queries sent while the rate moves
+between steps are tagged `ramping` and left out of those lines.
+
+### Query records
+
+Every query is recorded with its send time, latency, step and outcome
+(`ok` or a failure reason). `run.sh analyze [DIR]` (run automatically after
+`run`) combines all generators and writes:
+
+- `stages.tsv`: per query kind and step, p50, p90, p99, p99.9 and max latency,
+  queries, failures by reason, and the rate actually sent.
+- `timeline.tsv`: the same per second, to see when failures happened.
+
+Failures spread evenly across a run point at capacity; failures that both
+generators see in the same seconds point at a node-wide outage such as a
+resolver restart. A timeout is recorded at 5000 ms, so p99 jumps to 5000 once
+more than 1% of a step's queries time out.
+
+### Server-side stats
+
+The client sees only answers. To see where time goes and which component
+failed, compare a run with the resolver's own metrics for the same seconds:
+dnsdist's `dnsdist_latency_bucket`, `dnsdist_frontend_*` rcodes,
+`dnsdist_downstream_timeouts`, `dnsdist_server_tcpcurrentconnections` and CPU
+time, and CoreDNS's `coredns_dns_request_duration_seconds` and
+`internal_dns_context_queries_total`. Both are off unless the deployment sets
+`metricsAddress` (see `config/internal-dns/README.md`).
 
 A propagation result where an older value is seen again after a newer one means
 different serving replicas answered with different snapshots.

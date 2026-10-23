@@ -244,6 +244,9 @@ spec:
           readOnly: true
         - name: runtime
           mountPath: "/tmp"
+        - name: identity
+          mountPath: "/var/run/internal-dns/identity"
+          readOnly: true
       volumes:
       - name: config
         configMap:
@@ -251,6 +254,12 @@ spec:
       - name: nats
         secret:
           secretName: internal-dns-regional-front-0-nats
+      # One identity key per regional shard, shared with its regional CoreDNS
+      # members.
+      - name: identity
+        secret:
+          secretName: internal-dns-regional-identity
+          defaultMode: 0440
       - name: activation
         emptyDir:
           medium: Memory
@@ -290,3 +299,6 @@ spec:
           mountPath: "/var/lib/internal-dns"
         - name: daemon-config
           mountPath: "/etc/internal-dns"
+        - name: identity
+          mountPath: "/var/run/internal-dns/identity"
+          readOnly: true

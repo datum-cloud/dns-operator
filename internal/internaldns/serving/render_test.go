@@ -167,3 +167,55 @@ func TestPendingConfigurationCannotBeActivatedByReadinessMap(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSDistIdentityOptionReplacesPerQueryProxyHeader(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderNode
+	c.NodeDNSDist.IdentityKeyFile = "/run/internal-dns/identity.key"
+	c.NodeCoreDNS.IdentityKeyFile = c.NodeDNSDist.IdentityKeyFile
+	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(r.Files[c.NodeDNSDist.Path])
+	if strings.Contains(conf, "useProxyProtocol") {
+		t.Fatal("identity option transport still sends a PROXY header per query")
+	}
+	for _, required := range []string{"tcpOnly=true", `io.open("/run/internal-dns/identity.key","r")`, `appendRule(destination("10.253.0.51"), SetEDNSOptionAction(65431, internalDNSIdentityKey.."10.253.0.51"))`} {
+		if !strings.Contains(conf, required) {
+			t.Fatalf("dnsdist config missing %q:\n%s", required, conf)
+		}
+	}
+	if decodedCoreDNS(t, r.Files[c.NodeCoreDNS.Path]).IdentityKeyFile != c.NodeCoreDNS.IdentityKeyFile {
+		t.Fatal("node CoreDNS does not read the identity key")
+	}
+	proxy, err := Render(RenderConfig{Role: RenderNode, NodeDNSDist: DNSDistRenderConfig{Path: c.NodeDNSDist.Path, ListenAddress: c.NodeDNSDist.ListenAddress, ACLs: c.NodeDNSDist.ACLs, PoolName: c.NodeDNSDist.PoolName, Backends: c.NodeDNSDist.Backends}, NodeCoreDNS: CoreDNSRenderConfig{Path: c.NodeCoreDNS.Path, ListenAddress: c.NodeCoreDNS.ListenAddress, Port: c.NodeCoreDNS.Port, ProxyPeers: c.NodeCoreDNS.ProxyPeers}}, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topology(conf) == topology(string(proxy.Files[c.NodeDNSDist.Path])) {
+		t.Fatal("changing the backend transport does not require a replacement member")
+	}
+}
+
+func TestNodeIdentityKeyMustMatchAcrossDaemons(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderNode
+	c.NodeDNSDist.IdentityKeyFile = "/run/internal-dns/identity.key"
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("node dnsdist sends identity options its CoreDNS cannot verify")
+	}
+	c.NodeCoreDNS.IdentityKeyFile = "identity.key"
+	c.NodeDNSDist.IdentityKeyFile = "identity.key"
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("relative identity key path accepted")
+	}
+}
+
+func topology(conf string) string {
+	_, rest, _ := strings.Cut(conf, "internalDNSTopology = ")
+	value, _, _ := strings.Cut(rest, "\n")
+	return value
+}

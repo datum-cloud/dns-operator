@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,7 @@ import (
 type Config struct {
 	ListenAddress   string    `json:"listenAddress"`
 	ProxyPeers      []string  `json:"proxyPeers"`
+	IdentityKeyFile string    `json:"identityKeyFile,omitempty"`
 	PublicUpstreams []string  `json:"publicUpstreams,omitempty"`
 	Contexts        []Context `json:"contexts"`
 }
@@ -65,6 +67,9 @@ func (c Config) Validate() error {
 		if _, err := netip.ParseAddr(peer); err != nil {
 			return fmt.Errorf("CoreDNS proxy peer: %w", err)
 		}
+	}
+	if c.IdentityKeyFile != "" && !filepath.IsAbs(c.IdentityKeyFile) {
+		return errors.New("CoreDNS identity key file must be an absolute path")
 	}
 	for _, upstream := range c.PublicUpstreams {
 		if err := publicEndpoint(upstream); err != nil {

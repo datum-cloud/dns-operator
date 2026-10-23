@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
 func TestDNSDistKeyPersistsAcrossAgentRestarts(t *testing.T) {
@@ -137,5 +139,32 @@ func TestRestartRetainsRoutingAcrossProcessConfigurationRefresh(t *testing.T) {
 	}
 	if !installedFilesMatch(restarted.state.Active.Files) || !bytes.Equal(restarted.state.Active.Files[cfg.Render.NodeDNSDist.Path], data) {
 		t.Fatal("accepted checkpoint and current process configuration differ")
+	}
+}
+
+func TestNodeGeneratesIdentityKeyButRegionalRequiresSharedKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.key")
+	if err := prepareIdentityKey(path, false); err == nil {
+		t.Fatal("regional member started without its shared identity key")
+	}
+	if err := prepareIdentityKey(path, true); err != nil {
+		t.Fatal(err)
+	}
+	first, err := contextdns.LoadIdentityKey(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareIdentityKey(path, true); err != nil {
+		t.Fatal(err)
+	}
+	second, err := contextdns.LoadIdentityKey(path)
+	if err != nil || string(first) != string(second) {
+		t.Fatal("identity key changed across restarts", err)
+	}
+	if err := os.WriteFile(path, []byte("short\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareIdentityKey(path, true); err == nil {
+		t.Fatal("invalid identity key accepted")
 	}
 }

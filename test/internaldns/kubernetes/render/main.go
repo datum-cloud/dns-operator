@@ -152,6 +152,9 @@ func bootstrap() {
 		}
 		users = append(users, object{"user": name, "password": password, "permissions": object{"publish": object{"allow": allow}, "subscribe": object{"allow": subscribe}}})
 	}
+	identity := obj("v1", "Secret", "internal-dns-regional-identity", ns)
+	identity["stringData"] = object{"key": randomSecret()}
+	items = append(items, identity)
 	tls := object{"cert_file": "/tls/tls.crt", "key_file": "/tls/tls.key", "ca_file": "/tls/ca.crt", "verify": true}
 	cfg := object{"port": 4222, "http_port": 8222, "jetstream": object{"store_dir": "/data"}, "tls": tls, "authorization": object{"users": users}, "cluster": object{"name": "internal-dns-e2e", "port": 6222, "tls": tls, "routes": []string{"nats-route://internal-dns-nats-0.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-1.internal-dns-nats." + ns + ".svc.cluster.local:6222", "nats-route://internal-dns-nats-2.internal-dns-nats." + ns + ".svc.cluster.local:6222"}}}
 	var encoded bytes.Buffer
@@ -223,6 +226,9 @@ func fleetPod(name, member, role string) object {
 	o := obj("v1", "Pod", name, ns)
 	o["metadata"].(object)["labels"] = object{"internal-dns-role": role, "internal-dns-member": member}
 	mounts := []object{mount("config", "/config", true), mount("nats", "/var/run/internal-dns/nats", true), mount("state", "/var/lib/internal-dns", false), mount("daemon-config", "/etc/internal-dns", false), mount("lease", "/run/internal-dns", false), mount("runtime", "/tmp", false)}
+	if role != nodeRole {
+		mounts = append(mounts, mount("identity", "/var/run/internal-dns/identity", true))
+	}
 	containers := make([]object, 0, 3)
 	for _, process := range []string{"agent"} {
 		containers = append(containers, object{"name": process, "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=" + process + " --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
@@ -238,9 +244,16 @@ func fleetPod(name, member, role string) object {
 			file = "cluster-dnsdist.conf"
 			containers[0]["readinessProbe"] = object{"exec": object{"command": []string{"/internal-dns", "--role=readiness", "--config=/config/config.json"}}, "periodSeconds": 2, "timeoutSeconds": 2}
 		}
-		containers = append(containers, object{"name": "dnsdist", "image": serving.DNSDistImage, "command": []string{"/usr/local/bin/dnsdist"}, "args": []string{"--supervised", "--disable-syslog", "-C", "/etc/internal-dns/" + file}, "securityContext": sec, "volumeMounts": []object{mount("daemon-config", "/etc/internal-dns", true), mount("lease", "/run/internal-dns", true), mount("runtime", "/tmp", false)}, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
+		dnsdistMounts := []object{mount("daemon-config", "/etc/internal-dns", true), mount("lease", "/run/internal-dns", true), mount("runtime", "/tmp", false)}
+		if role != nodeRole {
+			dnsdistMounts = append(dnsdistMounts, mount("identity", "/var/run/internal-dns/identity", true))
+		}
+		containers = append(containers, object{"name": "dnsdist", "image": serving.DNSDistImage, "command": []string{"/usr/local/bin/dnsdist"}, "args": []string{"--supervised", "--disable-syslog", "-C", "/etc/internal-dns/" + file}, "securityContext": sec, "volumeMounts": dnsdistMounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
 	}
 	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}}
+	if role != nodeRole {
+		volumes = append(volumes, object{"name": "identity", "secret": object{"secretName": "internal-dns-regional-identity", "defaultMode": 0o440}})
+	}
 	// The aliases model the service-side destination contract only. The separate
 	// probe has no ability to write routes or send trusted PROXY traffic.
 	init := []object{}

@@ -19,7 +19,10 @@ const maxProxyHandshakes = 64
 
 type proxyListener struct {
 	net.Listener
-	peers     map[netip.Addr]bool
+	peers map[netip.Addr]bool
+	// plain accepts trusted connections without a PROXY header. Their queries
+	// select a context only through a keyed identity option.
+	plain     bool
 	once      sync.Once
 	closeOnce sync.Once
 	ready     chan net.Conn
@@ -70,7 +73,7 @@ func (l *proxyListener) acceptConnections() {
 		case pending <- struct{}{}:
 			go func() {
 				defer func() { <-pending }()
-				accepted, err := readProxyConnection(conn)
+				accepted, err := readProxyConnection(conn, l.plain)
 				if err != nil {
 					_ = conn.Close()
 					return
@@ -87,16 +90,25 @@ func (l *proxyListener) acceptConnections() {
 	}
 }
 
-func readProxyConnection(conn net.Conn) (net.Conn, error) {
+func readProxyConnection(conn net.Conn, plain bool) (net.Conn, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		return nil, err
 	}
 	header := make([]byte, 16)
-	if _, err := io.ReadFull(conn, header); err != nil {
+	if _, err := io.ReadFull(conn, header[:12]); err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(header[:12], proxySignature) {
-		return nil, errors.New("invalid PROXY signature")
+		if !plain {
+			return nil, errors.New("invalid PROXY signature")
+		}
+		if err := conn.SetReadDeadline(time.Time{}); err != nil {
+			return nil, err
+		}
+		return &prefixedConn{Conn: conn, prefix: header[:12]}, nil
+	}
+	if _, err := io.ReadFull(conn, header[12:]); err != nil {
+		return nil, err
 	}
 	size := int(binary.BigEndian.Uint16(header[14:16]))
 	if size > 4096 {
@@ -117,6 +129,20 @@ func readProxyConnection(conn net.Conn) (net.Conn, error) {
 		return nil, err
 	}
 	return &proxyConn{Conn: conn, source: source, destination: destination}, nil
+}
+
+type prefixedConn struct {
+	net.Conn
+	prefix []byte
+}
+
+func (c *prefixedConn) Read(p []byte) (int, error) {
+	if len(c.prefix) == 0 {
+		return c.Conn.Read(p)
+	}
+	n := copy(p, c.prefix)
+	c.prefix = c.prefix[n:]
+	return n, nil
 }
 
 type proxyConn struct {

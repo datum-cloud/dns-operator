@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
 const DNSDistKeyPath = "/run/internal-dns/dnsdist.key"
@@ -42,6 +44,11 @@ func PrepareDNSDist(config RenderConfig) error {
 		return err
 	}
 	for _, router := range routers {
+		if router.IdentityKeyFile != "" {
+			if err := prepareIdentityKey(router.IdentityKeyFile, config.Role == RenderNode); err != nil {
+				return err
+			}
+		}
 		if err := prepareDNSDistRouter(router); err != nil {
 			return err
 		}
@@ -106,6 +113,27 @@ func prepareDNSDistKey(path string) error {
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	return writeRandomKey(path)
+}
+
+// A node member's dnsdist and CoreDNS share a pod, so the node generates its
+// own identity key. Regional members are separate pods and must mount a shared
+// key.
+func prepareIdentityKey(path string, generate bool) error {
+	_, err := contextdns.LoadIdentityKey(path)
+	if generate && errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			return err
+		}
+		return writeRandomKey(path)
+	}
+	if err != nil {
+		return fmt.Errorf("identity key: %w", err)
+	}
+	return nil
+}
+
+func writeRandomKey(path string) error {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return err

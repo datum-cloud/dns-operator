@@ -22,6 +22,7 @@ const (
 	outcomeForwardedPublic       = "forwarded_public"
 	outcomeRefusedUnknownContext = "refused_unknown_context"
 	outcomeRefusedBadDestination = "refused_bad_destination"
+	outcomeRefusedBadIdentity    = "refused_bad_identity"
 	outcomeRefusedUnsupported    = "refused_unsupported"
 	outcomeRefusedTransfer       = "refused_transfer"
 	outcomeServfailNoState       = "servfail_no_state"
@@ -55,7 +56,7 @@ var snapshotApplied = prometheus.NewGauge(prometheus.GaugeOpts{
 func init() {
 	prometheus.MustRegister(contextQueries, snapshotContexts, snapshotReloads, snapshotApplied)
 	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
-		outcomeRefusedBadDestination, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
+		outcomeRefusedBadDestination, outcomeRefusedBadIdentity, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
 		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream} {
 		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
 	}

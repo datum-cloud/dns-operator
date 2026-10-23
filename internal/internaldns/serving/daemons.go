@@ -162,7 +162,7 @@ func RunDaemons(ctx context.Context, config Config) error {
 }
 
 func coreDNSArgs(bind CoreDNSRenderConfig) ([]string, error) {
-	args := []string{"-config", bind.Path}
+	args := []string{"-config", bind.Path, "-identity-key-file=" + bind.IdentityKeyFile}
 	if bind.MetricsAddress == "" {
 		return args, nil
 	}

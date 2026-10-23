@@ -13,12 +13,12 @@ func TestCoreDNSMetricsAddressExpandsPodIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"-config", "/etc/c.json", "-metrics-address", "10.244.1.7:9153"}; !slices.Equal(args, want) {
+	if want := []string{"-config", "/etc/c.json", "-identity-key-file=", "-metrics-address", "10.244.1.7:9153"}; !slices.Equal(args, want) {
 		t.Fatalf("args = %v, want %v", args, want)
 	}
-	args, err = coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json"})
-	if err != nil || !slices.Equal(args, []string{"-config", "/etc/c.json"}) {
-		t.Fatalf("metrics enabled without an address: %v %v", args, err)
+	args, err = coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", IdentityKeyFile: "/run/internal-dns/identity.key"})
+	if err != nil || !slices.Equal(args, []string{"-config", "/etc/c.json", "-identity-key-file=/run/internal-dns/identity.key"}) {
+		t.Fatalf("identity key file not passed to CoreDNS: %v %v", args, err)
 	}
 }
 

@@ -215,6 +215,7 @@ KIND_IMAGE ?= $(IMG)
 
 # Network Services Operator integration
 NSO_REPO ?= https://github.com/datum-cloud/network-services-operator.git
+# config/overlays/nso builds NSO from this default path
 NSO_DIR ?= dev/network-services-operator
 NSO_IMG ?= ghcr.io/datum-cloud/network-services-operator:latest
 NSO_NAMESPACE ?= network-services-operator-system
@@ -319,13 +320,11 @@ bootstrap-upstream: ## Create kind upstream and deploy replicator pointing to do
 	CLUSTER=$(UPSTREAM_CLUSTER_NAME) OUT=dev/kind.upstream.kubeconfig $(MAKE) export-kind-kubeconfig-raw
 	# Optionally build and deploy Network Services Operator into upstream
 	@if [ "$(NSO_DEPLOY)" = "true" ]; then \
+		set -e; \
 		echo "[bootstrap-upstream] Installing Kubernetes Gateway API CRDs ($(GATEWAY_API_VERSION))"; \
 		$(MAKE) install-gateway-api-crds CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) ; \
+		$(MAKE) install-prometheus-operator-crds CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) ; \
 		$(MAKE) nso-deploy-upstream KUBECONFIG=$(abspath dev/kind.upstream.kubeconfig) ; \
-		echo "[bootstrap-upstream] Re-applying NSO overlay (config + RBAC) with server-side apply to override defaults"; \
-		CONTEXT=kind-$(UPSTREAM_CLUSTER_NAME) KUSTOMIZE_DIR=config/overlays/nso $(MAKE) kustomize-apply-ssa ; \
-		echo "[bootstrap-upstream] Restarting NSO to pick up new ConfigMap"; \
-		kubectl --context kind-$(UPSTREAM_CLUSTER_NAME) -n network-services-operator-system rollout restart deploy/network-services-operator-controller-manager || true ; \
 	else \
 		echo "[bootstrap-upstream] Skipping NSO deployment (NSO_DEPLOY=false). Only CRDs installed."; \
 	fi
@@ -405,6 +404,8 @@ KUSTOMIZE_VERSION ?= v5.7.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 DEFAULTER_GEN_VERSION ?= v0.32.3
 GATEWAY_API_VERSION ?= v1.1.0
+# The Prometheus Operator CRDs infra installs (NSO's config/default ships a ServiceMonitor)
+PROMETHEUS_OPERATOR_VERSION ?= v0.81.0
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
@@ -491,10 +492,10 @@ nso-load-upstream: ## Load NSO image into upstream kind cluster
 	$(KIND) load docker-image $(NSO_IMG) --name $(UPSTREAM_CLUSTER_NAME)
 
 .PHONY: nso-deploy-upstream
-nso-deploy-upstream: nso-build nso-load-upstream ## Deploy NSO into upstream cluster using KUBECONFIG
+nso-deploy-upstream: nso-build nso-load-upstream kustomize ## Deploy NSO with config/overlays/nso into upstream cluster using KUBECONFIG
 	@test -n "$(KUBECONFIG)" || { echo "KUBECONFIG is required (e.g., dev/kind.upstream.kubeconfig)"; exit 1; }
 	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) set-image-controller IMG=$(NSO_IMG)
-	KUBECONFIG=$(abspath $(KUBECONFIG)) $(MAKE) -C $(NSO_DIR) deploy IMG=$(NSO_IMG)
+	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/overlays/nso | KUBECONFIG=$(abspath $(KUBECONFIG)) $(KUBECTL) apply --server-side=true --force-conflicts -f -
 
 .PHONY: install-networking-crds
 install-networking-crds: controller-gen ## Generate and install networking services CRDs (e.g., Domain) into CONTEXT
@@ -514,6 +515,11 @@ install-dns-operator-crds: kustomize ## Install DNS operator CRDs into CONTEXT
 install-gateway-api-crds: ## Install Kubernetes Gateway API CRDs into CONTEXT
 	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
 	$(KUBECTL) --context $(CONTEXT) apply -k "github.com/kubernetes-sigs/gateway-api/config/crd?ref=$(GATEWAY_API_VERSION)"
+
+.PHONY: install-prometheus-operator-crds
+install-prometheus-operator-crds: ## Install the Prometheus Operator CRDs into CONTEXT
+	@test -n "$(CONTEXT)" || { echo "CONTEXT is required (e.g., kind-$(UPSTREAM_CLUSTER_NAME))"; exit 1; }
+	$(KUBECTL) --context $(CONTEXT) apply --server-side -f "https://github.com/prometheus-operator/prometheus-operator/releases/download/$(PROMETHEUS_OPERATOR_VERSION)/stripped-down-crds.yaml"
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary

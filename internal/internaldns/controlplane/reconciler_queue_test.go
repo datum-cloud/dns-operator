@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"testing"
+	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -10,6 +11,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 func TestProjectEventsShareOneQueueKey(t *testing.T) {
@@ -41,5 +43,24 @@ func TestContributionStatusWritesDoNotQueueAnotherPass(t *testing.T) {
 	}
 	if !p.Create(event.CreateEvent{Object: old}) || !p.Delete(event.DeleteEvent{Object: old}) {
 		t.Fatal("contribution creation and deletion must queue a project pass")
+	}
+}
+
+func TestFailedProjectPassRetriesWithinTheCap(t *testing.T) {
+	limiter := projectRateLimiter()
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "project-ns", Name: projectQueueKey}}
+	if first := limiter.When(request); first > 2*time.Second {
+		t.Fatalf("first retry waited %v", first)
+	}
+	var last time.Duration
+	for range 40 {
+		last = limiter.When(request)
+	}
+	if last > 30*time.Second {
+		t.Fatalf("retry after repeated failures waited %v, want at most 30s", last)
+	}
+	limiter.Forget(request)
+	if again := limiter.When(request); again > 2*time.Second {
+		t.Fatalf("retry after a successful pass waited %v", again)
 	}
 }

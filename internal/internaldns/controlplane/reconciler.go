@@ -9,11 +9,14 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"golang.org/x/time/rate"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -133,12 +136,23 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// the queue then holds at most one pending pass per project. Contribution
 	// status is written by this controller and never needs another pass.
 	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).
+		WithOptions(controller.Options{RateLimiter: projectRateLimiter()}).
 		Watches(&dnsv1alpha1.DNSRecordContribution{}, enqueue, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&dnsv1alpha1.DNSZone{}, enqueue).Watches(&dnsv1alpha1.DNSZoneAssociation{}, enqueue).
 		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue)
 
 	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 
+}
+
+// A whole project shares one queue key, so its backoff delays every name in it.
+const projectRetryLimit = 30 * time.Second
+
+func projectRateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
+	return workqueue.NewTypedMaxOfRateLimiter(
+		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](time.Second, projectRetryLimit),
+		&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+	)
 }
 
 // projectQueueKey names the single queue entry for each project namespace.

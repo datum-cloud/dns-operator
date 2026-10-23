@@ -94,8 +94,10 @@ func (s *snapshot) forward(upstreams []string) plugin.Handler {
 func (p *ContextPlugin) Replace(c Config) error {
 	s, err := compile(c)
 	if err != nil {
+		snapshotReloads.WithLabelValues("rejected").Inc()
 		return err
 	}
+	observeSnapshot(s)
 	if previous := p.state.Swap(s); previous != nil {
 		previous.close()
 	}
@@ -109,9 +111,15 @@ func (p *ContextPlugin) Close() {
 }
 
 func (p *ContextPlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	outcome, rcode, err := p.serve(ctx, w, r)
+	outcomeQueries[outcome].Inc()
+	return rcode, err
+}
+
+func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (string, int, error) {
 	state := p.state.Load()
 	if state == nil {
-		return dns.RcodeServerFailure, nil
+		return outcomeServfailNoState, dns.RcodeServerFailure, nil
 	}
 	destination := w.LocalAddr()
 	if addr, ok := w.RemoteAddr().(interface{ OriginalDestination() net.Addr }); ok {
@@ -119,39 +127,43 @@ func (p *ContextPlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *d
 	}
 	host, _, err := net.SplitHostPort(destination.String())
 	if err != nil {
-		return dns.RcodeRefused, nil
+		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
 	}
 	selected := state.contexts[host]
 	if selected == nil {
-		return dns.RcodeRefused, nil
+		return outcomeRefusedUnknownContext, dns.RcodeRefused, nil
 	}
 	if selected.pending {
-		return dns.RcodeServerFailure, nil
+		return outcomeServfailContext, dns.RcodeServerFailure, nil
 	}
 	if len(r.Question) != 1 || r.Opcode != dns.OpcodeQuery || r.Question[0].Qclass != dns.ClassINET {
-		return dns.RcodeRefused, nil
+		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
 	}
 	if r.Question[0].Qtype == dns.TypeAXFR || r.Question[0].Qtype == dns.TypeIXFR {
-		return dns.RcodeRefused, nil
+		return outcomeRefusedTransfer, dns.RcodeRefused, nil
 	}
 	w = contextWriter{ResponseWriter: w, destination: destination, request: r, recursionAvailable: selected.next != nil || selected.public != nil}
 	apex := plugin.Zones(selected.zones.Names).Matches(strings.ToLower(r.Question[0].Name))
 	if apex != "" {
 		if selected.pendingZones[apex] {
-			return dns.RcodeServerFailure, nil
+			return outcomeServfailZone, dns.RcodeServerFailure, nil
 		}
 		if selected.next != nil {
-			return selected.next.ServeDNS(ctx, w, r)
+			rcode, err := selected.next.ServeDNS(ctx, w, r)
+			return outcomeForwardedNext, rcode, err
 		}
-		return selected.zones.ServeDNS(ctx, w, r)
+		rcode, err := selected.zones.ServeDNS(ctx, w, r)
+		return outcomeServedZone, rcode, err
 	}
 	if selected.next != nil {
-		return selected.next.ServeDNS(ctx, w, r)
+		rcode, err := selected.next.ServeDNS(ctx, w, r)
+		return outcomeForwardedNext, rcode, err
 	}
 	if selected.public == nil {
-		return dns.RcodeServerFailure, errors.New("public recursive upstream is unavailable")
+		return outcomeServfailNoUpstream, dns.RcodeServerFailure, errors.New("public recursive upstream is unavailable")
 	}
-	return selected.public.ServeDNS(ctx, w, r)
+	rcode, err := selected.public.ServeDNS(ctx, w, r)
+	return outcomeForwardedPublic, rcode, err
 }
 
 type contextWriter struct {

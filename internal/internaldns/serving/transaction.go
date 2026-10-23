@@ -14,9 +14,30 @@ import (
 )
 
 type Command struct {
+	Daemon      Daemon   `json:"daemon,omitempty"`
 	Path        string   `json:"path"`
 	Args        []string `json:"args,omitempty"`
 	WhenChanged []string `json:"whenChanged,omitempty"`
+}
+
+type Daemon string
+
+const (
+	DaemonCoreDNS Daemon = "coredns"
+	DaemonDNSDist Daemon = "dnsdist"
+)
+
+func (c TransactionConfig) validateDaemons() error {
+	for _, commands := range [][]Command{c.Validate, c.Reload} {
+		for _, command := range commands {
+			switch command.Daemon {
+			case "", DaemonCoreDNS, DaemonDNSDist:
+			default:
+				return fmt.Errorf("command %s names unknown daemon %q", command.Path, command.Daemon)
+			}
+		}
+	}
+	return nil
 }
 
 type Runner interface {

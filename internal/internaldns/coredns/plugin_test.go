@@ -197,7 +197,7 @@ func TestTrustedPROXYDestinationSurvivesTCP(t *testing.T) {
 	write(c)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, path) }()
+	go func() { done <- Run(ctx, path, "") }()
 	t.Cleanup(func() {
 		cancel()
 		select {

@@ -302,6 +302,21 @@ an upstream address, and node contexts forward to per-binding addresses.
 
 No metric carries a context, zone, query name or client label.
 
+Set `metricsAddress` and `metricsACLs` on a dnsdist render configuration, such
+as `"[${POD_IP}]:8083"` and the scraper's pod CIDR, to serve dnsdist's
+Prometheus `/metrics` from that address. dnsdist expands environment
+references when it starts, so the dnsdist container needs `POD_IP` from the
+downward API. The address must be a specific IP address; if it is not, dnsdist
+logs an error, leaves metrics off and keeps answering queries. Only addresses
+in `metricsACLs` may connect, and the API and dashboard stay closed because no
+password or API key is set. The listener starts with the process, so changing
+it takes a restart.
+
+The endpoint includes the dnsdist counters for queries, responses by rcode
+(`dnsdist_frontend_*`), rule refusals and SERVFAILs, downstream timeouts and
+errors, the `dnsdist_latency_bucket` histogram, per-backend queries, latency
+and TCP connections (`dnsdist_server_*`), and dnsdist's own CPU time.
+
 ### Reference-state recovery
 
 An observed association, naming policy, or registration requires its private

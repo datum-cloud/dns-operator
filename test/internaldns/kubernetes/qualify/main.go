@@ -10,7 +10,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +59,7 @@ type environment struct {
 	BrokerStatefulSet     string    `json:"brokerStatefulSet"`
 	RegionalMembers       []string  `json:"regionalMembers"`
 	Projects              []project `json:"projects"`
+	DNSDistMetrics        []string  `json:"dnsdistMetrics"`
 }
 
 type check struct {
@@ -108,7 +111,15 @@ func main() {
 	name := flag.String("name", "", "DNS query name")
 	rrType := flag.String("type", "A", "DNS record type")
 	tcp := flag.Bool("tcp", false, "Use DNS over TCP")
+	httpGet := flag.String("http-get", "", "Fetch one URL from a workload pod")
 	flag.Parse()
+	if *httpGet != "" {
+		if err := runHTTPGet(*httpGet); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *probe {
 		if err := runProbe(*server, *name, *rrType, *tcp); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -173,6 +184,24 @@ func runProbe(server, name, rrType string, tcp bool) error {
 	}
 	sort.Strings(result.Addresses)
 	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+type httpResult struct {
+	Status int    `json:"status"`
+	Body   string `json:"body"`
+}
+
+func runHTTPGet(url string) error {
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(url)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(httpResult{Status: response.StatusCode, Body: string(body)})
 }
 
 func writeReport(path string, value any) error {

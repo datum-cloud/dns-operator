@@ -3,9 +3,13 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +43,9 @@ func (s *suite) scenarios(a, b *project) error {
 		if err := s.expect(p, "only-a.prod.internal", "A", false, dns.RcodeNameError); err != nil {
 			return err
 		}
+	}
+	if err := s.dnsdistMetrics(); err != nil {
+		return err
 	}
 	pa, err := s.publish(a, dnsv1.DNSNameReference{Name: a.zone.Name}, "common", "common", "10.42.0.10", "fd42::10")
 	if err != nil {
@@ -485,4 +492,55 @@ func (s *suite) dnsdistProcesses() (map[string]string, error) {
 		}
 	}
 	return result, nil
+}
+
+func (s *suite) dnsdistMetrics() error {
+	if len(s.env.DNSDistMetrics) == 0 {
+		return errors.New("environment names no dnsdist metrics endpoints")
+	}
+	for i, url := range s.env.DNSDistMetrics {
+		metrics, err := s.httpGet(url + "/metrics")
+		if err != nil {
+			return err
+		}
+		if metrics.Status != http.StatusOK {
+			return fmt.Errorf("%s/metrics answered %d", url, metrics.Status)
+		}
+		for _, family := range []string{"dnsdist_queries", "dnsdist_latency_bucket", "dnsdist_frontend_servfail", "dnsdist_server_queries", "dnsdist_server_tcpcurrentconnections"} {
+			if !strings.Contains(metrics.Body, "\n"+family) {
+				return fmt.Errorf("%s/metrics has no %s", url, family)
+			}
+		}
+		if i == 0 && !regexp.MustCompile(`(?m)^dnsdist_queries [1-9]`).MatchString(metrics.Body) {
+			return fmt.Errorf("%s/metrics counted no queries", url)
+		}
+		api, err := s.httpGet(url + "/api/v1/servers/localhost")
+		if err != nil {
+			return err
+		}
+		if api.Status == http.StatusOK {
+			return fmt.Errorf("%s serves the dnsdist API without a key", url)
+		}
+		s.pass("dnsdist exports query metrics on the pod address and keeps its API closed", map[string]any{"endpoint": url, "apiStatus": api.Status})
+	}
+	return nil
+}
+
+func (s *suite) httpGet(url string) (httpResult, error) {
+	ctx, cancel := context.WithTimeout(s.ctx, 12*time.Second)
+	defer cancel()
+	args := []string{"--kubeconfig", s.env.PlatformKubeconfig, "-n", s.env.Namespace, "exec", s.env.ProbePod}
+	if s.env.ProbeContainer != "" {
+		args = append(args, "-c", s.env.ProbeContainer)
+	}
+	args = append(args, "--", s.env.ProbeBinary, "--http-get", url)
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if err != nil {
+		return httpResult{}, fmt.Errorf("get %s: %w: %s", url, err, stderr.String())
+	}
+	var result httpResult
+	return result, json.Unmarshal(output, &result)
 }

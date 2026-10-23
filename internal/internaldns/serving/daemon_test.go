@@ -13,4 +13,3 @@ func TestCommandsNameOnlyKnownDaemons(t *testing.T) {
 		t.Fatal("unknown daemon passed validation")
 	}
 }
-

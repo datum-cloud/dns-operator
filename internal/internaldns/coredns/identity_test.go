@@ -18,9 +18,9 @@ import (
 
 const testIdentityKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-func identityQuery(name string, options ...string) *dns.Msg {
+func identityQuery(options ...string) *dns.Msg {
 	m := new(dns.Msg)
-	m.SetQuestion(name, dns.TypeA)
+	m.SetQuestion("app.datum.internal.", dns.TypeA)
 	m.SetEdns0(1232, false)
 	opt := m.IsEdns0()
 	for _, data := range options {
@@ -52,7 +52,7 @@ func TestIdentityOptionSelectsContextOnlyWithKey(t *testing.T) {
 		{"absent", nil, dns.RcodeRefused, ""},
 	} {
 		w := &answerWriter{destination: "127.0.0.1"}
-		m := identityQuery("app.datum.internal.", tc.options...)
+		m := identityQuery(tc.options...)
 		rcode, err := p.ServeDNS(context.Background(), w, m)
 		if err != nil {
 			t.Fatal(tc.name, err)
@@ -75,7 +75,7 @@ func TestIdentityOptionIsIgnoredWithoutKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &answerWriter{destination: "fd53::a"}
-	if _, err := p.ServeDNS(context.Background(), w, identityQuery("app.datum.internal.", testIdentityKey+"fd53::b")); err != nil {
+	if _, err := p.ServeDNS(context.Background(), w, identityQuery(testIdentityKey+"fd53::b")); err != nil {
 		t.Fatal(err)
 	}
 	if address(w.answer) != "192.0.2.10" {
@@ -136,7 +136,7 @@ func TestPlainConnectionsCarryKeyedIdentityAndProxyStillWorks(t *testing.T) {
 		if i%2 == 1 {
 			destination, want = "fd53::b", "192.0.2.20"
 		}
-		if err := conn.WriteMsg(identityQuery("app.datum.internal.", testIdentityKey+destination)); err != nil {
+		if err := conn.WriteMsg(identityQuery(testIdentityKey+destination)); err != nil {
 			t.Fatal(err)
 		}
 		m, err := conn.ReadMsg()
@@ -144,7 +144,7 @@ func TestPlainConnectionsCarryKeyedIdentityAndProxyStillWorks(t *testing.T) {
 			t.Fatalf("query %d on a reused connection: %v %v", i, m, err)
 		}
 	}
-	if err := conn.WriteMsg(identityQuery("app.datum.internal.")); err != nil {
+	if err := conn.WriteMsg(identityQuery()); err != nil {
 		t.Fatal(err)
 	}
 	if m, err := conn.ReadMsg(); err != nil || m.Rcode != dns.RcodeRefused {
@@ -174,7 +174,7 @@ func TestPlainConnectionsNeedAnIdentityKey(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := client.WriteMsg(identityQuery("app.datum.internal.")); err != nil {
+		if err := client.WriteMsg(identityQuery()); err != nil {
 			t.Fatal(err)
 		}
 		select {

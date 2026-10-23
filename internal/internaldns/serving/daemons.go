@@ -182,6 +182,7 @@ func metricsListenAddress(address string) (string, error) {
 		return "", fmt.Errorf("%q is not address:port", address)
 	}
 	ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(address[:i], "["), "]"))
+	ip = ip.Unmap()
 	if err != nil || ip.IsUnspecified() {
 		return "", fmt.Errorf("%q must name the pod's IP address", address)
 	}

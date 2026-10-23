@@ -27,7 +27,7 @@ func TestCoreDNSMetricsAddressRejectsUnsetPodIP(t *testing.T) {
 	if _, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: "${POD_IP}:9153"}); err == nil {
 		t.Fatal("a metrics address with no host was accepted, which would listen on every interface")
 	}
-	for _, address := range []string{"[::]:9153", "0.0.0.0:9153", "localhost:9153", "10.0.0.1", "10.0.0.1:0"} {
+	for _, address := range []string{"[::]:9153", "0.0.0.0:9153", "localhost:9153", "10.0.0.1", "10.0.0.1:0", "[::ffff:0.0.0.0]:9153"} {
 		if _, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: address}); err == nil {
 			t.Errorf("metrics address %q was accepted", address)
 		}

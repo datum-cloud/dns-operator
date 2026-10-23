@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const dnsValueNode = "node"
@@ -74,7 +75,8 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 		}
 	}
 	if member == nil || member.ReplicaID != a.ReplicaID {
-		return fmt.Errorf("ack member identity is not assigned to this shard")
+		log.FromContext(ctx).Error(errors.New("ack member identity is not assigned to this shard"), "dropping acknowledgement", "member", a.MemberID, "replica", a.ReplicaID, "region", s.Region, "shard", s.Shard)
+		return nil
 	}
 	now := time.Now().UTC()
 	if s.Now != nil {

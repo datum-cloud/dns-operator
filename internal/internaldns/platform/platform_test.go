@@ -323,6 +323,23 @@ func TestAckCannotForgeAnotherMemberSubject(t *testing.T) {
 	}
 }
 
+func TestAckFromUnassignedMemberIsDrained(t *testing.T) {
+	now := time.Now().UTC()
+	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "auth-a", ReplicaID: "replica-a", Role: "regional"}}}
+	for _, a := range []model.MemberAck{
+		{MemberID: "auth-b", ReplicaID: "replica-b", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+		{MemberID: "auth-a", ReplicaID: "replica-b", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+	} {
+		env, err := model.NewEnvelope(model.KindMemberAck, "ack-1", "east", "shared", "zone-uid", 1, 1, now, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", a.MemberID), env); err != nil {
+			t.Fatalf("acknowledgement from unassigned %s/%s was left for redelivery: %v", a.MemberID, a.ReplicaID, err)
+		}
+	}
+}
+
 func TestPublicationAckDoesNotWaitForSourceProjection(t *testing.T) {
 	now := time.Now().UTC()
 	zoneUID := types.UID("zone-uid")

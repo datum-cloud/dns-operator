@@ -658,10 +658,6 @@ func TestExpiredKnownAckReplayDrainsWithoutStateChange(t *testing.T) {
 	if agent.state.Active != nil {
 		t.Fatal("expired ACK changed applied configuration")
 	}
-	ack.MemberID = "unknown"
-	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err == nil {
-		t.Fatal("expired ACK from an unknown member was accepted")
-	}
 	ack.MemberID = "regional-0"
 	ack.ValidUntil = ack.ObservedAt.Add(2*time.Minute + time.Nanosecond)
 	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err == nil {
@@ -677,5 +673,33 @@ func assertAppliedCheckpoint(t *testing.T, agent *Agent) {
 	}
 	if state.Active == nil || !installedFilesMatch(state.Active.Files) || activationPending(agent.cfg.StateDir) {
 		t.Fatal("approved configuration is not durably active")
+	}
+}
+
+func TestAckFromUnknownMemberIsDrainedWithoutStateChange(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	var reported []error
+	agent := &Agent{
+		cfg:  Config{Region: "east", Shard: "s1", Mode: ModeResolver},
+		deps: Dependencies{Clock: func() time.Time { return now }, OnError: func(err error) { reported = append(reported, err) }}, state: newCheckpoint(),
+		lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{},
+	}
+	snapshot := testSnapshot(now)
+	agent.state.Snapshot = &snapshot
+	agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
+	for _, ack := range []model.MemberAck{
+		{MemberID: "unknown", ReplicaID: "unknown", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckRejected, ObservedAt: now, ValidUntil: now.Add(time.Minute)},
+		{MemberID: "unknown", ReplicaID: "unknown", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now.Add(-2 * time.Minute), ValidUntil: now.Add(-time.Minute)},
+	} {
+		if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err != nil {
+			t.Fatalf("ACK from an unknown member was left for redelivery: %v", err)
+		}
+	}
+	if len(agent.state.Acks) != 0 || agent.state.Active != nil {
+		t.Fatalf("ACK from an unknown member changed state: acks=%#v", agent.state.Acks)
+	}
+	if len(reported) != 2 {
+		t.Fatalf("dropped ACKs were not reported: %v", reported)
 	}
 }

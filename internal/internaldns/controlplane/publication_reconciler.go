@@ -101,9 +101,13 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
 			earliest = next
 		}
-		if err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now); err != nil {
+		pending, err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now)
+		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
+		}
+		if !pending.IsZero() && (earliest.IsZero() || pending.Before(earliest)) {
+			earliest = pending
 		}
 		if !z.DeletionTimestamp.IsZero() && result {
 			base := z.DeepCopy()
@@ -137,22 +141,26 @@ func nextProjectRequeue(now, earliest time.Time, lease time.Duration) time.Durat
 	return delay
 }
 
-func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alpha1.DNSZone, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, now time.Time) error {
+func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alpha1.DNSZone, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, now time.Time) (time.Time, error) {
 	ownerName := "owner-" + model.OpaqueToken(string(z.UID))[:20]
 	var owner dnsv1alpha1.DNSPublicationOwnership
 	if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: ownerName}, &owner); err != nil {
-		return client.IgnoreNotFound(err)
+		return time.Time{}, client.IgnoreNotFound(err)
 	}
 	if owner.Spec.ActiveManifestName == "" {
-		return nil
+		return time.Time{}, nil
 	}
 	var manifest dnsv1alpha1.DNSPublicationManifest
 	if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: owner.Spec.ActiveManifestName}, &manifest); err != nil {
-		return client.IgnoreNotFound(err)
+		return time.Time{}, client.IgnoreNotFound(err)
 	}
 	published := false
 	if c := apimeta.FindStatusCondition(manifest.Status.Conditions, "Published"); c != nil && c.Status == metav1.ConditionTrue {
 		published = true
+	}
+	var recheck time.Time
+	if !published && owner.Spec.HolderIdentity == r.Options.Identity {
+		recheck = now.Add(publishedRecheckDelay(now, manifest.Spec.GeneratedAt.Time))
 	}
 	regUIDs := map[types.UID]bool{}
 	registrationFences := map[types.UID]int64{}
@@ -171,7 +179,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
 		if !jsonEqual(base.Status, reg.Status) {
 			if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil {
-				return err
+				return time.Time{}, err
 			}
 		}
 	}
@@ -189,7 +197,7 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 			if apierrors.IsNotFound(err) {
 				continue
 			}
-			return err
+			return time.Time{}, err
 		}
 		if current.UID != c.UID || current.Generation != c.Generation {
 			continue
@@ -207,11 +215,22 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		setCondition(&c.Status.Conditions, "Published", status, reason, msg, c.Generation, now)
 		if !jsonEqual(base.Status, c.Status) {
 			if err := r.Status().Patch(ctx, c, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return err
+				return time.Time{}, err
 			}
 		}
 	}
-	return nil
+	return recheck, nil
+}
+
+// publishedRecheckDelay polls a fresh manifest for its Published verdict
+// quickly, then backs off as the manifest ages, because nothing watches the
+// verdict and a zone that never publishes must not hold a tight loop.
+func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
+	age := now.Sub(generatedAt)
+	if age < time.Second {
+		return time.Second
+	}
+	return age
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, time.Time, error) {

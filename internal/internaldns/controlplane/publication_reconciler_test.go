@@ -399,3 +399,37 @@ func TestProjectContinuesAfterZonePublicationFailure(t *testing.T) {
 	}
 	t.Fatal("one broken zone blocked the healthy zone publication")
 }
+
+func TestHolderRechecksUnpublishedManifestWithBackoff(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "project", UID: "zone-a"}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken(string(zone.UID))[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{
+		ZoneUID: zone.UID, HolderIdentity: "writer-a", WriterEpoch: 1, ActiveManifestName: "active", LeaseUntil: metav1.NewTime(now.Add(time.Minute)),
+	}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "active", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{WriterEpoch: 1, Revision: 1, GeneratedAt: metav1.NewTime(now)}}
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(owner, manifest).Build()
+	cases := []struct {
+		identity string
+		at       time.Time
+		want     time.Time
+	}{
+		{"writer-a", now, now.Add(time.Second)},
+		{"writer-a", now.Add(8 * time.Second), now.Add(16 * time.Second)},
+		{"writer-b", now, time.Time{}},
+	}
+	for _, tc := range cases {
+		r := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "platform", Identity: tc.identity}}
+		got, err := r.aggregatePublicationStatus(ctx, zone, nil, nil, tc.at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.Equal(tc.want) {
+			t.Fatalf("%s at %s: recheck %s, want %s", tc.identity, tc.at, got, tc.want)
+		}
+	}
+}

@@ -38,7 +38,7 @@ func TestPublicationReadinessPreservesCurrentCompilerStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &Reconciler{Client: cl, Options: ReconcilerOptions{PlatformNamespace: "platform"}}
-	if err := r.aggregatePublicationStatus(context.Background(), zone, []dnsv1alpha1.DNSRegistration{registration}, []dnsv1alpha1.DNSRecordContribution{stale}, time.Now()); err != nil {
+	if _, err := r.aggregatePublicationStatus(context.Background(), zone, []dnsv1alpha1.DNSRegistration{registration}, []dnsv1alpha1.DNSRecordContribution{stale}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(&contribution), &contribution); err != nil {

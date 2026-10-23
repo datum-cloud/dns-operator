@@ -190,20 +190,13 @@ func TestReadinessSeesAbandonedInstallationThroughSupervisorLocking(t *testing.T
 	if err := os.WriteFile(activationMarkerPath(f.dir), []byte(`{"phase":"installing"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ctx.Err() == nil {
-			_, _, release := daemonPermission(f.dir)
-			time.Sleep(time.Millisecond)
-			release()
-			time.Sleep(49 * time.Millisecond)
-		}
-	}()
-	t.Cleanup(func() { cancel(); <-done })
-	for i := 0; i < 100; i++ {
-		if err := Readiness(context.Background(), f.config); err == nil {
+	for i := 0; i < 20; i++ {
+		_, _, release := daemonPermission(f.dir)
+		released := make(chan struct{})
+		time.AfterFunc(time.Millisecond, func() { release(); close(released) })
+		err := Readiness(context.Background(), f.config)
+		<-released
+		if err == nil {
 			t.Fatal("the supervisor's lock made an abandoned installation ready")
 		}
 	}

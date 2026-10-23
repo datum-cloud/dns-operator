@@ -308,6 +308,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 				Durable:        durable(roleControlPlane, planner.Region, planner.Shard, "acks"),
 				FilterSubjects: []string{ackFilter(planner.Region, planner.Shard)},
 				AckWait:        30 * time.Second, MaxAckPending: 128,
+				NewDurableReplay: ackReplay,
 			})
 			if consumerErr != nil {
 				log.Error(consumerErr, "regional ACK consumer setup failed; retrying", "shard", planner.Shard)
@@ -412,12 +413,12 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	}
 	defer regional.Close()
 	route, _ := regional.route(cfg.Agent.Region)
-	consumer := func(suffix string, filters ...string) (*transport.Consumer, error) {
-		return route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, suffix), FilterSubjects: filters, AckWait: 30 * time.Second, MaxAckPending: 64})
-	}
 	var sources []serving.EventSource
-	for _, feed := range []struct{ suffix, filter string }{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard)}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard)}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard)}} {
-		source, err := consumer(feed.suffix, feed.filter)
+	for _, feed := range []struct {
+		suffix, filter string
+		replay         time.Duration
+	}{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard), 0}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard), 0}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard), ackReplay}} {
+		source, err := route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, feed.suffix), FilterSubjects: []string{feed.filter}, AckWait: 30 * time.Second, MaxAckPending: 64, NewDurableReplay: feed.replay})
 		if err != nil {
 			return err
 		}
@@ -500,6 +501,10 @@ func retryLoop(ctx context.Context, interval time.Duration, name string, step fu
 		}
 	}
 }
+
+// ackReplay covers the longest serving lease an acknowledgement may carry;
+// anything older can no longer change readiness.
+const ackReplay = 2 * time.Minute
 
 func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform.AckSink, terminal chan<- error) {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-ack-consumer").WithValues("region", sink.Region, "shard", sink.Shard)

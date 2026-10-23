@@ -45,6 +45,7 @@ type FileTransaction struct {
 	MarkerPath     string
 	Config         TransactionConfig
 	Runner         Runner
+	restarts       uint64
 }
 
 type preservedTransactionError struct{ error }
@@ -173,6 +174,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 		if structural {
 			// Restart every owned daemon after changing routing or view configuration.
 			commandChanges = nil
+			t.restarts++
 			if err := t.FailClosed(ctx); err != nil {
 				return uncertainTransactionError{err}
 			}
@@ -212,6 +214,7 @@ func (t *FileTransaction) apply(ctx context.Context, files map[string][]byte, fo
 				return errors.Join(err, guardErr)
 			}
 			commandChanges = nil
+			t.restarts++
 			if guardErr := t.FailClosed(ctx); guardErr != nil {
 				return errors.Join(err, guardErr)
 			}

@@ -719,4 +719,9 @@ func TestResolverVerificationProbesOnlyChangedBindings(t *testing.T) {
 	if agent.verifyResolverBindings(context.Background(), bindings, activeSet()); len(probed) != 2 {
 		t.Fatalf("cleared proofs did not reprove every binding: %v", probed)
 	}
+	agent.tx.restarts++
+	probed = nil
+	if agent.verifyResolverBindings(context.Background(), bindings, activeSet()); len(probed) != 2 {
+		t.Fatalf("daemon restart did not reprove every binding: %v", probed)
+	}
 }

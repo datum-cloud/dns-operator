@@ -181,6 +181,7 @@ type Agent struct {
 	lastPublicationAck    map[string]time.Time
 	installedPublications map[string]installedPublication
 	verifiedPaths         map[string]string
+	verifiedRestarts      uint64
 	restoredAt            time.Time
 	stateReceived         bool
 	checkpointWithdrawn   bool
@@ -956,14 +957,18 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	if a.deps.Verifier == nil {
 		return false
 	}
+	if a.verifiedRestarts != a.tx.restarts {
+		a.verifiedPaths = nil
+		a.verifiedRestarts = a.tx.restarts
+	}
 	verified := map[string]string{}
 	identities := map[string]string{}
 	eligible := make([]model.Binding, 0, len(bindings))
 	for _, binding := range bindings {
 		if active[binding.BindingUID] {
 			binding.Zones = a.readyZones(binding)
-			identity := probeIdentity(binding)
-			if a.verifiedPaths[binding.BindingUID] == identity {
+			identity := a.probeIdentity(binding)
+			if identity != "" && a.verifiedPaths[binding.BindingUID] == identity {
 				verified[binding.BindingUID] = identity
 				continue
 			}
@@ -1039,8 +1044,20 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	return probeFailed
 }
 
-func probeIdentity(b model.Binding) string {
-	data, _ := json.Marshal(b)
+func (a *Agent) probeIdentity(b model.Binding) string {
+	members := make(map[string]map[string]bool, len(b.Zones))
+	for _, zone := range b.Zones {
+		private := b
+		private.Zones = []model.ZoneAttachment{zone}
+		members[zone.ZoneUID] = a.eligibleRegionalMembers(private)
+	}
+	data, err := json.Marshal(struct {
+		Binding model.Binding
+		Members map[string]map[string]bool
+	}{b, members})
+	if err != nil {
+		return ""
+	}
 	return model.Hash(data)
 }
 

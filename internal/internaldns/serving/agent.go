@@ -684,7 +684,8 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		}
 	}
 	if !known {
-		return fmt.Errorf("ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID)
+		a.report(fmt.Errorf("drop ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID))
+		return nil
 	}
 	// A durable ACK consumer can legitimately replay a once-valid lease after a
 	// backlog. Drain it without changing applied readiness;

@@ -23,8 +23,6 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 	return Process{MetricsAddress: metricsAddress}.Run(ctx, path)
 }
 
-// Process settings that come from the member configuration rather than the
-// rendered snapshot, which may be left over from an older member configuration.
 type Process struct {
 	MetricsAddress  string
 	IdentityKeyFile *string
@@ -106,6 +104,9 @@ func (pr Process) Run(ctx context.Context, path string) error {
 				continue
 			}
 			next, err := Decode(data)
+			if err == nil && pr.IdentityKeyFile != nil {
+				next.IdentityKeyFile = *pr.IdentityKeyFile
+			}
 			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
 				_ = server.Stop()
 				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, or identity key")

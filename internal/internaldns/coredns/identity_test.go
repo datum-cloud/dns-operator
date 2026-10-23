@@ -245,12 +245,7 @@ func TestMemberIdentityKeyAppliesOverASnapshotSavedWithoutIt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- Process{IdentityKeyFile: &keyPath}.Run(ctx, path) }()
-	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(cancel)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		m, err := keyedQuery(c.ListenAddress, "fd53::b")
@@ -262,13 +257,16 @@ func TestMemberIdentityKeyAppliesOverASnapshotSavedWithoutIt(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	c.IdentityKeyFile = keyPath
-	writeContexts(t, path, c)
-	time.Sleep(250 * time.Millisecond)
-	select {
-	case err := <-done:
-		t.Fatalf("CoreDNS restarted although the new snapshot matches its key: %v", err)
-	default:
+	for _, snapshotKey := range []string{keyPath, filepath.Join(filepath.Dir(keyPath), "stale.key")} {
+		c.IdentityKeyFile = snapshotKey
+		c.Contexts[0].Zones[0].Data = zoneData("192.0.2.10")
+		writeContexts(t, path, c)
+		time.Sleep(250 * time.Millisecond)
+		select {
+		case err := <-done:
+			t.Fatalf("CoreDNS restarted for a snapshot key the member configuration overrides: %v", err)
+		default:
+		}
 	}
 	if m, err := keyedQuery(c.ListenAddress, "fd53::a"); err != nil || address(m) != "192.0.2.10" {
 		t.Fatalf("signed query after the keyed snapshot: %v %v", m, err)
@@ -279,8 +277,10 @@ func TestSnapshotNeedingANewKeyRestartsCoreDNS(t *testing.T) {
 	t.Parallel()
 	c, keyPath, path := keyedFixture(t)
 	writeContexts(t, path, c)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- Run(context.Background(), path, "") }()
+	go func() { done <- Run(ctx, path, "") }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")

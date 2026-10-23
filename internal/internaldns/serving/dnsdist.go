@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
 const DNSDistKeyPath = "/run/internal-dns/dnsdist.key"
@@ -42,6 +44,11 @@ func PrepareDNSDist(config RenderConfig) error {
 		return err
 	}
 	for _, router := range routers {
+		if router.IdentityKeyFile != "" {
+			if err := prepareIdentityKey(router.IdentityKeyFile, config.Role == RenderNode); err != nil {
+				return err
+			}
+		}
 		if err := prepareDNSDistRouter(router); err != nil {
 			return err
 		}
@@ -82,12 +89,15 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 // Refresh immutable process settings while retaining accepted tenant rules.
 func refreshDNSDistConfiguration(router DNSDistRenderConfig, retained []byte) ([]byte, error) {
 	boundary := []byte(dnsdistRulesBoundary)
-	_, rules, ok := bytes.Cut(retained, boundary)
+	retainedHeader, rules, ok := bytes.Cut(retained, boundary)
 	if !ok || !bytes.HasSuffix(rules, []byte("setRules(rules)\nend\n")) {
 		return nil, errors.New("retained dnsdist configuration has no complete rules section")
 	}
 	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
 	header, _, _ := bytes.Cut(startup, boundary)
+	if dnsdistTopology(retainedHeader) != dnsdistTopology(header) {
+		return startup, nil
+	}
 	return append(append(header, boundary...), rules...), nil
 }
 
@@ -106,6 +116,24 @@ func prepareDNSDistKey(path string) error {
 	if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	return writeRandomKey(path)
+}
+
+func prepareIdentityKey(path string, generate bool) error {
+	_, err := contextdns.LoadIdentityKey(path)
+	if generate && errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+			return err
+		}
+		return writeRandomKey(path)
+	}
+	if err != nil {
+		return fmt.Errorf("identity key: %w", err)
+	}
+	return nil
+}
+
+func writeRandomKey(path string) error {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return err
@@ -115,4 +143,10 @@ func prepareDNSDistKey(path string) error {
 		return err
 	}
 	return os.Rename(temporary, path)
+}
+
+func dnsdistTopology(header []byte) string {
+	_, rest, _ := bytes.Cut(header, []byte("internalDNSTopology = "))
+	value, _, _ := bytes.Cut(rest, []byte("\n"))
+	return string(value)
 }

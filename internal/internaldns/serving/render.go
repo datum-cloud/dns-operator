@@ -17,11 +17,12 @@ import (
 )
 
 type DNSDistRenderConfig struct {
-	Path          string          `json:"path"`
-	ListenAddress string          `json:"listenAddress"`
-	ACLs          []string        `json:"acls"`
-	PoolName      string          `json:"poolName"`
-	Backends      []model.Backend `json:"backends,omitempty"`
+	Path            string          `json:"path"`
+	ListenAddress   string          `json:"listenAddress"`
+	ACLs            []string        `json:"acls"`
+	PoolName        string          `json:"poolName"`
+	Backends        []model.Backend `json:"backends,omitempty"`
+	IdentityKeyFile string          `json:"identityKeyFile,omitempty"`
 }
 
 type CoreDNSRenderConfig struct {
@@ -29,6 +30,7 @@ type CoreDNSRenderConfig struct {
 	ListenAddress   string   `json:"listenAddress"`
 	Port            uint16   `json:"port"`
 	ProxyPeers      []string `json:"proxyPeers"`
+	IdentityKeyFile string   `json:"identityKeyFile,omitempty"`
 	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
 	MetricsAddress  string   `json:"metricsAddress,omitempty"`
 }
@@ -140,6 +142,15 @@ func validateRenderConfig(c RenderConfig) error {
 		if err := validateBackends(d.Backends); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
+		if d.IdentityKeyFile != "" && !filepath.IsAbs(d.IdentityKeyFile) {
+			return fmt.Errorf("%s identity key file must be an absolute path", label)
+		}
+	}
+	if (role == RenderNode || role == RenderBoth) && c.NodeDNSDist.IdentityKeyFile != c.NodeCoreDNS.IdentityKeyFile {
+		return errors.New("node dnsdist and node CoreDNS require the same identity key file")
+	}
+	if (role == RenderCluster || role == RenderBoth) && c.ClusterDNSDist.IdentityKeyFile != c.ClusterCoreDNS.IdentityKeyFile {
+		return errors.New("cluster dnsdist and cluster CoreDNS require the same identity key file")
 	}
 	for label, b := range binds {
 		if !filepath.IsAbs(b.Path) || b.Port == 0 {
@@ -158,8 +169,7 @@ func validateRenderConfig(c RenderConfig) error {
 				return fmt.Errorf("%s metrics address: %w", label, err)
 			}
 		}
-		cfg := contextdns.Config{ListenAddress: net.JoinHostPort(b.ListenAddress, strconv.Itoa(int(b.Port))), ProxyPeers: b.ProxyPeers, PublicUpstreams: b.PublicUpstreams}
-		if err := cfg.Validate(); err != nil {
+		if err := coreDNSConfig(b).Validate(); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
 	}
@@ -218,7 +228,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		Backends  []model.Backend
 		Pool      string
 		Transport string
-	}{c.ListenAddress, c.ACLs, backends, c.PoolName, "proxy-v2-tcp"})
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c)})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "setLocal(%q)\nsetACL({", c.ListenAddress)
@@ -229,8 +239,13 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "%q", acl)
 	}
 	fmt.Fprint(&out, "})\nsetSecurityPollSuffix(\"\")\ninternalDNSServers = {}\ninternalDNSPools = {}\n")
+	proxy := "useProxyProtocol=true,"
+	if c.IdentityKeyFile != "" {
+		proxy = ""
+		fmt.Fprintf(&out, "if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then internalDNSIdentityKey = string.rep(\"A\",43)..\"=\" else\n  local handle = assert(io.open(%q,\"r\"))\n  internalDNSIdentityKey = assert(handle:read(\"*l\")):match(\"^%%s*(.-)%%s*$\"); handle:close()\nend\n", c.IdentityKeyFile)
+	}
 	for _, backend := range backends {
-		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,useProxyProtocol=true,tcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName)
+		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy)
 	}
 	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
 	fmt.Fprint(&out, dnsdistRulesBoundary+"local function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n")
@@ -274,6 +289,15 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	fmt.Fprint(&out, "appendRule(NotRule(TagRule(\"dns-context\")), RCodeAction(DNSRCode.REFUSED))\n")
 	fmt.Fprint(&out, "appendRule(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
+	if c.IdentityKeyFile != "" {
+		for _, b := range bindings {
+			addr := b.ConsumerAddress
+			if cluster {
+				addr = b.ClusterAddress
+			}
+			fmt.Fprintf(&out, "appendRule(destination(%q), SetEDNSOptionAction(%d, internalDNSIdentityKey..%q))\n", addr, contextdns.IdentityOption, addr)
+		}
+	}
 	for _, binding := range bindings {
 		attached := append([]model.ZoneAttachment(nil), binding.Zones...)
 		sort.Slice(attached, func(i, j int) bool { return len(attached[i].Apex) > len(attached[j].Apex) })
@@ -301,6 +325,13 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	fmt.Fprint(&out, "setRules(rules)\nend\n")
 	return out.Bytes()
+}
+
+func dnsdistTransport(c DNSDistRenderConfig) string {
+	if c.IdentityKeyFile != "" {
+		return "identity-option-tcp"
+	}
+	return "proxy-v2-tcp"
 }
 
 func eligiblePool(backends []model.Backend, allowed map[string]bool) string {
@@ -351,5 +382,5 @@ func renderClusterCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publi
 }
 
 func coreDNSConfig(c CoreDNSRenderConfig) contextdns.Config {
-	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
+	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, IdentityKeyFile: c.IdentityKeyFile, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
 }

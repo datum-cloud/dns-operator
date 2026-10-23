@@ -1,6 +1,11 @@
 # Fixed shared fleet members for one regional shard. Deploy at least two copies
 # of the regional-coredns member with distinct IDs, addresses, state, config, NATS
 # credentials, and activation state. Contexts and zones never create workloads.
+# The regional dnsdist and regional CoreDNS members of a shard share one identity
+# key (internal-dns-regional-identity, 32 random bytes, base64). Node members
+# generate their own. Turn the key on for regional CoreDNS before regional
+# dnsdist, and off in the reverse order. Both read the key only at start, so
+# rotate it by restarting every regional member of the shard together.
 apiVersion: v1
 kind: ConfigMap
 metadata: {name: internal-dns-node-0-config, namespace: internal-dns-system}
@@ -11,7 +16,7 @@ data:
       "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
       "agent":{
         "region":"us-central1","shard":"shared-0","memberID":"node-us-central1-0","replicaID":"node-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"resolver",
-        "render":{"role":"node","nodeDNSDist":{"path":"/etc/internal-dns/node-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:100::/64","::1/128"],"poolName":"node_shared","backends":[{"memberID":"node-coredns-0","address":"fd70:10::10","port":5300}]},"nodeCoreDNS":{"path":"/etc/internal-dns/node-coredns.json","listenAddress":"fd70:10::10","port":5300,"proxyPeers":["fd70:10::20","fd70:10::10"],"publicUpstreams":["[fd70:30::10]:5353"]}},
+        "render":{"role":"node","nodeDNSDist":{"path":"/etc/internal-dns/node-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:100::/64","::1/128"],"poolName":"node_shared","backends":[{"memberID":"node-coredns-0","address":"fd70:10::10","port":5300}],"identityKeyFile":"/run/internal-dns/identity.key"},"nodeCoreDNS":{"path":"/etc/internal-dns/node-coredns.json","listenAddress":"fd70:10::10","port":5300,"proxyPeers":["fd70:10::20","fd70:10::10"],"identityKeyFile":"/run/internal-dns/identity.key","publicUpstreams":["[fd70:30::10]:5353"]}},
         "transaction":{"stageDir":"/etc/internal-dns/stage","validate":[{"daemon":"dnsdist","path":"/usr/local/sbin/internal-dns-validate-dnsdist","args":["node","{stageDir}/node-dnsdist.conf"],"whenChanged":["/etc/internal-dns/node-dnsdist.conf"]},{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-validate-coredns","args":["node","{stageDir}/node-coredns.json"],"whenChanged":["/etc/internal-dns/node-coredns.json"]}],"reload":[{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-reload-coredns","args":["node"],"whenChanged":["/etc/internal-dns/node-coredns.json"]},{"daemon":"dnsdist","path":"/usr/local/sbin/internal-dns-reload-dnsdist","args":["node"],"whenChanged":["/etc/internal-dns/node-dnsdist.conf"]}],"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["node"]}]},
         "reconcileInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"resolverDNSProbe":{"timeout":3000000000},"resolverVerifyConcurrency":16
       }
@@ -27,7 +32,7 @@ data:
       "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
       "agent":{
         "region":"us-central1","shard":"shared-0","memberID":"regional-front-us-central1-0","replicaID":"regional-front-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"resolver",
-        "render":{"role":"regional-dnsdist","clusterDNSDist":{"path":"/etc/internal-dns/cluster-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:200::/64","::1/128"],"poolName":"regional_shared","backends":[{"memberID":"regional-coredns-us-central1-0","address":"fd70:20::10","port":5300},{"memberID":"regional-coredns-us-central1-1","address":"fd70:20::11","port":5300}]}},
+        "render":{"role":"regional-dnsdist","clusterDNSDist":{"path":"/etc/internal-dns/cluster-dnsdist.conf","listenAddress":"[::]:53","acls":["fd71:200::/64","::1/128"],"poolName":"regional_shared","backends":[{"memberID":"regional-coredns-us-central1-0","address":"fd70:20::10","port":5300},{"memberID":"regional-coredns-us-central1-1","address":"fd70:20::11","port":5300}],"identityKeyFile":"/var/run/internal-dns/identity/key"}},
         "transaction":{"stageDir":"/etc/internal-dns/stage","validate":[{"daemon":"dnsdist","path":"/usr/local/sbin/internal-dns-validate-dnsdist","args":["regional","{stageDir}/cluster-dnsdist.conf"],"whenChanged":["/etc/internal-dns/cluster-dnsdist.conf"]}],"reload":[{"daemon":"dnsdist","path":"/usr/local/sbin/internal-dns-reload-dnsdist","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-dnsdist.conf"]}],"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-front"]}]},
         "reconcileInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"resolverDNSProbe":{"timeout":3000000000},"resolverVerifyConcurrency":16
       }
@@ -43,7 +48,7 @@ data:
       "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
       "agent":{
         "region":"us-central1","shard":"shared-0","memberID":"regional-coredns-us-central1-0","replicaID":"regional-coredns-us-central1-0","stateDir":"/var/lib/internal-dns","mode":"combined",
-        "render":{"role":"regional-coredns","clusterCoreDNS":{"path":"/etc/internal-dns/cluster-coredns.json","listenAddress":"fd70:20::10","port":5300,"proxyPeers":["fd70:20::20","fd70:20::30","fd70:20::10"],"publicUpstreams":["[fd70:30::10]:5353"]}},
+        "render":{"role":"regional-coredns","clusterCoreDNS":{"path":"/etc/internal-dns/cluster-coredns.json","listenAddress":"fd70:20::10","port":5300,"proxyPeers":["fd70:20::20","fd70:20::30","fd70:20::10"],"identityKeyFile":"/var/run/internal-dns/identity/key","publicUpstreams":["[fd70:30::10]:5353"]}},
         "transaction":{"stageDir":"/etc/internal-dns/stage","validate":[{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-validate-coredns","args":["regional","{stageDir}/cluster-coredns.json"],"whenChanged":["/etc/internal-dns/cluster-coredns.json"]}],"reload":[{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-reload-coredns","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-coredns.json"]}],"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-coredns"]}]},
         "reconcileInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"publicationDNSProbe":{"server":"[fd70:20::10]:5300","timeout":3000000000}
       }
@@ -62,7 +67,7 @@ data:
       "stream":{"name":"DNS_PRIVATE","snapshotsBucket":"DNS_PRIVATE_SNAPSHOTS"},
       "agent":{
         "region":"us-central1","shard":"shared-0","memberID":"regional-coredns-us-central1-1","replicaID":"regional-coredns-us-central1-1","stateDir":"/var/lib/internal-dns","mode":"combined",
-        "render":{"role":"regional-coredns","clusterCoreDNS":{"path":"/etc/internal-dns/cluster-coredns.json","listenAddress":"fd70:20::11","port":5300,"proxyPeers":["fd70:20::20","fd70:20::31","fd70:20::11"],"publicUpstreams":["[fd70:30::10]:5353"]}},
+        "render":{"role":"regional-coredns","clusterCoreDNS":{"path":"/etc/internal-dns/cluster-coredns.json","listenAddress":"fd70:20::11","port":5300,"proxyPeers":["fd70:20::20","fd70:20::31","fd70:20::11"],"identityKeyFile":"/var/run/internal-dns/identity/key","publicUpstreams":["[fd70:30::10]:5353"]}},
         "transaction":{"stageDir":"/etc/internal-dns/stage","validate":[{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-validate-coredns","args":["regional","{stageDir}/cluster-coredns.json"],"whenChanged":["/etc/internal-dns/cluster-coredns.json"]}],"reload":[{"daemon":"coredns","path":"/usr/local/sbin/internal-dns-reload-coredns","args":["regional"],"whenChanged":["/etc/internal-dns/cluster-coredns.json"]}],"failClosed":[{"path":"/usr/local/sbin/internal-dns-gate","args":["regional-coredns"]}]},
         "reconcileInterval":1000000000,"retryDelay":1000000000,"ackInterval":30000000000,"ackLease":90000000000,"ackPublishTimeout":500000000,"maxBindings":200,"publicationDNSProbe":{"server":"[fd70:20::11]:5300","timeout":3000000000}
       }
@@ -111,11 +116,13 @@ spec:
         - {name: state, mountPath: /var/lib/internal-dns}
         - {name: activation, mountPath: /run/internal-dns}
         - {name: daemon-config, mountPath: /etc/internal-dns}
+        - {name: identity, mountPath: /var/run/internal-dns/identity, readOnly: true}
         # CoreDNS requires a writable working directory with a read-only root filesystem.
         - {name: runtime, mountPath: /tmp}
       volumes:
       - {name: config, configMap: {name: internal-dns-regional-coredns-0-config}}
       - {name: nats, secret: {secretName: internal-dns-regional-coredns-0-nats}}
+      - {name: identity, secret: {secretName: internal-dns-regional-identity, defaultMode: 0440}}
       - {name: activation, emptyDir: {medium: Memory}}
       - {name: runtime, emptyDir: {}}
       - {name: daemon-config, persistentVolumeClaim: {claimName: internal-dns-regional-coredns-0-config}}

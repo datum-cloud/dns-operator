@@ -39,7 +39,8 @@ func (s *snapshot) close() {
 }
 
 type ContextPlugin struct {
-	state atomic.Pointer[snapshot]
+	state       atomic.Pointer[snapshot]
+	identityKey []byte
 }
 
 func (p *ContextPlugin) Name() string { return "dnscontext" }
@@ -128,6 +129,15 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	host, _, err := net.SplitHostPort(destination.String())
 	if err != nil {
 		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
+	}
+	if p.identityKey != nil {
+		if asserted, present := identityDestination(r, p.identityKey); present {
+			if !asserted.IsValid() {
+				return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
+			}
+			host = asserted.String()
+			destination = &net.TCPAddr{IP: asserted.AsSlice(), Port: 53}
+		}
 	}
 	selected := state.contexts[host]
 	if selected == nil {

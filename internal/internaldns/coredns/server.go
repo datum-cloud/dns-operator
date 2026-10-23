@@ -29,6 +29,11 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 		return err
 	}
 	p := &ContextPlugin{}
+	if cfg.IdentityKeyFile != "" {
+		if p.identityKey, err = LoadIdentityKey(cfg.IdentityKeyFile); err != nil {
+			return fmt.Errorf("CoreDNS identity key: %w", err)
+		}
+	}
 	if err := p.Replace(cfg); err != nil {
 		return err
 	}
@@ -62,7 +67,7 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 		return err
 	}
 	defer func() { _ = tcp.Close() }()
-	listener := &proxyListener{Listener: tcp, peers: peers}
+	listener := &proxyListener{Listener: tcp, peers: peers, plain: p.identityKey != nil}
 	defer func() { _ = listener.Close() }()
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
@@ -86,8 +91,8 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 				continue
 			}
 			next, err := Decode(data)
-			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers)) {
-				err = errors.New("CoreDNS listener and proxy peers require a process rollout")
+			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
+				err = errors.New("CoreDNS listener, proxy peers, and identity key require a process rollout")
 			}
 			if err == nil {
 				err = p.Replace(next)

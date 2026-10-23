@@ -173,3 +173,27 @@ func TestSnapshotListOfEmptyBucketIsEmpty(t *testing.T) {
 		t.Fatalf("empty bucket must list no snapshots, got %v, %v", envelopes, err)
 	}
 }
+
+func TestNewDurableStartsWithinReplayWindow(t *testing.T) {
+	now := time.Date(2026, 10, 23, 2, 40, 0, 0, time.UTC)
+	c := ConsumerConfig{Stream: "DNS", Durable: "member-acks", FilterSubjects: []string{"acks.>"}, NewDurableReplay: 2 * time.Minute}
+
+	created := consumerConfig(c, nil, now)
+	if created.DeliverPolicy != jetstream.DeliverByStartTimePolicy || created.OptStartTime == nil || !created.OptStartTime.Equal(now.Add(-2*time.Minute)) {
+		t.Fatalf("new durable starts at %v %v; want two minutes before now", created.DeliverPolicy, created.OptStartTime)
+	}
+
+	earlier := now.Add(-time.Hour)
+	kept := consumerConfig(c, &jetstream.ConsumerConfig{DeliverPolicy: jetstream.DeliverByStartTimePolicy, OptStartTime: &earlier}, now)
+	if kept.DeliverPolicy != jetstream.DeliverByStartTimePolicy || kept.OptStartTime == nil || !kept.OptStartTime.Equal(earlier) {
+		t.Fatalf("existing durable start moved to %v %v", kept.DeliverPolicy, kept.OptStartTime)
+	}
+	if all := consumerConfig(c, &jetstream.ConsumerConfig{DeliverPolicy: jetstream.DeliverAllPolicy}, now); all.DeliverPolicy != jetstream.DeliverAllPolicy || all.OptStartTime != nil {
+		t.Fatalf("existing deliver-all durable changed policy to %v %v", all.DeliverPolicy, all.OptStartTime)
+	}
+
+	c.NewDurableReplay = 0
+	if full := consumerConfig(c, nil, now); full.DeliverPolicy != jetstream.DeliverAllPolicy || full.OptStartTime != nil {
+		t.Fatalf("durable without a replay window does not replay the stream: %v %v", full.DeliverPolicy, full.OptStartTime)
+	}
+}

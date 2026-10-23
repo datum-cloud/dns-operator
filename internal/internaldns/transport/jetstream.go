@@ -258,6 +258,10 @@ type ConsumerConfig struct {
 	FilterSubjects []string      `json:"filterSubjects"`
 	AckWait        time.Duration `json:"ackWait,omitempty"`
 	MaxAckPending  int           `json:"maxAckPending,omitempty"`
+	// NewDurableReplay starts a durable that does not exist yet this far
+	// before now instead of at the beginning of the stream. An existing
+	// durable keeps its delivery position.
+	NewDurableReplay time.Duration `json:"newDurableReplay,omitempty"`
 }
 
 type Message interface {
@@ -275,11 +279,36 @@ func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, 
 	if c.Stream == "" || !validDurable(c.Durable) || len(c.FilterSubjects) == 0 {
 		return nil, errors.New("stream, safe durable name, and filters are required")
 	}
-	cons, err := j.js.CreateOrUpdateConsumer(ctx, c.Stream, jetstream.ConsumerConfig{Durable: c.Durable, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverAllPolicy, ReplayPolicy: jetstream.ReplayInstantPolicy, FilterSubjects: c.FilterSubjects, AckWait: defaultDuration(c.AckWait, 30*time.Second), MaxAckPending: defaultInt(c.MaxAckPending, 64)})
+	var existing *jetstream.ConsumerConfig
+	if c.NewDurableReplay > 0 {
+		current, err := j.js.Consumer(ctx, c.Stream, c.Durable)
+		switch {
+		case err == nil:
+			existing = &current.CachedInfo().Config
+		case !errors.Is(err, jetstream.ErrConsumerNotFound):
+			return nil, fmt.Errorf("look up durable consumer %q: %w", c.Durable, err)
+		}
+	}
+	cons, err := j.js.CreateOrUpdateConsumer(ctx, c.Stream, consumerConfig(c, existing, time.Now()))
 	if err != nil {
 		return nil, fmt.Errorf("ensure durable consumer %q: %w", c.Durable, err)
 	}
 	return &Consumer{c: cons}, nil
+}
+
+func consumerConfig(c ConsumerConfig, existing *jetstream.ConsumerConfig, now time.Time) jetstream.ConsumerConfig {
+	cfg := jetstream.ConsumerConfig{Durable: c.Durable, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverAllPolicy, ReplayPolicy: jetstream.ReplayInstantPolicy, FilterSubjects: c.FilterSubjects, AckWait: defaultDuration(c.AckWait, 30*time.Second), MaxAckPending: defaultInt(c.MaxAckPending, 64)}
+	switch {
+	case existing != nil:
+		cfg.DeliverPolicy = existing.DeliverPolicy
+		cfg.OptStartSeq = existing.OptStartSeq
+		cfg.OptStartTime = existing.OptStartTime
+	case c.NewDurableReplay > 0:
+		start := now.Add(-c.NewDurableReplay).UTC()
+		cfg.DeliverPolicy = jetstream.DeliverByStartTimePolicy
+		cfg.OptStartTime = &start
+	}
+	return cfg
 }
 
 // Next returns one event. Malformed envelopes are terminated so a poison event

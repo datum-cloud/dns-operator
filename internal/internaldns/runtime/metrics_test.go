@@ -167,3 +167,12 @@ func TestLoopThatNeverSucceededIsExportedAsStale(t *testing.T) {
 		t.Fatalf("deprecated last success = %v, want 0", got)
 	}
 }
+
+func TestFirstRunExportsEveryResultSoTheFirstErrorIsCounted(t *testing.T) {
+	id := loopID{Loop: t.Name(), Region: "r1", Shard: "s1"}
+	defer deleteLoopSeries(id)
+	countLoop(id, nil)
+	if got := testutil.CollectAndCount(loopRuns, "internal_dns_loop_runs_total"); got < 3 {
+		t.Fatalf("first run exported %d result series, want success, conflict and error", got)
+	}
+}

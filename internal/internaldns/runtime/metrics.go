@@ -109,6 +109,9 @@ func observeLoop(id loopID, started time.Time, err error) {
 func countLoop(id loopID, err error) {
 	result := loopResult(err)
 	now := time.Now()
+	for _, r := range []string{"success", "conflict", "error"} {
+		loopRuns.WithLabelValues(id.Loop, id.Region, id.Shard, r)
+	}
 	loopRuns.WithLabelValues(id.Loop, id.Region, id.Shard, result).Inc()
 	failures := loopConsecutiveFailures.WithLabelValues(id.Loop, id.Region, id.Shard)
 	lastSuccess := loopLastSuccess.WithLabelValues(id.Loop, id.Region, id.Shard)

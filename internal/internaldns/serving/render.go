@@ -17,14 +17,12 @@ import (
 )
 
 type DNSDistRenderConfig struct {
-	Path          string          `json:"path"`
-	ListenAddress string          `json:"listenAddress"`
-	ACLs          []string        `json:"acls"`
-	PoolName      string          `json:"poolName"`
-	Backends      []model.Backend `json:"backends,omitempty"`
-	// IdentityKeyFile replaces the per-query PROXY header with a keyed identity
-	// option. The backend CoreDNS must read the same key.
-	IdentityKeyFile string `json:"identityKeyFile,omitempty"`
+	Path            string          `json:"path"`
+	ListenAddress   string          `json:"listenAddress"`
+	ACLs            []string        `json:"acls"`
+	PoolName        string          `json:"poolName"`
+	Backends        []model.Backend `json:"backends,omitempty"`
+	IdentityKeyFile string          `json:"identityKeyFile,omitempty"`
 }
 
 type CoreDNSRenderConfig struct {
@@ -285,15 +283,21 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 			addr = b.ClusterAddress
 		}
 		fmt.Fprintf(&out, "appendRule(destination(%q), SetTagAction(\"dns-context\", %q))\n", addr, b.ViewName())
-		if c.IdentityKeyFile != "" {
-			fmt.Fprintf(&out, "appendRule(destination(%q), SetEDNSOptionAction(%d, internalDNSIdentityKey..%q))\n", addr, contextdns.IdentityOption, addr)
-		}
 		if b.ConfigurationPending || !active[b.BindingUID] {
 			fmt.Fprintf(&out, "appendRule(destination(%q), SetTagAction(\"context-unready\", \"true\"))\n", addr)
 		}
 	}
 	fmt.Fprint(&out, "appendRule(NotRule(TagRule(\"dns-context\")), RCodeAction(DNSRCode.REFUSED))\n")
 	fmt.Fprint(&out, "appendRule(TagRule(\"context-unready\", \"true\"), RCodeAction(DNSRCode.SERVFAIL))\n")
+	if c.IdentityKeyFile != "" {
+		for _, b := range bindings {
+			addr := b.ConsumerAddress
+			if cluster {
+				addr = b.ClusterAddress
+			}
+			fmt.Fprintf(&out, "appendRule(destination(%q), SetEDNSOptionAction(%d, internalDNSIdentityKey..%q))\n", addr, contextdns.IdentityOption, addr)
+		}
+	}
 	for _, binding := range bindings {
 		attached := append([]model.ZoneAttachment(nil), binding.Zones...)
 		sort.Slice(attached, func(i, j int) bool { return len(attached[i].Apex) > len(attached[j].Apex) })

@@ -3,7 +3,9 @@
 # credentials, and activation state. Contexts and zones never create workloads.
 # The regional dnsdist and regional CoreDNS members of a shard share one identity
 # key (internal-dns-regional-identity, 32 random bytes, base64). Node members
-# generate their own.
+# generate their own. Turn the key on for regional CoreDNS before regional
+# dnsdist, and off in the reverse order. Both read the key only at start, so
+# rotate it by restarting every regional member of the shard together.
 apiVersion: v1
 kind: ConfigMap
 metadata: {name: internal-dns-node-0-config, namespace: internal-dns-system}

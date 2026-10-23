@@ -194,7 +194,7 @@ func TestDNSDistIdentityOptionReplacesPerQueryProxyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if topology(conf) == topology(string(proxy.Files[c.NodeDNSDist.Path])) {
+	if dnsdistTopology([]byte(conf)) == dnsdistTopology(proxy.Files[c.NodeDNSDist.Path]) {
 		t.Fatal("changing the backend transport does not require a replacement member")
 	}
 }
@@ -212,10 +212,4 @@ func TestNodeIdentityKeyMustMatchAcrossDaemons(t *testing.T) {
 	if _, err := Render(c, s, nil); err == nil {
 		t.Fatal("relative identity key path accepted")
 	}
-}
-
-func topology(conf string) string {
-	_, rest, _ := strings.Cut(conf, "internalDNSTopology = ")
-	value, _, _ := strings.Cut(rest, "\n")
-	return value
 }

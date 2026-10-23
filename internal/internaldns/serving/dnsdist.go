@@ -89,12 +89,15 @@ func prepareDNSDistRouter(router DNSDistRenderConfig) error {
 // Refresh immutable process settings while retaining accepted tenant rules.
 func refreshDNSDistConfiguration(router DNSDistRenderConfig, retained []byte) ([]byte, error) {
 	boundary := []byte(dnsdistRulesBoundary)
-	_, rules, ok := bytes.Cut(retained, boundary)
+	retainedHeader, rules, ok := bytes.Cut(retained, boundary)
 	if !ok || !bytes.HasSuffix(rules, []byte("setRules(rules)\nend\n")) {
 		return nil, errors.New("retained dnsdist configuration has no complete rules section")
 	}
 	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
 	header, _, _ := bytes.Cut(startup, boundary)
+	if dnsdistTopology(retainedHeader) != dnsdistTopology(header) {
+		return startup, nil
+	}
 	return append(append(header, boundary...), rules...), nil
 }
 
@@ -116,9 +119,6 @@ func prepareDNSDistKey(path string) error {
 	return writeRandomKey(path)
 }
 
-// A node member's dnsdist and CoreDNS share a pod, so the node generates its
-// own identity key. Regional members are separate pods and must mount a shared
-// key.
 func prepareIdentityKey(path string, generate bool) error {
 	_, err := contextdns.LoadIdentityKey(path)
 	if generate && errors.Is(err, os.ErrNotExist) {
@@ -143,4 +143,10 @@ func writeRandomKey(path string) error {
 		return err
 	}
 	return os.Rename(temporary, path)
+}
+
+func dnsdistTopology(header []byte) string {
+	_, rest, _ := bytes.Cut(header, []byte("internalDNSTopology = "))
+	value, _, _ := bytes.Cut(rest, []byte("\n"))
+	return string(value)
 }

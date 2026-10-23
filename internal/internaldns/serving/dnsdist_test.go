@@ -168,3 +168,28 @@ func TestNodeGeneratesIdentityKeyButRegionalRequiresSharedKey(t *testing.T) {
 		t.Fatal("invalid identity key accepted")
 	}
 }
+
+func TestRefreshDropsRetainedRulesWhenTransportChanges(t *testing.T) {
+	c, snapshot := renderFixture(t)
+	keyed := c.NodeDNSDist
+	keyed.IdentityKeyFile = "/run/internal-dns/identity.key"
+	plain := c.NodeDNSDist
+	for _, tc := range []struct {
+		name     string
+		from, to DNSDistRenderConfig
+	}{{"enable", plain, keyed}, {"disable", keyed, plain}} {
+		retained := renderDNSDist(tc.from, tc.from.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+		refreshed, err := refreshDNSDistConfiguration(tc.to, retained)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(refreshed), "10.253.0.51") {
+			t.Fatalf("%s: rules rendered for another backend transport survived the refresh", tc.name)
+		}
+	}
+	retained := renderDNSDist(keyed, keyed.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+	refreshed, err := refreshDNSDistConfiguration(keyed, retained)
+	if err != nil || !bytes.Equal(refreshed, retained) {
+		t.Fatal("refresh with an unchanged transport lost accepted rules", err)
+	}
+}

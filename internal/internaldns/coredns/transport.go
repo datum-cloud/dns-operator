@@ -19,9 +19,7 @@ const maxProxyHandshakes = 64
 
 type proxyListener struct {
 	net.Listener
-	peers map[netip.Addr]bool
-	// plain accepts trusted connections without a PROXY header. Their queries
-	// select a context only through a keyed identity option.
+	peers     map[netip.Addr]bool
 	plain     bool
 	once      sync.Once
 	closeOnce sync.Once

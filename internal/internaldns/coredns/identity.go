@@ -13,9 +13,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// IdentityOption carries the local resolver's key followed by the context
-// destination. It lets dnsdist reuse backend connections, which a per-query
-// PROXY header prevents.
 const IdentityOption uint16 = 65431
 
 func LoadIdentityKey(path string) ([]byte, error) {
@@ -30,10 +27,8 @@ func LoadIdentityKey(path string) ([]byte, error) {
 	return []byte(key), nil
 }
 
-// identityDestination removes every identity option from r. It reports
-// whether any was present and the destination asserted by the single option
-// that carries the key. A client can add the option itself, so an option
-// without the key is never trusted.
+// A client can send the option itself, so only a single keyed copy is trusted,
+// and every copy is removed before the query goes anywhere else.
 func identityDestination(r *dns.Msg, key []byte) (netip.Addr, bool) {
 	var destination netip.Addr
 	present, valid := false, 0

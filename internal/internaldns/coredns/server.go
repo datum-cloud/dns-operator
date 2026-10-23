@@ -91,8 +91,8 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 				continue
 			}
 			next, err := Decode(data)
-			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers)) {
-				err = errors.New("CoreDNS listener and proxy peers require a process rollout")
+			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
+				err = errors.New("CoreDNS listener, proxy peers, and identity key require a process rollout")
 			}
 			if err == nil {
 				err = p.Replace(next)

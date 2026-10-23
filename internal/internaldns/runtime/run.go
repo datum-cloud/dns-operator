@@ -308,7 +308,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 				Durable:        durable(roleControlPlane, planner.Region, planner.Shard, "acks"),
 				FilterSubjects: []string{ackFilter(planner.Region, planner.Shard)},
 				AckWait:        30 * time.Second, MaxAckPending: 128,
-				NewDurableReplay: ackReplay,
+				NewDurableReplay: ackReplay, Prefetch: ackPrefetch, AsyncAck: true,
 			})
 			if consumerErr != nil {
 				log.Error(consumerErr, "regional ACK consumer setup failed; retrying", "shard", planner.Shard)
@@ -417,8 +417,10 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	for _, feed := range []struct {
 		suffix, filter string
 		replay         time.Duration
-	}{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard), 0}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard), 0}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard), ackReplay}} {
-		source, err := route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, feed.suffix), FilterSubjects: []string{feed.filter}, AckWait: 30 * time.Second, MaxAckPending: 64, NewDurableReplay: feed.replay})
+		prefetch       int
+		asyncAck       bool
+	}{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard), 0, 0, false}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard), 0, 0, false}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard), ackReplay, ackPrefetch, true}} {
+		source, err := route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, feed.suffix), FilterSubjects: []string{feed.filter}, AckWait: 30 * time.Second, MaxAckPending: 64, NewDurableReplay: feed.replay, Prefetch: feed.prefetch, AsyncAck: feed.asyncAck})
 		if err != nil {
 			return err
 		}
@@ -505,6 +507,8 @@ func retryLoop(ctx context.Context, interval time.Duration, name string, step fu
 // ackReplay covers the longest serving lease an acknowledgement may carry;
 // anything older can no longer change readiness.
 const ackReplay = 2 * time.Minute
+
+const ackPrefetch = 32
 
 func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform.AckSink, terminal chan<- error) {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-ack-consumer").WithValues("region", sink.Region, "shard", sink.Shard)

@@ -436,6 +436,18 @@ func (a *Agent) Handle(ctx context.Context, env model.Envelope) error {
 	if env.Region != a.cfg.Region || env.Shard != a.cfg.Shard {
 		return fmt.Errorf("event targets %s/%s, agent serves %s/%s", env.Region, env.Shard, a.cfg.Region, a.cfg.Shard)
 	}
+	if env.Kind == model.KindMemberAck {
+		ack, err := decodeAck(env)
+		if err != nil {
+			return err
+		}
+		// A durable ACK consumer can legitimately replay a once-valid lease after
+		// a backlog. Drain it without taking the lock or changing readiness;
+		// retrying an already expired ACK can otherwise create a permanent NACK loop.
+		if !a.deps.Clock().Before(ack.ValidUntil) {
+			return nil
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -669,16 +681,24 @@ func (a *Agent) activatePublication(ctx context.Context, uid string, next public
 	return a.emitVerifiedPublicationAck(ctx, uid, next.Fence.Epoch, next.Fence.Revision)
 }
 
-func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
+func decodeAck(env model.Envelope) (model.MemberAck, error) {
 	var ack model.MemberAck
 	if err := json.Unmarshal(env.Payload, &ack); err != nil {
-		return err
+		return ack, err
 	}
 	if ack.ResourceUID != env.ResourceUID || ack.Epoch != env.Epoch || ack.Revision != env.Revision {
-		return errors.New("ack envelope identity does not match payload")
+		return ack, errors.New("ack envelope identity does not match payload")
 	}
 	if ack.ValidUntil.IsZero() || ack.ObservedAt.IsZero() || ack.ValidUntil.After(ack.ObservedAt.Add(2*time.Minute)) {
-		return errors.New("ack has an invalid serving lease")
+		return ack, errors.New("ack has an invalid serving lease")
+	}
+	return ack, nil
+}
+
+func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
+	ack, err := decodeAck(env)
+	if err != nil {
+		return err
 	}
 	if a.state.Snapshot == nil {
 		return nil
@@ -694,9 +714,6 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 		a.report(fmt.Errorf("drop ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID))
 		return nil
 	}
-	// A durable ACK consumer can legitimately replay a once-valid lease after a
-	// backlog. Drain it without changing applied readiness;
-	// retrying an already expired ACK can otherwise create a permanent NACK loop.
 	if !a.deps.Clock().Before(ack.ValidUntil) {
 		return nil
 	}

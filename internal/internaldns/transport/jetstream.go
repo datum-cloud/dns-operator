@@ -262,6 +262,14 @@ type ConsumerConfig struct {
 	// before now instead of at the beginning of the stream. An existing
 	// durable keeps its delivery position.
 	NewDurableReplay time.Duration `json:"newDurableReplay,omitempty"`
+	// Prefetch keeps up to this many messages pulled ahead of the handler
+	// instead of one pull request per message. Keep it at or below
+	// MaxAckPending and small enough to drain within AckWait.
+	Prefetch int `json:"prefetch,omitempty"`
+	// AsyncAck acknowledges without waiting for the server to confirm. Use it
+	// only for feeds whose handler is idempotent, since a lost acknowledgement
+	// redelivers the message after AckWait.
+	AsyncAck bool `json:"asyncAck,omitempty"`
 }
 
 type Message interface {
@@ -273,7 +281,12 @@ type Message interface {
 	Reject(string) error
 }
 
-type Consumer struct{ c jetstream.Consumer }
+type Consumer struct {
+	c        jetstream.Consumer
+	prefetch int
+	asyncAck bool
+	iter     jetstream.MessagesContext
+}
 
 func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, error) {
 	if c.Stream == "" || !validDurable(c.Durable) || len(c.FilterSubjects) == 0 {
@@ -293,7 +306,7 @@ func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, 
 	if err != nil {
 		return nil, fmt.Errorf("ensure durable consumer %q: %w", c.Durable, err)
 	}
-	return &Consumer{c: cons}, nil
+	return &Consumer{c: cons, prefetch: c.Prefetch, asyncAck: c.AsyncAck}, nil
 }
 
 func consumerConfig(c ConsumerConfig, existing *jetstream.ConsumerConfig, now time.Time) jetstream.ConsumerConfig {
@@ -320,7 +333,7 @@ func (c *Consumer) Next(ctx context.Context) (Message, error) {
 			return nil, err
 		}
 		var err error
-		m, err = c.c.Next(jetstream.FetchContext(ctx))
+		m, err = c.pull(ctx)
 		if errors.Is(err, nats.ErrTimeout) {
 			continue
 		}
@@ -347,7 +360,26 @@ func (c *Consumer) Next(ctx context.Context) (Message, error) {
 		_ = m.Nak()
 		return nil, err
 	}
-	return &message{msg: m, subject: m.Subject(), env: env, seq: meta.Sequence.Stream}, nil
+	return &message{msg: m, subject: m.Subject(), env: env, seq: meta.Sequence.Stream, async: c.asyncAck}, nil
+}
+
+func (c *Consumer) pull(ctx context.Context) (jetstream.Msg, error) {
+	if c.prefetch <= 1 {
+		return c.c.Next(jetstream.FetchContext(ctx))
+	}
+	if c.iter == nil {
+		iter, err := c.c.Messages(jetstream.PullMaxMessages(c.prefetch))
+		if err != nil {
+			return nil, err
+		}
+		c.iter = iter
+	}
+	m, err := c.iter.Next(jetstream.NextContext(ctx))
+	if err != nil {
+		c.iter.Stop()
+		c.iter = nil
+	}
+	return m, err
 }
 
 type message struct {
@@ -355,14 +387,20 @@ type message struct {
 	subject string
 	env     model.Envelope
 	seq     uint64
+	async   bool
 }
 
-func (m *message) Subject() string               { return m.subject }
-func (m *message) Envelope() model.Envelope      { return m.env }
-func (m *message) StreamSequence() uint64        { return m.seq }
-func (m *message) Ack(ctx context.Context) error { return m.msg.DoubleAck(ctx) }
-func (m *message) Retry(d time.Duration) error   { return m.msg.NakWithDelay(d) }
-func (m *message) Reject(reason string) error    { return m.msg.TermWithReason(reason) }
+func (m *message) Subject() string          { return m.subject }
+func (m *message) Envelope() model.Envelope { return m.env }
+func (m *message) StreamSequence() uint64   { return m.seq }
+func (m *message) Ack(ctx context.Context) error {
+	if m.async {
+		return m.msg.Ack()
+	}
+	return m.msg.DoubleAck(ctx)
+}
+func (m *message) Retry(d time.Duration) error { return m.msg.NakWithDelay(d) }
+func (m *message) Reject(reason string) error  { return m.msg.TermWithReason(reason) }
 
 type SnapshotStore struct{ kv jetstream.KeyValue }
 

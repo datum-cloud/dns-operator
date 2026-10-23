@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -159,7 +160,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			consumerOwners[c.Spec.ConsumerID] = c.UID
 		}
 		valid = valid && !duplicate
-		invalidDomain := c.Spec.ManagedNamespace.Enabled && len(validation.IsDNS1123Subdomain(c.Spec.ManagedNamespace.DomainSuffix)) > 0
+		invalidDomain := c.Spec.ManagedNamespace.Enabled && !r.managedDomainPermitted(c.Spec.ManagedNamespace.DomainSuffix)
 		valid = valid && !invalidDomain
 		c.Status.ServingTargets = nil
 		if valid {
@@ -168,7 +169,14 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
-		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+		if invalidDomain {
+			if err := r.withdrawManagedZone(ctx, c); err != nil {
+				return err
+			}
+		}
+		if !c.Spec.ManagedNamespace.Enabled || invalidDomain {
+			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+		}
 		if c.Spec.ManagedNamespace.Enabled && valid {
 			var err error
 			ready, err = r.reconcileManagedZone(ctx, c)
@@ -183,7 +191,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
-				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a valid domainSuffix"
+				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
 			}
 		}
 		if valid && !ready {
@@ -197,6 +205,28 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		}
 	}
 	return nil
+}
+
+// DefaultManagedDomainSuffixes is used when ManagedDomainSuffixes is empty.
+// Only names reserved for private use belong here, so a managed zone cannot
+// shadow a public or cluster name.
+var DefaultManagedDomainSuffixes = []string{"internal"}
+
+func (r *Reconciler) managedDomainPermitted(domain string) bool {
+	if len(validation.IsDNS1123Subdomain(domain)) > 0 {
+		return false
+	}
+	permitted := r.Options.ManagedDomainSuffixes
+	if len(permitted) == 0 {
+		permitted = DefaultManagedDomainSuffixes
+	}
+	domain = canonicalName(domain)
+	for _, suffix := range permitted {
+		if suffix = canonicalName(suffix); suffix != "" && strings.HasSuffix(domain, "."+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alpha1.DNSZoneAssociation, zones map[string]*dnsv1alpha1.DNSZone, now time.Time) error {
@@ -280,6 +310,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	}
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
+	held := map[string]bool{}
 	desired := map[string]bool{}
 	for i := range accesses.Items {
 		a := &accesses.Items[i]
@@ -309,8 +340,11 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		contextReady := resolverContextReady(contextObject)
 		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady
-		if _, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
+		destination := ""
+		if parsed, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
 			valid = false
+		} else {
+			destination = parsed.Unmap().String()
 		}
 		if _, ok := r.targetForRegion(spec.Region); !ok {
 			valid = false
@@ -321,7 +355,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else if valid {
 			if r.Options.AddressAllocator == nil {
 				valid = false
-			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, netip.MustParseAddr(spec.DestinationAddress).String(), 53); errors.Is(err, model.ErrDestinationRefused) {
+			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, destination, 53); errors.Is(err, model.ErrDestinationRefused) {
 				valid = false
 			} else if err != nil {
 				// A transient API failure is not a refusal: retry rather
@@ -329,6 +363,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return fmt.Errorf("claim service destination: %w", err)
 			} else {
 				destinations[key] = a.UID
+				held[model.DestinationKey(spec.Region, destination)] = true
 			}
 		}
 		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
@@ -456,7 +491,14 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
-	return nil
+	return r.releaseDestinations(ctx, held)
+}
+
+func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
+	if r.Options.AddressAllocator == nil {
+		return nil
+	}
+	return r.Options.AddressAllocator.ReleaseDestinations(ctx, r.Options.ProjectUID, held)
 }
 
 // confirmAccessWithdrawal prevents a stale or incomplete source List from
@@ -656,9 +698,35 @@ func resolverContextReady(contextObject *dnsv1alpha1.DNSResolverContext) bool {
 	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == contextObject.Generation
 }
 
+func managedZoneName(c *dnsv1alpha1.DNSResolverContext) string {
+	return "managed-" + model.OpaqueToken(string(c.UID))[:12]
+}
+
+func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) error {
+	zoneName := managedZoneName(c)
+	for _, obj := range []client.Object{
+		&dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName + "-context"}},
+		&dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName}},
+	} {
+		if err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj); apierrors.IsNotFound(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if !metav1.IsControlledBy(obj, c) || !obj.GetDeletionTimestamp().IsZero() {
+			continue
+		}
+		uid := obj.GetUID()
+		if err := r.Delete(ctx, obj, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
-	zoneName := "managed-" + model.OpaqueToken(string(c.UID))[:12]
+	zoneName := managedZoneName(c)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, zone, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
@@ -688,9 +756,13 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err != nil {
 		return false, err
 	}
-	ready := metav1.IsControlledBy(zone, c) && metav1.IsControlledBy(association, c) && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation && refMatches(refs["zone"], zone.Name, zone.UID, zone.Generation) && refMatches(refs["context"], c.Name, c.UID, 0)
+	zoneCurrent := metav1.IsControlledBy(zone, c) && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero()
+	ready := zoneCurrent && metav1.IsControlledBy(association, c) && accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation && refMatches(refs["zone"], zone.Name, zone.UID, zone.Generation) && refMatches(refs["context"], c.Name, c.UID, 0)
+	known := c.Status.ManagedNamespace.DNSZoneRef.Name == zone.Name && c.Status.ManagedNamespace.Suffix == suffix
 	if ready {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Suffix: suffix}
+	} else if !zoneCurrent || !known {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 	}
 	return ready, nil
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -167,4 +168,43 @@ func TestServingCheckpointReplacesInterruptedWritePermissions(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0640 {
 		t.Fatalf("retained temporary file prevents serving group access: %v %v", info, err)
 	}
+}
+
+func TestPodRestartRestoresDaemonPermissionOnlyForApprovedConfiguration(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, time.Now().UTC())
+	runtimeDir := t.TempDir()
+	allow := filepath.Join(runtimeDir, "allow-coredns")
+	restoreAndCheck := func(step string, want bool) {
+		t.Helper()
+		_ = os.Remove(allow)
+		if err := restoreDaemonPermissions(cfg.StateDir, runtimeDir, []string{"coredns"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(allow); (err == nil) != want {
+			t.Fatalf("%s: start permission restored=%t, want %t", step, err == nil, want)
+		}
+	}
+	restoreAndCheck("approved configuration", true)
+
+	if err := agent.failClosed(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restoreAndCheck("gate persisted before restart", false)
+
+	if err := agent.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restoreAndCheck("recovered configuration", true)
+
+	for path := range agent.state.Active.Files {
+		if err := os.WriteFile(path, []byte("unapproved configuration"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restoreAndCheck("installed files differ from approved configuration", false)
 }

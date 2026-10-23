@@ -37,8 +37,11 @@ func TestRenderStagesViewsButActivatesOnlyReadyBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(r.Files[c.NodeDNSDist.Path]), "10.253.0.51") {
+	if !bindingReadyInConfig(string(r.Files[c.NodeDNSDist.Path]), "10.253.0.51") {
 		t.Fatal("ready binding absent")
+	}
+	if strings.Contains(string(r.Files[c.NodeDNSDist.Path]), "LuaAction") {
+		t.Fatal("dnsdist runs a script on the query path")
 	}
 	if strings.Contains(string(r.Files[c.NodeDNSDist.Path]), "newPacketCache") {
 		t.Fatal("dnsdist packet cache enabled")
@@ -135,12 +138,9 @@ func TestDNSDistUsesPersistentIdentityAndBackendHealthCheck(t *testing.T) {
 }
 
 func bindingReadyInConfig(config, address string) bool {
-	for _, line := range strings.Split(config, "\n") {
-		if strings.Contains(line, "[\""+address+"\"]") && strings.Contains(line, "ready=true") {
-			return true
-		}
-	}
-	return false
+	tagged := `appendRule(destination("` + address + `"), SetTagAction("dns-context"`
+	unready := `appendRule(destination("` + address + `"), SetTagAction("context-unready"`
+	return strings.Contains(config, tagged) && !strings.Contains(config, unready)
 }
 
 func TestPendingConfigurationCannotBeActivatedByReadinessMap(t *testing.T) {

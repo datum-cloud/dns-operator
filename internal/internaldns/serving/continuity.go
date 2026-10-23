@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -100,6 +102,39 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 	return a.tx.commitActivation()
 }
 
+const localDaemonStartGrace = 10 * time.Second
+
+const restoredCheckpointLimit = 15 * time.Minute
+
+func (a *Agent) restoredCheckpointExpired() bool {
+	return !a.restoredAt.IsZero() && !a.stateReceived && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
+}
+
+func (a *Agent) withdrawRestoredCheckpoint(ctx context.Context) error {
+	if a.checkpointWithdrawn {
+		return nil
+	}
+	a.checkpointWithdrawn = true
+	return errors.Join(fmt.Errorf("no DNS state received within %s of restart, withdrawing the restored configuration", restoredCheckpointLimit), a.failClosed(ctx))
+}
+
+func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
+	deadline := a.deps.Clock().Add(localDaemonStartGrace)
+	for {
+		err := a.probeLocalDaemons(ctx)
+		if err == nil || ctx.Err() != nil {
+			return err
+		}
+		if !a.deps.Clock().Before(deadline) {
+			a.report(fmt.Errorf("local daemons did not answer within %s, reapplying the approved configuration: %w", localDaemonStartGrace, err))
+			return err
+		}
+		if !waitRetry(ctx, 200*time.Millisecond) {
+			return ctx.Err()
+		}
+	}
+}
+
 // restoreActive preserves running daemons when their installed configuration
 // matches the approved checkpoint. Incomplete installation requires recovery.
 func (a *Agent) restoreActive(ctx context.Context) error {
@@ -111,7 +146,7 @@ func (a *Agent) restoreActive(ctx context.Context) error {
 	}
 	files := a.state.Active.Files
 	if !activationPending(a.cfg.StateDir) && installedFilesMatch(files) {
-		if err := a.probeLocalDaemons(ctx); err == nil {
+		if err := a.awaitLocalDaemons(ctx); err == nil {
 			a.needsActivation = false
 			if actual := hashFiles(files); a.state.RenderedHash != actual {
 				a.state.RenderedHash = actual

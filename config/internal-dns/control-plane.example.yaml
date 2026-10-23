@@ -30,6 +30,7 @@ data:
       ],
       "clusterPrefix": "fd70:200::/48",
       "privateZoneClassName": "private-coredns",
+      "managedDomainSuffixes": ["internal"],
       "ownershipLeaseSeconds": 30,
       "shards": [
         {"region":"us-central1","shard":"shared-0","maxBindings":200,"maxSnapshotBytes":524288}

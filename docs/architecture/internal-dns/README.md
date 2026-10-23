@@ -296,7 +296,9 @@ Products define eligibility for instance identity, application discovery, or
 stable service addresses. Records and resolver bindings persist until an explicit
 update or withdrawal. Control plane and messaging outages delay changes but do
 not expire applied DNS configuration. Agents can restore verified configuration
-from local checkpoints without contacting the control plane. An endpoint can
+from local checkpoints without contacting the control plane. A restarted agent
+serves its restored checkpoint for at most 15 minutes without receiving DNS
+state, then gates serving until state arrives. An endpoint can
 remain published indefinitely if its publisher cannot report a health change.
 This availability tradeoff is intentional; record TTLs bound client caching,
 not the lifetime of authoritative records.

@@ -192,7 +192,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), "ready=true") {
+	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), `SetTagAction("dns-context"`) || strings.Contains(string(data), `SetTagAction("context-unready"`) {
 		t.Fatalf("persisted resolver mapping was not restored: %s", data)
 	}
 	cancel()
@@ -235,5 +235,29 @@ func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {
 				t.Fatalf("local role required messaging or control-plane configuration: %v", err)
 			}
 		})
+	}
+}
+
+func TestManagedDomainSuffixesValidation(t *testing.T) {
+	base := Config{
+		Region: "central", Shard: "one",
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Members:  []model.Member{{MemberID: "regional-1", Role: "regional"}},
+	}
+	for _, suffixes := range [][]string{nil, {"internal"}, {"internal", "corp.example"}} {
+		valid := base
+		valid.ManagedDomainSuffixes = suffixes
+		if err := valid.Validate(roleControlPlane); err != nil {
+			t.Fatalf("suffixes %q rejected: %v", suffixes, err)
+		}
+	}
+	for _, suffix := range []string{"", ".internal", "Internal", "bad..internal", "*.internal"} {
+		invalid := base
+		invalid.ManagedDomainSuffixes = []string{suffix}
+		if err := invalid.Validate(roleControlPlane); err == nil {
+			t.Fatalf("invalid managed domain suffix %q was accepted", suffix)
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -20,6 +21,7 @@ import (
 )
 
 const leaseLabel = "internal-dns.miloapis.com/address-lease"
+const destinationProjectLabel = "internal-dns.miloapis.com/destination-project"
 
 type AddressLease struct {
 	Owner          string    `json:"owner"`
@@ -30,8 +32,8 @@ type AddressLease struct {
 }
 
 // Allocator reserves all generated addresses through atomic, globally named Kubernetes address claims.
-// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Leases are retained after revocation: addresses are never reused by
-// another resolver context lifetime. Explicit garbage collection needs a quarantine policy.
+// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional leases are retained after revocation: those addresses
+// are never reused by another resolver context lifetime. Service destination claims are released once no binding routes them.
 type Allocator struct {
 	Client        client.Client
 	Namespace     string
@@ -44,12 +46,10 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 }
 
 // ClaimDestination atomically reserves an integration-selected service
-// destination across every project sharing this platform control plane. Claims
-// are retained after revocation so a stale route cannot become valid for a new
-// context lifetime.
+// destination across every project sharing this platform control plane.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
 	parsed, err := netip.ParseAddr(address)
-	if err != nil || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
+	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() || projectUID == "" || contextUID == "" || region == "" || port != 53 {
 		return fmt.Errorf("%w: destination claim identity, region, IP, and DNS port are required", model.ErrDestinationRefused)
 	}
 	parsed = parsed.Unmap()
@@ -69,8 +69,20 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return err
 	}
 	owner := string(projectUID) + "/" + string(contextUID)
-	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
-	if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
+	err = a.Client.Create(ctx, claim)
+	if err == nil {
+		if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
+			if err := a.deleteClaim(ctx, claim); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: service destination is reserved for regional resolution", model.ErrDestinationRefused)
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+	if apierrors.IsAlreadyExists(err) {
 		var existing corev1.ConfigMap
 		if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
 			return err
@@ -88,15 +100,120 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 					existing.Data["region"] == region && existing.Data["address"] == address && existing.Data["port"] == fmt.Sprint(port) {
 					base := existing.DeepCopy()
 					existing.Data["owner"] = owner
+					existing.Labels = claim.Labels
 					return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 				}
 			}
 			return fmt.Errorf("%w: service destination is already reserved", model.ErrDestinationRefused)
 		}
+		if existing.Labels[destinationProjectLabel] != claim.Labels[destinationProjectLabel] {
+			base := existing.DeepCopy()
+			existing.Labels = claim.Labels
+			return a.Client.Patch(ctx, &existing, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		}
 		return nil
-	} else {
+	}
+	return err
+}
+
+// ReleaseDestinations deletes the project's destination claims that are not in
+// held and that no binding still routes. A destination stays routed while a
+// live binding names it or while a committed serving snapshot for its region
+// still carries it, so a claim is never freed before its route is withdrawn.
+func (a *Allocator) ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error {
+	if a.Client == nil || a.Namespace == "" || projectUID == "" {
+		return fmt.Errorf("destination release requires a client, namespace, and project identity")
+	}
+	var claims corev1.ConfigMapList
+	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}); err != nil {
 		return err
 	}
+	var bindings *dnsv1alpha1.DNSResolverBindingList
+	snapshots := map[string]*model.ServingSnapshot{}
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+		region, address := claim.Data["region"], claim.Data["address"]
+		if region == "" || !strings.HasPrefix(claim.Data["owner"], string(projectUID)+"/") || held[model.DestinationKey(region, address)] {
+			continue
+		}
+		if bindings == nil {
+			bindings = &dnsv1alpha1.DNSResolverBindingList{}
+			if err := a.Client.List(ctx, bindings, client.InNamespace(a.Namespace)); err != nil {
+				return err
+			}
+		}
+		if routed, err := a.destinationRouted(ctx, bindings.Items, snapshots, region, address); err != nil || routed {
+			continue
+		}
+		if err := a.deleteClaim(ctx, claim); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, snapshots map[string]*model.ServingSnapshot, region, address string) (bool, error) {
+	shards := map[string]bool{}
+	for _, b := range bindings {
+		if b.Spec.Placement.Region != region {
+			continue
+		}
+		shards[b.Spec.Placement.Shard] = true
+		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() && sameAddress(b.Spec.Configuration.Query.NodeAddress, address) {
+			return true, nil
+		}
+	}
+	for shard := range shards {
+		key := region + "/" + shard
+		snapshot, cached := snapshots[key]
+		if !cached {
+			var err error
+			if _, snapshot, err = LoadCommittedServingSnapshot(ctx, a.Client, a.Namespace, region, shard); err != nil {
+				return false, err
+			}
+			snapshots[key] = snapshot
+		}
+		if snapshot == nil {
+			continue
+		}
+		for _, b := range snapshot.Bindings {
+			if sameAddress(b.ConsumerAddress, address) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func sameAddress(a, b string) bool {
+	left, err := netip.ParseAddr(a)
+	if err != nil {
+		return a == b
+	}
+	right, err := netip.ParseAddr(b)
+	return err == nil && left.Unmap() == right.Unmap()
+}
+
+func (a *Allocator) destinationClaimed(ctx context.Context, address string) (bool, error) {
+	var claims corev1.ConfigMapList
+	if err := a.Client.List(ctx, &claims, client.InNamespace(a.Namespace), client.MatchingLabels{leaseLabel: "true"}); err != nil {
+		return false, err
+	}
+	for _, claim := range claims.Items {
+		if claim.Data["region"] != "" && claim.Data["address"] == address {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (a *Allocator) deleteClaim(ctx context.Context, claim *corev1.ConfigMap) error {
+	uid, version := claim.UID, claim.ResourceVersion
+	err := a.Client.Delete(ctx, claim, client.Preconditions{UID: &uid, ResourceVersion: &version})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) (AddressLease, error) {
@@ -122,15 +239,27 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) 
 		candidate.ClusterAddress = addressInPrefix(parsed, owner+"/cluster", salt)
 		claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(candidate.ClusterAddress), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": candidate.ClusterAddress}}
 		if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
-			var existing corev1.ConfigMap
-			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
+			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
 				return AddressLease{}, err
 			}
-			if existing.Data["owner"] != owner || existing.Data["address"] != candidate.ClusterAddress {
+			if claim.Data["owner"] != owner || claim.Data["address"] != candidate.ClusterAddress {
 				continue
 			}
 		} else if err != nil {
 			return AddressLease{}, err
+		}
+		// Destination claims are checked after the regional claim exists, and
+		// ClaimDestination checks regional claims after its own exists, so two
+		// racing claimants cannot both miss each other.
+		claimed, err := a.destinationClaimed(ctx, candidate.ClusterAddress)
+		if err != nil {
+			return AddressLease{}, err
+		}
+		if claimed {
+			if err := a.deleteClaim(ctx, claim); err != nil {
+				return AddressLease{}, err
+			}
+			continue
 		}
 		b, err := json.Marshal(candidate)
 		if err != nil {

@@ -135,6 +135,7 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 				LeaseDuration:        cfg.ownershipLease(),
 				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
+				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)

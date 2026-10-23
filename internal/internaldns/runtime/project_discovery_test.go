@@ -184,3 +184,31 @@ func TestAllNamespaceRoutingPreservesListsAndStatus(t *testing.T) {
 		t.Fatalf("status did not reach source: %v", err)
 	}
 }
+
+func TestOneBrokenProjectDoesNotHoldDiscoveryReadiness(t *testing.T) {
+	scheme, err := newScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := readyDiscoveryProject("broken", "")
+	core := &discoveryFixtureClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(broken).Build()}
+	discovered := &firstSuccess{}
+	d := &projectDiscovery{client: core, directory: newProjectDirectory(nil), rest: &rest.Config{Host: "https://milo.example:6443"}, passed: discovered.done,
+		makeProject: func(ProjectConfig, *rest.Config) (projectRuntime, error) {
+			return projectRuntime{}, errors.New("unexpected source")
+		}}
+	core.unavailable = true
+	if err := d.step(context.Background()); err == nil {
+		t.Fatal("expected discovery error")
+	}
+	if discovered.check(nil) == nil {
+		t.Fatal("a failed project list made the control plane ready")
+	}
+	core.unavailable = false
+	if err := d.step(context.Background()); err == nil {
+		t.Fatal("a project with no identity passed discovery")
+	}
+	if err := discovered.check(nil); err != nil {
+		t.Fatalf("one broken project held readiness: %v", err)
+	}
+}

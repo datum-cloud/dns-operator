@@ -237,21 +237,38 @@ publication targets, and context status use the same stable shard assignment.
 
 ### Control-plane monitoring
 
-Set `metricsBindAddress` to an internal listener, such as `:8080`, to expose
-`/metrics` on the control-plane process. The endpoint is disabled when the
-setting is omitted or set to `0`. Restrict access to the monitoring network.
+The control-plane process serves `/metrics` on `--metrics-bind-address`
+(default `:8080`) and `/healthz` and `/readyz` on
+`--health-probe-bind-address` (default `:8081`). Set either flag to `0` to
+disable it. The deprecated `metricsBindAddress` configuration key still
+overrides the metrics flag. Restrict access to the monitoring network.
 
-The endpoint includes controller-runtime reconciliation metrics and:
+`/healthz` fails when a periodic loop has not completed a run in three times
+its interval, or ten minutes, whichever is longer. It checks that loops are
+running, not that they succeed. `/readyz` waits for the first project
+discovery pass and, when admission is enabled, for the webhook server.
 
-- `internal_dns_operations_total{operation,result}`: completed operations,
-  with `result` set to `success` or `error`.
-- `internal_dns_operation_last_success_timestamp_seconds{operation}`: the
-  latest successful completion time. Errors do not advance this timestamp.
+The metrics endpoint includes controller-runtime reconciliation metrics and:
 
-Operations identify configured discovery, planner, acknowledgement refresh,
-transport outbox, and acknowledgement processing loops. A successful loop
-can be idle; it does not prove that an endpoint is serving. Combine these
+- `internal_dns_loop_runs_total{loop,region,shard,result}`: completed loop
+  runs. `result` is `success`, `conflict` when every failure in the run lost
+  an optimistic-lock race to the other replica, or `error`.
+- `internal_dns_loop_consecutive_failures{loop,region,shard}`: errors since
+  the loop last succeeded. Conflicts neither raise nor reset it.
+- `internal_dns_loop_last_success_timestamp_seconds{loop,region,shard}`: the
+  latest successful run.
+- `internal_dns_loop_duration_seconds{loop,region}`: run duration. Broker
+  reads are counted but not timed, because they wait for messages.
+
+Loops are `project discovery`, `planner`, `ack refresh`, `outbox`, and the
+acknowledgement steps `ack read`, `ack apply`, and `ack commit`. A successful
+loop can be idle; it does not prove that an endpoint is serving. Combine these
 metrics with binding conditions, broker backlog, and DNS queries from a VPC.
+
+`internal_dns_operations_total{operation,result}` and
+`internal_dns_operation_last_success_timestamp_seconds{operation}` are
+deprecated and will be removed once dashboards move to the loop metrics. They
+fold region and shard into `operation` and count conflicts as errors.
 
 ### Serving monitoring
 

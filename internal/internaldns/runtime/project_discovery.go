@@ -92,6 +92,7 @@ type projectDiscovery struct {
 	rest        *rest.Config
 	kubeAPI     KubeAPIClientConfig
 	makeProject func(ProjectConfig, *rest.Config) (projectRuntime, error)
+	passed      func()
 }
 
 func (d *projectDiscovery) step(ctx context.Context) error {
@@ -148,6 +149,9 @@ func (d *projectDiscovery) step(ctx context.Context) error {
 		if !seen[name] {
 			d.remove(name)
 		}
+	}
+	if d.passed != nil {
+		d.passed()
 	}
 	return failures
 }

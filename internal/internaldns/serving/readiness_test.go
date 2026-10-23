@@ -198,11 +198,11 @@ func TestReadinessSeesAbandonedInstallationThroughSupervisorLocking(t *testing.T
 			_, _, release := daemonPermission(f.dir)
 			time.Sleep(time.Millisecond)
 			release()
-			time.Sleep(9 * time.Millisecond)
+			time.Sleep(49 * time.Millisecond)
 		}
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 100; i++ {
 		if err := Readiness(context.Background(), f.config); err == nil {
 			t.Fatal("the supervisor's lock made an abandoned installation ready")
 		}

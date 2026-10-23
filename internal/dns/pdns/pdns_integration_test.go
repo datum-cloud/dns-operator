@@ -93,7 +93,7 @@ func startPDNS(t *testing.T, apiKey string) (baseURL string, terminate func()) {
 func startPDNSLMDB(t *testing.T) (baseURL, apiKey string, terminate func()) {
 	t.Helper()
 	apiKey = "itest-key"
-	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.4", apiKey, writePDNSAuthWithLMDB)
+	baseURL, terminate = startPDNSWith(t, "powerdns/pdns-auth-51:5.1.5", apiKey, writePDNSAuthWithLMDB)
 	return baseURL, apiKey, terminate
 }
 
@@ -493,13 +493,14 @@ func TestPDNS_ApplyRecordSetAuthoritative_CleansRemovedOwners(t *testing.T) {
 	}
 }
 
-// TestPDNS_LMDB_DeleteLeavesNoComments proves the fix on the backend the
-// control plane runs. datum-cloud/dns-operator#158.
+// TestPDNS_LMDB_DeleteLeavesNoComments proves that deleting an RRset leaves no
+// comments on the backend the control plane runs. datum-cloud/dns-operator#158.
 //
-// The control runs first and it is the point of the test: a bare DELETE leaves
-// all three comments behind. Every other test in this file runs SQLite, which
-// does clear them, so without the control a green run here would not even show
-// the defect was reachable.
+// The control runs first: a bare DELETE, as the API reference describes it.
+// Up to 5.1.4 the LMDB backend left all three comments behind, which is why
+// the client clears them itself. Since 5.1.5 it deletes an RRset's comments
+// with the RRset (PowerDNS bbc302ee6, PowerDNS/pdns#18051), so the control
+// expects nothing left and fails if a release brings the leak back.
 func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	// No t.Parallel(): container + real PDNS.
 	baseURL, apiKey, stop := startPDNSLMDB(t)
@@ -547,10 +548,10 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 	}
 
 	// The operator stamps three ownership comments on every RRset it writes.
-	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "control", "fixed")); err != nil {
+	if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "control", "fixed", "neighbour")); err != nil {
 		t.Fatalf("EnsureRecordSet: %v", err)
 	}
-	for _, owner := range []string{"control", "fixed"} {
+	for _, owner := range []string{"control", "fixed", "neighbour"} {
 		if records, comments := counts(t, owner); records != 1 || comments != 3 {
 			t.Fatalf("%s starts at records=%d comments=%d, want 1 and 3", owner, records, comments)
 		}
@@ -562,9 +563,9 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 			ownername.Qualify("control", zoneName))); err != nil {
 		t.Fatalf("the control DELETE changed nothing, so it proves nothing: %v", err)
 	}
-	if records, comments := counts(t, "control"); records != 0 || comments != 3 {
-		t.Fatalf("control left records=%d comments=%d, want 0 and 3: this backend does not show the defect, "+
-			"so the reading below is not evidence", records, comments)
+	if records, comments := counts(t, "control"); records != 0 || comments != 0 {
+		t.Fatalf("control left records=%d comments=%d, want 0 and 0: the backend leaks an RRset's comments "+
+			"again, which PowerDNS fixed in 5.1.5", records, comments)
 	}
 
 	// The fix: the client's own delete, which clears the comments behind it.
@@ -575,9 +576,9 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 		t.Fatalf("after DeleteRRSet, records=%d comments=%d, want nothing left", records, comments)
 	}
 
-	// The clear addresses one RRset: the other name keeps its comments.
-	if records, comments := counts(t, "control"); records != 0 || comments != 3 {
-		t.Fatalf("deleting one name changed another: control now records=%d comments=%d", records, comments)
+	// The clear addresses one RRset: the other name keeps its record and comments.
+	if records, comments := counts(t, "neighbour"); records != 1 || comments != 3 {
+		t.Fatalf("deleting one name changed another: neighbour now records=%d comments=%d", records, comments)
 	}
 
 	// And one type: the TXT at that same name is untouched.
@@ -595,15 +596,16 @@ func TestPDNS_LMDB_DeleteLeavesNoComments(t *testing.T) {
 
 	// #158 asks for "no shell and no comments", and a zero-record shell reads
 	// as zero rows. So check the listing itself, not only the counts.
-	for _, owner := range []string{"fixed", "bare"} {
+	// The control's bare DELETE leaves no shell either.
+	for _, owner := range []string{"fixed", "bare", "control"} {
 		if _, _, listed := rrsetCounts(ctx, t, client, zoneName, owner, "A"); listed {
 			t.Fatalf("%s is still listed in the zone after its delete, as a shell", owner)
 		}
 	}
-	// The control was deleted without a clear, so its shell must still be there.
-	// Without this the check above would pass against a zone that lists nothing.
-	if _, _, listed := rrsetCounts(ctx, t, client, zoneName, "control", "A"); !listed {
-		t.Fatal("the control shell is gone, so the listing check above proves nothing")
+	// The neighbour is live, so it must be listed. Without this the checks above
+	// would pass against a zone that lists nothing.
+	if _, _, listed := rrsetCounts(ctx, t, client, zoneName, "neighbour", "A"); !listed {
+		t.Fatal("the neighbour is not listed, so the listing checks above prove nothing")
 	}
 }
 
@@ -831,15 +833,15 @@ func TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments(t *testing.T) {
 		if _, err := client.EnsureRecordSet(ctx, zone, aRecordSet(1, "www", "shell")); err != nil {
 			t.Fatalf("EnsureRecordSet: %v", err)
 		}
-		// A bare DELETE leaves a shell: no records and all three comments, which
-		// is what a zone delete meets in practice.
+		// Since 5.1.5 a bare DELETE takes the RRset's comments with it, so the
+		// zone meets its delete holding www's three.
 		if err := sendRaw(ctx, t, client, http.MethodPatch, zoneName,
 			fmt.Sprintf(`{"rrsets":[{"name":%q,"type":"A","changetype":"DELETE"}]}`,
 				ownername.Qualify("shell", zoneName))); err != nil {
-			t.Fatalf("leave a shell: %v", err)
+			t.Fatalf("delete shell: %v", err)
 		}
-		if got := zoneCommentTotal(ctx, t, client, zoneName); got != 6 {
-			t.Fatalf("%s holds %d comments before its delete, want 6", zoneName, got)
+		if got := zoneCommentTotal(ctx, t, client, zoneName); got != 3 {
+			t.Fatalf("%s holds %d comments before its delete, want 3", zoneName, got)
 		}
 		if err := deleteZone(zone); err != nil {
 			t.Fatalf("deleting %s: %v", zoneName, err)
@@ -859,8 +861,8 @@ func TestPDNS_LMDB_ARecreatedZoneComesBackWithoutComments(t *testing.T) {
 	bare := func(zone dnsv1alpha1.DNSZone) error {
 		return sendRaw(ctx, t, client, http.MethodDelete, zone.Spec.DomainName, "")
 	}
-	if got := recreate(t, "control.test", bare); got != 6 {
-		t.Fatalf("the control came back with %d comments, want 6: this backend does not show the defect, "+
+	if got := recreate(t, "control.test", bare); got != 3 {
+		t.Fatalf("the control came back with %d comments, want 3: this backend does not show the defect, "+
 			"so the reading below is not evidence", got)
 	}
 

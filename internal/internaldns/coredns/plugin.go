@@ -112,7 +112,7 @@ func (p *ContextPlugin) Close() {
 
 func (p *ContextPlugin) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	outcome, rcode, err := p.serve(ctx, w, r)
-	contextQueries.WithLabelValues(outcome).Inc()
+	outcomeQueries[outcome].Inc()
 	return rcode, err
 }
 

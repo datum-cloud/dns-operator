@@ -258,12 +258,17 @@ metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 Set `metricsAddress` on a CoreDNS render configuration, such as
 `"${POD_IP}:9153"`, to serve `/metrics`, `/health` and `/ready` from that
 CoreDNS process. The supervisor expands environment references when it starts
-the daemon, and refuses an empty or unspecified host, because a wildcard
-listener would also accept connections from the producer network. The
-listener is off when the field is omitted.
+the daemon. The host must be an IP address, IPv4 or IPv6, and not an
+unspecified one, because a wildcard listener would also accept connections
+from the producer network. The listener is off when the field is omitted.
+Roll out an image that knows the field before setting it: older agents reject
+unknown configuration fields. If the metrics listener cannot start or stops,
+CoreDNS logs it and keeps answering queries.
 
 The endpoint includes the standard CoreDNS `coredns_dns_*`, `coredns_forward_*`
-and `coredns_cache_*` families, Go and process metrics, and:
+and `coredns_cache_*` families, Go and process metrics, and the families
+below. `coredns_proxy_*` is not exported, because it labels each series with
+an upstream address, and node contexts forward to per-binding addresses.
 
 - `internal_dns_context_queries_total{outcome}`: how the context plugin
   handled each query, such as `served_zone`, `forwarded_public`,

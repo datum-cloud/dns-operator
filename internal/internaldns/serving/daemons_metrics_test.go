@@ -27,7 +27,35 @@ func TestCoreDNSMetricsAddressRejectsUnsetPodIP(t *testing.T) {
 	if _, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: "${POD_IP}:9153"}); err == nil {
 		t.Fatal("a metrics address with no host was accepted, which would listen on every interface")
 	}
-	if _, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: "[::]:9153"}); err == nil {
-		t.Fatal("an unspecified metrics address was accepted, which would listen on the producer network")
+	for _, address := range []string{"[::]:9153", "0.0.0.0:9153", "localhost:9153", "10.0.0.1", "10.0.0.1:0"} {
+		if _, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: address}); err == nil {
+			t.Errorf("metrics address %q was accepted", address)
+		}
+	}
+}
+
+func TestCoreDNSMetricsAddressAcceptsIPv6PodIP(t *testing.T) {
+	t.Setenv("POD_IP", "fd00::7")
+	for _, raw := range []string{"${POD_IP}:9153", "[${POD_IP}]:9153"} {
+		args, err := coreDNSArgs(CoreDNSRenderConfig{Path: "/etc/c.json", MetricsAddress: raw})
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if got := args[len(args)-1]; got != "[fd00::7]:9153" {
+			t.Fatalf("%s expanded to %q", raw, got)
+		}
+	}
+}
+
+func TestRenderConfigRejectsWildcardMetricsAddress(t *testing.T) {
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeCoreDNS.MetricsAddress = "[::]:9153"
+	if err := validateRenderConfig(renderConfig); err == nil {
+		t.Fatal("a wildcard metrics address passed validation")
+	}
+	renderConfig.NodeCoreDNS.MetricsAddress = "${POD_IP}:9153"
+	if err := validateRenderConfig(renderConfig); err != nil {
+		t.Fatalf("a pod IP reference failed validation: %v", err)
 	}
 }

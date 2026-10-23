@@ -19,8 +19,6 @@ import (
 	"github.com/coredns/coredns/plugin/metrics"
 )
 
-// Run serves the snapshot at path. A non-empty metricsAddress also serves
-// /metrics, /health and /ready there.
 func Run(ctx context.Context, path, metricsAddress string) error {
 	previous, err := os.ReadFile(path)
 	if err != nil {
@@ -45,7 +43,7 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 		metricsCtx, stopMetrics := context.WithCancel(ctx)
 		defer stopMetrics()
 		if metricsDone, err = serveMetrics(metricsCtx, metricsAddress, p); err != nil {
-			return err
+			log.Printf("CoreDNS serves without metrics: %v", err)
 		}
 	}
 	server, err := dnsserver.NewServer("dns://"+cfg.ListenAddress, []*dnsserver.Config{{
@@ -78,11 +76,10 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 			_ = server.Stop()
 			return fmt.Errorf("CoreDNS listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
 		case err := <-metricsDone:
-			if ctx.Err() != nil {
-				return server.Stop()
+			metricsDone = nil
+			if ctx.Err() == nil {
+				log.Printf("CoreDNS serves without metrics: %v", errors.Join(err, errors.New("metrics listener stopped")))
 			}
-			_ = server.Stop()
-			return fmt.Errorf("CoreDNS metrics listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
 		case <-ticker.C:
 			data, err := os.ReadFile(path)
 			if err != nil || bytes.Equal(previous, data) {

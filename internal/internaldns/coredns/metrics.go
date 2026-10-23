@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	dto "github.com/prometheus/client_model/go"
 )
 
 const (
@@ -33,6 +35,8 @@ var contextQueries = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Queries by how the context plugin handled them.",
 }, []string{"outcome"})
 
+var outcomeQueries = map[string]prometheus.Counter{}
+
 var snapshotContexts = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "internal_dns_context_snapshot_contexts",
 	Help: "Contexts in the active snapshot, by whether they are ready or pending.",
@@ -53,7 +57,7 @@ func init() {
 	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
 		outcomeRefusedBadDestination, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
 		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream} {
-		contextQueries.WithLabelValues(outcome)
+		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
 	}
 	for _, result := range []string{"applied", "rejected"} {
 		snapshotReloads.WithLabelValues(result)
@@ -75,15 +79,29 @@ func observeSnapshot(s *snapshot) {
 	snapshotReloads.WithLabelValues("applied").Inc()
 }
 
-// serveMetrics exposes /metrics, /health while the process runs, and /ready
-// once a snapshot is loaded. It stops when ctx ends.
+// tenantFreeGatherer drops CoreDNS proxy families, which label every series
+// with the upstream address. Node contexts forward to per-binding addresses,
+// and those series outlive the binding.
+type tenantFreeGatherer struct{ prometheus.Gatherer }
+
+func (g tenantFreeGatherer) Gather() ([]*dto.MetricFamily, error) {
+	families, err := g.Gatherer.Gather()
+	kept := families[:0]
+	for _, family := range families {
+		if !strings.HasPrefix(family.GetName(), "coredns_proxy_") {
+			kept = append(kept, family)
+		}
+	}
+	return kept, err
+}
+
 func serveMetrics(ctx context.Context, address string, p *ContextPlugin) (<-chan error, error) {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("listen for metrics on %s: %w", address, err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}))
+	mux.Handle("/metrics", promhttp.HandlerFor(tenantFreeGatherer{prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
 		if p.state.Load() == nil {

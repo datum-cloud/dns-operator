@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -163,14 +166,27 @@ func coreDNSArgs(bind CoreDNSRenderConfig) ([]string, error) {
 	if bind.MetricsAddress == "" {
 		return args, nil
 	}
-	address := os.ExpandEnv(bind.MetricsAddress)
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || host == "" || port == "" {
-		return nil, fmt.Errorf("CoreDNS metrics address %q expands to %q, which is not host:port", bind.MetricsAddress, address)
-	}
-	// An unspecified address would also listen on the producer network.
-	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
-		return nil, fmt.Errorf("CoreDNS metrics address %q must name the pod address, not every interface", address)
+	address, err := metricsListenAddress(os.ExpandEnv(bind.MetricsAddress))
+	if err != nil {
+		return nil, fmt.Errorf("CoreDNS metrics address %q: %w", bind.MetricsAddress, err)
 	}
 	return append(args, "-metrics-address", address), nil
+}
+
+// metricsListenAddress accepts an IP literal and port, with or without
+// brackets, so an expanded IPv6 pod address needs none. An unspecified
+// address would also listen on the producer network.
+func metricsListenAddress(address string) (string, error) {
+	i := strings.LastIndex(address, ":")
+	if i < 0 {
+		return "", fmt.Errorf("%q is not address:port", address)
+	}
+	ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(address[:i], "["), "]"))
+	if err != nil || ip.IsUnspecified() {
+		return "", fmt.Errorf("%q must name the pod's IP address", address)
+	}
+	if port, err := strconv.ParseUint(address[i+1:], 10, 16); err != nil || port == 0 {
+		return "", fmt.Errorf("%q has an invalid port", address)
+	}
+	return net.JoinHostPort(ip.String(), address[i+1:]), nil
 }

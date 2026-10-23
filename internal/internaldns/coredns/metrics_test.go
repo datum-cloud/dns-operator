@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -169,5 +170,53 @@ func TestQueryMetricsKeepContextSelection(t *testing.T) {
 		if !strings.Contains(string(body), family) {
 			t.Errorf("/metrics is missing %s", family)
 		}
+	}
+}
+
+func TestMetricsCarryNoUpstreamAddress(t *testing.T) {
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &dns.Server{PacketConn: packet, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.IPv4(198, 51, 100, 9)}}
+		_ = w.WriteMsg(answer)
+	})}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown(); _ = packet.Close() })
+	upstream := packet.LocalAddr().String()
+	c := fixture()
+	c.Contexts[0].Upstreams = []string{upstream}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	if answer, _ := query(t, p, "fd53::a", "app.datum.internal."); address(answer) != "198.51.100.9" {
+		t.Fatalf("context upstream was not used: %v", answer)
+	}
+	labelled := func(g prometheus.Gatherer) bool {
+		families, err := g.Gather()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, family := range families {
+			for _, metric := range family.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if strings.Contains(label.GetValue(), upstream) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	if !labelled(prometheus.DefaultGatherer) {
+		t.Fatal("the upstream address never reached a metric label, so this test proves nothing")
+	}
+	if labelled(tenantFreeGatherer{prometheus.DefaultGatherer}) {
+		t.Fatal("/metrics would expose a per-binding upstream address")
 	}
 }

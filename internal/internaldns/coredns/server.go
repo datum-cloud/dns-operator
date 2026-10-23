@@ -20,6 +20,18 @@ import (
 )
 
 func Run(ctx context.Context, path, metricsAddress string) error {
+	return Process{MetricsAddress: metricsAddress}.Run(ctx, path)
+}
+
+// Process settings that come from the member configuration rather than the
+// rendered snapshot, which may be left over from an older member configuration.
+type Process struct {
+	MetricsAddress  string
+	IdentityKeyFile *string
+}
+
+func (pr Process) Run(ctx context.Context, path string) error {
+	metricsAddress := pr.MetricsAddress
 	previous, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -27,6 +39,9 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 	cfg, err := Decode(previous)
 	if err != nil {
 		return err
+	}
+	if pr.IdentityKeyFile != nil {
+		cfg.IdentityKeyFile = *pr.IdentityKeyFile
 	}
 	p := &ContextPlugin{}
 	if cfg.IdentityKeyFile != "" {
@@ -92,7 +107,8 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 			}
 			next, err := Decode(data)
 			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
-				err = errors.New("CoreDNS listener, proxy peers, and identity key require a process rollout")
+				_ = server.Stop()
+				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, or identity key")
 			}
 			if err == nil {
 				err = p.Replace(next)

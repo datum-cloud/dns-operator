@@ -196,3 +196,110 @@ func TestPlainConnectionsNeedAnIdentityKey(t *testing.T) {
 		_ = proxy.Close()
 	}
 }
+
+func writeContexts(t *testing.T, path string, c Config) {
+	t.Helper()
+	data, _ := json.Marshal(c)
+	if err := os.WriteFile(path+".tmp", data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func keyedFixture(t *testing.T) (Config, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "identity.key")
+	if err := os.WriteFile(keyPath, []byte(testIdentityKey+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := fixture()
+	c.ListenAddress = listener.Addr().String()
+	_ = listener.Close()
+	return c, keyPath, filepath.Join(dir, "contexts.json")
+}
+
+func keyedQuery(server, destination string) (*dns.Msg, error) {
+	conn, err := dns.DialTimeout("tcp", server, 200*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	if err := conn.WriteMsg(identityQuery(testIdentityKey + destination)); err != nil {
+		return nil, err
+	}
+	return conn.ReadMsg()
+}
+
+func TestMemberIdentityKeyAppliesOverASnapshotSavedWithoutIt(t *testing.T) {
+	t.Parallel()
+	c, keyPath, path := keyedFixture(t)
+	writeContexts(t, path, c)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Process{IdentityKeyFile: &keyPath}.Run(ctx, path) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		m, err := keyedQuery(c.ListenAddress, "fd53::b")
+		if err == nil && address(m) == "192.0.2.20" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CoreDNS started from a snapshot saved without the key refused signed queries: %v %v", m, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.IdentityKeyFile = keyPath
+	writeContexts(t, path, c)
+	time.Sleep(250 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("CoreDNS restarted although the new snapshot matches its key: %v", err)
+	default:
+	}
+	if m, err := keyedQuery(c.ListenAddress, "fd53::a"); err != nil || address(m) != "192.0.2.10" {
+		t.Fatalf("signed query after the keyed snapshot: %v %v", m, err)
+	}
+}
+
+func TestSnapshotNeedingANewKeyRestartsCoreDNS(t *testing.T) {
+	t.Parallel()
+	c, keyPath, path := keyedFixture(t)
+	writeContexts(t, path, c)
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), path, "") }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		m, err := proxyQuery("tcp", c.ListenAddress, "fd53::a")
+		if err == nil && address(m) == "192.0.2.10" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("CoreDNS did not start", m, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	c.IdentityKeyFile = keyPath
+	writeContexts(t, path, c)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("CoreDNS exited cleanly instead of asking to be restarted")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CoreDNS kept serving without the identity key its snapshot requires")
+	}
+}

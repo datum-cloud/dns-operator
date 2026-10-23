@@ -167,6 +167,11 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 		if err := servingAnswer(answer, err); err != nil {
 			return fmt.Errorf("local CoreDNS health %s: %w", server, err)
 		}
+		if bind.IdentityKeyFile != "" {
+			if err := probeIdentityTransport(ctx, server); err != nil {
+				return fmt.Errorf("local CoreDNS identity transport %s: %w", server, err)
+			}
+		}
 	}
 	for _, dist := range dists {
 		for _, network := range []string{networkUDP, networkTCP} {
@@ -189,4 +194,13 @@ func servingAnswer(answer *dns.Msg, err error) error {
 		return errors.New("daemon answered SERVFAIL")
 	}
 	return nil
+}
+
+// dnsdist reaches a keyed CoreDNS without a PROXY header, which a CoreDNS
+// running without the key refuses at the connection.
+func probeIdentityTransport(ctx context.Context, server string) error {
+	query := new(dns.Msg)
+	query.SetQuestion(".", dns.TypeSOA)
+	answer, _, err := (&dns.Client{Net: networkTCP, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, query, server)
+	return servingAnswer(answer, err)
 }

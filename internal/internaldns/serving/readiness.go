@@ -55,23 +55,44 @@ func activationOwned(stateDir string) bool {
 	return true
 }
 
-func routineInstallation(stateDir string, now time.Time) error {
-	marker := activationMarkerPath(stateDir)
-	info, err := os.Stat(marker)
-	if err != nil {
-		return fmt.Errorf("configuration installation is incomplete: %w", err)
-	}
+func routineInstallation(stateDir string, info os.FileInfo, now time.Time) error {
 	if !activationOwned(stateDir) {
 		return errors.New("configuration installation is incomplete")
 	}
 	since := info.ModTime()
-	if state, err := readActivation(marker); err == nil && !state.Since.IsZero() {
+	if state, err := readActivation(activationMarkerPath(stateDir)); err == nil && !state.Since.IsZero() {
 		since = state.Since
 	}
 	if age := now.Sub(since); age > activationInstallGrace {
 		return fmt.Errorf("configuration installation has not finished after %s", age.Truncate(time.Second))
 	}
 	return nil
+}
+
+// installationReadiness reports whether a routine installation is in
+// progress. Each marker write is a new file, so a marker that changed while
+// its owner was checked belongs to a later write and is checked again; an
+// abandoned marker never changes.
+func installationReadiness(stateDir string, now time.Time) (bool, error) {
+	marker := activationMarkerPath(stateDir)
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		before, statErr := os.Stat(marker)
+		if statErr != nil {
+			return false, nil
+		}
+		if err = routineInstallation(stateDir, before, now); err == nil {
+			return true, nil
+		}
+		after, statErr := os.Stat(marker)
+		if statErr != nil {
+			return false, nil
+		}
+		if os.SameFile(before, after) {
+			return true, err
+		}
+	}
+	return true, err
 }
 
 func installedFilesMatch(files map[string][]byte) bool {
@@ -115,15 +136,9 @@ func sameDNSDistRules(a, b []byte) bool {
 // installed files are expected to differ from the approved checkpoint. An
 // abandoned or gated activation is never ready.
 func Readiness(ctx context.Context, config Config) error {
-	installing := activationPending(config.StateDir)
-	if installing {
-		if err := routineInstallation(config.StateDir, time.Now()); err != nil {
-			// A commit removes the marker and then releases the lock.
-			if activationPending(config.StateDir) {
-				return err
-			}
-			installing = false
-		}
+	installing, err := installationReadiness(config.StateDir, time.Now())
+	if err != nil {
+		return err
 	}
 	state, err := (stateStore{path: filepath.Join(config.StateDir, "checkpoint.json")}).Load()
 	if err != nil {
@@ -132,8 +147,13 @@ func Readiness(ctx context.Context, config Config) error {
 	if state.Active == nil {
 		return errors.New("no approved configuration is active")
 	}
-	if !installing && !installedFilesMatch(state.Active.Files) && !activationPending(config.StateDir) {
-		return errors.New("installed configuration does not match the approved checkpoint")
+	if !installing && !installedFilesMatch(state.Active.Files) {
+		if installing, err = installationReadiness(config.StateDir, time.Now()); err != nil {
+			return err
+		}
+		if !installing {
+			return errors.New("installed configuration does not match the approved checkpoint")
+		}
 	}
 	if err := state.Active.Snapshot.Validate(); err != nil {
 		return fmt.Errorf("approved snapshot: %w", err)

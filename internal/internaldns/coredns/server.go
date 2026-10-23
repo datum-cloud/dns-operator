@@ -16,9 +16,10 @@ import (
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
+	"github.com/coredns/coredns/plugin/metrics"
 )
 
-func Run(ctx context.Context, path string) error {
+func Run(ctx context.Context, path, metricsAddress string) error {
 	previous, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -33,9 +34,21 @@ func Run(ctx context.Context, path string) error {
 	}
 	defer p.Close()
 	host, port, _ := net.SplitHostPort(cfg.ListenAddress)
+	chain := []plugin.Plugin{func(plugin.Handler) plugin.Handler { return p }}
+	var metricsDone <-chan error
+	if metricsAddress != "" {
+		queries := metrics.New(metricsAddress)
+		queries.AddZone(".")
+		chain = append([]plugin.Plugin{func(next plugin.Handler) plugin.Handler { queries.Next = next; return queries }}, chain...)
+		metricsCtx, stopMetrics := context.WithCancel(ctx)
+		defer stopMetrics()
+		if metricsDone, err = serveMetrics(metricsCtx, metricsAddress, p); err != nil {
+			log.Printf("CoreDNS serves without metrics: %v", err)
+		}
+	}
 	server, err := dnsserver.NewServer("dns://"+cfg.ListenAddress, []*dnsserver.Config{{
 		Zone: ".", Port: port, Transport: "dns", ListenHosts: []string{host},
-		Plugin: []plugin.Plugin{func(plugin.Handler) plugin.Handler { return p }},
+		Plugin: chain,
 	}})
 	if err != nil {
 		return err
@@ -62,6 +75,11 @@ func Run(ctx context.Context, path string) error {
 		case err := <-done:
 			_ = server.Stop()
 			return fmt.Errorf("CoreDNS listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
+		case err := <-metricsDone:
+			metricsDone = nil
+			if ctx.Err() == nil {
+				log.Printf("CoreDNS serves without metrics: %v", errors.Join(err, errors.New("metrics listener stopped")))
+			}
 		case <-ticker.C:
 			data, err := os.ReadFile(path)
 			if err != nil || bytes.Equal(previous, data) {
@@ -73,6 +91,8 @@ func Run(ctx context.Context, path string) error {
 			}
 			if err == nil {
 				err = p.Replace(next)
+			} else {
+				snapshotReloads.WithLabelValues("rejected").Inc()
 			}
 			if err != nil {
 				log.Printf("CoreDNS retains accepted state: %v", err)

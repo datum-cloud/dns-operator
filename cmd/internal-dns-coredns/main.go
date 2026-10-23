@@ -17,9 +17,10 @@ import (
 
 func main() {
 	flags := flag.NewFlagSet("coredns", flag.ExitOnError)
-	var path string
+	var path, metricsAddress string
 	var validate, version bool
 	flags.StringVar(&path, "config", "", "Absolute path to the DNS context snapshot")
+	flags.StringVar(&metricsAddress, "metrics-address", "", "host:port for /metrics, /health and /ready; empty disables it")
 	flags.BoolVar(&validate, "validate", false, "Validate the DNS context snapshot and exit")
 	flags.BoolVar(&version, "version", false, "Print the CoreDNS version and exit")
 	if err := flags.Parse(os.Args[1:]); err != nil {
@@ -43,7 +44,7 @@ func main() {
 	} else {
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer cancel()
-		err = coredns.Run(ctx, path)
+		err = coredns.Run(ctx, path, metricsAddress)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "CoreDNS: %v\n", err)

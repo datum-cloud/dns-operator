@@ -30,6 +30,7 @@ type CoreDNSRenderConfig struct {
 	Port            uint16   `json:"port"`
 	ProxyPeers      []string `json:"proxyPeers"`
 	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
+	MetricsAddress  string   `json:"metricsAddress,omitempty"`
 }
 
 type RenderRole string
@@ -150,6 +151,11 @@ func validateRenderConfig(c RenderConfig) error {
 		for _, peer := range b.ProxyPeers {
 			if _, err := netip.ParseAddr(peer); err != nil {
 				return fmt.Errorf("%s invalid proxy peer %q", label, peer)
+			}
+		}
+		if b.MetricsAddress != "" && !strings.Contains(b.MetricsAddress, "$") {
+			if _, err := metricsListenAddress(b.MetricsAddress); err != nil {
+				return fmt.Errorf("%s metrics address: %w", label, err)
 			}
 		}
 		cfg := contextdns.Config{ListenAddress: net.JoinHostPort(b.ListenAddress, strconv.Itoa(int(b.Port))), ProxyPeers: b.ProxyPeers, PublicUpstreams: b.PublicUpstreams}

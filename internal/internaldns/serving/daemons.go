@@ -6,9 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -83,8 +87,11 @@ func RunDaemons(ctx context.Context, config Config) error {
 		return err
 	}
 	var processes []*daemonProcess
+	var bindErr error
 	addBind := func(bind CoreDNSRenderConfig) {
-		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: []string{"-config", bind.Path}})
+		args, err := coreDNSArgs(bind)
+		bindErr = err
+		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args})
 	}
 
 	switch config.Render.Role {
@@ -96,6 +103,9 @@ func RunDaemons(ctx context.Context, config Config) error {
 		addBind(config.Render.ClusterCoreDNS)
 	default:
 		return fmt.Errorf("unsupported serving process role %q", config.Render.Role)
+	}
+	if bindErr != nil {
+		return bindErr
 	}
 	defer func() {
 		for _, p := range processes {
@@ -149,4 +159,35 @@ func RunDaemons(ctx context.Context, config Config) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func coreDNSArgs(bind CoreDNSRenderConfig) ([]string, error) {
+	args := []string{"-config", bind.Path}
+	if bind.MetricsAddress == "" {
+		return args, nil
+	}
+	address, err := metricsListenAddress(os.ExpandEnv(bind.MetricsAddress))
+	if err != nil {
+		return nil, fmt.Errorf("CoreDNS metrics address %q: %w", bind.MetricsAddress, err)
+	}
+	return append(args, "-metrics-address", address), nil
+}
+
+// metricsListenAddress accepts an IP literal and port, with or without
+// brackets, so an expanded IPv6 pod address needs none. An unspecified
+// address would also listen on the producer network.
+func metricsListenAddress(address string) (string, error) {
+	i := strings.LastIndex(address, ":")
+	if i < 0 {
+		return "", fmt.Errorf("%q is not address:port", address)
+	}
+	ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(address[:i], "["), "]"))
+	ip = ip.Unmap()
+	if err != nil || ip.IsUnspecified() {
+		return "", fmt.Errorf("%q must name the pod's IP address", address)
+	}
+	if port, err := strconv.ParseUint(address[i+1:], 10, 16); err != nil || port == 0 {
+		return "", fmt.Errorf("%q has an invalid port", address)
+	}
+	return net.JoinHostPort(ip.String(), address[i+1:]), nil
 }

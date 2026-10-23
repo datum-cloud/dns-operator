@@ -1,0 +1,41 @@
+# Idle instances whose automatic names give the load test private records to
+# query: idns-perf-target-default-<location>-<n>.datum.internal.
+apiVersion: compute.datumapis.com/v1alpha
+kind: Workload
+metadata:
+  name: idns-perf-target
+  labels:
+    test.datum.net/owner: internal-dns-perf
+spec:
+  placements:
+  - name: default
+    locations:
+    - name: ${LOCATION}
+    scaleSettings:
+      # Parallel never creates instances today (datum-cloud/compute#524).
+      instanceManagementPolicy: OrderedReady
+      minReplicas: ${TARGETS}
+  template:
+    spec:
+      networkInterfaces:
+      - name: eth0
+        ipFamilies: [IPv6]
+        network:
+          name: ${NETWORK}
+        reclaimPolicy: Delete
+      runtime:
+        class: general-purpose
+        resources:
+          instanceType: datumcloud-d1-standard-2
+        sandbox:
+          containers:
+          - name: app
+            image: docker.io/library/busybox:1.37
+            command: [sh, -c]
+            args: ["sleep infinity"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop: [ALL]
+              seccompProfile:
+                type: RuntimeDefault

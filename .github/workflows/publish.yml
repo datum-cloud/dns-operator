@@ -72,6 +72,21 @@ jobs:
       platforms: linux/amd64,linux/arm64
     secrets: inherit
 
+  publish-internal-dns-perf:
+    if: github.event_name == 'release' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')))
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+      attestations: write
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    with:
+      image-name: internal-dns-perf
+      context: test/internaldns/perf
+      dockerfile-path: test/internaldns/perf/Dockerfile
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit
+
   publish-internal-dns-builds:
     if: github.event_name == 'release' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')))
     needs: [publish-internal-dns-runtime, publish-internal-dns-serving, publish-kustomize-bundles]

@@ -28,9 +28,8 @@ func activationPending(stateDir string) bool {
 	return !errors.Is(err, os.ErrNotExist)
 }
 
-// A routine installation can hold the marker for as long as candidate
-// verification runs. Past this age the member is no longer treated as serving
-// its approved configuration.
+// Measured from the first write of a pending marker, so back-to-back updates
+// that never commit cannot keep a member ready.
 const activationInstallGrace = time.Minute
 
 // activationOwned reports whether a live installer holds the transaction lock.
@@ -57,14 +56,19 @@ func activationOwned(stateDir string) bool {
 }
 
 func routineInstallation(stateDir string, now time.Time) error {
-	info, err := os.Stat(activationMarkerPath(stateDir))
+	marker := activationMarkerPath(stateDir)
+	info, err := os.Stat(marker)
 	if err != nil {
 		return fmt.Errorf("configuration installation is incomplete: %w", err)
 	}
 	if !activationOwned(stateDir) {
 		return errors.New("configuration installation is incomplete")
 	}
-	if age := now.Sub(info.ModTime()); age > activationInstallGrace {
+	since := info.ModTime()
+	if state, err := readActivation(marker); err == nil && !state.Since.IsZero() {
+		since = state.Since
+	}
+	if age := now.Sub(since); age > activationInstallGrace {
 		return fmt.Errorf("configuration installation has not finished after %s", age.Truncate(time.Second))
 	}
 	return nil
@@ -124,7 +128,7 @@ func Readiness(ctx context.Context, config Config) error {
 	if state.Active == nil {
 		return errors.New("no approved configuration is active")
 	}
-	if !installing && !installedFilesMatch(state.Active.Files) {
+	if !installing && !installedFilesMatch(state.Active.Files) && !activationPending(config.StateDir) {
 		return errors.New("installed configuration does not match the approved checkpoint")
 	}
 	if err := state.Active.Snapshot.Validate(); err != nil {

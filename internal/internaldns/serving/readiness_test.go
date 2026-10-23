@@ -4,6 +4,7 @@ package serving
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -130,21 +131,81 @@ func TestReadinessHoldsThroughRoutineInstallation(t *testing.T) {
 		t.Fatal("DNS answering SERVFAIL during installation was ready")
 	}
 	f.rcode.Store(dns.RcodeRefused)
-	stale := time.Now().Add(-activationInstallGrace - time.Second)
-	if err := os.Chtimes(activationMarkerPath(f.dir), stale, stale); err != nil {
-		t.Fatal(err)
-	}
-	if err := Readiness(context.Background(), f.config); err == nil {
-		t.Fatal("an installation past its grace period was ready")
-	}
 	if err := tx.abandonActivation(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(activationMarkerPath(f.dir), time.Now(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := Readiness(context.Background(), f.config); err == nil || err.Error() != "configuration installation is incomplete" {
 		t.Fatalf("an abandoned installation was ready: %v", err)
+	}
+}
+
+func TestReadinessBoundsInstallationFromItsStart(t *testing.T) {
+	f := newReadinessFixture(t)
+	tx := FileTransaction{MarkerPath: activationMarkerPath(f.dir)}
+	t.Cleanup(func() { _ = tx.abandonActivation() })
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	started, err := readActivation(tx.MarkerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := activationState{Phase: activationVerifying, Since: time.Now().Add(-activationInstallGrace - time.Second)}
+	data, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tx.MarkerPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.filesInstalled(); err != nil {
+		t.Fatal(err)
+	}
+	current, err := readActivation(tx.MarkerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !current.Since.Equal(stale.Since) || current.Since.Equal(started.Since) {
+		t.Fatalf("a later update restarted the installation clock: %v", current.Since)
+	}
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("updates that never committed kept the member ready past its grace period")
+	}
+	if err := tx.commitActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err != nil {
+		t.Fatalf("a new installation after a commit inherited the old clock: %v", err)
+	}
+}
+
+func TestReadinessSeesAbandonedInstallationThroughSupervisorLocking(t *testing.T) {
+	f := newReadinessFixture(t)
+	if err := os.WriteFile(activationMarkerPath(f.dir), []byte(`{"phase":"installing"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ctx.Err() == nil {
+			_, _, release := daemonPermission(f.dir)
+			time.Sleep(time.Millisecond)
+			release()
+			time.Sleep(9 * time.Millisecond)
+		}
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	for i := 0; i < 40; i++ {
+		if err := Readiness(context.Background(), f.config); err == nil {
+			t.Fatal("the supervisor's lock made an abandoned installation ready")
+		}
 	}
 }
 

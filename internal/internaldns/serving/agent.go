@@ -63,6 +63,10 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if err := c.Transaction.validateDaemons(); err != nil {
+		return err
+	}
+
 	if c.AckLease > 2*time.Minute {
 		return errors.New("ack lease may not exceed two minutes")
 	}

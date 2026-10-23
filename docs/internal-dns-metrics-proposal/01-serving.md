@@ -67,13 +67,13 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 |---|---|---|
 | `internal_dns_agent_serving_fence` | gauge | `state` ∈ `target`, `applied`; `part` ∈ `epoch`, `revision`. Lag is only valid when the epochs match: `Compare` orders by (epoch, revision). |
 | `internal_dns_agent_events_total` | counter | `kind` (envelope kind, ≤6), `result` ∈ `applied`, `stale`, `rejected`, `error` |
-| `internal_dns_agent_activations_total` | counter | `daemon` ∈ `coredns`, `dnsdist`; `result` ∈ `success`, `validate_failed`, `reload_failed`, `reload_reported_errors`, `verify_failed`. `reload_reported_errors` counts a reload that exited 0 but wrote errors, so a silent partial reload is visible per daemon. |
+| `internal_dns_agent_activations_total` | counter | `daemon` ∈ `coredns`, `dnsdist`, taken from each validate and reload command's `daemon` field; `result` ∈ `success`, `validate_failed`, `reload_failed`, `reload_reported_errors`, `verify_failed`. `reload_reported_errors` counts a reload that exited 0 but wrote errors, so a silent partial reload is visible per daemon. |
 | `internal_dns_agent_activation_duration_seconds` | histogram | `daemon`; .05, .1, .25, .5, 1, 2.5, 5, 10, 30 |
 | `internal_dns_agent_fail_closed` | gauge | — |
 | `internal_dns_agent_checkpoint_timestamp_seconds` | gauge | — |
 | `internal_dns_agent_checkpoint_restored` | gauge | 1 while the agent serves state restored from its checkpoint and has not yet confirmed a fence with the control plane, else 0 |
 | `internal_dns_agent_fence_confirmed_timestamp_seconds` | gauge | —. Last time the control plane confirmed the serving fence. `time() -` this shows how long a member has served without control-plane contact. |
-| `internal_dns_agent_loop_consecutive_failures` | gauge | `loop` (fixed set: transport, activation, ack, watchdog); reset to 0 on success |
+| `internal_dns_agent_loop_consecutive_failures` | gauge | `loop` ∈ `bootstrap`, `consume_serving`, `consume_records`, `consume_acks`, `step`, the agent's actual loops: the startup bootstrap retry, one consumer per event source, and the reconcile ticker that drives activation; reset to 0 on success |
 | `internal_dns_agent_bindings` | gauge | `state` ∈ `active`, `pending`, `unverified` (≤ `maxBindings` = 200, count only) |
 | `internal_dns_agent_publications` | gauge | `state` ∈ `verified`, `pending`, `rejected`, `tombstone` |
 | `internal_dns_agent_acks_published_total` | counter | `result` ∈ `success`, `error` |
@@ -99,7 +99,7 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 3. **Liveness, kept separate.**
    - CoreDNS: `/health`, process-local, with a lameduck period.
    - dnsdist: `tcpSocket` on 8083.
-   - Agent: `/healthz` checks only that its loop is ticking, never NATS. Activation must keep working offline.
+   - Agent: `/healthz` checks only that its `step` loop is ticking, never NATS. Activation must keep working offline.
    - All three: `failureThreshold` of 6 or more, plus a `startupProbe`.
 4. **Restore UID separation in staging.** `serving` and `dnsdist` run as 65533 without the `nats` mount, matching `fleet.example.yaml`. This must land **before** any metrics port opens in those containers.
 5. **Member identity as pod labels.** Use them in dashboards. Keep `memberID` only as a value inside the protocol.

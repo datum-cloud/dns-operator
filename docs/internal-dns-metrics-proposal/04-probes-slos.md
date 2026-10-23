@@ -150,7 +150,7 @@ All of these route on `service: dns` to the deliver channel. `critical` also pag
 
 ## 4. Architecture improvements
 
-1. **Readiness that matches the ability to answer.** Make `serving.Readiness` require NOERROR plus the expected RRset for the member's `_canary` record through dnsdist over UDP and TCP, and require that the watchdog lease is unexpired. Keep the `.` check for liveness only.
+1. **Readiness that matches the ability to answer.** Make `serving.Readiness` require NOERROR plus the expected RRset for the member's `_canary` record through dnsdist over UDP and TCP, and require that the `step` loop has completed a run within three reconcile intervals. The agent has no watchdog of its own. Keep the `.` check for liveness only.
 2. **A canary record baked into every context.** It is hidden from tenant-facing APIs and listings (README decision 5). The planner synthesises `_canary.<context suffix>` TXT `"rev=<snapshot revision> ts=<compile unix>"` into each compiled snapshot. It adds one record per context, inside the shard caps. This gives:
    - a universal positive name for probes and the self-test;
    - end-to-end freshness, by comparing `rev` with the control plane's revision, with no churn needed.

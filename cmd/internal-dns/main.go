@@ -15,8 +15,11 @@ import (
 
 func main() {
 	var role, configPath, kubeconfig string
+	var opts internruntime.Options
 	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, readiness, or prepare")
 	flag.StringVar(&configPath, "config", "", "Absolute path to the internal DNS JSON configuration")
+	flag.StringVar(&opts.MetricsBindAddress, "metrics-bind-address", ":8080", "Control-plane metrics listener, or 0 to disable; the configuration's metricsBindAddress overrides it")
+	flag.StringVar(&opts.HealthProbeBindAddress, "health-probe-bind-address", ":8081", "Control-plane /healthz and /readyz listener, or 0 to disable")
 	// controller-runtime/client-go may install this standard flag from an init
 	// hook. Reuse it when present so the command keeps one stable contract.
 	if flag.Lookup("kubeconfig") == nil {
@@ -28,11 +31,12 @@ func main() {
 	if existing := flag.Lookup("kubeconfig"); existing != nil {
 		kubeconfig = existing.Value.String()
 	}
+	opts.Kubeconfig = kubeconfig
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&logOptions)))
 
 	cfg, err := internruntime.LoadConfig(configPath)
 	if err == nil {
-		err = internruntime.Run(ctrl.SetupSignalHandler(), role, cfg, kubeconfig)
+		err = internruntime.Run(ctrl.SetupSignalHandler(), role, cfg, opts)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "internal-dns: %v\n", err)

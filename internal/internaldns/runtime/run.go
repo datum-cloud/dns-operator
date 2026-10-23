@@ -32,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -39,15 +40,23 @@ import (
 
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
+// Options are process settings that ship with the image rather than the
+// versionless configuration file.
+type Options struct {
+	Kubeconfig             string
+	MetricsBindAddress     string
+	HealthProbeBindAddress string
+}
+
 // Run starts one of the deliberately separate production roles. Agent and
 // readiness never load Kubernetes credentials.
-func Run(ctx context.Context, role string, cfg Config, kubeconfig string) error {
+func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 	if err := cfg.Validate(role); err != nil {
 		return err
 	}
 	switch role {
 	case roleControlPlane:
-		return runControlPlane(ctx, cfg, kubeconfig)
+		return runControlPlane(ctx, cfg, opts)
 	case roleAgent:
 		return runAgent(ctx, cfg)
 	case roleReadiness:
@@ -67,12 +76,12 @@ type projectRuntime struct {
 	start  func(context.Context) error
 }
 
-func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
+func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	scheme, err := newScheme()
 	if err != nil {
 		return err
 	}
-	platformREST, err := restConfig(kubeconfig)
+	platformREST, err := restConfig(opts.Kubeconfig)
 	if err != nil {
 		return fmt.Errorf("load platform kubeconfig: %w", err)
 	}
@@ -191,16 +200,38 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 	}
 
 	errCh := make(chan error, len(projects)+len(planners)*3+8)
-	if cfg.MetricsBindAddress != "" && cfg.MetricsBindAddress != "0" {
-		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: cfg.MetricsBindAddress}, platformREST, nil)
+	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
+		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, platformREST, nil)
 		if err != nil {
 			return fmt.Errorf("create metrics server: %w", err)
 		}
 		go func() { errCh <- server.Start(ctx) }()
 	}
+	live := newLoopLiveness()
+	discovered := &firstSuccess{}
+	if opts.HealthProbeBindAddress != "" && opts.HealthProbeBindAddress != "0" {
+		ready := map[string]healthz.Checker{"projects": discovered.check}
+		if admissionManager != nil {
+			ready["webhook"] = admissionManager.GetWebhookServer().StartedChecker()
+		}
+		server, err := newProbeServer(opts.HealthProbeBindAddress, map[string]healthz.Checker{"loops": live.check}, ready)
+		if err != nil {
+			return err
+		}
+		go func() { errCh <- server.Start(ctx) }()
+	}
 	startProjectSources(ctx, projects)
-	if discovery != nil {
-		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, "project discovery", discovery.step, errCh)
+	if discovery == nil {
+		discovered.done()
+	} else {
+		step := func(ctx context.Context) error {
+			err := discovery.step(ctx)
+			if err == nil {
+				discovered.done()
+			}
+			return err
+		}
+		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, loopID{Loop: "project discovery"}, live, step, errCh)
 	}
 	if admissionManager != nil {
 		go func() { errCh <- admissionManager.Start(ctx) }()
@@ -220,14 +251,14 @@ func runControlPlane(ctx context.Context, cfg Config, kubeconfig string) error {
 		if interval < time.Second {
 			interval = time.Second
 		}
-		go retryLoop(ctx, interval, "planner "+pc.Region+"/"+pc.Shard, planner.Step, errCh)
+		go retryLoop(ctx, interval, loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
-		go retryLoop(ctx, 2*time.Second, "ack refresh "+pc.Region+"/"+pc.Shard, sink.Refresh, errCh)
+		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks, live)
 	}, errCh)
 
 	select {
@@ -281,7 +312,7 @@ func startRegionalWorkers(planners []platform.PlannerConfig, run func(string, []
 	}
 }
 
-func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink) error {
+func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-region").WithValues("region", region)
 	for ctx.Err() == nil {
 		regional, err := connectRegional(ctx, cfg, []string{region})
@@ -328,7 +359,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		const ackWorkers = 4
 		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
-		go retryLoop(workerCtx, 500*time.Millisecond, "outbox "+region, outbox.Step, localDone)
+		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)
@@ -481,14 +512,18 @@ func connectWithRetry(ctx context.Context, cfg transport.Config) (*transport.Jet
 	}
 }
 
-func retryLoop(ctx context.Context, interval time.Duration, name string, step func(context.Context) error, terminal chan<- error) {
-	log := ctrl.LoggerFrom(ctx).WithName("internal-dns").WithValues("loop", name)
+func retryLoop(ctx context.Context, interval time.Duration, id loopID, live *loopLiveness, step func(context.Context) error, terminal chan<- error) {
+	log := ctrl.LoggerFrom(ctx).WithName("internal-dns").WithValues("loop", id.operation())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	live.start(id, interval)
+	defer live.stop(id)
 	for {
+		started := time.Now()
 		err := step(ctx)
+		live.tick(id)
 		if !errors.Is(err, context.Canceled) {
-			observeOperation(name, err)
+			observeLoop(id, started, err)
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Error(err, "operation failed; retrying")
@@ -508,6 +543,9 @@ const ackReplay = 2 * time.Minute
 
 func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform.AckSink, terminal chan<- error) {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-ack-consumer").WithValues("region", sink.Region, "shard", sink.Shard)
+	read := loopID{Loop: "ack read", Region: sink.Region, Shard: sink.Shard}
+	apply := loopID{Loop: "ack apply", Region: sink.Region, Shard: sink.Shard}
+	commit := loopID{Loop: "ack commit", Region: sink.Region, Shard: sink.Shard}
 	for {
 		message, err := source.Next(ctx)
 		if err != nil {
@@ -515,21 +553,23 @@ func consumeAcks(ctx context.Context, source *transport.Consumer, sink *platform
 				terminal <- nil
 				return
 			}
-			observeOperation("ack read "+sink.Region+"/"+sink.Shard, err)
+			countLoop(read, err)
 			log.Error(err, "read acknowledgement failed; retrying")
 			time.Sleep(time.Second)
 			continue
 		}
-		observeOperation("ack read "+sink.Region+"/"+sink.Shard, nil)
+		countLoop(read, nil)
+		started := time.Now()
 		err = sink.Apply(ctx, message.Subject(), message.Envelope())
-		observeOperation("ack apply "+sink.Region+"/"+sink.Shard, err)
+		observeLoop(apply, started, err)
 		if err != nil {
 			log.Error(err, "apply acknowledgement failed; retrying")
 			_ = message.Retry(time.Second)
 			continue
 		}
+		started = time.Now()
 		err = message.Ack(ctx)
-		observeOperation("ack commit "+sink.Region+"/"+sink.Shard, err)
+		observeLoop(commit, started, err)
 		if err != nil {
 			log.Error(err, "acknowledgement commit was ambiguous; awaiting redelivery")
 		}

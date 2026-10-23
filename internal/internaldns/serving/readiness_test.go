@@ -7,13 +7,24 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
+type readinessFixture struct {
+	dir        string
+	configPath string
+	files      map[string][]byte
+	config     Config
+	rcode      *atomic.Int32
+	udpServer  *dns.Server
+}
+
+func newReadinessFixture(t *testing.T) readinessFixture {
+	t.Helper()
 	tcp, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -22,9 +33,11 @@ func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rcode := &atomic.Int32{}
+	rcode.Store(dns.RcodeRefused)
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
 		response := new(dns.Msg)
-		response.SetRcode(request, dns.RcodeRefused)
+		response.SetRcode(request, int(rcode.Load()))
 		_ = w.WriteMsg(response)
 	})
 	started := make(chan struct{}, 2)
@@ -55,7 +68,16 @@ func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
 	if err := (stateStore{path: filepath.Join(dir, "checkpoint.json")}).Save(state); err != nil {
 		t.Fatal(err)
 	}
+	if err := prepareServingState(dir); err != nil {
+		t.Fatal(err)
+	}
 	config := Config{StateDir: dir, Render: RenderConfig{Role: RenderRegionalDNSDist, ClusterDNSDist: DNSDistRenderConfig{ListenAddress: tcp.Addr().String()}}}
+	return readinessFixture{dir: dir, configPath: configPath, files: files, config: config, rcode: rcode, udpServer: udpServer}
+}
+
+func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
+	f := newReadinessFixture(t)
+	dir, configPath, files, config, udpServer := f.dir, f.configPath, f.files, f.config, f.udpServer
 	if err := Readiness(context.Background(), config); err != nil {
 		t.Fatalf("approved DNS required an agent heartbeat or delivery connection: %v", err)
 	}
@@ -63,7 +85,7 @@ func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := Readiness(context.Background(), config); err == nil {
-		t.Fatal("incomplete installation was ready")
+		t.Fatal("abandoned installation was ready")
 	}
 	if err := os.Remove(activationMarkerPath(dir)); err != nil {
 		t.Fatal(err)
@@ -82,6 +104,75 @@ func TestReadinessUsesApprovedConfigurationWithoutAgentOrBroker(t *testing.T) {
 	}
 	if err := Readiness(context.Background(), config); err == nil {
 		t.Fatal("TCP-only DNS was ready")
+	}
+}
+
+func TestReadinessHoldsThroughRoutineInstallation(t *testing.T) {
+	f := newReadinessFixture(t)
+	tx := FileTransaction{MarkerPath: activationMarkerPath(f.dir)}
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.configPath, []byte("candidate configuration"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err != nil {
+		t.Fatalf("installing an update made serving DNS unready: %v", err)
+	}
+	if err := tx.filesInstalled(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err != nil {
+		t.Fatalf("verifying an update made serving DNS unready: %v", err)
+	}
+	f.rcode.Store(dns.RcodeServerFailure)
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("DNS answering SERVFAIL during installation was ready")
+	}
+	f.rcode.Store(dns.RcodeRefused)
+	stale := time.Now().Add(-activationInstallGrace - time.Second)
+	if err := os.Chtimes(activationMarkerPath(f.dir), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("an installation past its grace period was ready")
+	}
+	if err := tx.abandonActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(activationMarkerPath(f.dir), time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err == nil || err.Error() != "configuration installation is incomplete" {
+		t.Fatalf("an abandoned installation was ready: %v", err)
+	}
+}
+
+func TestReadinessRejectsGatedDaemon(t *testing.T) {
+	f := newReadinessFixture(t)
+	f.rcode.Store(dns.RcodeServerFailure)
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("a daemon answering SERVFAIL was ready")
+	}
+}
+
+func TestReadinessRejectsInstallationWithoutApprovedConfiguration(t *testing.T) {
+	f := newReadinessFixture(t)
+	state, err := (stateStore{path: filepath.Join(f.dir, "checkpoint.json")}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Active = nil
+	if err := (stateStore{path: filepath.Join(f.dir, "checkpoint.json")}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	tx := FileTransaction{MarkerPath: activationMarkerPath(f.dir)}
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.abandonActivation() })
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("an installation with no approved configuration was ready")
 	}
 }
 

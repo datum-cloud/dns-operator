@@ -308,7 +308,9 @@ A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
 consumer listeners over UDP and TCP and CoreDNS over TCP, without contacting
-the broker or project APIs.
+the broker or project APIs. A SERVFAIL answer is not ready. A routine
+installation held by a live agent's transaction lock stays ready while the
+daemons answer, for up to one minute.
 The serving supervisor retains approved configuration independently of the
 agent. A transaction lock owns candidate verification; incomplete or orphaned
 activation stays gated until recovery verifies the saved configuration. DNS query probes and backend health checks isolate

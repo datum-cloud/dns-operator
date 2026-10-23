@@ -159,7 +159,9 @@ nodes require a complete configuration before accepting queries. Replay cannot
 regress writer or configuration versions or restore a withdrawn lifetime.
 
 Readiness verifies the approved checkpoint and installed files, then queries
-local DNS daemons over UDP and TCP. Healthy daemons continue through normal
+local DNS daemons over UDP and TCP; a SERVFAIL answer is not ready. A routine
+installation that a live agent owns stays ready while its daemons answer, for
+up to one minute; abandoned or gated activation is never ready. Healthy daemons continue through normal
 agent stops and restarts. Staging and validation can continue while approved
 configuration serves. A rejected expansion retains that configuration; a
 withdrawal that cannot be applied gates serving. The serving supervisor accepts

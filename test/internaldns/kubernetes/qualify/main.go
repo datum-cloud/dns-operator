@@ -112,9 +112,10 @@ func main() {
 	rrType := flag.String("type", "A", "DNS record type")
 	tcp := flag.Bool("tcp", false, "Use DNS over TCP")
 	httpGet := flag.String("http-get", "", "Fetch one URL from a workload pod")
+	httpUser := flag.String("http-basic", "", "user:password to send as basic authentication")
 	flag.Parse()
 	if *httpGet != "" {
-		if err := runHTTPGet(*httpGet); err != nil {
+		if err := runHTTPGet(*httpGet, *httpUser); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -191,12 +192,19 @@ type httpResult struct {
 	Body   string `json:"body"`
 }
 
-func runHTTPGet(url string) error {
-	response, err := (&http.Client{Timeout: 5 * time.Second}).Get(url)
+func runHTTPGet(url, basic string) error {
+	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	if user, password, ok := strings.Cut(basic, ":"); ok {
+		request.SetBasicAuth(user, password)
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
 	if err != nil {
 		return err

@@ -176,13 +176,14 @@ between steps are tagged `ramping` and left out of those lines.
 
 ### Query records
 
-Every query is recorded with its send time, latency, step and outcome
+Every query is recorded with its finish time, latency, step and outcome
 (`ok` or a failure reason). `run.sh analyze [DIR]` (run automatically after
 `run`) combines all generators and writes:
 
 - `stages.tsv`: per query kind and step, p50, p90, p99, p99.9 and max latency,
   queries, failures by reason, and the rate actually sent.
-- `timeline.tsv`: the same per second, to see when failures happened.
+- `timeline.tsv`: the same per second the query was sent (finish time minus
+  latency), to line up with the resolver's metrics.
 
 Failures spread evenly across a run point at capacity; failures that both
 generators see in the same seconds point at a node-wide outage such as a

@@ -308,9 +308,9 @@ Prometheus `/metrics` from that address. dnsdist expands environment
 references when it starts, so the dnsdist container needs `POD_IP` from the
 downward API. The address must be a specific IP address; if it is not, dnsdist
 logs an error, leaves metrics off and keeps answering queries. Only addresses
-in `metricsACLs` may connect, and the API and dashboard stay closed because no
-password or API key is set. The listener starts with the process, so changing
-it takes a restart.
+in `metricsACLs` may connect. The API and dashboard stay closed behind a random
+password and API key that dnsdist generates at start and never writes out. The
+listener address takes a restart to change; the ACLs apply on reload.
 
 The endpoint includes the dnsdist counters for queries, responses by rcode
 (`dnsdist_frontend_*`), rule refusals and SERVFAILs, downstream timeouts and

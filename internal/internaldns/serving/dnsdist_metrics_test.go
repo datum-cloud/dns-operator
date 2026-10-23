@@ -35,25 +35,28 @@ func TestDNSDistMetricsStartOnceWithStatsOnly(t *testing.T) {
 		"statsRequireAuthentication=false",
 		"apiRequiresAuthentication=true",
 		"dashboardRequiresAuthentication=true",
+		"password=internalDNSWebSecret",
+		"apiKey=internalDNSWebSecret",
+		`io.open("/dev/urandom", "rb")`,
 	} {
 		if !strings.Contains(conf, required) {
 			t.Fatalf("dnsdist config missing %q:\n%s", required, conf)
 		}
 	}
-	if strings.Contains(conf, "password=") || strings.Contains(conf, "apiKey=") {
-		t.Fatal("dnsdist web server credentials rendered; the API and dashboard must stay closed")
-	}
 	init := strings.Index(conf, "if not internalDNSInitialized then")
+	secret := strings.Index(conf, "internalDNSWebSecret = hashPassword(")
 	server := strings.Index(conf, "webserver(address)")
 	done := strings.Index(conf, "internalDNSInitialized = true")
-	if init < 0 || server < init || done < server {
-		t.Fatal("web server is not started inside the one-time initialization block, so reloads would rebind it")
+	access := strings.Index(conf, "setWebserverConfig(")
+	rules := strings.Index(conf, "local rules = {}")
+	if init < 0 || secret < init || server < secret || done < server {
+		t.Fatal("web server and its secret are not set up once inside the initialization block, so reloads would rebind it")
 	}
 	if !strings.Contains(conf[init:server], `if os.getenv("INTERNAL_DNS_VALIDATE") ~= "1" then`) {
 		t.Fatal("configuration checks would try to start the web server")
 	}
-	if strings.Contains(conf[:server], "local rules = {}") {
-		t.Fatal("web server is configured in the reloadable rules section")
+	if access < done || rules < access || !strings.Contains(conf[done:access], "if internalDNSWebSecret then") {
+		t.Fatal("web server access is not reapplied on every reload, or is applied without the secret")
 	}
 }
 
@@ -87,6 +90,11 @@ func TestDNSDistMetricsConfigValidation(t *testing.T) {
 		{"10.244.1.7:8083", []string{"0.0.0.0/0"}, false},
 		{"10.244.1.7:8083", []string{"::/0"}, false},
 		{"10.244.1.7:8083", []string{"pods"}, false},
+		{"${POD_IP}:8083", []string{"10.244.0.0/16"}, true},
+		{"${POD_IP}", []string{"10.244.0.0/16"}, false},
+		{"0.0.0.0:${PORT}", []string{"10.244.0.0/16"}, false},
+		{"[::]:${PORT}", []string{"10.244.0.0/16"}, false},
+		{"localhost:8083", []string{"10.244.0.0/16"}, false},
 	}
 	for _, tc := range cases {
 		c, _ := renderFixture(t)

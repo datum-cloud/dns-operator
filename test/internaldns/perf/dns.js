@@ -8,10 +8,15 @@ import exec from 'k6/execution';
 const env = (k, d) => (__ENV[k] === undefined || __ENV[k] === '' ? d : __ENV[k]);
 const list = (k, d) => env(k, d).split(',').map((s) => s.trim()).filter(Boolean);
 const int = (k, d) => parseInt(env(k, String(d)), 10);
+// k6 durations: a bare number of seconds, or parts such as 1m30s.
 const seconds = (d) => {
-  const m = String(d).match(/^(\d+)(ms|s|m|h)?$/);
-  if (!m) throw new Error(`cannot read duration ${d}; use a number with ms, s, m or h`);
-  return Number(m[1]) * { ms: 0.001, s: 1, m: 60, h: 3600 }[m[2] || 's'];
+  const text = String(d);
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+  const parts = [...text.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g)];
+  if (parts.length === 0 || parts.map((p) => p[0]).join('') !== text) {
+    throw new Error(`cannot read duration ${d}; use a k6 duration such as 90s or 1m30s`);
+  }
+  return parts.reduce((sum, p) => sum + Number(p[1]) * { ms: 0.001, s: 1, m: 60, h: 3600 }[p[2]], 0);
 };
 
 const RESOLVER = env('RESOLVER', '[fd53::53]:53');
@@ -241,7 +246,7 @@ export function handleSummary(data) {
   }
   lines.push(`  dropped iterations (generator saturated): ${data.metrics.dropped_iterations ? data.metrics.dropped_iterations.values.count : 0}`);
   for (const [name, m] of Object.entries(data.metrics)) {
-    if (m.thresholds) {
+    if (m.thresholds && !name.includes('stage:')) {
       for (const [t, r] of Object.entries(m.thresholds)) lines.push(`  ${enforce ? (r.ok ? 'PASS' : 'FAIL') : 'REPORT ONLY'} ${name} ${t}`);
     }
   }

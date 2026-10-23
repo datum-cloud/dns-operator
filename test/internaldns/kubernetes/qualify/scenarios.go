@@ -499,7 +499,7 @@ func (s *suite) dnsdistMetrics() error {
 		return errors.New("environment names no dnsdist metrics endpoints")
 	}
 	for i, url := range s.env.DNSDistMetrics {
-		metrics, err := s.httpGet(url + "/metrics")
+		metrics, err := s.httpGet(url+"/metrics", "")
 		if err != nil {
 			return err
 		}
@@ -514,26 +514,32 @@ func (s *suite) dnsdistMetrics() error {
 		if i == 0 && !regexp.MustCompile(`(?m)^dnsdist_queries [1-9]`).MatchString(metrics.Body) {
 			return fmt.Errorf("%s/metrics counted no queries", url)
 		}
-		api, err := s.httpGet(url + "/api/v1/servers/localhost")
-		if err != nil {
-			return err
+		statuses := map[string]int{}
+		for _, path := range []string{"/", "/api/v1/servers/localhost"} {
+			for _, basic := range []string{"", "x:x"} {
+				result, err := s.httpGet(url+path, basic)
+				if err != nil {
+					return err
+				}
+				if result.Status != http.StatusUnauthorized {
+					return fmt.Errorf("%s%s with credentials %q answered %d, want 401", url, path, basic, result.Status)
+				}
+				statuses[path+" "+basic] = result.Status
+			}
 		}
-		if api.Status == http.StatusOK {
-			return fmt.Errorf("%s serves the dnsdist API without a key", url)
-		}
-		s.pass("dnsdist exports query metrics on the pod address and keeps its API closed", map[string]any{"endpoint": url, "apiStatus": api.Status})
+		s.pass("dnsdist exports query metrics on the pod address and keeps its API and dashboard closed", map[string]any{"endpoint": url, "statuses": statuses})
 	}
 	return nil
 }
 
-func (s *suite) httpGet(url string) (httpResult, error) {
+func (s *suite) httpGet(url, basic string) (httpResult, error) {
 	ctx, cancel := context.WithTimeout(s.ctx, 12*time.Second)
 	defer cancel()
 	args := []string{"--kubeconfig", s.env.PlatformKubeconfig, "-n", s.env.Namespace, "exec", s.env.ProbePod}
 	if s.env.ProbeContainer != "" {
 		args = append(args, "-c", s.env.ProbeContainer)
 	}
-	args = append(args, "--", s.env.ProbeBinary, "--http-get", url)
+	args = append(args, "--", s.env.ProbeBinary, "--http-get", url, "--http-basic", basic)
 	cmd := exec.CommandContext(ctx, "kubectl", args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr

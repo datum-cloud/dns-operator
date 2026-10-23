@@ -47,8 +47,6 @@ func init() {
 	metrics.Registry.MustRegister(operationResults, operationLastSuccess, loopRuns, loopDuration, loopLastSuccess, loopConsecutiveFailures)
 }
 
-// loopID names one configured control-plane loop. Region and shard are empty
-// for loops that span every region.
 type loopID struct {
 	Loop, Region, Shard string
 }
@@ -80,16 +78,17 @@ func loopResult(err error) string {
 func onlyConflicts(err error) bool {
 	switch e := err.(type) {
 	case interface{ Unwrap() []error }:
-		children := e.Unwrap()
-		if len(children) == 0 {
-			return false
-		}
-		for _, child := range children {
-			if child != nil && !onlyConflicts(child) {
+		found := false
+		for _, child := range e.Unwrap() {
+			if child == nil {
+				continue
+			}
+			if !onlyConflicts(child) {
 				return false
 			}
+			found = true
 		}
-		return true
+		return found
 	case interface{ Unwrap() error }:
 		if apierrors.IsConflict(err) && !errors.As(err, new(interface{ Unwrap() []error })) {
 			return true
@@ -112,26 +111,27 @@ func countLoop(id loopID, err error) {
 	now := time.Now()
 	loopRuns.WithLabelValues(id.Loop, id.Region, id.Shard, result).Inc()
 	failures := loopConsecutiveFailures.WithLabelValues(id.Loop, id.Region, id.Shard)
+	lastSuccess := loopLastSuccess.WithLabelValues(id.Loop, id.Region, id.Shard)
 	switch result {
 	case "success":
-		loopLastSuccess.WithLabelValues(id.Loop, id.Region, id.Shard).Set(float64(now.Unix()))
+		lastSuccess.Set(float64(now.Unix()))
 		failures.Set(0)
 	case "error":
 		failures.Inc()
 	}
 
 	operation := id.operation()
+	operationSuccess := operationLastSuccess.WithLabelValues(operation)
 	if err == nil {
-		operationLastSuccess.WithLabelValues(operation).Set(float64(now.Unix()))
+		operationSuccess.Set(float64(now.Unix()))
 		operationResults.WithLabelValues(operation, "success").Inc()
 	} else {
 		operationResults.WithLabelValues(operation, "error").Inc()
 	}
 }
 
-// loopLiveness reports a periodic loop that has stopped completing runs, such
-// as one blocked on a call that never returns. It does not judge whether runs
-// succeed; a loop that fails every run is still alive.
+// loopLiveness fails only for a loop that stops completing runs; a loop that
+// fails every run is still alive.
 type loopLiveness struct {
 	mu    sync.Mutex
 	now   func() time.Time
@@ -143,7 +143,7 @@ type loopTick struct {
 	limit time.Duration
 }
 
-const minLoopStall = 2 * time.Minute
+const minLoopStall = 10 * time.Minute
 
 func newLoopLiveness() *loopLiveness {
 	return &loopLiveness{now: time.Now, loops: map[loopID]loopTick{}}

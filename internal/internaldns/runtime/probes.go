@@ -12,8 +12,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 )
 
-// metricsBindAddress keeps the deprecated configuration key working for
-// deployments that still set it; otherwise the flag applies.
 func metricsBindAddress(cfg Config, opts Options) string {
 	if cfg.MetricsBindAddress != "" {
 		return cfg.MetricsBindAddress

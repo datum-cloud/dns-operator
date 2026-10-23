@@ -17,9 +17,7 @@ func TestRetryLoopReportsFailureAndRecovery(t *testing.T) {
 	defer cancel()
 	id := loopID{Loop: t.Name()}
 	operation := id.operation()
-	defer operationResults.DeleteLabelValues(operation, "error")
-	defer operationResults.DeleteLabelValues(operation, "success")
-	defer operationLastSuccess.DeleteLabelValues(operation)
+	defer deleteLoopSeries(id)
 	done := make(chan error, 1)
 	calls := 0
 	go retryLoop(ctx, time.Millisecond, id, nil, func(context.Context) error {
@@ -49,8 +47,7 @@ func TestRetryLoopReportsFailureAndRecovery(t *testing.T) {
 func TestFailedOperationDoesNotRenewSuccess(t *testing.T) {
 	id := loopID{Loop: t.Name()}
 	operation := id.operation()
-	defer operationResults.DeleteLabelValues(operation, "error")
-	defer operationLastSuccess.DeleteLabelValues(operation)
+	defer deleteLoopSeries(id)
 	operationLastSuccess.WithLabelValues(operation).Set(123)
 	loopLastSuccess.WithLabelValues(id.Loop, "", "").Set(123)
 	countLoop(id, errors.New("failed"))
@@ -62,8 +59,20 @@ func TestFailedOperationDoesNotRenewSuccess(t *testing.T) {
 	}
 }
 
+func deleteLoopSeries(id loopID) {
+	for _, result := range []string{"success", "conflict", "error"} {
+		loopRuns.DeleteLabelValues(id.Loop, id.Region, id.Shard, result)
+		operationResults.DeleteLabelValues(id.operation(), result)
+	}
+	loopDuration.DeleteLabelValues(id.Loop, id.Region)
+	loopLastSuccess.DeleteLabelValues(id.Loop, id.Region, id.Shard)
+	loopConsecutiveFailures.DeleteLabelValues(id.Loop, id.Region, id.Shard)
+	operationLastSuccess.DeleteLabelValues(id.operation())
+}
+
 func TestConflictIsNotAFailure(t *testing.T) {
 	id := loopID{Loop: t.Name(), Region: "r1", Shard: "s1"}
+	defer deleteLoopSeries(id)
 	conflict := apierrors.NewConflict(schema.GroupResource{Resource: "dnstransportoutboxes"}, "o", errors.New("modified"))
 	countLoop(id, errors.New("unavailable"))
 	countLoop(id, fmt.Errorf("update outbox: %w", conflict))
@@ -94,6 +103,7 @@ func TestJoinedRealFailureIsAnError(t *testing.T) {
 		"conflict and outage": {errors.Join(conflict, errors.New("timeout")), "error"},
 		"wrapped mixed join":  {fmt.Errorf("pass: %w", errors.Join(errors.New("timeout"), conflict)), "error"},
 		"outage":              {errors.New("timeout"), "error"},
+		"empty join":          {nilChildren{}, "error"},
 	} {
 		if got := loopResult(tc.err); got != tc.want {
 			t.Errorf("%s: result = %q, want %q", name, got, tc.want)
@@ -135,5 +145,25 @@ func TestLoopLivenessReportsStalledLoop(t *testing.T) {
 	live.stop(id)
 	if err := live.check(nil); err != nil {
 		t.Fatalf("stopped loop reported stalled: %v", err)
+	}
+}
+
+type nilChildren struct{}
+
+func (nilChildren) Error() string   { return "no detail" }
+func (nilChildren) Unwrap() []error { return []error{nil} }
+
+func TestLoopThatNeverSucceededIsExportedAsStale(t *testing.T) {
+	id := loopID{Loop: t.Name(), Region: "r1", Shard: "s1"}
+	defer deleteLoopSeries(id)
+	countLoop(id, errors.New("unavailable"))
+	if got := testutil.CollectAndCount(loopLastSuccess, "internal_dns_loop_last_success_timestamp_seconds"); got == 0 {
+		t.Fatal("no last-success series")
+	}
+	if got := testutil.ToFloat64(loopLastSuccess.WithLabelValues(id.Loop, "r1", "s1")); got != 0 {
+		t.Fatalf("last success = %v, want 0 so the loop reads as stale", got)
+	}
+	if got := testutil.ToFloat64(operationLastSuccess.WithLabelValues(id.operation())); got != 0 {
+		t.Fatalf("deprecated last success = %v, want 0", got)
 	}
 }

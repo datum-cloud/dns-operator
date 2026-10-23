@@ -40,8 +40,6 @@ import (
 
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
-// Options are process settings that ship with the image rather than the
-// versionless configuration file.
 type Options struct {
 	Kubeconfig             string
 	MetricsBindAddress     string
@@ -224,14 +222,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if discovery == nil {
 		discovered.done()
 	} else {
-		step := func(ctx context.Context) error {
-			err := discovery.step(ctx)
-			if err == nil {
-				discovered.done()
-			}
-			return err
-		}
-		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, loopID{Loop: "project discovery"}, live, step, errCh)
+		discovery.passed = discovered.done
+		go retryLoop(ctx, time.Duration(cfg.ProjectDiscovery.IntervalSeconds)*time.Second, loopID{Loop: "project discovery"}, live, discovery.step, errCh)
 	}
 	if admissionManager != nil {
 		go func() { errCh <- admissionManager.Start(ctx) }()

@@ -244,7 +244,7 @@ disable it. The deprecated `metricsBindAddress` configuration key still
 overrides the metrics flag. Restrict access to the monitoring network.
 
 `/healthz` fails when a periodic loop has not completed a run in three times
-its interval, or two minutes, whichever is longer. It checks that loops are
+its interval, or ten minutes, whichever is longer. It checks that loops are
 running, not that they succeed. `/readyz` waits for the first project
 discovery pass and, when admission is enabled, for the webhook server.
 

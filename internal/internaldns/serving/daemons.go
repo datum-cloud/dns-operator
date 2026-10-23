@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,8 +84,11 @@ func RunDaemons(ctx context.Context, config Config) error {
 		return err
 	}
 	var processes []*daemonProcess
+	var bindErr error
 	addBind := func(bind CoreDNSRenderConfig) {
-		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: []string{"-config", bind.Path}})
+		args, err := coreDNSArgs(bind)
+		bindErr = err
+		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args})
 	}
 
 	switch config.Render.Role {
@@ -96,6 +100,9 @@ func RunDaemons(ctx context.Context, config Config) error {
 		addBind(config.Render.ClusterCoreDNS)
 	default:
 		return fmt.Errorf("unsupported serving process role %q", config.Render.Role)
+	}
+	if bindErr != nil {
+		return bindErr
 	}
 	defer func() {
 		for _, p := range processes {
@@ -149,4 +156,21 @@ func RunDaemons(ctx context.Context, config Config) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func coreDNSArgs(bind CoreDNSRenderConfig) ([]string, error) {
+	args := []string{"-config", bind.Path}
+	if bind.MetricsAddress == "" {
+		return args, nil
+	}
+	address := os.ExpandEnv(bind.MetricsAddress)
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" || port == "" {
+		return nil, fmt.Errorf("CoreDNS metrics address %q expands to %q, which is not host:port", bind.MetricsAddress, address)
+	}
+	// An unspecified address would also listen on the producer network.
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return nil, fmt.Errorf("CoreDNS metrics address %q must name the pod address, not every interface", address)
+	}
+	return append(args, "-metrics-address", address), nil
 }

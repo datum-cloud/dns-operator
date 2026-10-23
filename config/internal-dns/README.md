@@ -253,6 +253,30 @@ transport outbox, and acknowledgement processing loops. A successful loop
 can be idle; it does not prove that an endpoint is serving. Combine these
 metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 
+### Serving monitoring
+
+Set `metricsAddress` on a CoreDNS render configuration, such as
+`"${POD_IP}:9153"`, to serve `/metrics`, `/health` and `/ready` from that
+CoreDNS process. The supervisor expands environment references when it starts
+the daemon, and refuses an empty or unspecified host, because a wildcard
+listener would also accept connections from the producer network. The
+listener is off when the field is omitted.
+
+The endpoint includes the standard CoreDNS `coredns_dns_*`, `coredns_forward_*`
+and `coredns_cache_*` families, Go and process metrics, and:
+
+- `internal_dns_context_queries_total{outcome}`: how the context plugin
+  handled each query, such as `served_zone`, `forwarded_public`,
+  `refused_unknown_context` or `servfail_zone_pending`.
+- `internal_dns_context_snapshot_contexts{state}`: ready and pending contexts
+  in the active snapshot.
+- `internal_dns_context_snapshot_reloads_total{result}`: snapshots `applied`
+  or `rejected`. A rejected snapshot leaves the previous one serving.
+- `internal_dns_context_snapshot_applied_timestamp_seconds`: when the active
+  snapshot was applied.
+
+No metric carries a context, zone, query name or client label.
+
 ### Reference-state recovery
 
 An observed association, naming policy, or registration requires its private

@@ -30,6 +30,10 @@ type CoreDNSRenderConfig struct {
 	Port            uint16   `json:"port"`
 	ProxyPeers      []string `json:"proxyPeers"`
 	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
+	// MetricsAddress is where CoreDNS serves /metrics, /health and /ready.
+	// Environment references such as ${POD_IP} are expanded when the daemon
+	// starts. Empty disables the listener.
+	MetricsAddress string `json:"metricsAddress,omitempty"`
 }
 
 type RenderRole string

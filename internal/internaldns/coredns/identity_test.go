@@ -136,7 +136,7 @@ func TestPlainConnectionsCarryKeyedIdentityAndProxyStillWorks(t *testing.T) {
 		if i%2 == 1 {
 			destination, want = "fd53::b", "192.0.2.20"
 		}
-		if err := conn.WriteMsg(identityQuery(testIdentityKey+destination)); err != nil {
+		if err := conn.WriteMsg(identityQuery(testIdentityKey + destination)); err != nil {
 			t.Fatal(err)
 		}
 		m, err := conn.ReadMsg()

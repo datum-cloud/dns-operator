@@ -209,6 +209,38 @@ func TestReadinessSeesAbandonedInstallationThroughSupervisorLocking(t *testing.T
 	}
 }
 
+func TestReadinessHoldsAcrossInstallationCommits(t *testing.T) {
+	f := newReadinessFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		tx := FileTransaction{MarkerPath: activationMarkerPath(f.dir)}
+		for ctx.Err() == nil {
+			if err := tx.beginActivation(); err != nil {
+				done <- err
+				return
+			}
+			if err := tx.commitActivation(); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	var failure error
+	for time.Now().Before(deadline) && failure == nil {
+		failure = Readiness(context.Background(), f.config)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if failure != nil {
+		t.Fatalf("a committing installation made serving DNS unready: %v", failure)
+	}
+}
+
 func TestReadinessRejectsGatedDaemon(t *testing.T) {
 	f := newReadinessFixture(t)
 	f.rcode.Store(dns.RcodeServerFailure)

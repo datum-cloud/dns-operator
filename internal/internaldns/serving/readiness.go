@@ -118,7 +118,11 @@ func Readiness(ctx context.Context, config Config) error {
 	installing := activationPending(config.StateDir)
 	if installing {
 		if err := routineInstallation(config.StateDir, time.Now()); err != nil {
-			return err
+			// A commit removes the marker and then releases the lock.
+			if activationPending(config.StateDir) {
+				return err
+			}
+			installing = false
 		}
 	}
 	state, err := (stateStore{path: filepath.Join(config.StateDir, "checkpoint.json")}).Load()

@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/miekg/dns"
+	"golang.org/x/sys/unix"
 )
 
 const activationMarkerName = "activation.pending"
@@ -23,6 +26,52 @@ func activationMarkerPath(stateDir string) string {
 func activationPending(stateDir string) bool {
 	_, err := os.Stat(activationMarkerPath(stateDir))
 	return !errors.Is(err, os.ErrNotExist)
+}
+
+// Measured from the first write of a pending marker, so back-to-back updates
+// that never commit cannot keep a member ready.
+const activationInstallGrace = time.Minute
+
+// activationOwned reports whether a live installer holds the transaction lock.
+// The serving supervisor takes the lock briefly on every pass, so ownership is
+// only concluded when the lock stays unavailable across several attempts.
+func activationOwned(stateDir string) bool {
+	lock, err := os.Open(activationMarkerPath(stateDir) + ".lock")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = lock.Close() }()
+	for attempt := 0; attempt < 5; attempt++ {
+		err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			_ = unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+			return false
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
+func routineInstallation(stateDir string, now time.Time) error {
+	marker := activationMarkerPath(stateDir)
+	info, err := os.Stat(marker)
+	if err != nil {
+		return fmt.Errorf("configuration installation is incomplete: %w", err)
+	}
+	if !activationOwned(stateDir) {
+		return errors.New("configuration installation is incomplete")
+	}
+	since := info.ModTime()
+	if state, err := readActivation(marker); err == nil && !state.Since.IsZero() {
+		since = state.Since
+	}
+	if age := now.Sub(since); age > activationInstallGrace {
+		return fmt.Errorf("configuration installation has not finished after %s", age.Truncate(time.Second))
+	}
+	return nil
 }
 
 func installedFilesMatch(files map[string][]byte) bool {
@@ -62,15 +111,24 @@ func sameDNSDistRules(a, b []byte) bool {
 
 // Readiness verifies the approved files and live DNS processes using local state.
 // It does not require the configuration agent or state delivery to be available.
+// While a live agent installs an update, the daemons keep serving and the
+// installed files are expected to differ from the approved checkpoint. An
+// abandoned or gated activation is never ready.
 func Readiness(ctx context.Context, config Config) error {
-	if activationPending(config.StateDir) {
-		return errors.New("configuration installation is incomplete")
+	installing := activationPending(config.StateDir)
+	if installing {
+		if err := routineInstallation(config.StateDir, time.Now()); err != nil {
+			return err
+		}
 	}
 	state, err := (stateStore{path: filepath.Join(config.StateDir, "checkpoint.json")}).Load()
 	if err != nil {
 		return err
 	}
-	if state.Active == nil || !installedFilesMatch(state.Active.Files) {
+	if state.Active == nil {
+		return errors.New("no approved configuration is active")
+	}
+	if !installing && !installedFilesMatch(state.Active.Files) && !activationPending(config.StateDir) {
 		return errors.New("installed configuration does not match the approved checkpoint")
 	}
 	if err := state.Active.Snapshot.Validate(); err != nil {
@@ -106,17 +164,29 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
 		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
 		answer, err := exchangePublication(ctx, networkTCP, server, ".", view, 200*time.Millisecond)
-		if err != nil || answer == nil || !answer.Response {
-			return fmt.Errorf("local CoreDNS health %s: %w", server, errors.Join(err, errors.New("DNS response required")))
+		if err := servingAnswer(answer, err); err != nil {
+			return fmt.Errorf("local CoreDNS health %s: %w", server, err)
 		}
 	}
 	for _, dist := range dists {
 		for _, network := range []string{networkUDP, networkTCP} {
 			answer, err := exchangeResolverSOA(ctx, network, dist.ListenAddress, ".", 200*time.Millisecond)
-			if err != nil || answer == nil || !answer.Response {
-				return fmt.Errorf("local dnsdist health %s: %w", dist.ListenAddress, errors.Join(err, errors.New("DNS response required")))
+			if err := servingAnswer(answer, err); err != nil {
+				return fmt.Errorf("local dnsdist health %s: %w", dist.ListenAddress, err)
 			}
 		}
+	}
+	return nil
+}
+
+// servingAnswer rejects SERVFAIL: CoreDNS without loaded state and a gated
+// dnsdist both answer every query that way.
+func servingAnswer(answer *dns.Msg, err error) error {
+	if err != nil || answer == nil || !answer.Response {
+		return errors.Join(err, errors.New("DNS response required"))
+	}
+	if answer.Rcode == dns.RcodeServerFailure {
+		return errors.New("daemon answered SERVFAIL")
 	}
 	return nil
 }

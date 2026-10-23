@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,7 +18,17 @@ const (
 )
 
 type activationState struct {
-	Phase string `json:"phase"`
+	Phase string    `json:"phase"`
+	Since time.Time `json:"since"`
+}
+
+func readActivation(markerPath string) (activationState, error) {
+	var state activationState
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		return state, err
+	}
+	return state, json.Unmarshal(data, &state)
 }
 
 func (t *FileTransaction) beginActivation() error {
@@ -47,6 +58,10 @@ func (t *FileTransaction) beginActivation() error {
 func (t *FileTransaction) writeActivation(state activationState) error {
 	if t.MarkerPath == "" {
 		return nil
+	}
+	state.Since = time.Now().UTC()
+	if previous, err := readActivation(t.MarkerPath); err == nil && !previous.Since.IsZero() {
+		state.Since = previous.Since
 	}
 	data, err := json.Marshal(state)
 	if err != nil {

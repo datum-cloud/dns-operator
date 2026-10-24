@@ -20,8 +20,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -137,7 +140,7 @@ func associatedWithContext(assocs []dnsv1alpha1.DNSZoneAssociation, pins map[typ
 func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, now time.Time) error {
 	var contexts dnsv1alpha1.DNSResolverContextList
 	var existing dnsv1alpha1.DNSResolverBindingList
-	if err := r.List(ctx, &existing, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
+	if err := r.listProjectBindings(ctx, &existing); err != nil {
 		return err
 	}
 	if err := r.List(ctx, &contexts, client.InNamespace(ns)); err != nil {
@@ -297,7 +300,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	if err := r.List(ctx, &accesses, client.InNamespace(ns)); err != nil {
 		return err
 	}
-	if err := r.List(ctx, &existing, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
+	if err := r.listProjectBindings(ctx, &existing); err != nil {
 		return err
 	}
 	zonesByContext := map[types.UID][]types.UID{}
@@ -416,7 +419,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		}
-		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/source-namespace": ns, "internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
+		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{referenceProjectLabel: string(r.Options.ProjectUID), "internal-dns.miloapis.com/source-namespace": ns, "internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
 		if !exists {
 			if err := r.Create(ctx, binding); err != nil {
 				return err
@@ -424,7 +427,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if err := r.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 				return err
 			}
-		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns {
+		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns || old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
 			baseOld := old.DeepCopy()
 			old.Spec = binding.Spec
 			old.Labels = binding.Labels
@@ -767,4 +770,44 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 	}
 	return ready, nil
+}
+
+// listProjectBindings lists this project's resolver bindings by label instead
+// of every project's bindings in the platform namespace. Bindings written
+// without the label, before it existed or by an older replica during a
+// rollout, come from a second list of unlabelled bindings, which is empty once
+// every binding carries the label; this project's are labelled as they are
+// found.
+func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.DNSResolverBindingList) error {
+	if err := r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{referenceProjectLabel: string(r.Options.ProjectUID)}); err != nil {
+		return err
+	}
+	unlabelled, err := labels.NewRequirement(referenceProjectLabel, selection.DoesNotExist, nil)
+	if err != nil {
+		return err
+	}
+	var legacy dnsv1alpha1.DNSResolverBindingList
+	if err := r.List(ctx, &legacy, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*unlabelled)}); err != nil {
+		return err
+	}
+	var failed []error
+	for i := range legacy.Items {
+		b := &legacy.Items[i]
+		if b.Spec.Source.ProjectUID != r.Options.ProjectUID {
+			continue
+		}
+		list.Items = append(list.Items, *b)
+		base := b.DeepCopy()
+		if b.Labels == nil {
+			b.Labels = map[string]string{}
+		}
+		b.Labels[referenceProjectLabel] = string(r.Options.ProjectUID)
+		if err := r.Patch(ctx, b, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+			failed = append(failed, err)
+		}
+	}
+	if len(failed) > 0 {
+		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
+	}
+	return nil
 }

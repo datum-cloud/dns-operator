@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -425,6 +426,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns || old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
+			if old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
+				r.bindingsLabelledAt = time.Time{}
+			}
 			baseOld := old.DeepCopy()
 			old.Spec = binding.Spec
 			old.Labels = binding.Labels
@@ -782,6 +786,7 @@ func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.
 	if err := r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
 		return err
 	}
+	var failed []error
 	for i := range list.Items {
 		b := &list.Items[i]
 		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || b.Labels[referenceProjectLabel] == string(r.Options.ProjectUID) {
@@ -792,9 +797,13 @@ func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.
 			b.Labels = map[string]string{}
 		}
 		b.Labels[referenceProjectLabel] = string(r.Options.ProjectUID)
-		if err := r.Patch(ctx, b, client.MergeFrom(base)); err != nil {
-			return err
+		if err := r.Patch(ctx, b, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+			failed = append(failed, err)
 		}
+	}
+	if len(failed) > 0 {
+		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
+		return nil
 	}
 	r.bindingsLabelledAt = time.Now()
 	return nil

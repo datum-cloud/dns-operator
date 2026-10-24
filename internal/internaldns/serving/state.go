@@ -121,7 +121,7 @@ func (s stateStore) Save(state checkpoint) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(state, "", "  ")
+	b, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}

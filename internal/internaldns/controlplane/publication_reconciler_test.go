@@ -462,7 +462,7 @@ func TestSlowPassKeepsOwnershipLeaseAheadOfNextPass(t *testing.T) {
 		WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).
 		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if slow {
-				now = now.Add(time.Second)
+				now = now.Add(400 * time.Millisecond)
 			}
 			return cl.Get(ctx, key, obj, opts...)
 		}}).Build()
@@ -487,8 +487,8 @@ func TestSlowPassKeepsOwnershipLeaseAheadOfNextPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if now.Sub(start) <= lease/2 {
-		t.Fatalf("pass took %s; the test needs a pass longer than half a lease", now.Sub(start))
+	if took := now.Sub(start); took <= lease/2 || took >= lease {
+		t.Fatalf("pass took %s; the test needs a pass between half a lease and a lease", took)
 	}
 	var owner dnsv1alpha1.DNSPublicationOwnership
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "platform", Name: "owner-" + model.OpaqueToken(string(zone.UID))[:20]}, &owner); err != nil {

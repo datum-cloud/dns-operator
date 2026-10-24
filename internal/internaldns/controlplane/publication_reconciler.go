@@ -197,15 +197,37 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 			continue
 		}
 		regUIDs[reg.UID] = true
-		base := reg.DeepCopy()
-		reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
-		reg.Status.PublicationRevision = manifest.Spec.Revision
-		projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
-		if !jsonEqual(base.Status, reg.Status) {
-			if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil {
+		apply := func(reg *dnsv1alpha1.DNSRegistration) {
+			reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
+			reg.Status.PublicationRevision = manifest.Spec.Revision
+			projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
+		}
+		listed := reg.DeepCopy()
+		apply(listed)
+		if jsonEqual(reg.Status, listed.Status) {
+			continue
+		}
+		// The listed copy can be a whole pass old, and the merge patch replaces
+		// every condition, so patch a fresh read rather than overwrite the ACK
+		// sink's newer conditions.
+		var current dnsv1alpha1.DNSRegistration
+		if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(reg), &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return time.Time{}, err
+		}
+		if current.UID != reg.UID || current.Generation != reg.Generation {
+			continue
+		}
+		base := current.DeepCopy()
+		apply(&current)
+		if !jsonEqual(base.Status, current.Status) {
+			if err := r.Status().Patch(ctx, &current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return time.Time{}, err
 			}
 		}
+		*reg = current
 	}
 	fenced := map[types.UID]int64{}
 	for _, f := range manifest.Spec.ContributionFences {
@@ -619,7 +641,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
-		if reflect.DeepEqual(base.Status, reg.Status) {
+		if jsonEqual(base.Status, reg.Status) {
 			continue
 		}
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
@@ -639,7 +661,7 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		base := c.DeepCopy()
 		c.Status.ObservedGeneration = c.Generation
 		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
-		if reflect.DeepEqual(base.Status, c.Status) {
+		if jsonEqual(base.Status, c.Status) {
 			continue
 		}
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {

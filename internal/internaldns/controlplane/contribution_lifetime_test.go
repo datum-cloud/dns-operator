@@ -151,6 +151,8 @@ func TestContributionAbsenceRequiresAuthoritativeRead(t *testing.T) {
 	}
 	r.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
 		return fmt.Errorf("source API unavailable")
+	}, List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+		return fmt.Errorf("source API unavailable")
 	}}).Build()
 	if _, err := r.confirmContributions(context.Background(), "project", nil, previous); err == nil {
 		t.Fatal("source read error was treated as deletion")

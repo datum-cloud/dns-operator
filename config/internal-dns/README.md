@@ -263,6 +263,32 @@ The metrics endpoint includes controller-runtime reconciliation metrics and:
 - `internal_dns_loop_duration_seconds{loop,region}`: run duration. Broker
   reads are counted but not timed, because they wait for messages.
 
+Each private zone is published by the replica that holds its ownership lease.
+These metrics show leases moving between replicas:
+
+- `internal_dns_zone_lease_takeovers_total`: leases this replica took from a
+  different holder whose lease had expired. A takeover bumps the writer epoch;
+  the new holder republishes only if the zone's content changed. Restarts and
+  rollouts also cause takeovers, because a new process has a new holder
+  identity and leases are not released on shutdown. Alert on a sustained rate,
+  not a single increase.
+- `internal_dns_zone_lease_acquisitions_total{result}`: lease acquisition
+  attempts. `result` is `held` when this replica already holds the lease,
+  `created`, `taken_over`, `standby` when another replica holds a live lease,
+  `conflict` when it lost a create race (AlreadyExists) or lost the takeover
+  write to an optimistic-lock conflict, or `error`. `standby` is normal on
+  every replica that does not hold a zone; use it for distribution panels, not
+  alerts.
+- `internal_dns_zone_lease_renewals_total{result}`: writes that extend a held
+  lease. `result` is `renewed`, `conflict`, or `error`. A `conflict` usually
+  means the pass outlasted the lease and another replica took the zone.
+- `internal_dns_zone_lease_remaining_seconds{point}`: histogram of lease time
+  left on a held zone, measured with the current clock. `point` is `acquire`
+  (start of the zone's pass) or `renew` (just before a write extends the
+  lease). Observations at or below zero mean the lease had lapsed.
+- `internal_dns_zone_lease_duration_seconds`: the configured lease length.
+  Divide remaining time by it to alert on a fraction of the lease.
+
 Loops are `project discovery`, `planner`, `ack refresh`, `outbox`, and the
 acknowledgement steps `ack read`, `ack apply`, and `ack commit`. A successful
 loop can be idle; it does not prove that an endpoint is serving. Combine these

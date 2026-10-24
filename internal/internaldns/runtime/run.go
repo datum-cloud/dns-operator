@@ -239,7 +239,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
 		planner := &platform.Planner{Client: platformClient, Allocator: allocator, Config: pc}
-		interval := pc.LeaseDuration / 3
+		interval := min(pc.LeaseDuration/3, maxPlannerInterval)
 		if interval < time.Second {
 			interval = time.Second
 		}
@@ -263,6 +263,11 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return err
 	}
 }
+
+// maxPlannerInterval bounds how long a new or changed resolver binding waits
+// for the shard planner, independent of the ownership lease that otherwise
+// sets the planner's cadence.
+const maxPlannerInterval = 10 * time.Second
 
 func startProjectSources(ctx context.Context, projects []projectRuntime) {
 	for _, project := range projects {

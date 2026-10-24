@@ -297,6 +297,22 @@ The metrics endpoint includes controller-runtime reconciliation metrics and:
 - `internal_dns_loop_duration_seconds{loop,region}`: run duration. Broker
   reads are counted but not timed, because they wait for messages.
 
+Each private zone is published by the replica that holds its ownership lease.
+These metrics show leases moving between replicas:
+
+- `internal_dns_zone_lease_takeovers_total{reason}`: leases this replica took
+  from a different holder. `reason` is `expired`: the previous holder let its
+  lease lapse. A steady rate means passes outlast the lease, and each takeover
+  republishes the zone.
+- `internal_dns_zone_lease_acquisitions_total{result}`: lease acquisition
+  attempts. `result` is `held` when this replica already holds the lease,
+  `created`, `taken_over`, `standby` when a peer holds a live lease,
+  `conflict` when it lost an optimistic-lock race to the other replica, or
+  `error`.
+- `internal_dns_zone_lease_remaining_seconds`: histogram of lease time left
+  when this replica returns to a zone it holds. Observations at or below zero
+  mean the lease had lapsed and a peer could have taken the zone.
+
 Loops are `project discovery`, `planner`, `ack refresh`, `outbox`, and the
 acknowledgement steps `ack read`, `ack apply`, and `ack commit`. A successful
 loop can be idle; it does not prove that an endpoint is serving. Combine these

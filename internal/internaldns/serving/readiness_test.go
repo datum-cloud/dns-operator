@@ -442,3 +442,34 @@ func TestReadinessFailsWhenDNSDistPoolHasNoBackend(t *testing.T) {
 		t.Fatalf("dnsdist whose pool has no available backend was ready: %v", err)
 	}
 }
+
+func TestReadinessNamesASlowDaemonWithinTheProbeTimeout(t *testing.T) {
+	f := newReadinessFixture(t)
+	tcp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udp, err := net.ListenPacket("udp", tcp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
+		time.Sleep(900 * time.Millisecond)
+		_ = w.WriteMsg(readinessCanaryReply(request, dns.RcodeSuccess, contextdns.ReadinessCanaryText))
+	})
+	udpServer := &dns.Server{PacketConn: udp, Handler: slow}
+	tcpServer := &dns.Server{Listener: tcp, Handler: slow}
+	go func() { _ = udpServer.ActivateAndServe() }()
+	go func() { _ = tcpServer.ActivateAndServe() }()
+	t.Cleanup(func() { _ = udpServer.Shutdown(); _ = tcpServer.Shutdown() })
+	f.config.Render = nodeReadinessConfig(t, f, dns.RcodeSuccess, contextdns.ReadinessCanaryText)
+	f.config.Render.NodeDNSDist.ListenAddress = tcp.Addr().String()
+	started := time.Now()
+	err = Readiness(context.Background(), f.config)
+	if err == nil || !strings.Contains(err.Error(), "local dnsdist readiness canary "+tcp.Addr().String()) {
+		t.Fatalf("answers slower than the probe timeout were ready or unnamed: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("readiness took %s, longer than the probe timeout", elapsed)
+	}
+}

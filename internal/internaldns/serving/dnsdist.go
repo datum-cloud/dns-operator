@@ -98,7 +98,11 @@ func refreshDNSDistConfiguration(router DNSDistRenderConfig, retained []byte) ([
 	if dnsdistTopology(retainedHeader) != dnsdistTopology(header) {
 		return startup, nil
 	}
-	return append(append(header, boundary...), withDNSDistReadinessCanary(router, rules)...), nil
+	rules, ok = withDNSDistReadinessCanary(router, rules)
+	if !ok {
+		return startup, nil
+	}
+	return append(append(header, boundary...), rules...), nil
 }
 
 func prepareDNSDistKey(path string) error {

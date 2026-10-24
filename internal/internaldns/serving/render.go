@@ -441,21 +441,34 @@ func renderDNSDistReadinessCanary(c DNSDistRenderConfig) []byte {
 }
 
 // withDNSDistReadinessCanary replaces the canary in retained rules, or adds it
-// to rules accepted before the canary existed.
-func withDNSDistReadinessCanary(c DNSDistRenderConfig, rules []byte) []byte {
+// to rules accepted before the canary existed. It reports false when neither
+// is possible.
+func withDNSDistReadinessCanary(c DNSDistRenderConfig, rules []byte) ([]byte, bool) {
 	canary := renderDNSDistReadinessCanary(c)
 	if before, rest, ok := bytes.Cut(rules, []byte(dnsdistCanaryStart)); ok {
 		_, after, ok := bytes.Cut(rest, []byte(dnsdistCanaryEnd))
 		if !ok {
-			return rules
+			return nil, false
 		}
-		return append(append(append([]byte(nil), before...), canary...), after...)
+		return append(append(append([]byte(nil), before...), canary...), after...), true
 	}
 	before, after, ok := bytes.Cut(rules, []byte(dnsdistDestinationHelper))
 	if !ok {
+		return nil, false
+	}
+	return append(append(append(append([]byte(nil), before...), dnsdistDestinationHelper...), canary...), after...), true
+}
+
+func withoutDNSDistReadinessCanary(rules []byte) []byte {
+	before, rest, ok := bytes.Cut(rules, []byte(dnsdistCanaryStart))
+	if !ok {
 		return rules
 	}
-	return append(append(append(append([]byte(nil), before...), dnsdistDestinationHelper...), canary...), after...)
+	_, after, ok := bytes.Cut(rest, []byte(dnsdistCanaryEnd))
+	if !ok {
+		return rules
+	}
+	return append(append([]byte(nil), before...), after...)
 }
 
 func dnsdistTransport(c DNSDistRenderConfig) string {

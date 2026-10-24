@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -125,11 +126,13 @@ func approvedFilesInstalled(files map[string][]byte) bool {
 	return true
 }
 
+// The readiness canary is refreshed at startup independently of the approved
+// tenant rules, so it is not part of the comparison.
 func sameDNSDistRules(a, b []byte) bool {
 	boundary := []byte(dnsdistRulesBoundary)
 	_, rulesA, okA := bytes.Cut(a, boundary)
 	_, rulesB, okB := bytes.Cut(b, boundary)
-	return okA && okB && bytes.Equal(rulesA, rulesB)
+	return okA && okB && bytes.Equal(withoutDNSDistReadinessCanary(rulesA), withoutDNSDistReadinessCanary(rulesB))
 }
 
 // Readiness verifies the approved files and live DNS processes using local state.
@@ -163,6 +166,8 @@ func Readiness(ctx context.Context, config Config) error {
 	if config.UnsafeAllowNoDNSVerify {
 		return errors.New("readiness requires live DNS query verification")
 	}
+	ctx, cancel := context.WithTimeout(ctx, readinessDeadline)
+	defer cancel()
 	return probeLocalReadiness(ctx, config.Render)
 }
 
@@ -238,7 +243,10 @@ func probeIdentityTransport(ctx context.Context, server string) error {
 	return servingAnswer(answer, err)
 }
 
+// readinessDeadline stays below the example probes' two-second timeout, so a
+// slow daemon fails with an error that names it.
 const (
+	readinessDeadline    = 1500 * time.Millisecond
 	coreDNSCanaryTimeout = 500 * time.Millisecond
 	dnsdistCanaryTimeout = time.Second
 )
@@ -269,9 +277,11 @@ func probeLocalReadiness(ctx context.Context, render RenderConfig) error {
 	for _, dist := range dists {
 		for _, network := range []string{networkUDP, networkTCP} {
 			answer, _, err := (&dns.Client{Net: network, Timeout: dnsdistCanaryTimeout}).ExchangeContext(ctx, readinessCanaryQuery(nil), dist.ListenAddress)
-			// Once a front's rules carry the canary, only a regional CoreDNS from
-			// before the canary refuses it, so fronts can roll out ahead of CoreDNS.
+			// Temporary, until every regional CoreDNS answers the canary: once a
+			// front's rules carry it, only a regional CoreDNS from before the
+			// canary refuses it, so fronts can roll out ahead of CoreDNS.
 			if role == RenderRegionalDNSDist && err == nil && answer != nil && answer.Response && answer.Rcode == dns.RcodeRefused {
+				log.Printf("local dnsdist readiness canary %s over %s: a backend refused the canary; treating it as a regional CoreDNS from before the canary", dist.ListenAddress, network)
 				continue
 			}
 			if err := readinessCanaryAnswer(answer, err); err != nil {

@@ -165,11 +165,14 @@ with no contexts is still ready. With an identity key, CoreDNS answers it only
 when the query carries that key. dnsdist forwards the canary from loopback, or
 from its own listen address, to its backend pool over UDP and TCP, and answers
 SERVFAIL when no backend is available. Only NOERROR with the expected TXT answer
-is ready. Any client that reaches a context can also read the canary; it says
-only that a CoreDNS process has loaded state. After a restart the agent waits
-for its daemons to answer at all, not for the canary, so it does not gate
-daemons still running rules from an earlier release; dnsdist adds the canary to
-retained rules when it starts. An
+is ready. Readiness finishes within 1.5 seconds, inside the example probes'
+2-second timeout, and names the daemon that was slow. Any client that reaches a
+context can also read the canary; it says only that a CoreDNS process has loaded
+state. After a restart the agent waits for its daemons to answer the root SOA
+without SERVFAIL, not for the canary, so it does not gate daemons still running
+rules from an earlier release. dnsdist adds the canary to retained rules when
+it starts; if it cannot place the canary, it starts with startup rules that
+refuse every context until the agent installs the approved configuration. An
 installation that a live agent owns stays ready while its daemons answer, for
 up to one minute from its start. An abandoned activation is not ready, and a
 gate is not ready once it has stopped or gated the daemons. Healthy daemons
@@ -234,12 +237,14 @@ serving agents before controllers that emit per-zone pending state. Enable the
 controller change after every serving member supports that contract; a matching
 wire version alone does not establish feature compatibility.
 
-Regional CoreDNS members from before the readiness canary refuse it. A regional
-front therefore treats a REFUSED canary as a live backend, so fronts and
-CoreDNS members can upgrade in either order. A SERVFAIL canary, which means no
-backend is available or a backend has no state or the wrong identity key, is
-never ready. Node members run dnsdist and CoreDNS from one image and require
-NOERROR.
+Regional CoreDNS members from before the readiness canary refuse it. Until
+every regional CoreDNS answers the canary, a regional front treats a REFUSED
+canary as a live backend and logs that it did, so fronts and CoreDNS members can
+upgrade in either order. This is temporary: once every regional CoreDNS has
+the canary, a REFUSED canary should fail front readiness too. A SERVFAIL
+canary, which means no backend is available or a backend has no state or the
+wrong identity key, is never ready. A node member's dnsdist and CoreDNS run in
+one pod and upgrade together, so node readiness requires NOERROR.
 
 The checkpoint retains desired version fences and the activated configuration
 separately. Restart can restore the activated configuration during a rejected

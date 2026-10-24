@@ -37,10 +37,10 @@ local fleetPods = lib.fleetPods;
 local step = '30s';
 
 local overRun(run, inner) =
-  'sum_over_time((%s)[$__range:%s])' % [lib.during(inner, run), step];
+  'sum_over_time((%s)[$__range:%s])' % [lib.during(inner, run, step), step];
 
 local avgOverRun(run, inner) =
-  'avg_over_time((%s)[$__range:%s])' % [lib.during(inner, run), step];
+  'avg_over_time((%s)[$__range:%s])' % [lib.during(inner, run, step), step];
 
 // ---------------------------------------------------------------------------
 // Measures
@@ -78,7 +78,7 @@ local measures = [
   { name: 'changes never answered, create', expr: missed('create') },
   { name: 'changes never answered, update', expr: missed('update') },
   { name: 'changes never answered, delete', expr: missed('delete') },
-  { name: 'API write p99 (ms)', expr: function(run) 'max(quantile_over_time(0.99, idns_perf_publish_api_ms{run="%s"}[$__range]))' % run },
+  { name: 'API write p99, worst step (ms)', expr: function(run) 'max(quantile_over_time(0.99, idns_perf_publish_api_ms{run="%s"}[$__range]))' % run },
   { name: 'query rate (per second)', expr: function(run) 'sum(avg_over_time(idns_perf_query_qps{run="%s"}[$__range]))' % run },
   { name: 'query worst p99 (ms)', expr: function(run) 'max(max_over_time(idns_perf_query_p99_ms{run="%s"}[$__range]))' % run },
   { name: 'queries failed', expr: function(run) 'sum(sum_over_time(idns_perf_query_failed{run="%s"}[$__range]))' % run },
@@ -110,7 +110,7 @@ local side(runVar) =
 local comparisonTable =
   table.new('Run A against run B')
   + table.panelOptions.withGridPos(33, 12, 0, 0)
-  + table.panelOptions.withDescription('Each measure over the whole of run A and run B, and how B differs from A. Publish times are the worse of the two resolvers. Control-plane and fleet measures cover only the time each run was going, plus up to 30 seconds after it ended. A blank cell means the run reported no such series, for example on a build without that metric.')
+  + table.panelOptions.withDescription('Each measure over the whole of run A and run B, and how B differs from A. Publish times are the worse of the two resolvers. Control-plane and fleet measures cover only the time each run was going, plus up to 30 seconds after it ended. They are worked out over the whole time range before being cut to each run, so keep the range to the hours around the two runs. A blank cell means the run reported no such series, for example on a build without that metric.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([
     qTable(side('$run_a'), 'A'),
@@ -295,8 +295,19 @@ local fleetCpu =
 // Variables
 // ---------------------------------------------------------------------------
 
-local runChoice(name, label) =
-  lib.queryVar(name, label, 'idns_perf_run', 'run', multi=false, includeAll=false, sort=2);
+// Runs listed by start time. Run A defaults to the oldest run in the time
+// range and run B to the newest, so the dashboard opens on a comparison.
+local runChoice(name, label, order) =
+  var.query.new(name)
+  + var.query.generalOptions.withLabel(label)
+  + var.query.generalOptions.showOnDashboard.withLabelAndValue()
+  + var.query.withDatasource('prometheus', ds)
+  + var.query.queryTypes.withQueryResult('%s(max by (run) (tfirst_over_time(idns_perf_run[$__range])))' % order)
+  + var.query.withRegex('/run="([^"]+)"/')
+  + var.query.refresh.onTime()
+  // Keep the query's order. grafonnet's withSort(0) falls back to
+  // alphabetical, so set it directly.
+  + { sort: 0 };
 
 local stepVar =
   var.custom.new('step', ['create', 'update', 'delete'])
@@ -313,15 +324,17 @@ lib.dashboard(
   ['dns', 'internal-dns', 'private-dns', 'performance'],
 )
 + g.dashboard.withRefresh('')
-+ g.dashboard.time.withFrom('now-7d')
+// Every control-plane measure is worked out across the whole range, so a
+// long default range is slow and can run out of memory in VictoriaMetrics.
++ g.dashboard.time.withFrom('now-6h')
 + g.dashboard.withLinks(lib.dnsLinks + [
   { type: 'link', title: 'All runs', url: '/d/internal-dns-performance/private-dns-performance', keepTime: true, includeVars: false, icon: 'dashboard' },
 ])
 + g.dashboard.withAnnotations([lib.loadTestAnnotation])
 + g.dashboard.withVariables([
   lib.datasourceVar,
-  runChoice('run_a', 'Run A'),
-  runChoice('run_b', 'Run B'),
+  runChoice('run_a', 'Run A', 'sort'),
+  runChoice('run_b', 'Run B', 'sort_desc'),
   stepVar,
 ])
 + g.dashboard.withPanels([

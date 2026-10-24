@@ -68,7 +68,7 @@
                            },
                            {
                               "title": "Compare this run with another",
-                              "url": "/d/internal-dns-performance-compare/private-dns-run-comparison?${datasource:queryparam}&var-run_a=${__data.fields.run}&${__url_time_range}"
+                              "url": "/d/internal-dns-performance-compare/private-dns-run-comparison?${datasource:queryparam}&var-run_a=${__data.fields.run}&from=${__data.fields.compare_from}&to=now"
                            }
                         ]
                      }
@@ -98,7 +98,7 @@
                      },
                      {
                         "id": "custom.width",
-                        "value": 170
+                        "value": 200
                      }
                   ]
                },
@@ -167,7 +167,7 @@
                {
                   "matcher": {
                      "id": "byRegexp",
-                     "options": "from|to"
+                     "options": "^(from|to|compare_from)$"
                   },
                   "properties": [
                      {
@@ -234,6 +234,17 @@
                "format": "table",
                "instant": true,
                "refId": "TO"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) ((tfirst_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]) - 60) * 1000)",
+               "format": "table",
+               "instant": true,
+               "refId": "CMP"
             },
             {
                "datasource": {
@@ -378,6 +389,7 @@
                      "Value #A": 3,
                      "Value #B": 4,
                      "Value #C": 5,
+                     "Value #CMP": 17,
                      "Value #D": 6,
                      "Value #E": 7,
                      "Value #F": 8,
@@ -397,6 +409,7 @@
                      "Value #A": "started",
                      "Value #B": "duration",
                      "Value #C": "create p50",
+                     "Value #CMP": "compare_from",
                      "Value #D": "create p99",
                      "Value #E": "update p50",
                      "Value #F": "update p99",
@@ -2060,7 +2073,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (internal_dns_datum_net_tier, pod) (rate(dnsdist_queries{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "expr": "sum by (internal_dns_datum_net_tier, pod) (rate(dnsdist_queries{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
                "legendFormat": "{{internal_dns_datum_net_tier}} {{pod}}"
             }
          ],
@@ -2121,7 +2134,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_noerror{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_noerror{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
                "legendFormat": "{{internal_dns_datum_net_tier}} NOERROR"
             },
             {
@@ -2130,7 +2143,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_nxdomain{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_nxdomain{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
                "legendFormat": "{{internal_dns_datum_net_tier}} NXDOMAIN"
             },
             {
@@ -2139,7 +2152,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_servfail{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_servfail{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
                "legendFormat": "{{internal_dns_datum_net_tier}} SERVFAIL"
             }
          ],
@@ -2200,7 +2213,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
                "legendFormat": "{{internal_dns_datum_net_tier}} p50"
             },
             {
@@ -2209,7 +2222,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
                "legendFormat": "{{internal_dns_datum_net_tier}} p99"
             }
          ],
@@ -2270,7 +2283,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],
@@ -2331,7 +2344,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
+               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],

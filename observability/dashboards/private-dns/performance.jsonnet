@@ -39,7 +39,7 @@ local tier = lib.tier;
 // Serving pods of the chosen members. Pods are named
 // <deployment>-<replica set hash>-<suffix>, so anchoring two trailing
 // segments keeps internal-dns-node from also matching internal-dns-node-b.
-local memberPods = 'namespace=~"ns-.*",cluster=~"$cluster",pod=~"(${member:regex})-[a-z0-9]+-[a-z0-9]+"';
+local memberPods = 'namespace=~"ns-.*",cluster=~"$cluster",pod=~"internal-dns-.*",pod=~"(${member:regex})-[a-z0-9]+-[a-z0-9]+"';
 local dnsdist = 'container="dnsdist",%s' % memberPods;
 
 // ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ local openRun = {
 
 local compareRun = {
   title: 'Compare this run with another',
-  url: '/d/internal-dns-performance-compare/private-dns-run-comparison?${datasource:queryparam}&var-run_a=${__data.fields.run}&${__url_time_range}',
+  url: '/d/internal-dns-performance-compare/private-dns-run-comparison?${datasource:queryparam}&var-run_a=${__data.fields.run}&from=${__data.fields.compare_from}&to=now',
 };
 
 local runsTable =
@@ -85,6 +85,9 @@ local runsTable =
     qTable('max by (%s) (tlast_over_time(%s[$__range]) - tfirst_over_time(%s[$__range]))' % [byRun, runs, runs], 'B'),
     qTable('max by (%s) ((tfirst_over_time(%s[$__range]) - 60) * 1000)' % [byRun, runs], 'FROM'),
     qTable('max by (%s) ((tlast_over_time(%s[$__range]) + 120) * 1000)' % [byRun, runs], 'TO'),
+    // The comparison opens on the span from this run to now, so run B can be
+    // any later run.
+    qTable('max by (%s) ((tfirst_over_time(%s[$__range]) - 60) * 1000)' % [byRun, runs], 'CMP'),
     qTable(lagQuantile('0.5', 'create'), 'C'),
     qTable(lagQuantile('0.99', 'create'), 'D'),
     qTable(lagQuantile('0.5', 'update'), 'E'),
@@ -109,7 +112,7 @@ local runsTable =
         indexByName: {
           run: 0, scenario: 1, commit: 2, 'Value #A': 3, 'Value #B': 4,
           'Value #C': 5, 'Value #D': 6, 'Value #E': 7, 'Value #F': 8, 'Value #G': 9, 'Value #H': 10,
-          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #FROM': 15, 'Value #TO': 16,
+          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #FROM': 15, 'Value #TO': 16, 'Value #CMP': 17,
         },
         renameByName: {
           'Value #A': 'started', 'Value #B': 'duration',
@@ -118,7 +121,7 @@ local runsTable =
           'Value #G': 'delete p50', 'Value #H': 'delete p99',
           'Value #I': 'never answered', 'Value #J': 'query rate',
           'Value #K': 'query worst p99', 'Value #L': 'failed queries',
-          'Value #FROM': 'from', 'Value #TO': 'to',
+          'Value #FROM': 'from', 'Value #TO': 'to', 'Value #CMP': 'compare_from',
         },
       },
     },
@@ -138,7 +141,7 @@ local runsTable =
     + table.fieldOverride.byRegexp.withProperty('unit', 'string'),
     table.fieldOverride.byName.new('started')
     + table.fieldOverride.byName.withProperty('unit', 'dateTimeAsLocal')
-    + table.fieldOverride.byName.withProperty('custom.width', 170),
+    + table.fieldOverride.byName.withProperty('custom.width', 200),
     table.fieldOverride.byName.new('duration')
     + table.fieldOverride.byName.withProperty('unit', 's'),
     table.fieldOverride.byRegexp.new('never answered|failed queries')
@@ -149,7 +152,7 @@ local runsTable =
     + table.fieldOverride.byName.withProperty('unit', 'reqps')
     + table.fieldOverride.byName.withProperty('decimals', 1),
     // Only the links read these; they hold the run window in epoch ms.
-    table.fieldOverride.byRegexp.new('from|to')
+    table.fieldOverride.byRegexp.new('^(from|to|compare_from)$')
     + table.fieldOverride.byRegexp.withProperty('unit', 'none')
     + table.fieldOverride.byRegexp.withProperty('custom.hidden', true),
   ]);

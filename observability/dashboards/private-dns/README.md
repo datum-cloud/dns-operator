@@ -27,8 +27,9 @@ fails when the committed JSON differs.
 
 Include `config/components/dashboards` from the bundle with a namespace, and
 patch the GrafanaDashboards' `instanceSelector` to match your Grafana
-instance. Every dashboard has a `datasource` variable for the Prometheus or
-VictoriaMetrics data source that holds the metrics.
+instance. Every dashboard has a `datasource` variable for the data source that holds the
+metrics. The queries use MetricsQL functions such as `label_set` and
+`tfirst_over_time`, so the data source must be VictoriaMetrics.
 
 ## Load test series
 

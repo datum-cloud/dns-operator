@@ -53,11 +53,13 @@ local ds = '${datasource}';
 
   // Load test runs report idns_perf_run = 1 every 10 seconds while they last.
   // during() keeps `expr` only at instants inside the run, so a subquery over
-  // it covers that run's window and nothing else. The window ends up to one
-  // subquery step after the last run sample, which keeps the tail of a run's
-  // publishing in.
-  during(expr, run)::
-    '(%s) and on () max(idns_perf_run{run="%s"})' % [expr, run],
+  // it covers that run's window and nothing else. `expr` should look back one
+  // `step` (a rate or increase over `step`): the run series is read `step`
+  // earlier, so a point is kept only when the interval it covers starts after
+  // the run began. The window ends up to one step after the last run sample,
+  // which keeps the tail of a run's publishing in.
+  during(expr, run, step)::
+    '(%s) and on () max(idns_perf_run{run="%s"} offset %s)' % [expr, run, step],
 
   // -------------------------------------------------------------------------
   // Layout and panels

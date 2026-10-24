@@ -49,12 +49,15 @@ You need:
 
 Label conventions used below:
 
-- Control-plane loop series carry `loop`, `region`, `shard` and `result`.
+- Control-plane loop series carry `loop` and `result`, plus `region` and
+  `shard` where the loop has them (`internal_dns_loop_duration_seconds` has no
+  `shard`).
 - dnsdist series carry `internal_dns_datum_net_tier` (from the pod label
   `internal-dns.datum.net/tier`) with values `node`, `node-b` and
   `regional-dnsdist`.
 - `result` on loop series is `success`, `conflict` or `error`. Both control-plane
-  replicas run every loop (F8), so `conflict` is normal.
+  replicas run the outbox and ack-refresh loops (F8), so `conflict` there is
+  normal.
 
 Record your own baseline the first time you run these checks; most numbers
 here are only meaningful compared with your deployment's normal.
@@ -77,8 +80,9 @@ control-plane cluster, and the fleet on each serving cluster. Producers
 gotk_resource_info{name=~"internal-dns.*"}
 ```
 
-Every row should be `ready="True"` with `suspended` not `true`. The control-plane
-and fleet Kustomizations should report the same source revision.
+Every row should be `ready="True"` with `suspended` not `true`. Run `kubectl get
+kustomization -A` against both the control-plane cluster and each fleet
+cluster; the Kustomizations should report the same source revision.
 
 **Bad looks like.** A Kustomization `Ready=False` with a health-check failure on
 a fleet Deployment, or control-plane and fleet copies on different revisions for
@@ -104,7 +108,7 @@ DNSResolverBinding status in the DNS service project.
 
 ```promql
 max by (loop) (internal_dns_loop_consecutive_failures)                      # 0 for every loop
-max by (loop) (time() - internal_dns_loop_last_success_timestamp_seconds)   # under two intervals
+min by (loop) (time() - internal_dns_loop_last_success_timestamp_seconds)   # freshest replica
 sum by (loop, result) (increase(internal_dns_loop_runs_total[1h]))          # errors near 0
 histogram_quantile(0.99, sum by (loop, le) (rate(internal_dns_loop_duration_seconds_bucket[1h])))
 ```
@@ -116,19 +120,30 @@ sum by (result) (increase(controller_runtime_reconcile_total{namespace="internal
 topk(3, histogram_quantile(0.99, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace="internal-dns-system"}[1h]))))
 ```
 
-Logs are JSON; filter on `"level":"error"`.
+Logs are JSON; filter on `"level":"error"`. Read every replica in full:
+
+```bash
+kubectl -n internal-dns-system logs -l app.kubernetes.io/name=internal-dns-control-plane --since=1h --tail=-1 --prefix
+```
 
 **Watch.**
 
-- `internal_dns_loop_consecutive_failures >= 5` for 5 minutes (the proposal's
-  alert shape).
-- Loop staleness above two of that loop's intervals.
+- Consecutive failures. The proposal's `>= 5 for 5m` misses short, sharp
+  disruptions: a platform API restart can push `ack apply` past 100
+  consecutive failures and recover within five minutes. Pair it with
+  `max_over_time(internal_dns_loop_consecutive_failures[5m]) >= 20` and no
+  `for`.
+- Staleness, using `min by (loop)` so one slow replica doesn't alarm. The
+  planner runs every lease/3 (40s with a 120s lease) and `ack refresh` every
+  2s, but scrape lag puts a floor of about 20s under every loop. Set
+  thresholds from your own baseline, for example planner above 120s and
+  other loops above 60s.
 
 **Bad looks like.** When the platform API server is unavailable or slow, all
 loops start failing together: `ack apply` logs `committed serving snapshot
 fence mismatch`, `project discovery` and per-project reconciles fail on `Get`
-timeouts, and loop staleness climbs. The loop metrics record this clearly; an
-alert on them would have caught every occurrence we've seen.
+timeouts, and loop staleness climbs. The loop metrics record this clearly, but
+only an alert shaped for short bursts (above) catches it.
 
 **Known failure modes.**
 
@@ -150,8 +165,9 @@ alert on them would have caught every occurrence we've seen.
   `internal_dns_operation_last_success_timestamp_seconds` families are still
   emitted next to `internal_dns_loop_*`; dashboards should move to the loop
   families.
-- The readiness probe does not prove the control plane can reach the platform
-  API or NATS.
+- The control plane serves a `/healthz` loop-liveness check, but the
+  reference Deployment has no liveness probe. Its readiness probe doesn't
+  prove it can reach the platform API or NATS.
 
 ### 3. NATS JetStream broker
 
@@ -163,7 +179,8 @@ The standard `prometheus-nats-exporter` sidecar exposes `nats_*`.
 **Healthy now.**
 
 ```promql
-max by (stream_name, consumer_name) (nats_consumer_num_pending{namespace="internal-dns-system"})       # returns to 0
+max by (stream_name, consumer_name) (nats_consumer_num_pending{namespace="internal-dns-system",consumer_name!~".*-acks"})  # 0
+max by (stream_name, consumer_name) (avg_over_time(nats_consumer_num_pending{namespace="internal-dns-system",consumer_name=~".*-acks"}[1h]))
 max by (stream_name, consumer_name) (nats_consumer_num_ack_pending{namespace="internal-dns-system"})
 max by (stream_name) (nats_stream_total_bytes{namespace="internal-dns-system"})
   / max by (stream_name) (nats_stream_limit_bytes{namespace="internal-dns-system"} > 0)
@@ -174,8 +191,10 @@ sum (nats_connz_num_connections{namespace="internal-dns-system"})       # member
 not on a fixed pending threshold.
 
 **Bad looks like.** A consumer whose pending count never returns to 0, or a
-connection count below members plus control-plane replicas. Member `-acks`
-consumers saw-tooth by design.
+connection count below members plus control-plane replicas. Every `-acks`
+consumer, members' and the control plane's, saw-tooths by design: instant
+values above 100 are normal, so judge them by whether they drain, not by a
+single reading.
 
 **Known failure modes.** ACK heartbeats are most of the traffic and grow with
 bindings times members (F6). This is a scaling limit, not a fault.
@@ -192,12 +211,19 @@ replica holding the lease publishes the zone; the other waits until the lease
 could expire (`internal/internaldns/controlplane/publication_reconciler.go`).
 
 **Healthy now.** There is no metric. Use per-project reconcile time as a proxy
-(section 2): passes that approach two-thirds of the lease duration risk losing
-leases.
+(section 2). Today a pass renews a zone's lease only when it reaches that zone
+and less than half a lease remains, then requeues half a lease after it ends,
+so a lease can lapse on passes well under the lease duration. After #316,
+leases hold while passes stay under about two-thirds of a lease. The reconcile
+histogram's top bucket is 60s, so the proxy saturates before a pass gets that
+long; treat any project at the top bucket as at risk.
+
+Ownership conflicts show in the logs as `Operation cannot be fulfilled on
+dnspublicationownerships`.
 
 **Bad looks like.** Two replicas take a zone from each other on every pass:
 `writerEpoch` keeps rising, passes conflict on
-`dnspublicationmanifests`, and each takeover republishes the zone, which makes
+`dnspublicationownerships`, and each takeover republishes the zone, which makes
 the next pass slower.
 
 **Known failure modes.** Lease expiry mid-pass: a long pass renewed each lease
@@ -216,7 +242,7 @@ daemon config, reloads CoreDNS or dnsdist, and sends acks.
 **Healthy now.**
 
 ```promql
-max by (consumer_name) (nats_consumer_num_pending{namespace="internal-dns-system",consumer_name!~"control-plane-.*"})   # 0
+max by (consumer_name) (nats_consumer_num_pending{namespace="internal-dns-system",consumer_name=~".*-(records|serving)"})   # 0
 max by (consumer_name) (increase(nats_consumer_num_redelivered{namespace="internal-dns-system"}[1h]))                 # 0
 ```
 
@@ -236,7 +262,8 @@ the proposal; neither has a signal yet.
 
 **Gaps.** No agent metrics (`internal_dns_agent_*`, phase 2): fail-closed state,
 fence, activations by result, checkpoint restore, transport connection. No
-liveness or startup probe on any container, and none at all on `agent` (F3).
+liveness or startup probe on any container (F3); the `agent` container has a
+readiness probe only on the regional front.
 The reference fleet still mounts broker credentials in `serving` (F1), which
 must change before CoreDNS metrics are turned on.
 
@@ -272,10 +299,17 @@ or SERVFAIL rising while queries stay flat.
 - Backend flap: dnsdist marks the local CoreDNS backend down and back up, and
   while it is down the node pool has no server. Watch
   `changes(dnsdist_server_status[1h])` and `dnsdist_server_healthcheckfailures`.
-- The readiness probe queries `. SOA`, which the classifier always refuses
-  (F2). That adds one refused query a second per pod to `dnsdist_rule_refused`,
-  so readiness never tests the real path and real refusals hide under the
-  probe's.
+- The readiness check queries `. SOA`, which the classifier always refuses
+  (F2), so readiness never tests the real path. A steady refusal rate of about
+  one a second per dnsdist, on idle members too, is probably this and other
+  health checks (inferred, not traced); real refusals hide under it.
+
+**Also check placement.** If every member in a region lands on one node, one
+node failure takes out the region's Private DNS. Nothing alerts on this:
+
+```bash
+kubectl -n <fleet-namespace> get pods -o wide
+```
 
 **Gaps.** CoreDNS metrics (#300) are opt-in and wait on F1. Until then there is
 no per-outcome counter, so a query refused for an unknown context looks the
@@ -323,7 +357,7 @@ public names for CoreDNS.
 **Healthy now.** The recursor logs a statistics report every 15 minutes:
 
 ```bash
-kubectl -n <fleet-namespace> logs deploy/internal-dns-public-recursor --since=1h | grep 'Periodic statistics'
+kubectl -n <fleet-namespace> logs -l app.kubernetes.io/name=internal-dns-public-recursor --since=1h --tail=-1 --prefix | grep 'Periodic statistics'
 ```
 
 Check `outgoing-timeouts`, `throttled-queries-perc` and `concurrent-queries`.
@@ -370,17 +404,26 @@ datum_cloud_network_context_status_condition{condition="DNSReady"} == 1
 sum by (controller, result) (increase(controller_runtime_reconcile_total{controller=~"internal-dns-instance-publisher|internaldns-.*"}[1h]))
 ```
 
-`DNSReady` series with every status at 0 mean the context has no `DNSReady`
-condition at all, not that it is failing.
+resource-metrics exports one series per context with the condition's current
+`status` and `reason` as labels, and a value of 1 only when the status is
+`True`. So `== 1` hides contexts that aren't ready. To see them:
+
+```promql
+count by (status, reason) (datum_cloud_network_context_status_condition{condition="DNSReady"} == 0)
+```
+
+The `reason` says why: `Pending` (waiting on publication), `NetworkPathNotReady`
+(no serving path yet, as in a region with no fleet), or `Terminating`.
 
 **Bad looks like.** A context with `DNSReady` False, or instances created but
-never published while the publisher's error count climbs.
+never published while the publisher's error count climbs. A context stuck at
+`Unknown`/`NetworkPathNotReady` in a region that has a fleet is worth a look.
 
 **Gaps.** No instance-level DNS condition metric
 (`datum_cloud_compute_instance_dns_status_condition`), no publisher
-`publications_total` or latency. Nothing tells "not opted in" apart from
-"stuck" for contexts without `DNSReady`. Producers return errors together with
-`RequeueAfter` (F9).
+`publications_total` or latency, and no age on a non-ready `DNSReady`, so a
+context that is slow can't be told from one that is stuck. Producers return
+errors together with `RequeueAfter` (F9).
 
 ### 11. Milo and resource-metrics
 
@@ -405,7 +448,7 @@ These are gaps in what the software and its reference deployment expose.
 
 | # | Gap | Why it matters | Fix |
 |---|---|---|---|
-| 1 | No alert rules ship for any Private DNS signal | Control-plane disruptions are recorded by the loop metrics but reported by nothing | Rules on `internal_dns_loop_consecutive_failures`, loop staleness, `dnsdist_server_status`, SERVFAIL and timeout rates, consumer drain |
+| 1 | No alert rules ship for any Private DNS signal | Control-plane disruptions are recorded by the loop metrics but reported by nothing; short ones also slip past the proposal's `for 5m` shapes | Burst-aware rules on `internal_dns_loop_consecutive_failures`, loop staleness, `dnsdist_server_status`, SERVFAIL and timeout rates, consumer drain |
 | 2 | No synthetic probe of a private name through `fd53::53` (F12) | Wrong answers for private names are invisible | Phase 4: canary project, `_canary` record, probe |
 | 3 | Readiness queries `. SOA`, which is always refused (F2), and flips on one failure | Ready says nothing about answering; refusal counts are polluted; regional members blip on reloads | Phase 2: NOERROR canary readiness, HTTP probes, separate liveness |
 | 4 | CoreDNS metrics wait on removing broker credentials from `serving` (F1) | No error, latency or outcome signal behind dnsdist, and no snapshot state | UID split, then set the #300 metrics address |
@@ -417,5 +460,6 @@ These are gaps in what the software and its reference deployment expose.
 | 10 | No instance DNS condition or publisher counters | Per-instance publication and its latency can't be seen | Compute, phase 3 |
 | 11 | Producers and the cell controller poll and count conflicts as errors (F9) | Error ratios can't be used as incident signals | Producer hygiene |
 | 12 | Cardinality: one `controller` value per project (F7) and `dnsdist_pool_*` series | Series grow with tenants | Stable controller names (phase 1); drop pool series at scrape |
-| 13 | No counter for acks dropped from unknown members | The head-of-line fix can't show it is working | Control plane |
-| 14 | Legacy `internal_dns_operations_total` still emitted | Two families for one thing | Remove once dashboards use `internal_dns_loop_*` |
+| 13 | No anti-affinity or placement signal for serving members | Members can all land on one node, a single point of failure for the region | Spread constraints in the reference fleet; a placement check |
+| 14 | No counter for acks dropped from unknown members | The head-of-line fix can't show it is working | Control plane |
+| 15 | Legacy `internal_dns_operations_total` still emitted | Two families for one thing | Remove once dashboards use `internal_dns_loop_*` |

@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
@@ -431,5 +432,69 @@ func TestHolderRechecksUnpublishedManifestWithBackoff(t *testing.T) {
 		if !got.Equal(tc.want) {
 			t.Fatalf("%s at %s: recheck %s, want %s", tc.identity, tc.at, got, tc.want)
 		}
+	}
+}
+
+func TestSlowPassKeepsOwnershipLeaseAheadOfNextPass(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	slow := false
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	network := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-a"}}
+	input := fixture(now)
+	zone := input.Zone.DeepCopy()
+	zone.Namespace = "project"
+	zone.Finalizers = []string{privateZoneFinalizer}
+	assoc := input.Associations[0].DeepCopy()
+	assoc.Namespace = "project"
+	assoc.Name = "zone-prod"
+	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: "prod"}
+	assoc.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
+	reg := input.Registrations[0].DeepCopy()
+	reg.Namespace = "project"
+	contribution := input.Contributions[0].DeepCopy()
+	contribution.Namespace = "project"
+	contribution.Generation = 1
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contribution).
+		WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).
+		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if slow {
+				now = now.Add(400 * time.Millisecond)
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		}}).Build()
+	lease := 10 * time.Second
+	writer := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{
+		ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "platform",
+		Identity: "writer-a", LeaseDuration: lease,
+		ServingRegions: []ServingRegion{{Region: "east", Shard: "shared"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now },
+	}}
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}
+	for i := 0; i < 8; i++ {
+		if _, err := writer.Reconcile(ctx, request); err != nil {
+			t.Fatalf("initial reconcile %d: %v", i, err)
+		}
+	}
+
+	now = now.Add(lease/2 + time.Second)
+	start := now
+	slow = true
+	result, err := writer.Reconcile(ctx, request)
+	slow = false
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := now.Sub(start); took <= lease/2 || took >= lease {
+		t.Fatalf("pass took %s; the test needs a pass between half a lease and a lease", took)
+	}
+	var owner dnsv1alpha1.DNSPublicationOwnership
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "platform", Name: "owner-" + model.OpaqueToken(string(zone.UID))[:20]}, &owner); err != nil {
+		t.Fatal(err)
+	}
+	if next := now.Add(result.RequeueAfter); !next.Before(owner.Spec.LeaseUntil.Time) {
+		t.Fatalf("next pass at %s is not before the lease expiry %s", next, owner.Spec.LeaseUntil.Time)
 	}
 }

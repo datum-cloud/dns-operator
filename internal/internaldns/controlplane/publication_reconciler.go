@@ -80,6 +80,15 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	}
 	var earliest time.Time
 	var zoneErrors []error
+	held := map[types.UID]heldOwnership{}
+	for i := range zones.Items {
+		z := &zones.Items[i]
+		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || (z.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(z, privateZoneFinalizer)) {
+			continue
+		}
+		own, retryAt, err := r.holdOwnership(ctx, z)
+		held[z.UID] = heldOwnership{own: own, retryAt: retryAt, err: err}
+	}
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -93,13 +102,21 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 			continue
 		}
-		result, next, err := r.compileZone(ctx, z, assocs.Items, regs.Items, contributions.Items, records.Items, now)
+		lease := held[z.UID]
+		if lease.err != nil {
+			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, lease.err))
+			continue
+		}
+		if lease.own == nil {
+			if earliest.IsZero() || lease.retryAt.Before(earliest) {
+				earliest = lease.retryAt
+			}
+			continue
+		}
+		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
-		}
-		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
 		}
 		pending, err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now)
 		if err != nil {
@@ -117,7 +134,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 		}
 	}
-	return ctrl.Result{RequeueAfter: nextProjectRequeue(now, earliest, r.Options.LeaseDuration)}, errors.Join(zoneErrors...)
+	renewBy := now.Add(r.Options.LeaseDuration / 2)
+	if earliest.IsZero() || renewBy.Before(earliest) {
+		earliest = renewBy
+	}
+	return ctrl.Result{RequeueAfter: nextProjectRequeue(r.Options.Now().UTC(), earliest, r.Options.LeaseDuration)}, errors.Join(zoneErrors...)
 }
 
 // nextProjectRequeue never lets a later scheduled reconciliation
@@ -233,32 +254,25 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 	return age
 }
 
-func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, time.Time, error) {
-	own, retryAt, err := r.acquireOwnership(ctx, z, now)
-	if err != nil {
-		return false, time.Time{}, err
-	}
-	if own == nil {
-		return false, retryAt, nil
-	}
+func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
 	for i := range regs {
 		refs, err := r.readReferences(ctx, &regs[i])
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
 	}
@@ -268,25 +282,25 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 	if !tombstone {
 		compiled, err := Compile(input)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		ownPlan = compiled.Plan
 		wire, err := WirePlan(compiled.Plan)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		payload, err = json.Marshal(wire)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 	}
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	stateHash := hash
 	if !tombstone {
@@ -300,18 +314,11 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 		stateHash = hash
 	}
 	if own.Spec.LastContentHash == stateHash {
-		if !own.Spec.LeaseUntil.After(now.Add(r.Options.LeaseDuration / 2)) {
-			base := own.DeepCopy()
-			own.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
-			if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-				return false, time.Time{}, err
-			}
-		}
-		return r.tombstoneAcknowledged(ctx, own), time.Time{}, nil
+		return r.tombstoneAcknowledged(ctx, own), nil
 	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	revision := own.Spec.NextRevision
 	if revision <= 0 {
@@ -322,23 +329,23 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, as
 	// different generated bytes or timestamps.
 	reservationBase := own.DeepCopy()
 	own.Spec.NextRevision = revision + 1
-	own.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
+	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(reservationBase, client.MergeFromWithOptimisticLock{})); err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
 	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	base := own.DeepCopy()
 	own.Spec.LastContentHash = stateHash
 	own.Spec.ActiveManifestName = manifest.Name
-	own.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
+	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
-	return false, time.Time{}, nil
+	return false, nil
 }
 
 func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership) (int64, error) {
@@ -469,6 +476,33 @@ func (r *Reconciler) outbox(name, region, shard, subject string, uid types.UID, 
 		"internal-dns.miloapis.com/region": model.SafeToken(region),
 		"internal-dns.miloapis.com/shard":  model.SafeToken(shard),
 	}}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: subject, ResourceUID: uid, WriterEpoch: epoch, Revision: revision, ManifestRef: dnsv1alpha1.DNSObjectReference{Name: manifest}, OwnershipRef: dnsv1alpha1.DNSObjectReference{Name: ownerName}, PayloadHash: model.Hash(payload), Payload: payload, Activation: activation, DependsOn: deps}}
+}
+
+type heldOwnership struct {
+	own     *dnsv1alpha1.DNSPublicationOwnership
+	retryAt time.Time
+	err     error
+}
+
+// holdOwnership acquires or renews every zone lease before any zone is
+// compiled, so a long pass cannot outlast the leases of zones it reaches late.
+// A held lease is renewed once a third of it has elapsed, which every pass
+// does because passes start at most half a lease apart.
+func (r *Reconciler) holdOwnership(ctx context.Context, z *dnsv1alpha1.DNSZone) (*dnsv1alpha1.DNSPublicationOwnership, time.Time, error) {
+	own, retryAt, err := r.acquireOwnership(ctx, z, r.Options.Now().UTC())
+	if err != nil || own == nil {
+		return nil, retryAt, err
+	}
+	renewedAt := r.Options.Now().UTC()
+	if own.Spec.LeaseUntil.After(renewedAt.Add(r.Options.LeaseDuration * 2 / 3)) {
+		return own, time.Time{}, nil
+	}
+	base := own.DeepCopy()
+	own.Spec.LeaseUntil = metav1.NewTime(renewedAt.Add(r.Options.LeaseDuration))
+	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return nil, time.Time{}, err
+	}
+	return own, time.Time{}, nil
 }
 
 func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZone, now time.Time) (*dnsv1alpha1.DNSPublicationOwnership, time.Time, error) {

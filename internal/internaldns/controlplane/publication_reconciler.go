@@ -330,7 +330,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	reservationBase := own.DeepCopy()
 	own.Spec.NextRevision = revision + 1
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(reservationBase, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, reservationBase); err != nil {
 		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
@@ -342,7 +342,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	own.Spec.LastContentHash = stateHash
 	own.Spec.ActiveManifestName = manifest.Name
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, base); err != nil {
 		return false, err
 	}
 	return false, nil
@@ -499,7 +499,7 @@ func (r *Reconciler) holdOwnership(ctx context.Context, z *dnsv1alpha1.DNSZone) 
 	}
 	base := own.DeepCopy()
 	own.Spec.LeaseUntil = metav1.NewTime(renewedAt.Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, base); err != nil {
 		return nil, time.Time{}, err
 	}
 	return own, time.Time{}, nil
@@ -511,6 +511,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 	key := client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}
 	result := "error"
 	defer func() { zoneLeaseAcquisitions.WithLabelValues(result).Inc() }()
+	zoneLeaseDuration.Set(r.Options.LeaseDuration.Seconds())
 	err := r.Get(ctx, key, o)
 	if apierrors.IsNotFound(err) {
 		o = &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: key.Namespace}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: z.UID, HolderIdentity: r.Options.Identity, WriterEpoch: 1, NextRevision: 1, LeaseUntil: metav1.NewTime(now.Add(r.Options.LeaseDuration))}}
@@ -546,11 +547,11 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 			return nil, time.Time{}, err
 		}
 		result = "taken_over"
-		zoneLeaseTakeovers.WithLabelValues("expired").Inc()
+		zoneLeaseTakeovers.Inc()
 		return o, time.Time{}, nil
 	}
 	result = "held"
-	zoneLeaseRemaining.Observe(o.Spec.LeaseUntil.Sub(now).Seconds())
+	zoneLeaseRemaining.WithLabelValues("acquire").Observe(o.Spec.LeaseUntil.Sub(r.clock()).Seconds())
 	return o, time.Time{}, nil
 }
 

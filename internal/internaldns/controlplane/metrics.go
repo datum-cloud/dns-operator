@@ -16,8 +16,14 @@ var passPhaseDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 	Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 30},
 }, []string{"phase"})
 
+var passDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+	Name:    "internal_dns_project_pass_seconds",
+	Help:    "Duration of whole project passes. Reaches past the 60 s ceiling of the controller-runtime reconcile histogram.",
+	Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 90, 120, 180, 300, 600},
+})
+
 func init() {
-	metrics.Registry.MustRegister(passPhaseDuration)
+	metrics.Registry.MustRegister(passPhaseDuration, passDuration)
 }
 
 // slowPass is how long a project pass may take before it logs where its time

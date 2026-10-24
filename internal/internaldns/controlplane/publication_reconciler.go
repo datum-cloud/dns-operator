@@ -31,7 +31,9 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	totals := passTotals{}
 	ctx = context.WithValue(ctx, passTotalsKey{}, totals)
 	defer func() {
-		if elapsed := time.Since(started); elapsed > slowPass {
+		elapsed := time.Since(started)
+		passDuration.Observe(elapsed.Seconds())
+		if elapsed > slowPass {
 			ctrl.LoggerFrom(ctx).Info("slow project pass", "projectUID", r.Options.ProjectUID, "namespace", ns, "seconds", elapsed.Seconds(), "phases", totals.seconds())
 		}
 	}()

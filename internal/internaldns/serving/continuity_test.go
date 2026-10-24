@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -307,9 +308,7 @@ func TestRestartWaitsForStartingDaemonsInsteadOfGating(t *testing.T) {
 
 	const startDelay = 500 * time.Millisecond
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
-		response := new(dns.Msg)
-		response.SetRcode(request, dns.RcodeRefused)
-		_ = w.WriteMsg(response)
+		_ = w.WriteMsg(readinessCanaryReply(request, dns.RcodeSuccess, contextdns.ReadinessCanaryText))
 	})
 	udpServer := &dns.Server{PacketConn: dnsdistUDP, Handler: handler}
 	tcpServer := &dns.Server{Listener: dnsdistTCP, Handler: handler}
@@ -366,9 +365,7 @@ func serveProxiedTCPDNS(listener net.Listener) {
 			if request.Unpack(wire) != nil {
 				return
 			}
-			response := new(dns.Msg)
-			response.SetRcode(request, dns.RcodeRefused)
-			reply, err := response.Pack()
+			reply, err := readinessCanaryReply(request, dns.RcodeSuccess, contextdns.ReadinessCanaryText).Pack()
 			if err != nil {
 				return
 			}

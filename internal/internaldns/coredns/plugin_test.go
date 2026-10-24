@@ -346,3 +346,45 @@ func TestLocalHealthHeaderCannotSelectAContext(t *testing.T) {
 		t.Fatal("management listener can select a tenant context")
 	}
 }
+
+func TestReadinessCanaryReportsLoadedStateWithoutAContext(t *testing.T) {
+	t.Parallel()
+	canary := func(p *ContextPlugin, destination string, class uint16) (*dns.Msg, int) {
+		w := &answerWriter{destination: destination}
+		m := new(dns.Msg)
+		m.SetQuestion("READY.internal-dns.", dns.TypeTXT)
+		m.Question[0].Qclass = class
+		rcode, err := p.ServeDNS(context.Background(), w, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.answer, rcode
+	}
+	p := &ContextPlugin{}
+	if _, rcode := canary(p, "fd53::a", dns.ClassCHAOS); rcode != dns.RcodeServerFailure {
+		t.Fatalf("canary without loaded state returned %s", dns.RcodeToString[rcode])
+	}
+	c := fixture()
+	c.Contexts = []Context{}
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, destination := range []string{"fd53::a", "127.0.0.1"} {
+		answer, rcode := canary(p, destination, dns.ClassCHAOS)
+		if rcode != dns.RcodeSuccess || answer == nil || answer.Rcode != dns.RcodeSuccess || len(answer.Answer) != 1 {
+			t.Fatalf("canary through %s returned %s: %v", destination, dns.RcodeToString[rcode], answer)
+		}
+		txt, ok := answer.Answer[0].(*dns.TXT)
+		if !ok || txt.Hdr.Class != dns.ClassCHAOS || strings.Join(txt.Txt, "") != ReadinessCanaryText {
+			t.Fatalf("canary answer %v", answer.Answer[0])
+		}
+	}
+	if _, rcode := canary(p, "fd53::a", dns.ClassINET); rcode != dns.RcodeRefused {
+		t.Fatalf("IN-class canary name bypassed context selection: %s", dns.RcodeToString[rcode])
+	}
+	p.Close()
+	if _, rcode := canary(p, "fd53::a", dns.ClassCHAOS); rcode != dns.RcodeServerFailure {
+		t.Fatalf("canary after state was withdrawn returned %s", dns.RcodeToString[rcode])
+	}
+}

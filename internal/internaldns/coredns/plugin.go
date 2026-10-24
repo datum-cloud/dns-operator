@@ -122,6 +122,13 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	if state == nil {
 		return outcomeServfailNoState, dns.RcodeServerFailure, nil
 	}
+	if IsReadinessCanary(r) {
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.Authoritative = true
+		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
+		return outcomeReadinessCanary, dns.RcodeSuccess, w.WriteMsg(answer)
+	}
 	destination := w.LocalAddr()
 	if addr, ok := w.RemoteAddr().(interface{ OriginalDestination() net.Addr }); ok {
 		destination = addr.OriginalDestination()
@@ -174,6 +181,18 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 	rcode, err := selected.public.ServeDNS(ctx, w, r)
 	return outcomeForwardedPublic, rcode, err
+}
+
+// The canary is answered before a context is selected, so it proves a loaded
+// snapshot even on a member that serves no contexts.
+const (
+	ReadinessCanaryName = "ready.internal-dns."
+	ReadinessCanaryText = "ready"
+)
+
+func IsReadinessCanary(r *dns.Msg) bool {
+	return r.Opcode == dns.OpcodeQuery && len(r.Question) == 1 && r.Question[0].Qclass == dns.ClassCHAOS &&
+		r.Question[0].Qtype == dns.TypeTXT && strings.EqualFold(r.Question[0].Name, ReadinessCanaryName)
 }
 
 type contextWriter struct {

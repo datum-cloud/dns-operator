@@ -19,6 +19,11 @@ import (
 	"github.com/coredns/coredns/plugin/metrics"
 )
 
+// CoreDNS refuses every non-IN query before the plugin chain unless a listed
+// plugin opts in. The plugin answers only the CH readiness canary and still
+// refuses other non-IN queries itself.
+func init() { dnsserver.EnableChaos[(&ContextPlugin{}).Name()] = struct{}{} }
+
 func Run(ctx context.Context, path, metricsAddress string) error {
 	return Process{MetricsAddress: metricsAddress}.Run(ctx, path)
 }

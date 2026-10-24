@@ -29,6 +29,7 @@ const (
 	outcomeServfailContext       = "servfail_context_pending"
 	outcomeServfailZone          = "servfail_zone_pending"
 	outcomeServfailNoUpstream    = "servfail_no_upstream"
+	outcomeReadinessCanary       = "readiness_canary"
 )
 
 var contextQueries = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -57,7 +58,7 @@ func init() {
 	prometheus.MustRegister(contextQueries, snapshotContexts, snapshotReloads, snapshotApplied)
 	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
 		outcomeRefusedBadDestination, outcomeRefusedBadIdentity, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
-		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream} {
+		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary} {
 		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
 	}
 	for _, result := range []string{"applied", "rejected"} {

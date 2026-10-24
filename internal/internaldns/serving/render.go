@@ -355,6 +355,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		}
 	}
 	fmt.Fprint(&out, "local function destination(address) local nmg = newNMG(); nmg:addMask(address); return NetmaskGroupRule(nmg, false, true) end\n\n")
+	renderDNSDistReadinessCanary(&out, c.PoolName)
 	for _, b := range bindings {
 		addr := b.ConsumerAddress
 		if cluster {
@@ -403,6 +404,13 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	fmt.Fprint(&out, "setRules(rules)\nend\n")
 	return out.Bytes()
+}
+
+// The canary is accepted only from loopback, so tenants cannot reach the
+// backend pool without being classified into a context.
+func renderDNSDistReadinessCanary(out *bytes.Buffer, pool string) {
+	fmt.Fprintf(out, "local function readinessCanary() local nmg = newNMG(); nmg:addMask(\"127.0.0.0/8\"); nmg:addMask(\"::1/128\"); return AndRule({NetmaskGroupRule(nmg, true, true),QClassRule(DNSClass.CHAOS),QTypeRule(DNSQType.TXT),QNameRule(%q)}) end\n", contextdns.ReadinessCanaryName)
+	fmt.Fprintf(out, "getPool(%q)\nappendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\nappendRule(readinessCanary(),PoolAction(%q))\n", pool, pool, pool)
 }
 
 func dnsdistTransport(c DNSDistRenderConfig) string {

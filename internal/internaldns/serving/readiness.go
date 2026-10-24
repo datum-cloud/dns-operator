@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/miekg/dns"
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"golang.org/x/sys/unix"
 )
 
@@ -187,9 +189,9 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	for _, bind := range binds {
 		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
 		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
-		answer, err := exchangePublication(ctx, networkTCP, server, ".", view, 200*time.Millisecond)
-		if err := servingAnswer(answer, err); err != nil {
-			return fmt.Errorf("local CoreDNS health %s: %w", server, err)
+		answer, err := exchangeProxied(ctx, networkTCP, server, readinessCanaryQuery(), view, 200*time.Millisecond)
+		if err := readinessCanaryAnswer(answer, err); err != nil {
+			return fmt.Errorf("local CoreDNS readiness canary %s: %w", server, err)
 		}
 		if bind.IdentityKeyFile != "" {
 			if err := probeIdentityTransport(ctx, server); err != nil {
@@ -199,32 +201,55 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	}
 	for _, dist := range dists {
 		for _, network := range []string{networkUDP, networkTCP} {
-			answer, err := exchangeResolverSOA(ctx, network, dist.ListenAddress, ".", 200*time.Millisecond)
-			if err := servingAnswer(answer, err); err != nil {
-				return fmt.Errorf("local dnsdist health %s: %w", dist.ListenAddress, err)
+			answer, _, err := (&dns.Client{Net: network, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, readinessCanaryQuery(), dist.ListenAddress)
+			if err := readinessCanaryAnswer(answer, err); err != nil {
+				return fmt.Errorf("local dnsdist readiness canary %s over %s: %w", dist.ListenAddress, network, err)
 			}
 		}
 	}
 	return nil
 }
 
-// servingAnswer rejects SERVFAIL: CoreDNS without loaded state and a gated
-// dnsdist both answer every query that way.
-func servingAnswer(answer *dns.Msg, err error) error {
-	if err != nil || answer == nil || !answer.Response {
-		return errors.Join(err, errors.New("DNS response required"))
+func readinessCanaryQuery() *dns.Msg {
+	query := new(dns.Msg)
+	query.SetQuestion(contextdns.ReadinessCanaryName, dns.TypeTXT)
+	query.Question[0].Qclass = dns.ClassCHAOS
+	return query
+}
+
+// Only NOERROR with the canary text proves a loaded snapshot answered. dnsdist
+// refuses unclassified names and answers SERVFAIL when its pool has no backend.
+func readinessCanaryAnswer(answer *dns.Msg, err error) error {
+	if err != nil {
+		return fmt.Errorf("exchange: %w", err)
 	}
-	if answer.Rcode == dns.RcodeServerFailure {
-		return errors.New("daemon answered SERVFAIL")
+	if answer == nil || !answer.Response {
+		return errors.New("no DNS response")
 	}
-	return nil
+	if answer.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("returned %s, want NOERROR", dns.RcodeToString[answer.Rcode])
+	}
+	var observed []string
+	for _, rr := range answer.Answer {
+		txt, ok := rr.(*dns.TXT)
+		if !ok || !strings.EqualFold(txt.Hdr.Name, contextdns.ReadinessCanaryName) {
+			continue
+		}
+		text := strings.Join(txt.Txt, "")
+		if text == contextdns.ReadinessCanaryText {
+			return nil
+		}
+		observed = append(observed, text)
+	}
+	if len(observed) == 0 {
+		return fmt.Errorf("returned NOERROR without a TXT answer for %s", contextdns.ReadinessCanaryName)
+	}
+	return fmt.Errorf("returned TXT %q, want %q", observed, contextdns.ReadinessCanaryText)
 }
 
 // dnsdist reaches a keyed CoreDNS without a PROXY header, which a CoreDNS
 // running without the key refuses at the connection.
 func probeIdentityTransport(ctx context.Context, server string) error {
-	query := new(dns.Msg)
-	query.SetQuestion(".", dns.TypeSOA)
-	answer, _, err := (&dns.Client{Net: networkTCP, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, query, server)
-	return servingAnswer(answer, err)
+	answer, _, err := (&dns.Client{Net: networkTCP, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, readinessCanaryQuery(), server)
+	return readinessCanaryAnswer(answer, err)
 }

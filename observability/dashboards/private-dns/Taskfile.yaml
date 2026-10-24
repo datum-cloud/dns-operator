@@ -1,0 +1,42 @@
+version: "3"
+
+# Renders the Private DNS dashboards. The JSON lands in the dashboards
+# kustomize component so the OCI bundle ships it; CI fails when the committed
+# JSON drifts from this source.
+
+vars:
+  OUT_DIR: ../../../config/components/dashboards
+  DASHBOARDS: overview performance compare
+
+tasks:
+  install:
+    desc: Install jsonnet dependencies for the Private DNS dashboards
+    dir: .
+    silent: true
+    cmds:
+      - jb install
+
+  build:
+    desc: Render the Private DNS dashboard JSON from jsonnet
+    dir: .
+    silent: true
+    cmds:
+      - mkdir -p {{.OUT_DIR}}
+      - for: { var: DASHBOARDS, split: " " }
+        cmd: |
+          out="{{.OUT_DIR}}/private-dns-{{.ITEM}}.json"
+          jsonnet -J vendor {{.ITEM}}.jsonnet > "$out"
+          # jsonnet omits the trailing newline; add one so the file stays
+          # POSIX-clean and diffs do not flag the last line.
+          if [ -n "$(tail -c 1 "$out")" ]; then
+            echo "" >> "$out"
+          fi
+          echo "Rendered $out"
+
+  clean:
+    desc: Remove the rendered dashboard JSON
+    dir: .
+    silent: true
+    cmds:
+      - for: { var: DASHBOARDS, split: " " }
+        cmd: rm -f "{{.OUT_DIR}}/private-dns-{{.ITEM}}.json"

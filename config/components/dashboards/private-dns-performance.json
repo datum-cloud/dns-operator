@@ -1,0 +1,2454 @@
+{
+   "annotations": {
+      "list": [
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "enable": true,
+            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "iconColor": "purple",
+            "name": "Load tests",
+            "step": "10s",
+            "tagKeys": "scenario,commit",
+            "textFormat": "run {{run}}, commit {{commit}}",
+            "titleFormat": "Load test {{scenario}}",
+            "useValueForTime": false
+         }
+      ]
+   },
+   "description": "Private DNS load test runs next to what the control plane, broker and serving fleet did while they ran. Click a run in the table to narrow the dashboard to it, or open the run comparison.",
+   "editable": true,
+   "links": [
+      {
+         "asDropdown": true,
+         "includeVars": false,
+         "keepTime": true,
+         "tags": [
+            "dns"
+         ],
+         "title": "DNS dashboards",
+         "type": "dashboards"
+      },
+      {
+         "icon": "dashboard",
+         "includeVars": false,
+         "keepTime": true,
+         "title": "Compare two runs",
+         "type": "link",
+         "url": "/d/internal-dns-performance-compare/private-dns-run-comparison"
+      }
+   ],
+   "panels": [
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "One row per run in the time range. Click a run to narrow the dashboard to its window, or to compare it with another run. Publish columns are the time from the write request to the first answer from the VPC resolver; query columns cover the whole run.",
+         "fieldConfig": {
+            "defaults": {
+               "decimals": 0,
+               "unit": "ms"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "run"
+                  },
+                  "properties": [
+                     {
+                        "id": "links",
+                        "value": [
+                           {
+                              "title": "Show this run",
+                              "url": "/d/internal-dns-performance/private-dns-performance?${datasource:queryparam}&${cluster:queryparam}&${member:queryparam}&var-run=${__data.fields.run}&from=${__data.fields.from}&to=${__data.fields.to}"
+                           },
+                           {
+                              "title": "Compare this run with another",
+                              "url": "/d/internal-dns-performance-compare/private-dns-run-comparison?${datasource:queryparam}&var-run_a=${__data.fields.run}&${__url_time_range}"
+                           }
+                        ]
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "run|scenario|commit"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "string"
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "started"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "dateTimeAsLocal"
+                     },
+                     {
+                        "id": "custom.width",
+                        "value": 170
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "duration"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "s"
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "never answered|failed queries"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "short"
+                     },
+                     {
+                        "id": "custom.cellOptions",
+                        "value": {
+                           "type": "color-text"
+                        }
+                     },
+                     {
+                        "id": "thresholds",
+                        "value": {
+                           "mode": "absolute",
+                           "steps": [
+                              {
+                                 "color": "green",
+                                 "value": null
+                              },
+                              {
+                                 "color": "red",
+                                 "value": 1
+                              }
+                           ]
+                        }
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "query rate"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "reqps"
+                     },
+                     {
+                        "id": "decimals",
+                        "value": 1
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "from|to"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "none"
+                     },
+                     {
+                        "id": "custom.hidden",
+                        "value": true
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (tfirst_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]) * 1000)",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (tlast_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]) - tfirst_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) ((tfirst_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]) - 60) * 1000)",
+               "format": "table",
+               "instant": true,
+               "refId": "FROM"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) ((tlast_over_time(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\",run=~\"$run\"}[$__range]) + 120) * 1000)",
+               "format": "table",
+               "instant": true,
+               "refId": "TO"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.5, idns_perf_publish_lag_ms{run=~\"$run\",step=\"create\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "C"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.99, idns_perf_publish_lag_ms{run=~\"$run\",step=\"create\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "D"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.5, idns_perf_publish_lag_ms{run=~\"$run\",step=\"update\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "E"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.99, idns_perf_publish_lag_ms{run=~\"$run\",step=\"update\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "F"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.5, idns_perf_publish_lag_ms{run=~\"$run\",step=\"delete\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "G"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (quantile_over_time(0.99, idns_perf_publish_lag_ms{run=~\"$run\",step=\"delete\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "H"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, scenario, commit) (count_over_time(idns_perf_publish_missed{run=~\"$run\"}[$__range])) or (max by (run, scenario, commit) (max_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__range])) * 0)",
+               "format": "table",
+               "instant": true,
+               "refId": "I"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, scenario, commit) (avg_over_time(idns_perf_query_qps{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "J"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, scenario, commit) (max_over_time(idns_perf_query_p99_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "K"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, scenario, commit) (sum_over_time(idns_perf_query_failed{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "L"
+            }
+         ],
+         "title": "Runs",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "filterByValue",
+               "options": {
+                  "filters": [
+                     {
+                        "config": {
+                           "id": "isNull",
+                           "options": { }
+                        },
+                        "fieldName": "Value #A"
+                     }
+                  ],
+                  "match": "any",
+                  "type": "exclude"
+               }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true
+                  },
+                  "indexByName": {
+                     "Value #A": 3,
+                     "Value #B": 4,
+                     "Value #C": 5,
+                     "Value #D": 6,
+                     "Value #E": 7,
+                     "Value #F": 8,
+                     "Value #FROM": 15,
+                     "Value #G": 9,
+                     "Value #H": 10,
+                     "Value #I": 11,
+                     "Value #J": 12,
+                     "Value #K": 13,
+                     "Value #L": 14,
+                     "Value #TO": 16,
+                     "commit": 2,
+                     "run": 0,
+                     "scenario": 1
+                  },
+                  "renameByName": {
+                     "Value #A": "started",
+                     "Value #B": "duration",
+                     "Value #C": "create p50",
+                     "Value #D": "create p99",
+                     "Value #E": "update p50",
+                     "Value #F": "update p99",
+                     "Value #FROM": "from",
+                     "Value #G": "delete p50",
+                     "Value #H": "delete p99",
+                     "Value #I": "never answered",
+                     "Value #J": "query rate",
+                     "Value #K": "query worst p99",
+                     "Value #L": "failed queries",
+                     "Value #TO": "to"
+                  }
+               }
+            },
+            {
+               "id": "sortBy",
+               "options": {
+                  "sort": [
+                     {
+                        "desc": true,
+                        "field": "started"
+                     }
+                  ]
+               }
+            },
+            {
+               "id": "convertFieldType",
+               "options": {
+                  "conversions": [
+                     {
+                        "destinationType": "string",
+                        "targetField": "commit"
+                     }
+                  ],
+                  "fields": { }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 9
+         },
+         "id": 2,
+         "title": "Publishing",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "For each run and step: how many answers were seen, the spread of time from write request to first answer, changes never answered, and how long the project API took to accept the write. Answers are counted per resolver, so one change watched at two resolvers counts twice.",
+         "fieldConfig": {
+            "defaults": {
+               "decimals": 0,
+               "unit": "ms"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": "answers|never answered"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "short"
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "never answered"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.cellOptions",
+                        "value": {
+                           "type": "color-text"
+                        }
+                     },
+                     {
+                        "id": "thresholds",
+                        "value": {
+                           "mode": "absolute",
+                           "steps": [
+                              {
+                                 "color": "green",
+                                 "value": null
+                              },
+                              {
+                                 "color": "red",
+                                 "value": 1
+                              }
+                           ]
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 10
+         },
+         "id": 3,
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, step) (count_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (quantile_over_time(0.5, idns_perf_publish_lag_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (quantile_over_time(0.9, idns_perf_publish_lag_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "C"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (quantile_over_time(0.99, idns_perf_publish_lag_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "D"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (max_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "E"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, step) (count_over_time(idns_perf_publish_missed{run=~\"$run\"}[$__range])) or (max by (run, step) (max_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__range])) * 0)",
+               "format": "table",
+               "instant": true,
+               "refId": "F"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (quantile_over_time(0.5, idns_perf_publish_api_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "G"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (quantile_over_time(0.99, idns_perf_publish_api_ms{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "H"
+            }
+         ],
+         "title": "Publish time by step",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true
+                  },
+                  "renameByName": {
+                     "Value #A": "answers",
+                     "Value #B": "p50",
+                     "Value #C": "p90",
+                     "Value #D": "p99",
+                     "Value #E": "max",
+                     "Value #F": "never answered",
+                     "Value #G": "API p50",
+                     "Value #H": "API p99"
+                  }
+               }
+            },
+            {
+               "id": "sortBy",
+               "options": {
+                  "sort": [
+                     {
+                        "desc": true,
+                        "field": "run"
+                     }
+                  ]
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "One dot per answered change: time from the write request to the first answer, by run and step, plotted when the answer arrived.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "points",
+                  "fillOpacity": 0,
+                  "lineWidth": 1,
+                  "pointSize": 4,
+                  "showPoints": "always",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 17
+         },
+         "id": 4,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (max_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{step}}"
+            }
+         ],
+         "title": "Time to answer a published change",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "The same time split by the resolver that answered, to tell the two node resolvers apart.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "points",
+                  "fillOpacity": 0,
+                  "lineWidth": 1,
+                  "pointSize": 4,
+                  "showPoints": "always",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 17
+         },
+         "id": 5,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, resolver) (max_over_time(idns_perf_publish_lag_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{resolver}}"
+            }
+         ],
+         "title": "Time to answer by resolver",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "How long the project API took to accept each create, update and delete, plotted when the write was sent.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "points",
+                  "fillOpacity": 0,
+                  "lineWidth": 1,
+                  "pointSize": 4,
+                  "showPoints": "always",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 26
+         },
+         "id": 6,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, step) (max_over_time(idns_perf_publish_api_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{step}}"
+            }
+         ],
+         "title": "API write time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Changes the prober gave up waiting for, plotted when the write was sent. Any bar here is a failed publish.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 26
+         },
+         "id": 7,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, step) (count_over_time(idns_perf_publish_missed{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{step}}"
+            }
+         ],
+         "title": "Changes never answered",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 34
+         },
+         "id": 8,
+         "title": "Queries",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Per-second p50, p99 and max of load test queries, from the generator with the slowest answers, by run and query kind. Timeouts count as 5000 ms.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 35
+         },
+         "id": 9,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, kind) (max_over_time(idns_perf_query_max_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{kind}} max"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, kind) (max_over_time(idns_perf_query_p99_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{kind}} p99"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (run, kind) (max_over_time(idns_perf_query_p50_ms{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{kind}} p50"
+            }
+         ],
+         "title": "Load test query time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries per second across all generators, by run and query kind.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 35
+         },
+         "id": 10,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, kind) (avg_over_time(idns_perf_query_qps{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{kind}}"
+            }
+         ],
+         "title": "Load test queries sent",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries per second that timed out or got a wrong answer, across all generators, by run and query kind.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "bars",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 35
+         },
+         "id": 11,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, kind) (avg_over_time(idns_perf_query_failed{run=~\"$run\"}[$__interval])) > 0",
+               "legendFormat": "{{run}} {{kind}}"
+            }
+         ],
+         "title": "Load test queries failed",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 43
+         },
+         "id": 12,
+         "title": "Control plane: project passes",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average time one project pass spends in each phase, across every project. A record change waits for at most two passes before it is published.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 44
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "mean",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (rate(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[$__rate_interval])) / sum by (phase) (rate(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[$__rate_interval]))",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Pass phases, average",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average time of each step of compiling one changed zone.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 44
+         },
+         "id": 14,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "mean",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (rate(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[$__rate_interval])) / sum by (phase) (rate(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[$__rate_interval]))",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Zone compile steps, average",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Seconds of pass time spent in each phase per second, summed over every project and both replicas. This weighs a phase by how often it runs, so it shows which phase is worth making faster. Zone steps are part of compile and are left out.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 60,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false,
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 44
+         },
+         "id": 15,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "mean",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (rate(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[$__rate_interval]))",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Where pass time goes",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Slowest 10% of each phase and zone step.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 52
+         },
+         "id": 16,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "mean",
+                  "max"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.9, sum by (phase, le) (rate(internal_dns_project_pass_phase_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval])))",
+               "legendFormat": "{{phase}}"
+            }
+         ],
+         "title": "Pass phases and zone steps, p90",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Whole project pass time across every project.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 52
+         },
+         "id": 17,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.5, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.9, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "p90"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "p99"
+            }
+         ],
+         "title": "Project pass time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "How long a project waits in the queue before its pass starts (left axis), and how many projects are waiting (right axis).",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "waiting"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "short"
+                     },
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 52
+         },
+         "id": 18,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.9, sum by (le) (rate(workqueue_queue_duration_seconds_bucket{namespace=\"internal-dns-system\",name=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "wait p90"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(workqueue_depth{namespace=\"internal-dns-system\",name=~\"internal-dns-control-plane-.*\"})",
+               "legendFormat": "waiting"
+            }
+         ],
+         "title": "Project queue wait and depth",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 60
+         },
+         "id": 19,
+         "title": "Control plane: API, loops and resources",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Requests per second the control plane sends to the project API, by method and response code. 409 is a write that lost a race with the other replica; 429 is the server asking it to slow down.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 60,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false,
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 61
+         },
+         "id": 20,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (method, code) (rate(rest_client_requests_total{namespace=\"internal-dns-system\"}[$__rate_interval]))",
+               "legendFormat": "{{method}} {{code}}"
+            }
+         ],
+         "title": "API requests from the control plane",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Seconds per second that API requests spent waiting for the control plane's own client-side rate limiter, by client, and the p99 wait of one request. Time spent here is time a pass is not doing work. Empty on builds that do not report it.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 61
+         },
+         "id": 21,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (client) (rate(internal_dns_kube_client_throttle_seconds_sum{namespace=\"internal-dns-system\"}[$__rate_interval]))",
+               "legendFormat": "{{client}} total"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.99, sum by (client, le) (rate(internal_dns_kube_client_throttle_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval])))",
+               "legendFormat": "{{client}} p99"
+            }
+         ],
+         "title": "Waiting on the client rate limit",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Control-plane loop runs per second that ended in anything but success. Conflicts mean the two replicas raced for the same object.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ops"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 61
+         },
+         "id": 22,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (loop, result) (rate(internal_dns_loop_runs_total{namespace=\"internal-dns-system\",result!=\"success\"}[$__rate_interval]))",
+               "legendFormat": "{{loop}} {{result}}"
+            }
+         ],
+         "title": "Loop runs that did not succeed",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average run time of the loops that move publications to the broker and acknowledgements back.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 69
+         },
+         "id": 23,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (loop) (rate(internal_dns_loop_duration_seconds_sum{namespace=\"internal-dns-system\"}[$__rate_interval])) / sum by (loop) (rate(internal_dns_loop_duration_seconds_count{namespace=\"internal-dns-system\"}[$__rate_interval]))",
+               "legendFormat": "{{loop}}"
+            }
+         ],
+         "title": "Loop run time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "CPU used by each control-plane and broker pod, by container.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 69
+         },
+         "id": 24,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{pod}} {{container}}"
+            }
+         ],
+         "title": "Control plane and broker CPU, cores",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Working set memory of each control-plane and broker pod, by container.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "bytes"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 69
+         },
+         "id": 25,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{pod}} {{container}}"
+            }
+         ],
+         "title": "Control plane and broker memory",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 77
+         },
+         "id": 26,
+         "title": "Delivery and serving fleet ($cluster, $member)",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Messages waiting for each configuration consumer, and messages delivered but not yet acknowledged. A consumer that climbs during a run is a member falling behind.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 78
+         },
+         "id": 27,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (consumer_name) (nats_consumer_num_pending{namespace=\"internal-dns-system\",consumer_name=~\".*-(serving|records)|control-plane-.*-acks\"})",
+               "legendFormat": "{{consumer_name}} waiting"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (consumer_name) (nats_consumer_num_ack_pending{namespace=\"internal-dns-system\",consumer_name=~\".*-(serving|records)|control-plane-.*-acks\"})",
+               "legendFormat": "{{consumer_name}} not acknowledged"
+            }
+         ],
+         "title": "Broker messages waiting",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries per second each dnsdist front received, by tier and pod. Only members with dnsdist metrics turned on report.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 78
+         },
+         "id": 28,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier, pod) (rate(dnsdist_queries{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} {{pod}}"
+            }
+         ],
+         "title": "Resolver queries",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "What the resolvers sent back, by tier. NXDOMAIN is expected for names outside a project. SERVFAIL means a backend failed or did not answer in time. A query can pass through more than one tier.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 78
+         },
+         "id": 29,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_noerror{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} NOERROR"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_nxdomain{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} NXDOMAIN"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_servfail{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} SERVFAIL"
+            }
+         ],
+         "title": "Answers by response code",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "p50 and p99 answer time measured by dnsdist, by tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 86
+         },
+         "id": 30,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} p99"
+            }
+         ],
+         "title": "Resolver answer time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "CPU each serving pod used, by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion).",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 86
+         },
+         "id": 31,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{pod}} {{container}}"
+            }
+         ],
+         "title": "Serving CPU by container, cores",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Working set memory of each serving pod, by container.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "bytes"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 86
+         },
+         "id": 32,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{pod}} {{container}}"
+            }
+         ],
+         "title": "Serving memory by container",
+         "type": "timeseries"
+      }
+   ],
+   "refresh": "",
+   "schemaVersion": 41,
+   "tags": [
+      "dns",
+      "internal-dns",
+      "private-dns",
+      "performance"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Scenario",
+            "multi": true,
+            "name": "scenario",
+            "query": "label_values(idns_perf_run, scenario)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Commit",
+            "multi": true,
+            "name": "commit",
+            "query": "label_values(idns_perf_run{scenario=~\"$scenario\"}, commit)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Run",
+            "multi": true,
+            "name": "run",
+            "query": "label_values(idns_perf_run{scenario=~\"$scenario\",commit=~\"$commit\"}, run)",
+            "refresh": 2,
+            "sort": 2,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Cluster",
+            "multi": true,
+            "name": "cluster",
+            "query": "label_values(kube_deployment_status_replicas_available{namespace=~\"ns-.*\",deployment=~\"internal-dns-.*\"}, cluster)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Serving member",
+            "multi": true,
+            "name": "member",
+            "query": "label_values(kube_deployment_status_replicas_available{namespace=~\"ns-.*\",deployment=~\"internal-dns-.*\",cluster=~\"$cluster\"}, deployment)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-24h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Private DNS Performance",
+   "uid": "internal-dns-performance"
+}

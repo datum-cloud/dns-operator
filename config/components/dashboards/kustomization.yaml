@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Grafana dashboards for Private DNS, installed through the Grafana operator.
+# The JSON files here are rendered from observability/dashboards/private-dns
+# and must not be edited by hand: run `task build` there instead.
+#
+# Whatever installs this component sets the namespace, so the GrafanaDashboard
+# objects and their ConfigMap land together. The dashboards read from a
+# `datasource` variable and name no particular metrics install.
+
+resources:
+  - grafana-dashboards.yaml
+
+configMapGenerator:
+  - name: private-dns-dashboards
+    files:
+      - private-dns-overview.json
+      - private-dns-performance.json
+      - private-dns-compare.json
+    options:
+      # A stable name lets the GrafanaDashboards reference the ConfigMap
+      # without a generated suffix.
+      disableNameSuffixHash: true
+      labels:
+        app.kubernetes.io/part-of: dns-operator
+        app.kubernetes.io/component: monitoring

@@ -390,7 +390,7 @@ func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPub
 
 func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
 	var bindings dnsv1alpha1.DNSResolverBindingList
-	if err := r.List(ctx, &bindings, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
+	if err := r.listProjectBindings(ctx, &bindings); err != nil {
 		return nil, err
 	}
 	byKey := map[string]ServingRegion{}

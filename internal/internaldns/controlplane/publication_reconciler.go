@@ -33,7 +33,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	ctx = context.WithValue(ctx, passTotalsKey{}, totals)
 	defer func() {
 		if elapsed := time.Since(started); elapsed > slowPass {
-			ctrl.LoggerFrom(ctx).Info("slow project pass", "namespace", ns, "seconds", elapsed.Seconds(), "phases", totals.seconds())
+			ctrl.LoggerFrom(ctx).Info("slow project pass", "projectUID", r.Options.ProjectUID, "namespace", ns, "seconds", elapsed.Seconds(), "phases", totals.seconds())
 		}
 	}()
 	timer := newPhaseTimer(ctx)
@@ -74,15 +74,18 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	for i := range policies.Items {
 		sources = append(sources, &policies.Items[i])
 	}
+	registrationZones := make(map[types.UID]dnsv1alpha1.DNSObjectReference, len(regs.Items))
 	for i := range regs.Items {
 		registration := &regs.Items[i]
 		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
 		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
 			ref.UID, ref.Generation = zone.UID, zone.Generation
 		}
-		if _, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref}); err != nil {
+		pinned, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref})
+		if err != nil {
 			return ctrl.Result{}, err
 		}
+		registrationZones[registration.UID] = pinned["zone"]
 		sources = append(sources, registration)
 	}
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
@@ -129,7 +132,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 			continue
 		}
-		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
+		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)
 		timer.done("compile")
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
@@ -272,7 +275,7 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 	return age
 }
 
-func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
+func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, registrationZones map[types.UID]dnsv1alpha1.DNSObjectReference, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
 	timer := newPhaseTimer(ctx)
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
@@ -289,14 +292,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if err != nil {
 		return false, err
 	}
-	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
-	for i := range regs {
-		refs, err := r.readReferences(ctx, &regs[i])
-		if err != nil {
-			return false, err
-		}
-		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
-	}
+	input.RegistrationZoneReferences = registrationZones
 	timer.done("zone references")
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte

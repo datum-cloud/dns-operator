@@ -126,18 +126,8 @@ func (p *Planner) Step(ctx context.Context) error {
 	snapshot := model.ServingSnapshot{Region: c.Region, Shard: c.Shard, ConfigurationEpoch: state.Epoch, ConfigurationRevision: state.NextRevision, GeneratedAt: now, Members: append([]model.Member(nil), c.Members...)}
 	var prior model.ServingSnapshot
 	if state.ActiveOutbox != "" {
-		if state.ActiveOutbox != p.priorOutbox {
-			var out dnsv1alpha1.DNSTransportOutbox
-			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: state.ActiveOutbox}, &out); err != nil {
-				return err
-			}
-			var e model.Envelope
-			if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
-				return err
-			}
-			p.priorOutbox, p.priorPayload = state.ActiveOutbox, e.Payload
-		}
-		if err := json.Unmarshal(p.priorPayload, &prior); err != nil {
+		var err error
+		if prior, err = p.loadPrior(ctx, state.ActiveOutbox); err != nil {
 			return err
 		}
 	}
@@ -366,4 +356,23 @@ func (r manifestReader) get(ctx context.Context, name string) (dnsv1alpha1.DNSPu
 	}
 	r.read[name] = &m
 	return m, true, nil
+}
+
+// loadPrior decodes the snapshot in the named active outbox, fetching the
+// outbox only when it differs from the one read last.
+func (p *Planner) loadPrior(ctx context.Context, name string) (model.ServingSnapshot, error) {
+	var prior model.ServingSnapshot
+	if name != p.priorOutbox {
+		var out dnsv1alpha1.DNSTransportOutbox
+		if err := p.Client.Get(ctx, client.ObjectKey{Namespace: p.Config.Namespace, Name: name}, &out); err != nil {
+			return prior, err
+		}
+		var e model.Envelope
+		if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
+			return prior, err
+		}
+		p.priorOutbox, p.priorPayload = name, e.Payload
+	}
+	err := json.Unmarshal(p.priorPayload, &prior)
+	return prior, err
 }

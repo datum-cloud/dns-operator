@@ -3,6 +3,7 @@
 package controlplane
 
 import (
+	"context"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,12 +20,38 @@ func init() {
 	metrics.Registry.MustRegister(passPhaseDuration)
 }
 
-type phaseTimer struct{ last time.Time }
+// slowPass is how long a project pass may take before it logs where its time
+// went.
+const slowPass = 10 * time.Second
 
-func newPhaseTimer() *phaseTimer { return &phaseTimer{last: time.Now()} }
+type passTotals map[string]time.Duration
+
+type passTotalsKey struct{}
+
+type phaseTimer struct {
+	last   time.Time
+	totals passTotals
+}
+
+func newPhaseTimer(ctx context.Context) *phaseTimer {
+	totals, _ := ctx.Value(passTotalsKey{}).(passTotals)
+	return &phaseTimer{last: time.Now(), totals: totals}
+}
 
 func (t *phaseTimer) done(phase string) {
 	now := time.Now()
-	passPhaseDuration.WithLabelValues(phase).Observe(now.Sub(t.last).Seconds())
+	elapsed := now.Sub(t.last)
+	passPhaseDuration.WithLabelValues(phase).Observe(elapsed.Seconds())
+	if t.totals != nil {
+		t.totals[phase] += elapsed
+	}
 	t.last = now
+}
+
+func (t passTotals) seconds() map[string]float64 {
+	out := make(map[string]float64, len(t))
+	for phase, d := range t {
+		out[phase] = d.Round(time.Millisecond).Seconds()
+	}
+	return out
 }

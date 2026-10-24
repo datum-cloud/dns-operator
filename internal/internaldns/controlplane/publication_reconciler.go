@@ -28,7 +28,15 @@ const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publicati
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	now := r.Options.Now().UTC()
-	timer := newPhaseTimer()
+	started := time.Now()
+	totals := passTotals{}
+	ctx = context.WithValue(ctx, passTotalsKey{}, totals)
+	defer func() {
+		if elapsed := time.Since(started); elapsed > slowPass {
+			ctrl.LoggerFrom(ctx).Info("slow project pass", "namespace", ns, "seconds", elapsed.Seconds(), "phases", totals.seconds())
+		}
+	}()
+	timer := newPhaseTimer(ctx)
 
 	if err := r.reconcileResolverContexts(ctx, ns, now); err != nil {
 		return ctrl.Result{}, err
@@ -265,7 +273,7 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
-	timer := newPhaseTimer()
+	timer := newPhaseTimer(ctx)
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err

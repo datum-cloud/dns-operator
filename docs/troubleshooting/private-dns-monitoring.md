@@ -134,10 +134,11 @@ kubectl -n internal-dns-system logs -l app.kubernetes.io/name=internal-dns-contr
   `max_over_time(internal_dns_loop_consecutive_failures[5m]) >= 20` and no
   `for`.
 - Staleness, using `min by (loop)` so one slow replica doesn't alarm. The
-  planner runs every lease/3 (40s with a 120s lease) and `ack refresh` every
-  2s, but scrape lag puts a floor of about 20s under every loop. Set
-  thresholds from your own baseline, for example planner above 120s and
-  other loops above 60s.
+  planner runs every lease/3, capped at 10s, and `ack refresh` every 2s, but
+  scrape lag puts a floor of about 20s under every loop. Set thresholds from
+  your own baseline, for example planner above 60s and other loops above 60s.
+  The planner's consecutive-failure count also climbs every 10s during an
+  API outage, so a failure-count alert fires sooner for it than before.
 
 **Bad looks like.** When the platform API server is unavailable or slow, all
 loops start failing together: `ack apply` logs `committed serving snapshot

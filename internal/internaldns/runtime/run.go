@@ -239,11 +239,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
 		planner := &platform.Planner{Client: platformClient, Allocator: allocator, Config: pc}
-		interval := pc.LeaseDuration / 3
-		if interval < time.Second {
-			interval = time.Second
-		}
-		go retryLoop(ctx, interval, loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
+		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
@@ -262,6 +258,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		return err
 	}
+}
+
+// plannerInterval is a third of the ownership lease, capped so a new or
+// changed resolver binding never waits long for the shard planner when the
+// lease is long. The lease still governs renewal and takeover.
+func plannerInterval(lease time.Duration) time.Duration {
+	return max(min(lease/3, 10*time.Second), time.Second)
 }
 
 func startProjectSources(ctx context.Context, projects []projectRuntime) {

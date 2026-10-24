@@ -388,3 +388,57 @@ func TestReadinessCanaryReportsLoadedStateWithoutAContext(t *testing.T) {
 		t.Fatalf("canary after state was withdrawn returned %s", dns.RcodeToString[rcode])
 	}
 }
+
+func TestKeyedReadinessCanaryRequiresTheIdentityKey(t *testing.T) {
+	t.Parallel()
+	p := &ContextPlugin{identityKey: []byte(testIdentityKey)}
+	defer p.Close()
+	if err := p.Replace(fixture()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		options []string
+		rcode   int
+	}{
+		{"keyed", []string{testIdentityKey + "::1"}, dns.RcodeSuccess},
+		{"forged", []string{strings.Repeat("B", len(testIdentityKey)) + "::1"}, dns.RcodeServerFailure},
+		{"two keyed", []string{testIdentityKey + "::1", testIdentityKey + "fd53::a"}, dns.RcodeServerFailure},
+		{"absent", nil, dns.RcodeServerFailure},
+	} {
+		w := &answerWriter{destination: "fd53::a"}
+		m := identityQuery(tc.options...)
+		m.Question[0] = dns.Question{Name: ReadinessCanaryName, Qtype: dns.TypeTXT, Qclass: dns.ClassCHAOS}
+		rcode, err := p.ServeDNS(context.Background(), w, m)
+		if err != nil {
+			t.Fatal(tc.name, err)
+		}
+		if rcode != tc.rcode {
+			t.Fatalf("%s: canary returned %s, want %s", tc.name, dns.RcodeToString[rcode], dns.RcodeToString[tc.rcode])
+		}
+	}
+}
+
+func TestNonINQueriesAreRefusedBeforeContextSelection(t *testing.T) {
+	t.Parallel()
+	p := &ContextPlugin{}
+	defer p.Close()
+	c := fixture()
+	c.Contexts[0].Pending = true
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []uint16{dns.ClassCHAOS, dns.ClassANY, dns.ClassNONE} {
+		w := &answerWriter{destination: "fd53::a"}
+		m := new(dns.Msg)
+		m.SetQuestion("version.bind.", dns.TypeTXT)
+		m.Question[0].Qclass = class
+		rcode, err := p.ServeDNS(context.Background(), w, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rcode != dns.RcodeRefused {
+			t.Fatalf("class %d query to a pending context returned %s", class, dns.RcodeToString[rcode])
+		}
+	}
+}

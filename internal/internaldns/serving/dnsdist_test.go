@@ -193,3 +193,54 @@ func TestRefreshDropsRetainedRulesWhenTransportChanges(t *testing.T) {
 		t.Fatal("refresh with an unchanged transport lost accepted rules", err)
 	}
 }
+
+func TestRestartAddsReadinessCanaryToRulesFromAnOlderRelease(t *testing.T) {
+	cfg := regionalTestConfig(t)
+	cfg.Mode = ModeResolver
+	cfg.Render.Role = RenderNode
+	cfg.Render.NodeDNSDist.Path = filepath.Join(t.TempDir(), "node-dnsdist.conf")
+	_, snapshot := renderFixture(t)
+	data := renderDNSDist(cfg.Render.NodeDNSDist, cfg.Render.NodeDNSDist.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+	before, rest, _ := bytes.Cut(data, []byte(dnsdistCanaryStart))
+	_, after, _ := bytes.Cut(rest, []byte(dnsdistCanaryEnd))
+	old := append(append([]byte(nil), before...), after...)
+	if bytes.Contains(old, []byte("readinessCanary")) {
+		t.Fatal("fixture still carries the canary")
+	}
+	if err := os.WriteFile(cfg.Render.NodeDNSDist.Path, old, 0644); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.Snapshot = &snapshot
+	agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
+	agent.state.Active = &activeConfiguration{Snapshot: snapshot, Files: map[string][]byte{cfg.Render.NodeDNSDist.Path: old}}
+	agent.state.RenderedHash = hashFiles(agent.state.Active.Files)
+	if err := agent.store.Save(agent.state); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareDNSDistRouter(cfg.Render.NodeDNSDist); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+	if err != nil || !bytes.Equal(installed, data) {
+		t.Fatalf("startup did not add the readiness canary to retained rules: %v", err)
+	}
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 || !bytes.Equal(restarted.state.Active.Files[cfg.Render.NodeDNSDist.Path], data) {
+		t.Fatalf("restart did not carry the canary into the approved checkpoint without a reload: %v", runner.calls)
+	}
+	refreshed, err := refreshDNSDistConfiguration(cfg.Render.NodeDNSDist, data)
+	if err != nil || !bytes.Equal(refreshed, data) {
+		t.Fatalf("refreshing current rules changed them: %v", err)
+	}
+}

@@ -163,35 +163,42 @@ func Readiness(ctx context.Context, config Config) error {
 	if config.UnsafeAllowNoDNSVerify {
 		return errors.New("readiness requires live DNS query verification")
 	}
-	return (&Agent{cfg: config}).probeLocalDaemons(ctx)
+	return probeLocalReadiness(ctx, config.Render)
 }
 
-func (a *Agent) probeLocalDaemons(ctx context.Context) error {
-	if a.cfg.UnsafeAllowNoDNSVerify {
-		return nil
-	}
-	role := a.cfg.Render.Role
+func localDaemons(render RenderConfig) (RenderRole, []CoreDNSRenderConfig, []DNSDistRenderConfig) {
+	role := render.Role
 	if role == "" {
 		role = RenderBoth
 	}
 	var binds []CoreDNSRenderConfig
 	var dists []DNSDistRenderConfig
 	if role == RenderNode || role == RenderBoth {
-		binds = append(binds, a.cfg.Render.NodeCoreDNS)
-		dists = append(dists, a.cfg.Render.NodeDNSDist)
+		binds = append(binds, render.NodeCoreDNS)
+		dists = append(dists, render.NodeDNSDist)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalCoreDNS {
-		binds = append(binds, a.cfg.Render.ClusterCoreDNS)
+		binds = append(binds, render.ClusterCoreDNS)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
-		dists = append(dists, a.cfg.Render.ClusterDNSDist)
+		dists = append(dists, render.ClusterDNSDist)
 	}
+	return role, binds, dists
+}
+
+// probeLocalDaemons checks only that the daemons answer, so a restart does not
+// gate daemons that are still running configuration from an older release.
+func (a *Agent) probeLocalDaemons(ctx context.Context) error {
+	if a.cfg.UnsafeAllowNoDNSVerify {
+		return nil
+	}
+	_, binds, dists := localDaemons(a.cfg.Render)
 	for _, bind := range binds {
 		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
 		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
-		answer, err := exchangeProxied(ctx, networkTCP, server, readinessCanaryQuery(), view, 200*time.Millisecond)
-		if err := readinessCanaryAnswer(answer, err); err != nil {
-			return fmt.Errorf("local CoreDNS readiness canary %s: %w", server, err)
+		answer, err := exchangePublication(ctx, networkTCP, server, ".", view, 200*time.Millisecond)
+		if err := servingAnswer(answer, err); err != nil {
+			return fmt.Errorf("local CoreDNS health %s: %w", server, err)
 		}
 		if bind.IdentityKeyFile != "" {
 			if err := probeIdentityTransport(ctx, server); err != nil {
@@ -201,7 +208,72 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	}
 	for _, dist := range dists {
 		for _, network := range []string{networkUDP, networkTCP} {
-			answer, _, err := (&dns.Client{Net: network, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, readinessCanaryQuery(), dist.ListenAddress)
+			answer, err := exchangeResolverSOA(ctx, network, dist.ListenAddress, ".", 200*time.Millisecond)
+			if err := servingAnswer(answer, err); err != nil {
+				return fmt.Errorf("local dnsdist health %s: %w", dist.ListenAddress, err)
+			}
+		}
+	}
+	return nil
+}
+
+// servingAnswer rejects SERVFAIL: CoreDNS without loaded state and a gated
+// dnsdist both answer every query that way.
+func servingAnswer(answer *dns.Msg, err error) error {
+	if err != nil || answer == nil || !answer.Response {
+		return errors.Join(err, errors.New("DNS response required"))
+	}
+	if answer.Rcode == dns.RcodeServerFailure {
+		return errors.New("daemon answered SERVFAIL")
+	}
+	return nil
+}
+
+// dnsdist reaches a keyed CoreDNS without a PROXY header, which a CoreDNS
+// running without the key refuses at the connection.
+func probeIdentityTransport(ctx context.Context, server string) error {
+	query := new(dns.Msg)
+	query.SetQuestion(".", dns.TypeSOA)
+	answer, _, err := (&dns.Client{Net: networkTCP, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, query, server)
+	return servingAnswer(answer, err)
+}
+
+const (
+	coreDNSCanaryTimeout = 500 * time.Millisecond
+	dnsdistCanaryTimeout = time.Second
+)
+
+func probeLocalReadiness(ctx context.Context, render RenderConfig) error {
+	role, binds, dists := localDaemons(render)
+	for _, bind := range binds {
+		server := net.JoinHostPort(bind.ListenAddress, strconv.Itoa(int(bind.Port)))
+		var key []byte
+		if bind.IdentityKeyFile != "" {
+			var err error
+			if key, err = contextdns.LoadIdentityKey(bind.IdentityKeyFile); err != nil {
+				return fmt.Errorf("local CoreDNS readiness canary %s: identity key: %w", server, err)
+			}
+		}
+		view := PublicationView{DestinationAddress: bind.ListenAddress, DestinationPort: bind.Port}
+		answer, err := exchangeProxied(ctx, networkTCP, server, readinessCanaryQuery(key), view, coreDNSCanaryTimeout)
+		if err := readinessCanaryAnswer(answer, err); err != nil {
+			return fmt.Errorf("local CoreDNS readiness canary %s: %w", server, err)
+		}
+		if key != nil {
+			answer, _, err := (&dns.Client{Net: networkTCP, Timeout: coreDNSCanaryTimeout}).ExchangeContext(ctx, readinessCanaryQuery(key), server)
+			if err := readinessCanaryAnswer(answer, err); err != nil {
+				return fmt.Errorf("local CoreDNS identity transport %s: %w", server, err)
+			}
+		}
+	}
+	for _, dist := range dists {
+		for _, network := range []string{networkUDP, networkTCP} {
+			answer, _, err := (&dns.Client{Net: network, Timeout: dnsdistCanaryTimeout}).ExchangeContext(ctx, readinessCanaryQuery(nil), dist.ListenAddress)
+			// Once a front's rules carry the canary, only a regional CoreDNS from
+			// before the canary refuses it, so fronts can roll out ahead of CoreDNS.
+			if role == RenderRegionalDNSDist && err == nil && answer != nil && answer.Response && answer.Rcode == dns.RcodeRefused {
+				continue
+			}
 			if err := readinessCanaryAnswer(answer, err); err != nil {
 				return fmt.Errorf("local dnsdist readiness canary %s over %s: %w", dist.ListenAddress, network, err)
 			}
@@ -210,15 +282,20 @@ func (a *Agent) probeLocalDaemons(ctx context.Context) error {
 	return nil
 }
 
-func readinessCanaryQuery() *dns.Msg {
+func readinessCanaryQuery(identityKey []byte) *dns.Msg {
 	query := new(dns.Msg)
 	query.SetQuestion(contextdns.ReadinessCanaryName, dns.TypeTXT)
 	query.Question[0].Qclass = dns.ClassCHAOS
+	if identityKey != nil {
+		query.SetEdns0(1232, false)
+		opt := query.IsEdns0()
+		opt.Option = append(opt.Option, &dns.EDNS0_LOCAL{Code: contextdns.IdentityOption, Data: append(append([]byte(nil), identityKey...), "::1"...)})
+	}
 	return query
 }
 
 // Only NOERROR with the canary text proves a loaded snapshot answered. dnsdist
-// refuses unclassified names and answers SERVFAIL when its pool has no backend.
+// answers SERVFAIL when its pool has no available backend.
 func readinessCanaryAnswer(answer *dns.Msg, err error) error {
 	if err != nil {
 		return fmt.Errorf("exchange: %w", err)
@@ -245,11 +322,4 @@ func readinessCanaryAnswer(answer *dns.Msg, err error) error {
 		return fmt.Errorf("returned NOERROR without a TXT answer for %s", contextdns.ReadinessCanaryName)
 	}
 	return fmt.Errorf("returned TXT %q, want %q", observed, contextdns.ReadinessCanaryText)
-}
-
-// dnsdist reaches a keyed CoreDNS without a PROXY header, which a CoreDNS
-// running without the key refuses at the connection.
-func probeIdentityTransport(ctx context.Context, server string) error {
-	answer, _, err := (&dns.Client{Net: networkTCP, Timeout: 200 * time.Millisecond}).ExchangeContext(ctx, readinessCanaryQuery(), server)
-	return readinessCanaryAnswer(answer, err)
 }

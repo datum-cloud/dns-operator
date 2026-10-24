@@ -17,19 +17,20 @@ import (
 )
 
 const (
-	outcomeServedZone            = "served_zone"
-	outcomeForwardedNext         = "forwarded_next"
-	outcomeForwardedPublic       = "forwarded_public"
-	outcomeRefusedUnknownContext = "refused_unknown_context"
-	outcomeRefusedBadDestination = "refused_bad_destination"
-	outcomeRefusedBadIdentity    = "refused_bad_identity"
-	outcomeRefusedUnsupported    = "refused_unsupported"
-	outcomeRefusedTransfer       = "refused_transfer"
-	outcomeServfailNoState       = "servfail_no_state"
-	outcomeServfailContext       = "servfail_context_pending"
-	outcomeServfailZone          = "servfail_zone_pending"
-	outcomeServfailNoUpstream    = "servfail_no_upstream"
-	outcomeReadinessCanary       = "readiness_canary"
+	outcomeServedZone             = "served_zone"
+	outcomeForwardedNext          = "forwarded_next"
+	outcomeForwardedPublic        = "forwarded_public"
+	outcomeRefusedUnknownContext  = "refused_unknown_context"
+	outcomeRefusedBadDestination  = "refused_bad_destination"
+	outcomeRefusedBadIdentity     = "refused_bad_identity"
+	outcomeRefusedUnsupported     = "refused_unsupported"
+	outcomeRefusedTransfer        = "refused_transfer"
+	outcomeServfailNoState        = "servfail_no_state"
+	outcomeServfailContext        = "servfail_context_pending"
+	outcomeServfailZone           = "servfail_zone_pending"
+	outcomeServfailNoUpstream     = "servfail_no_upstream"
+	outcomeReadinessCanary        = "readiness_canary"
+	outcomeServfailCanaryIdentity = "servfail_canary_bad_identity"
 )
 
 var contextQueries = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -58,7 +59,7 @@ func init() {
 	prometheus.MustRegister(contextQueries, snapshotContexts, snapshotReloads, snapshotApplied)
 	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
 		outcomeRefusedBadDestination, outcomeRefusedBadIdentity, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
-		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary} {
+		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary, outcomeServfailCanaryIdentity} {
 		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
 	}
 	for _, result := range []string{"applied", "rejected"} {

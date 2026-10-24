@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -308,7 +307,9 @@ func TestRestartWaitsForStartingDaemonsInsteadOfGating(t *testing.T) {
 
 	const startDelay = 500 * time.Millisecond
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
-		_ = w.WriteMsg(readinessCanaryReply(request, dns.RcodeSuccess, contextdns.ReadinessCanaryText))
+		response := new(dns.Msg)
+		response.SetRcode(request, dns.RcodeRefused)
+		_ = w.WriteMsg(response)
 	})
 	udpServer := &dns.Server{PacketConn: dnsdistUDP, Handler: handler}
 	tcpServer := &dns.Server{Listener: dnsdistTCP, Handler: handler}
@@ -317,7 +318,7 @@ func TestRestartWaitsForStartingDaemonsInsteadOfGating(t *testing.T) {
 		time.Sleep(startDelay)
 		go func() { _ = udpServer.ActivateAndServe() }()
 		go func() { _ = tcpServer.ActivateAndServe() }()
-		serveProxiedTCPDNS(coreDNSListener)
+		serveProxiedTCPDNS(coreDNSListener, dns.RcodeRefused, "")
 	}()
 
 	cfg.UnsafeAllowNoDNSVerify = false
@@ -338,7 +339,7 @@ func TestRestartWaitsForStartingDaemonsInsteadOfGating(t *testing.T) {
 	}
 }
 
-func serveProxiedTCPDNS(listener net.Listener) {
+func serveProxiedTCPDNS(listener net.Listener, rcode int, text string) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -365,7 +366,7 @@ func serveProxiedTCPDNS(listener net.Listener) {
 			if request.Unpack(wire) != nil {
 				return
 			}
-			reply, err := readinessCanaryReply(request, dns.RcodeSuccess, contextdns.ReadinessCanaryText).Pack()
+			reply, err := readinessCanaryReply(request, rcode, text).Pack()
 			if err != nil {
 				return
 			}

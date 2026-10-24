@@ -123,11 +123,19 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeServfailNoState, dns.RcodeServerFailure, nil
 	}
 	if IsReadinessCanary(r) {
+		if p.identityKey != nil {
+			if asserted, present := identityDestination(r, p.identityKey); !present || !asserted.IsValid() {
+				return outcomeServfailCanaryIdentity, dns.RcodeServerFailure, nil
+			}
+		}
 		answer := new(dns.Msg)
 		answer.SetReply(r)
 		answer.Authoritative = true
 		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
 		return outcomeReadinessCanary, dns.RcodeSuccess, w.WriteMsg(answer)
+	}
+	if len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET {
+		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
 	}
 	destination := w.LocalAddr()
 	if addr, ok := w.RemoteAddr().(interface{ OriginalDestination() net.Addr }); ok {
@@ -184,7 +192,9 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 }
 
 // The canary is answered before a context is selected, so it proves a loaded
-// snapshot even on a member that serves no contexts.
+// snapshot even on a member that serves no contexts. With an identity key it
+// also proves the sender holds the key. Any client that reaches a context can
+// read it; it reveals only that this process has loaded state.
 const (
 	ReadinessCanaryName = "ready.internal-dns."
 	ReadinessCanaryText = "ready"

@@ -330,35 +330,64 @@ func TestFailClosedPersistsIncompleteActivationAcrossRestart(t *testing.T) {
 	}
 }
 
+func nodeReadinessConfig(t *testing.T, f readinessFixture, rcode int, text string) RenderConfig {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go serveProxiedTCPDNS(listener, rcode, text)
+	return RenderConfig{Role: RenderNode, NodeDNSDist: f.config.Render.ClusterDNSDist, NodeCoreDNS: CoreDNSRenderConfig{ListenAddress: "127.0.0.1", Port: uint16(listener.Addr().(*net.TCPAddr).Port)}}
+}
+
 func TestReadinessRequiresTheCanaryAnswer(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		rcode int
-		text  string
-		want  string
+		name      string
+		rcode     int
+		text      string
+		want      string
+		frontPass bool
 	}{
-		{"canary answered", dns.RcodeSuccess, contextdns.ReadinessCanaryText, ""},
-		{"classifier refused", dns.RcodeRefused, contextdns.ReadinessCanaryText, "returned REFUSED"},
-		{"daemon gated", dns.RcodeServerFailure, contextdns.ReadinessCanaryText, "returned SERVFAIL"},
-		{"name missing", dns.RcodeNameError, contextdns.ReadinessCanaryText, "returned NXDOMAIN"},
-		{"empty answer", dns.RcodeSuccess, "", "without a TXT answer"},
-		{"wrong text", dns.RcodeSuccess, "stale", `returned TXT ["stale"]`},
+		{"canary answered", dns.RcodeSuccess, contextdns.ReadinessCanaryText, "", true},
+		{"refused", dns.RcodeRefused, contextdns.ReadinessCanaryText, "returned REFUSED", true},
+		{"daemon gated", dns.RcodeServerFailure, contextdns.ReadinessCanaryText, "returned SERVFAIL", false},
+		{"name missing", dns.RcodeNameError, contextdns.ReadinessCanaryText, "returned NXDOMAIN", false},
+		{"empty answer", dns.RcodeSuccess, "", "without a TXT answer", false},
+		{"wrong text", dns.RcodeSuccess, "stale", `returned TXT ["stale"]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newReadinessFixture(t)
 			f.rcode.Store(int32(tc.rcode))
 			f.text.Store(&tc.text)
+			front := Readiness(context.Background(), f.config)
+			if tc.frontPass != (front == nil) {
+				t.Fatalf("regional front readiness = %v, want pass %v", front, tc.frontPass)
+			}
+			f.config.Render = nodeReadinessConfig(t, f, dns.RcodeSuccess, contextdns.ReadinessCanaryText)
 			err := Readiness(context.Background(), f.config)
 			if tc.want == "" {
 				if err != nil {
-					t.Fatalf("a daemon answering the canary was not ready: %v", err)
+					t.Fatalf("a node answering the canary was not ready: %v", err)
 				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("readiness error = %v, want it to name %q", err, tc.want)
+				t.Fatalf("node readiness error = %v, want it to name %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestReadinessRequiresTheCoreDNSCanary(t *testing.T) {
+	for _, rcode := range []int{dns.RcodeRefused, dns.RcodeServerFailure} {
+		f := newReadinessFixture(t)
+		f.rcode.Store(dns.RcodeSuccess)
+		f.config.Render = nodeReadinessConfig(t, f, rcode, contextdns.ReadinessCanaryText)
+		err := Readiness(context.Background(), f.config)
+		if err == nil || !strings.Contains(err.Error(), "local CoreDNS readiness canary") || !strings.Contains(err.Error(), "returned "+dns.RcodeToString[rcode]) {
+			t.Fatalf("CoreDNS answering %s was ready: %v", dns.RcodeToString[rcode], err)
+		}
 	}
 }
 

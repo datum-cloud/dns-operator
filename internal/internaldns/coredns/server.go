@@ -20,8 +20,8 @@ import (
 )
 
 // CoreDNS refuses every non-IN query before the plugin chain unless a listed
-// plugin opts in. The plugin answers only the CH readiness canary and still
-// refuses other non-IN queries itself.
+// plugin opts in. The plugin answers only the CH readiness canary and refuses
+// every other non-IN query before it selects a context.
 func init() { dnsserver.EnableChaos[(&ContextPlugin{}).Name()] = struct{}{} }
 
 func Run(ctx context.Context, path, metricsAddress string) error {

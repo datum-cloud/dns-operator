@@ -264,14 +264,17 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
+	timer := newPhaseTimer()
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err
 	}
+	timer.done("zone load")
 	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 	if err != nil {
 		return false, err
 	}
+	timer.done("zone confirm")
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
 	if err != nil {
@@ -285,6 +288,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		}
 		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
 	}
+	timer.done("zone references")
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -302,15 +306,18 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		if err != nil {
 			return false, err
 		}
+		timer.done("zone compile")
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
 			return false, err
 		}
+		timer.done("zone statuses")
 	}
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
 		return false, err
 	}
+	timer.done("zone targets")
 	stateHash := hash
 	if !tombstone {
 		fenceBytes, _ := json.Marshal(ownPlan.Contributions)
@@ -354,6 +361,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, err
 	}
+	timer.done("zone persist")
 	return false, nil
 }
 
@@ -632,6 +640,9 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
+		if reflect.DeepEqual(base.Status, reg.Status) {
+			continue
+		}
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -649,6 +660,9 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		base := c.DeepCopy()
 		c.Status.ObservedGeneration = c.Generation
 		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
+		if reflect.DeepEqual(base.Status, c.Status) {
+			continue
+		}
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}

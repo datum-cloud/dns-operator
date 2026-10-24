@@ -395,7 +395,7 @@ local statPrivateZones = statPanel(
   labelled('count(dns_zone_info{visibility="Private"}) or vector(0)'),
   'short',
   blue,
-  grid(4, 8, 0, 73),
+  grid(4, 6, 0, 73),
 );
 
 local statRecordSets = statPanel(
@@ -404,7 +404,7 @@ local statRecordSets = statPanel(
   labelled('count(%s) or vector(0)' % privateRecordSetCondition('Programmed')),
   'short',
   blue,
-  grid(4, 8, 8, 73),
+  grid(4, 6, 6, 73),
 );
 
 local statRecordSetsNotProgrammed = statPanel(
@@ -413,12 +413,12 @@ local statRecordSetsNotProgrammed = statPanel(
   labelled('count(%s != 1) or vector(0)' % privateRecordSetCondition('Programmed')),
   'short',
   anyIsBad,
-  grid(4, 8, 16, 73),
+  grid(4, 6, 12, 73),
 );
 
 local zonesTable =
   table.new('Private zones not programmed')
-  + table.panelOptions.withGridPos(8, 24, 0, 77)
+  + table.panelOptions.withGridPos(8, 12, 0, 77)
   + table.panelOptions.withDescription('Every private zone whose Programmed condition is not true, with its reason.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([qInstant(privateZoneCondition('Programmed') + ' != 1') + prometheus.withFormat('table')])
@@ -429,6 +429,38 @@ local zonesTable =
       includeByName: { 'milo.project.name': true, namespace: true, name: true, status: true, reason: true },
       renameByName: { 'milo.project.name': 'Project', namespace: 'Namespace', name: 'Zone', status: 'Programmed', reason: 'Reason' },
       indexByName: { 'milo.project.name': 0, namespace: 1, name: 2, status: 3, reason: 4 },
+    },
+  }])
+  + table.options.withShowHeader(true)
+  + table.options.withSortBy([{ displayName: 'Project', desc: false }]);
+
+// Networks report DNSReady false for reasons that are not faults: nothing
+// attached yet (NoAttachedWorkloads is its older name), DNS turned off, or
+// being deleted. Only the rest need attention.
+local networksNotDnsReady = 'datum_cloud_network_context_status_condition{condition="DNSReady",reason!~"NoAttachments|NoAttachedWorkloads|Disabled|Terminating"} != 1';
+
+local statNetworksNotReady = statPanel(
+  'Networks not DNS-ready',
+  'Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.',
+  'count(%s) or vector(0)' % networksNotDnsReady,
+  'short',
+  anyIsBad,
+  grid(4, 6, 18, 73),
+);
+
+local networksTable =
+  table.new('Networks not DNS-ready')
+  + table.panelOptions.withGridPos(8, 12, 12, 77)
+  + table.panelOptions.withDescription('Every network in a region whose DNSReady condition is a fault, with its reason. Networks with nothing attached, with DNS turned off, or being deleted are left out.')
+  + table.queryOptions.withDatasource('prometheus', ds)
+  + table.queryOptions.withTargets([qInstant(networksNotDnsReady) + prometheus.withFormat('table')])
+  + table.queryOptions.withTransformations([{
+    id: 'organize',
+    options: {
+      excludeByName: { Time: true, Value: true },
+      includeByName: { 'milo.project.name': true, name: true, status: true, reason: true },
+      renameByName: { 'milo.project.name': 'Project', name: 'Network context', status: 'DNSReady', reason: 'Reason' },
+      indexByName: { 'milo.project.name': 0, name: 1, status: 2, reason: 3 },
     },
   }])
   + table.options.withShowHeader(true)
@@ -566,7 +598,9 @@ g.dashboard.new('Private DNS')
   statPrivateZones,
   statRecordSets,
   statRecordSetsNotProgrammed,
+  statNetworksNotReady,
   zonesTable,
+  networksTable,
 
   deliveryRow,
   pendingPerConsumer,

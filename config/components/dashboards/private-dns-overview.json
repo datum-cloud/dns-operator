@@ -2240,7 +2240,7 @@
          },
          "gridPos": {
             "h": 4,
-            "w": 8,
+            "w": 6,
             "x": 0,
             "y": 73
          },
@@ -2298,8 +2298,8 @@
          },
          "gridPos": {
             "h": 4,
-            "w": 8,
-            "x": 8,
+            "w": 6,
+            "x": 6,
             "y": 73
          },
          "id": 38,
@@ -2360,8 +2360,8 @@
          },
          "gridPos": {
             "h": 4,
-            "w": 8,
-            "x": 16,
+            "w": 6,
+            "x": 12,
             "y": 73
          },
          "id": 39,
@@ -2397,14 +2397,76 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
+         "description": "Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 73
+         },
+         "id": 40,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "count(datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) or vector(0)",
+               "instant": true
+            }
+         ],
+         "title": "Networks not DNS-ready",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
          "description": "Every private zone whose Programmed condition is not true, with its reason.",
          "gridPos": {
             "h": 8,
-            "w": 24,
+            "w": 12,
             "x": 0,
             "y": 77
          },
-         "id": 40,
+         "id": 41,
          "options": {
             "showHeader": true,
             "sortBy": [
@@ -2463,6 +2525,73 @@
          "type": "table"
       },
       {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Every network in a region whose DNSReady condition is a fault, with its reason. Networks with nothing attached, with DNS turned off, or being deleted are left out.",
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 77
+         },
+         "id": 42,
+         "options": {
+            "showHeader": true,
+            "sortBy": [
+               {
+                  "desc": false,
+                  "displayName": "Project"
+               }
+            ]
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1",
+               "format": "table",
+               "instant": true
+            }
+         ],
+         "title": "Networks not DNS-ready",
+         "transformations": [
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "Value": true
+                  },
+                  "includeByName": {
+                     "milo.project.name": true,
+                     "name": true,
+                     "reason": true,
+                     "status": true
+                  },
+                  "indexByName": {
+                     "milo.project.name": 0,
+                     "name": 1,
+                     "reason": 3,
+                     "status": 2
+                  },
+                  "renameByName": {
+                     "milo.project.name": "Project",
+                     "name": "Network context",
+                     "reason": "Reason",
+                     "status": "DNSReady"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
          "collapsed": false,
          "gridPos": {
             "h": 1,
@@ -2470,7 +2599,7 @@
             "x": 0,
             "y": 85
          },
-         "id": 41,
+         "id": 43,
          "title": "Configuration delivery",
          "type": "row"
       },
@@ -2502,7 +2631,7 @@
             "x": 0,
             "y": 86
          },
-         "id": 42,
+         "id": 44,
          "options": {
             "legend": {
                "calcs": [
@@ -2563,7 +2692,7 @@
             "x": 8,
             "y": 86
          },
-         "id": 43,
+         "id": 45,
          "options": {
             "legend": {
                "calcs": [
@@ -2624,7 +2753,7 @@
             "x": 16,
             "y": 86
          },
-         "id": 44,
+         "id": 46,
          "options": {
             "legend": {
                "calcs": [
@@ -2665,7 +2794,7 @@
             "x": 0,
             "y": 94
          },
-         "id": 45,
+         "id": 47,
          "title": "Load tests",
          "type": "row"
       },
@@ -2727,7 +2856,7 @@
             "x": 0,
             "y": 95
          },
-         "id": 46,
+         "id": 48,
          "interval": "1s",
          "options": {
             "legend": {
@@ -2798,7 +2927,7 @@
             "x": 8,
             "y": 95
          },
-         "id": 47,
+         "id": 49,
          "interval": "1s",
          "options": {
             "legend": {
@@ -2860,7 +2989,7 @@
             "x": 16,
             "y": 95
          },
-         "id": 48,
+         "id": 50,
          "interval": "1s",
          "options": {
             "legend": {

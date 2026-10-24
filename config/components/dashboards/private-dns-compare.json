@@ -1,0 +1,734 @@
+{
+   "annotations": {
+      "list": [
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "enable": true,
+            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "iconColor": "purple",
+            "name": "Load tests",
+            "step": "10s",
+            "tagKeys": "scenario,commit",
+            "textFormat": "run {{run}}, commit {{commit}}",
+            "titleFormat": "Load test {{scenario}}",
+            "useValueForTime": false
+         }
+      ]
+   },
+   "description": "Two Private DNS load test runs side by side: publish and query results, and what the control plane and serving fleet did during each. The time range only needs to include both runs.",
+   "editable": true,
+   "links": [
+      {
+         "asDropdown": true,
+         "includeVars": false,
+         "keepTime": true,
+         "tags": [
+            "dns"
+         ],
+         "title": "DNS dashboards",
+         "type": "dashboards"
+      },
+      {
+         "icon": "dashboard",
+         "includeVars": false,
+         "keepTime": true,
+         "title": "All runs",
+         "type": "link",
+         "url": "/d/internal-dns-performance/private-dns-performance"
+      }
+   ],
+   "panels": [
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Each measure over the whole of run A and run B, and how B differs from A. Publish times are the worse of the two resolvers. Control-plane and fleet measures cover only the time each run was going, plus up to 30 seconds after it ended. They are worked out over the whole time range before being cut to each run, so keep the range to the hours around the two runs. A blank cell means the run reported no such series, for example on a build without that metric.",
+         "fieldConfig": {
+            "defaults": {
+               "mappings": [
+                  {
+                     "options": {
+                        "match": "nan",
+                        "result": {
+                           "text": "-"
+                        }
+                     },
+                     "type": "special"
+                  }
+               ],
+               "unit": "none"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "B against A"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "percentunit"
+                     },
+                     {
+                        "id": "decimals",
+                        "value": 0
+                     }
+                  ]
+               },
+               {
+                  "matcher": {
+                     "id": "byName",
+                     "options": "Measure"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.width",
+                        "value": 260
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 33,
+            "w": 12,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"create\"}[$__range])), \"measure\", \"publish create p50 (ms)\", \"order\", \"00\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"create\"}[$__range])), \"measure\", \"publish create p90 (ms)\", \"order\", \"01\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"create\"}[$__range])), \"measure\", \"publish create p99 (ms)\", \"order\", \"02\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"update\"}[$__range])), \"measure\", \"publish update p50 (ms)\", \"order\", \"03\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"update\"}[$__range])), \"measure\", \"publish update p90 (ms)\", \"order\", \"04\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"update\"}[$__range])), \"measure\", \"publish update p99 (ms)\", \"order\", \"05\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p50 (ms)\", \"order\", \"06\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p90 (ms)\", \"order\", \"07\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p99 (ms)\", \"order\", \"08\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_a\",step=\"create\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_a\"}[$__range])) * 0), \"measure\", \"changes never answered, create\", \"order\", \"09\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_a\",step=\"update\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_a\"}[$__range])) * 0), \"measure\", \"changes never answered, update\", \"order\", \"10\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_a\",step=\"delete\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_a\"}[$__range])) * 0), \"measure\", \"changes never answered, delete\", \"order\", \"11\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_api_ms{run=\"$run_a\"}[$__range])), \"measure\", \"API write p99, worst step (ms)\", \"order\", \"12\") or label_set(sum(avg_over_time(idns_perf_query_qps{run=\"$run_a\"}[$__range])), \"measure\", \"query rate (per second)\", \"order\", \"13\") or label_set(max(max_over_time(idns_perf_query_p99_ms{run=\"$run_a\"}[$__range])), \"measure\", \"query worst p99 (ms)\", \"order\", \"14\") or label_set(sum(sum_over_time(idns_perf_query_failed{run=\"$run_a\"}[$__range])), \"measure\", \"queries failed\", \"order\", \"15\") or label_set(histogram_quantile(0.5, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.5, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p50 (s)\", \"order\", \"16\") or label_set(histogram_quantile(0.9, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.9, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p90 (s)\", \"order\", \"17\") or label_set(histogram_quantile(0.99, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.99, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p99 (s)\", \"order\", \"18\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"compile\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"compile\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])), \"measure\", \"compile phase, average (s)\", \"order\", \"19\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"zone confirm\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"zone confirm\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])), \"measure\", \"zone confirm step, average (s)\", \"order\", \"20\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"zone persist\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"zone persist\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])), \"measure\", \"zone persist step, average (s)\", \"order\", \"21\") or label_set(avg_over_time(((sum(workqueue_depth{namespace=\"internal-dns-system\",name=~\"internal-dns-control-plane-.*\"})) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"project queue depth, average\", \"order\", \"22\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"API requests (per second)\", \"order\", \"23\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\",code=\"409\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"API conflicts, 409 (per second)\", \"order\", \"24\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\",code=\"429\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"API throttled, 429 (per second)\", \"order\", \"25\") or label_set(avg_over_time(((sum(rate(internal_dns_kube_client_throttle_seconds_sum{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"client rate limit wait (s per s)\", \"order\", \"26\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",pod=~\"internal-dns-control-plane-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"control plane CPU (cores)\", \"order\", \"27\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",pod=~\"internal-dns-nats-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"broker CPU (cores)\", \"order\", \"28\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"serving fleet CPU (cores)\", \"order\", \"29\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container=\"agent\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"measure\", \"serving fleet agent CPU (cores)\", \"order\", \"30\")",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"create\"}[$__range])), \"measure\", \"publish create p50 (ms)\", \"order\", \"00\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"create\"}[$__range])), \"measure\", \"publish create p90 (ms)\", \"order\", \"01\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"create\"}[$__range])), \"measure\", \"publish create p99 (ms)\", \"order\", \"02\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"update\"}[$__range])), \"measure\", \"publish update p50 (ms)\", \"order\", \"03\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"update\"}[$__range])), \"measure\", \"publish update p90 (ms)\", \"order\", \"04\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"update\"}[$__range])), \"measure\", \"publish update p99 (ms)\", \"order\", \"05\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p50 (ms)\", \"order\", \"06\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p90 (ms)\", \"order\", \"07\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"delete\"}[$__range])), \"measure\", \"publish delete p99 (ms)\", \"order\", \"08\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_b\",step=\"create\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_b\"}[$__range])) * 0), \"measure\", \"changes never answered, create\", \"order\", \"09\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_b\",step=\"update\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_b\"}[$__range])) * 0), \"measure\", \"changes never answered, update\", \"order\", \"10\") or label_set(sum(count_over_time(idns_perf_publish_missed{run=\"$run_b\",step=\"delete\"}[$__range])) or on () (max(max_over_time(idns_perf_run{run=\"$run_b\"}[$__range])) * 0), \"measure\", \"changes never answered, delete\", \"order\", \"11\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_api_ms{run=\"$run_b\"}[$__range])), \"measure\", \"API write p99, worst step (ms)\", \"order\", \"12\") or label_set(sum(avg_over_time(idns_perf_query_qps{run=\"$run_b\"}[$__range])), \"measure\", \"query rate (per second)\", \"order\", \"13\") or label_set(max(max_over_time(idns_perf_query_p99_ms{run=\"$run_b\"}[$__range])), \"measure\", \"query worst p99 (ms)\", \"order\", \"14\") or label_set(sum(sum_over_time(idns_perf_query_failed{run=\"$run_b\"}[$__range])), \"measure\", \"queries failed\", \"order\", \"15\") or label_set(histogram_quantile(0.5, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.5, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p50 (s)\", \"order\", \"16\") or label_set(histogram_quantile(0.9, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.9, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p90 (s)\", \"order\", \"17\") or label_set(histogram_quantile(0.99, sum by (le) (sum_over_time(((sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))) or histogram_quantile(0.99, sum by (le) (sum_over_time(((sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))), \"measure\", \"project pass p99 (s)\", \"order\", \"18\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"compile\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"compile\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])), \"measure\", \"compile phase, average (s)\", \"order\", \"19\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"zone confirm\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"zone confirm\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])), \"measure\", \"zone confirm step, average (s)\", \"order\", \"20\") or label_set(sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=\"zone persist\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])) / sum(sum_over_time(((sum(increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=\"zone persist\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])), \"measure\", \"zone persist step, average (s)\", \"order\", \"21\") or label_set(avg_over_time(((sum(workqueue_depth{namespace=\"internal-dns-system\",name=~\"internal-dns-control-plane-.*\"})) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"project queue depth, average\", \"order\", \"22\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"API requests (per second)\", \"order\", \"23\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\",code=\"409\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"API conflicts, 409 (per second)\", \"order\", \"24\") or label_set(avg_over_time(((sum(rate(rest_client_requests_total{namespace=\"internal-dns-system\",code=\"429\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"API throttled, 429 (per second)\", \"order\", \"25\") or label_set(avg_over_time(((sum(rate(internal_dns_kube_client_throttle_seconds_sum{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"client rate limit wait (s per s)\", \"order\", \"26\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",pod=~\"internal-dns-control-plane-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"control plane CPU (cores)\", \"order\", \"27\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",pod=~\"internal-dns-nats-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"broker CPU (cores)\", \"order\", \"28\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"serving fleet CPU (cores)\", \"order\", \"29\") or label_set(avg_over_time(((sum(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container=\"agent\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"measure\", \"serving fleet agent CPU (cores)\", \"order\", \"30\")",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "Run A against run B",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "calculateField",
+               "options": {
+                  "alias": "ratio",
+                  "binary": {
+                     "left": "Value #B",
+                     "operator": "/",
+                     "right": "Value #A"
+                  },
+                  "mode": "binary",
+                  "replaceFields": false
+               }
+            },
+            {
+               "id": "calculateField",
+               "options": {
+                  "alias": "B against A",
+                  "binary": {
+                     "left": "ratio",
+                     "operator": "-",
+                     "right": "1"
+                  },
+                  "mode": "binary",
+                  "replaceFields": false
+               }
+            },
+            {
+               "id": "sortBy",
+               "options": {
+                  "sort": [
+                     {
+                        "desc": false,
+                        "field": "order"
+                     }
+                  ]
+               }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "order": true,
+                     "ratio": true
+                  },
+                  "indexByName": {
+                     "B against A": 3,
+                     "Value #A": 1,
+                     "Value #B": 2,
+                     "measure": 0
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B",
+                     "measure": "Measure"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Spread of the time from write request to first answer for $step changes in each run, the worse of the two resolvers at each point.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 11,
+            "w": 12,
+            "x": 12,
+            "y": 0
+         },
+         "id": 2,
+         "maxPerRow": 1,
+         "options": {
+            "barWidth": 0.90000000000000002,
+            "groupWidth": 0.69999999999999996,
+            "legend": {
+               "placement": "bottom",
+               "showLegend": true
+            },
+            "orientation": "vertical",
+            "showValue": "never",
+            "tooltip": {
+               "mode": "multi"
+            },
+            "xField": "quantile"
+         },
+         "pluginVersion": "v11.4.0",
+         "repeat": "step",
+         "repeatDirection": "v",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_set(max(quantile_over_time(0.1, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p10\", \"order\", \"00\") or label_set(max(quantile_over_time(0.25, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p25\", \"order\", \"01\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p50\", \"order\", \"02\") or label_set(max(quantile_over_time(0.75, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p75\", \"order\", \"03\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p90\", \"order\", \"04\") or label_set(max(quantile_over_time(0.95, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p95\", \"order\", \"05\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"p99\", \"order\", \"06\") or label_set(max(quantile_over_time(1, idns_perf_publish_lag_ms{run=\"$run_a\",step=\"$step\"}[$__range])), \"quantile\", \"max\", \"order\", \"07\")",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_set(max(quantile_over_time(0.1, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p10\", \"order\", \"00\") or label_set(max(quantile_over_time(0.25, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p25\", \"order\", \"01\") or label_set(max(quantile_over_time(0.5, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p50\", \"order\", \"02\") or label_set(max(quantile_over_time(0.75, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p75\", \"order\", \"03\") or label_set(max(quantile_over_time(0.9, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p90\", \"order\", \"04\") or label_set(max(quantile_over_time(0.95, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p95\", \"order\", \"05\") or label_set(max(quantile_over_time(0.99, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"p99\", \"order\", \"06\") or label_set(max(quantile_over_time(1, idns_perf_publish_lag_ms{run=\"$run_b\",step=\"$step\"}[$__range])), \"quantile\", \"max\", \"order\", \"07\")",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "Time to answer, $step",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "sortBy",
+               "options": {
+                  "sort": [
+                     {
+                        "desc": false,
+                        "field": "order"
+                     }
+                  ]
+               }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "order": true
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B"
+                  }
+               }
+            }
+         ],
+         "type": "barchart"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 33
+         },
+         "id": 3,
+         "title": "During each run",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average time one project pass spent in each phase while each run was going.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 34
+         },
+         "id": 4,
+         "options": {
+            "barWidth": 0.90000000000000002,
+            "groupWidth": 0.69999999999999996,
+            "legend": {
+               "placement": "bottom",
+               "showLegend": true
+            },
+            "orientation": "horizontal",
+            "showValue": "never",
+            "tooltip": {
+               "mode": "multi"
+            },
+            "xField": "phase"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])) / sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])) / sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase!~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "Pass phases, average",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "order": true
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B"
+                  }
+               }
+            }
+         ],
+         "type": "barchart"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average time of each step of compiling one changed zone while each run was going.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 34
+         },
+         "id": 5,
+         "options": {
+            "barWidth": 0.90000000000000002,
+            "groupWidth": 0.69999999999999996,
+            "legend": {
+               "placement": "bottom",
+               "showLegend": true
+            },
+            "orientation": "horizontal",
+            "showValue": "never",
+            "tooltip": {
+               "mode": "multi"
+            },
+            "xField": "phase"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s])) / sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]))",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_sum{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s])) / sum by (phase) (sum_over_time(((sum by (phase) (increase(internal_dns_project_pass_phase_seconds_count{namespace=\"internal-dns-system\",phase=~\"zone .*\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]))",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "Zone compile steps, average",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "order": true
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B"
+                  }
+               }
+            }
+         ],
+         "type": "barchart"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average requests per second the control plane sent to the project API while each run was going.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 0,
+            "y": 44
+         },
+         "id": 6,
+         "options": {
+            "barWidth": 0.90000000000000002,
+            "groupWidth": 0.69999999999999996,
+            "legend": {
+               "placement": "bottom",
+               "showLegend": true
+            },
+            "orientation": "horizontal",
+            "showValue": "never",
+            "tooltip": {
+               "mode": "multi"
+            },
+            "xField": "request"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_join(avg_over_time(((sum by (method, code) (rate(rest_client_requests_total{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"request\", \" \", \"method\", \"code\")",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_join(avg_over_time(((sum by (method, code) (rate(rest_client_requests_total{namespace=\"internal-dns-system\"}[30s]))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"request\", \" \", \"method\", \"code\")",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "API requests by method and code",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "code": true,
+                     "method": true
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B"
+                  }
+               }
+            }
+         ],
+         "type": "barchart"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average CPU of each serving member type and container while each run was going, summed over its pods.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 10,
+            "w": 12,
+            "x": 12,
+            "y": 44
+         },
+         "id": 7,
+         "options": {
+            "barWidth": 0.90000000000000002,
+            "groupWidth": 0.69999999999999996,
+            "legend": {
+               "placement": "bottom",
+               "showLegend": true
+            },
+            "orientation": "horizontal",
+            "showValue": "never",
+            "tooltip": {
+               "mode": "multi"
+            },
+            "xField": "workload"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_join(avg_over_time(((sum by (member, container) (label_replace(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[30s]), \"member\", \"$1\", \"pod\", \"internal-dns-(.+)-[a-z0-9]+-[a-z0-9]+\"))) and on () max(idns_perf_run{run=\"$run_a\"} offset 30s))[$__range:30s]), \"workload\", \" \", \"member\", \"container\")",
+               "format": "table",
+               "instant": true,
+               "refId": "A"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "label_join(avg_over_time(((sum by (member, container) (label_replace(rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[30s]), \"member\", \"$1\", \"pod\", \"internal-dns-(.+)-[a-z0-9]+-[a-z0-9]+\"))) and on () max(idns_perf_run{run=\"$run_b\"} offset 30s))[$__range:30s]), \"workload\", \" \", \"member\", \"container\")",
+               "format": "table",
+               "instant": true,
+               "refId": "B"
+            }
+         ],
+         "title": "Serving CPU by member and container, cores",
+         "transformations": [
+            {
+               "id": "merge",
+               "options": { }
+            },
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "container": true,
+                     "member": true
+                  },
+                  "renameByName": {
+                     "Value #A": "Run A",
+                     "Value #B": "Run B"
+                  }
+               }
+            }
+         ],
+         "type": "barchart"
+      }
+   ],
+   "refresh": "",
+   "schemaVersion": 41,
+   "tags": [
+      "dns",
+      "internal-dns",
+      "private-dns",
+      "performance"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "label": "Run A",
+            "name": "run_a",
+            "query": "query_result(sort(max by (run) (tfirst_over_time(idns_perf_run[$__range]))))",
+            "refresh": 2,
+            "regex": "/run=\"([^\"]+)\"/",
+            "sort": 0,
+            "type": "query"
+         },
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "label": "Run B",
+            "name": "run_b",
+            "query": "query_result(sort_desc(max by (run) (tfirst_over_time(idns_perf_run[$__range]))))",
+            "refresh": 2,
+            "regex": "/run=\"([^\"]+)\"/",
+            "sort": 0,
+            "type": "query"
+         },
+         {
+            "current": {
+               "selected": false,
+               "text": [
+                  "All"
+               ],
+               "value": [
+                  "$__all"
+               ]
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Publish step",
+            "multi": true,
+            "name": "step",
+            "options": [
+               {
+                  "selected": true,
+                  "text": "create",
+                  "value": "create"
+               },
+               {
+                  "selected": false,
+                  "text": "update",
+                  "value": "update"
+               },
+               {
+                  "selected": false,
+                  "text": "delete",
+                  "value": "delete"
+               }
+            ],
+            "query": "create : create,update : update,delete : delete",
+            "type": "custom"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-6h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Private DNS Run Comparison",
+   "uid": "internal-dns-performance-compare"
+}

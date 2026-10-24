@@ -1,0 +1,59 @@
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: private-dns-overview
+  labels:
+    app.kubernetes.io/part-of: dns-operator
+    app.kubernetes.io/component: monitoring
+spec:
+  # The Grafana instance usually lives in another namespace.
+  allowCrossNamespaceImport: true
+  folder: Platform / DNS
+  # Installers patch this to match the labels on their Grafana instance.
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  resyncPeriod: 5m
+  configMapRef:
+    name: private-dns-dashboards
+    key: private-dns-overview.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: private-dns-performance
+  labels:
+    app.kubernetes.io/part-of: dns-operator
+    app.kubernetes.io/component: monitoring
+spec:
+  # The Grafana instance usually lives in another namespace.
+  allowCrossNamespaceImport: true
+  folder: Platform / DNS
+  # Installers patch this to match the labels on their Grafana instance.
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  resyncPeriod: 5m
+  configMapRef:
+    name: private-dns-dashboards
+    key: private-dns-performance.json
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: private-dns-run-comparison
+  labels:
+    app.kubernetes.io/part-of: dns-operator
+    app.kubernetes.io/component: monitoring
+spec:
+  # The Grafana instance usually lives in another namespace.
+  allowCrossNamespaceImport: true
+  folder: Platform / DNS
+  # Installers patch this to match the labels on their Grafana instance.
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  resyncPeriod: 5m
+  configMapRef:
+    name: private-dns-dashboards
+    key: private-dns-compare.json

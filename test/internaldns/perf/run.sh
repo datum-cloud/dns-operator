@@ -5,6 +5,7 @@
 #   run.sh run [ENV=VALUE ...]
 #                      run dns.js on every k6 instance at once
 #   run.sh propagate   rewrite a private TXT record on a timer
+#   run.sh publish     create, update and delete record sets; time each answer
 #   run.sh down        delete everything run.sh created
 #   run.sh analyze [DIR]
 #                      per-step and per-second stats from a run's query records
@@ -148,6 +149,39 @@ to_seconds() {
   esac
 }
 
+api_base() {
+  local host
+  host=$(dctl get namespace default -v=6 2>&1 | grep -oE 'https://[^/ "]+' | head -1)
+  echo "$host/apis/resourcemanager.miloapis.com/v1alpha1/projects/$PROJECT/control-plane"
+}
+
+publish() {
+  local pod prefix start probe_pid failed=0
+  pod=$(instances idns-perf-k6 1)
+  prefix=pub-$(date -u +%H%M%S)
+  # The exec session takes a while to start k6, so schedule the writes ahead.
+  start=$(( ($(date +%s) + ${LEAD_S:-45}) * 1000 ))
+  mkdir -p "$RESULTS"
+  if ! dctl get dnszone idns-perf >/dev/null 2>&1; then
+    ctx=$(resolver_context)
+    [[ -n "$ctx" ]] || { echo "no resolver context for network $NETWORK yet" >&2; exit 1; }
+    export ZONE_DOMAIN ZONE_CLASS CONTEXT=$ctx STAMP=0
+    render "$here/manifests/propagation.yaml" | dctl apply -f - >/dev/null
+  fi
+  local -a vars=(PREFIX="$prefix" START_MS="$start" COUNT="${COUNT:-20}" WRITE_RATE="${WRITE_RATE:-2}" ZONE_DOMAIN="$ZONE_DOMAIN")
+  datumctl compute exec -i --project "$PROJECT" "$pod" -c k6 -- \
+    env "${vars[@]}" RESOLVERS="${RESOLVERS:-[fd53::53]:53}" POLL_MS="${POLL_MS:-200}" \
+    sh -c 'cat >/tmp/publish.js && k6 run --quiet /tmp/publish.js' <"$here/publish.js" >"$RESULTS/probe.log" 2>&1 &
+  probe_pid=$!
+  k6 run --quiet --console-output="$RESULTS/writer.log" \
+    -e API="$(api_base)" -e TOKEN="$(datumctl auth get-token --output=token)" -e GAP_S="${GAP_S:-30}" -e TTL="${TTL:-1}" \
+    $(printf -- '-e %s ' "${vars[@]}") "$here/publish-writer.js" >"$RESULTS/writer.txt" 2>&1 || failed=1
+  wait "$probe_pid" || failed=1
+  printf '%s\n' "${vars[@]}" >"$RESULTS/params"
+  "$here/publish-analyze.sh" "$RESULTS" || failed=1
+  return "$failed"
+}
+
 down() {
   # Only objects run.sh labelled, so a wrong PROJECT cannot lose anything else.
   dctl delete workloads,dnsrecordsets,dnszoneassociations,dnszones -l test.datum.net/owner=internal-dns-perf
@@ -156,6 +190,6 @@ down() {
 cmd=${1:-}
 shift || true
 case $cmd in
-  up | run | propagate | down) guard; "$cmd" "$@" ;;
+  up | run | propagate | publish | down) guard; "$cmd" "$@" ;;
   *) sed -n '2,12p' "$0" >&2; exit 2 ;;
 esac

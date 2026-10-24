@@ -127,6 +127,36 @@ workload once you have the result. Read the summary with:
 datumctl compute logs idns-perf-k6 --project $PROJECT --since=30m
 ```
 
+### Publishing
+
+`run.sh publish` times the write path. On your machine, `publish-writer.js`
+creates `COUNT` private TXT record sets through the project API at `WRITE_RATE`
+per second, then updates each, then deletes each, with `GAP_S` seconds between
+steps. Inside the first generator, `publish.js` follows every name and records
+when each resolver in `RESOLVERS` first answers the new value, or NXDOMAIN after
+the delete. Each value carries the time its write was sent.
+
+```sh
+COUNT=30 WRITE_RATE=2 RESOLVERS='[fd53::53]:53,[fd53::54]:53' test/internaldns/perf/run.sh publish
+```
+
+`publish-analyze.sh` (run automatically) writes `publish.tsv`, one row per
+change and resolver, and `summary.tsv` with lag percentiles per step and
+resolver, API latency and failed writes. The run exits non-zero when a change
+was never answered or a write failed. It needs `k6` and `jq` locally. Lag
+includes clock skew between your machine and the instance.
+
+The prober starts watching each name when the writer is due to create it, so a
+create's lag can include a negative answer cached during propagation. Updates
+use `TTL` (default 1 second) and show the pipeline itself.
+
+### Sending results to dashboards
+
+`report.sh DIR [SCENARIO]` sends a `run` or `publish` results directory to a
+Prometheus text import endpoint (`IMPORT_URL`), labelled with the directory
+name, the scenario and `COMMIT`. `idns_perf_run` is 1 while the run lasted, for
+annotations; the other series are `idns_perf_publish_*` and `idns_perf_query_*`.
+
 ## Settings
 
 `dns.js` reads these from the environment:

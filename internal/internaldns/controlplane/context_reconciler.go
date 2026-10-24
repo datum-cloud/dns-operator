@@ -626,12 +626,20 @@ func (r *Reconciler) selectServingTargets(resolverContextUID types.UID, existing
 	return selected
 }
 
-func (r *Reconciler) createIfAbsent(ctx context.Context, o client.Object) error {
-	err := r.Create(ctx, o)
-	if apierrors.IsAlreadyExists(err) {
-		return nil
+// getOrCreate reads o, creating it from its current contents only when it does
+// not exist. Reading first spares the API server a rejected create on every
+// pass, which costs far more than a read once admission runs.
+func (r *Reconciler) getOrCreate(ctx context.Context, o client.Object) error {
+	key := client.ObjectKeyFromObject(o)
+	desired := o.DeepCopyObject().(client.Object)
+	err := r.Get(ctx, key, o)
+	if !apierrors.IsNotFound(err) {
+		return err
 	}
-	return err
+	if err := r.Create(ctx, desired); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return r.Get(ctx, key, o)
 }
 
 func setCondition(cs *[]metav1.Condition, t string, status metav1.ConditionStatus, reason, msg string, generation int64, now time.Time) {
@@ -737,10 +745,7 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 			return false, err
 		}
 	}
-	if err := r.createIfAbsent(ctx, zone); err != nil {
-		return false, err
-	}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
+	if err := r.getOrCreate(ctx, zone); err != nil {
 		return false, err
 	}
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
@@ -749,10 +754,7 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 			return false, err
 		}
 	}
-	if err := r.createIfAbsent(ctx, association); err != nil {
-		return false, err
-	}
-	if err := r.Get(ctx, client.ObjectKeyFromObject(association), association); err != nil {
+	if err := r.getOrCreate(ctx, association); err != nil {
 		return false, err
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)

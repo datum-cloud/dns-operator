@@ -14,6 +14,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/projectstatus"
+	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -760,16 +761,38 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 			}
 		}
 	}
-	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(names))
+	ordered := make([]string, 0, len(names))
 	for name := range names {
-		var current dnsv1alpha1.DNSRecordContribution
-		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &current); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
+		ordered = append(ordered, name)
+	}
+	found := make([]*dnsv1alpha1.DNSRecordContribution, len(ordered))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(confirmConcurrency)
+	for i, name := range ordered {
+		g.Go(func() error {
+			var current dnsv1alpha1.DNSRecordContribution
+			if err := reader.Get(gctx, client.ObjectKey{Namespace: namespace, Name: name}, &current); err != nil {
+				if apierrors.IsNotFound(err) {
+					return nil
+				}
+				return err
 			}
-			return nil, err
+			found[i] = &current
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(ordered))
+	for _, c := range found {
+		if c != nil {
+			confirmed = append(confirmed, *c)
 		}
-		confirmed = append(confirmed, current)
 	}
 	return confirmed, nil
 }
+
+// confirmConcurrency bounds the reads one zone issues at once; the project
+// client's rate limiter still caps the total.
+const confirmConcurrency = 8

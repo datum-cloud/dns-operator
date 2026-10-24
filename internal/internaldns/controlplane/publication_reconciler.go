@@ -61,15 +61,18 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	for i := range policies.Items {
 		sources = append(sources, &policies.Items[i])
 	}
+	registrationZones := make(map[types.UID]dnsv1alpha1.DNSObjectReference, len(regs.Items))
 	for i := range regs.Items {
 		registration := &regs.Items[i]
 		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
 		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
 			ref.UID, ref.Generation = zone.UID, zone.Generation
 		}
-		if _, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref}); err != nil {
+		pinned, _, err := r.pinReferences(ctx, registration, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref})
+		if err != nil {
 			return ctrl.Result{}, err
 		}
+		registrationZones[registration.UID] = pinned["zone"]
 		sources = append(sources, registration)
 	}
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
@@ -113,7 +116,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 			continue
 		}
-		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
+		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
@@ -194,15 +197,37 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 			continue
 		}
 		regUIDs[reg.UID] = true
-		base := reg.DeepCopy()
-		reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
-		reg.Status.PublicationRevision = manifest.Spec.Revision
-		projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
-		if !jsonEqual(base.Status, reg.Status) {
-			if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil {
+		apply := func(reg *dnsv1alpha1.DNSRegistration) {
+			reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
+			reg.Status.PublicationRevision = manifest.Spec.Revision
+			projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
+		}
+		listed := reg.DeepCopy()
+		apply(listed)
+		if jsonEqual(reg.Status, listed.Status) {
+			continue
+		}
+		// The listed copy can be a whole pass old, and the merge patch replaces
+		// every condition, so patch a fresh read rather than overwrite the ACK
+		// sink's newer conditions.
+		var current dnsv1alpha1.DNSRegistration
+		if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(reg), &current); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return time.Time{}, err
+		}
+		if current.UID != reg.UID || current.Generation != reg.Generation {
+			continue
+		}
+		base := current.DeepCopy()
+		apply(&current)
+		if !jsonEqual(base.Status, current.Status) {
+			if err := r.Status().Patch(ctx, &current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				return time.Time{}, err
 			}
 		}
+		*reg = current
 	}
 	fenced := map[types.UID]int64{}
 	for _, f := range manifest.Spec.ContributionFences {
@@ -254,7 +279,7 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 	return age
 }
 
-func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
+func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, registrationZones map[types.UID]dnsv1alpha1.DNSObjectReference, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err
@@ -268,14 +293,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if err != nil {
 		return false, err
 	}
-	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
-	for i := range regs {
-		refs, err := r.readReferences(ctx, &regs[i])
-		if err != nil {
-			return false, err
-		}
-		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
-	}
+	input.RegistrationZoneReferences = registrationZones
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -623,6 +641,9 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		}
 		reg.Status.ObservedGeneration = reg.Generation
 		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
+		if jsonEqual(base.Status, reg.Status) {
+			continue
+		}
 		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -640,6 +661,9 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		base := c.DeepCopy()
 		c.Status.ObservedGeneration = c.Generation
 		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
+		if jsonEqual(base.Status, c.Status) {
+			continue
+		}
 		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -737,16 +761,15 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 			}
 		}
 	}
+	var current dnsv1alpha1.DNSRecordContributionList
+	if err := reader.List(ctx, &current, client.InNamespace(namespace)); err != nil {
+		return nil, err
+	}
 	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(names))
-	for name := range names {
-		var current dnsv1alpha1.DNSRecordContribution
-		if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &current); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			return nil, err
+	for _, c := range current.Items {
+		if names[c.Name] {
+			confirmed = append(confirmed, c)
 		}
-		confirmed = append(confirmed, current)
 	}
 	return confirmed, nil
 }

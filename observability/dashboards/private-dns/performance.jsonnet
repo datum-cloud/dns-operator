@@ -329,13 +329,16 @@ local phaseP90 = ts(
   calcs=['mean', 'max'],
 );
 
+local passBuckets(m) = 'sum by (le) (rate(%s[$__rate_interval]))' % m;
+
 local passDuration = ts(
   'Project pass time',
-  'Whole project pass time across every project.',
+  'Whole project pass time across every project, and the slowest pass as the upper bound of its histogram bucket. On builds without internal_dns_project_pass_seconds the lines stop at 60 s.',
   [
-    qRange('histogram_quantile(0.5, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval])))' % controllers, 'p50'),
-    qRange('histogram_quantile(0.9, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval])))' % controllers, 'p90'),
-    qRange('histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval])))' % controllers, 'p99'),
+    qRange(lib.passQuantile('0.5', passBuckets), 'p50'),
+    qRange(lib.passQuantile('0.9', passBuckets), 'p90'),
+    qRange(lib.passQuantile('0.99', passBuckets), 'p99'),
+    qRange(lib.passQuantile('1', passBuckets), 'slowest'),
   ],
   's',
   grid(8, 8, 8, 52),

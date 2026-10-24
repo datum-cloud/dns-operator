@@ -58,6 +58,18 @@ local ds = '${datasource}';
   // earlier, so a point is kept only when the interval it covers starts after
   // the run began. The window ends up to one step after the last run sample,
   // which keeps the tail of a run's publishing in.
+  // Whole project pass time at quantile q, from rate or increase buckets
+  // built by `buckets(metric)`. internal_dns_project_pass_seconds reaches
+  // 600 s; builds without it fall back to the controller-runtime reconcile
+  // histogram, whose top bucket is 60 s, so anything slower reads as 60 s.
+  passQuantile(q, buckets)::
+    'histogram_quantile(%s, %s) or histogram_quantile(%s, %s)' % [
+      q,
+      buckets('internal_dns_project_pass_seconds_bucket{%s}' % self.controlPlane),
+      q,
+      buckets('controller_runtime_reconcile_time_seconds_bucket{%s}' % self.controllers),
+    ],
+
   during(expr, run, step)::
     '(%s) and on () max(idns_perf_run{run="%s"} offset %s)' % [expr, run, step],
 

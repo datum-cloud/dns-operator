@@ -2076,7 +2076,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Slowest 1% of project reconciles. Every reconcile reads the source project API directly, so this follows project API latency.",
+         "description": "Slowest 1% of project passes, and the slowest pass, read as the upper bound of its histogram bucket. Every pass reads the source project API directly, so this follows project API latency. On builds without internal_dns_project_pass_seconds both lines stop at 60 s.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -2125,11 +2125,20 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.99, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
                "legendFormat": "p99"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(1, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(1, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "slowest"
             }
          ],
-         "title": "Reconcile time, p99",
+         "title": "Project pass time, p99 and slowest",
          "type": "timeseries"
       },
       {

@@ -1385,7 +1385,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Whole project pass time across every project.",
+         "description": "Whole project pass time across every project, and the slowest pass as the upper bound of its histogram bucket. On builds without internal_dns_project_pass_seconds the lines stop at 60 s.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1434,7 +1434,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.5, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.5, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(0.5, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
                "legendFormat": "p50"
             },
             {
@@ -1443,7 +1443,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.9, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.9, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(0.9, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
                "legendFormat": "p90"
             },
             {
@@ -1452,8 +1452,17 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "expr": "histogram_quantile(0.99, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
                "legendFormat": "p99"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(1, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(1, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "slowest"
             }
          ],
          "title": "Project pass time",

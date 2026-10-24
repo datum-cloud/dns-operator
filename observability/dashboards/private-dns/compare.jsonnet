@@ -54,7 +54,7 @@ local missed(s) = function(run)
   'sum(count_over_time(idns_perf_publish_missed{run="%s",step="%s"}[$__range])) or on () (max(max_over_time(idns_perf_run{run="%s"}[$__range])) * 0)' % [run, s, run];
 
 local passQuantile(q) = function(run)
-  'histogram_quantile(%s, sum by (le) (%s))' % [q, overRun(run, 'sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{%s}[%s]))' % [controllers, step])];
+  lib.passQuantile(q, function(m) 'sum by (le) (%s)' % overRun(run, 'sum by (le) (increase(%s[%s]))' % [m, step]));
 
 local phaseAvg(phase) = function(run)
   'sum(%s) / sum(%s)' % [

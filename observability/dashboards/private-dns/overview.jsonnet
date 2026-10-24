@@ -369,9 +369,12 @@ local reconcilesByResult = ts(
 );
 
 local reconcileLatency = ts(
-  'Reconcile time, p99',
-  'Slowest 1% of project reconciles. Every reconcile reads the source project API directly, so this follows project API latency.',
-  [qRange('histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{%s}[$__rate_interval])))' % controllers, 'p99')],
+  'Project pass time, p99 and slowest',
+  'Slowest 1% of project passes, and the slowest pass, read as the upper bound of its histogram bucket. Every pass reads the source project API directly, so this follows project API latency. On builds without internal_dns_project_pass_seconds both lines stop at 60 s.',
+  [
+    qRange(lib.passQuantile('0.99', function(m) 'sum by (le) (rate(%s[$__rate_interval]))' % m), 'p99'),
+    qRange(lib.passQuantile('1', function(m) 'sum by (le) (rate(%s[$__rate_interval]))' % m), 'slowest'),
+  ],
   's',
   grid(8, 8, 8, 64),
 );

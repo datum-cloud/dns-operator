@@ -52,6 +52,11 @@ type Planner struct {
 	Allocator *Allocator
 	Config    PlannerConfig
 	Now       func() time.Time
+
+	// Outboxes are immutable and named by revision, so the prior snapshot's
+	// bytes are reused until the active outbox changes.
+	priorOutbox  string
+	priorPayload []byte
 }
 
 func (p *Planner) Step(ctx context.Context) error {
@@ -121,18 +126,22 @@ func (p *Planner) Step(ctx context.Context) error {
 	snapshot := model.ServingSnapshot{Region: c.Region, Shard: c.Shard, ConfigurationEpoch: state.Epoch, ConfigurationRevision: state.NextRevision, GeneratedAt: now, Members: append([]model.Member(nil), c.Members...)}
 	var prior model.ServingSnapshot
 	if state.ActiveOutbox != "" {
-		var out dnsv1alpha1.DNSTransportOutbox
-		if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: state.ActiveOutbox}, &out); err != nil {
-			return err
+		if state.ActiveOutbox != p.priorOutbox {
+			var out dnsv1alpha1.DNSTransportOutbox
+			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: state.ActiveOutbox}, &out); err != nil {
+				return err
+			}
+			var e model.Envelope
+			if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
+				return err
+			}
+			p.priorOutbox, p.priorPayload = state.ActiveOutbox, e.Payload
 		}
-		var e model.Envelope
-		if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
-			return err
-		}
-		if err := json.Unmarshal(e.Payload, &prior); err != nil {
+		if err := json.Unmarshal(p.priorPayload, &prior); err != nil {
 			return err
 		}
 	}
+	manifests := manifestReader{client: p.Client, namespace: c.Namespace, read: map[string]*dnsv1alpha1.DNSPublicationManifest{}}
 	activations := map[string]string{}
 	priorBindings := map[string]model.Binding{}
 	for _, b := range prior.Bindings {
@@ -161,12 +170,13 @@ func (p *Planner) Step(ctx context.Context) error {
 				pending()
 				continue
 			}
-			var m dnsv1alpha1.DNSPublicationManifest
-			if err := p.Client.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: o.Spec.ActiveManifestName}, &m); apierrors.IsNotFound(err) {
+			m, found, err := manifests.get(ctx, o.Spec.ActiveManifestName)
+			if err != nil {
+				return err
+			}
+			if !found {
 				pending()
 				continue
-			} else if err != nil {
-				return err
 			}
 			targeted := false
 			for _, target := range m.Spec.ServingTargets {
@@ -330,4 +340,30 @@ func publicationDependencies(snapshot *model.ServingSnapshot, activations map[st
 		return snapshot.RequiredPublications[i].ZoneUID < snapshot.RequiredPublications[j].ZoneUID
 	})
 	return dependsOn, nil
+}
+
+// manifestReader reads each publication manifest at most once per planner run;
+// many bindings in a shard attach the same zone.
+type manifestReader struct {
+	client    client.Client
+	namespace string
+	read      map[string]*dnsv1alpha1.DNSPublicationManifest
+}
+
+func (r manifestReader) get(ctx context.Context, name string) (dnsv1alpha1.DNSPublicationManifest, bool, error) {
+	if m, ok := r.read[name]; ok {
+		if m == nil {
+			return dnsv1alpha1.DNSPublicationManifest{}, false, nil
+		}
+		return *m, true, nil
+	}
+	var m dnsv1alpha1.DNSPublicationManifest
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: r.namespace, Name: name}, &m); apierrors.IsNotFound(err) {
+		r.read[name] = nil
+		return m, false, nil
+	} else if err != nil {
+		return m, false, err
+	}
+	r.read[name] = &m
+	return m, true, nil
 }

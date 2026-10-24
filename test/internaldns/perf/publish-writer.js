@@ -28,7 +28,8 @@ function step(name, n, fn = name) {
     executor: 'constant-arrival-rate',
     rate: perUnit,
     timeUnit: unit,
-    duration: `${phase}s`,
+    // A whole-second phase can end one arrival short; the extra iterations are skipped.
+    duration: `${phase + 2}s`,
     startTime: `${offset + n * (phase + GAP_S)}s`,
     preAllocatedVUs: Math.max(5, Math.ceil(RATE * 2)),
     maxVUs: Math.max(20, Math.ceil(RATE * 10)),

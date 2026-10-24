@@ -15,14 +15,15 @@ grep -ho 'PUBLISH {.*}' probe.log | sed 's/^PUBLISH //; s/\\"/"/g; s/}".*/}/' >s
 [[ -s writes.jsonl ]] || { echo "no writes in $dir/writer.log" >&2; exit 1; }
 [[ -s seen.jsonl ]] || { echo "no prober events in $dir/probe.log" >&2; exit 1; }
 
-# seen_ms is 0 when the prober gave up on that change.
+# seen is 0 when the prober gave up on that change; status is 0 when the writer
+# never sent it.
 jq -rn --slurpfile w writes.jsonl --slurpfile s seen.jsonl '
   ($w | map({key: "\(.index)/\(.step)", value: .}) | from_entries) as $by
   | ["step", "resolver", "index", "status", "api_ms", "sent", "seen", "lag_ms"],
     ($s[] | . as $e | $by["\($e.index)/\($e.step)"] as $x
-      | select($x != null)
-      | [$e.step, $e.resolver, $e.index, $x.status, $x.done - $x.sent, $x.sent, $e.seen,
-         (if $e.seen > 0 then $e.seen - $x.sent else -1 end)])
+      | if $x == null then [$e.step, $e.resolver, $e.index, 0, 0, 0, $e.seen, -1]
+        else [$e.step, $e.resolver, $e.index, $x.status, $x.done - $x.sent, $x.sent, $e.seen,
+          (if $e.seen > 0 then $e.seen - $x.sent else -1 end)] end)
   | @tsv' >publish.tsv
 
 {

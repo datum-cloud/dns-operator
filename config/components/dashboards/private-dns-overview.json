@@ -1,0 +1,3092 @@
+{
+   "annotations": {
+      "list": [
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "enable": true,
+            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "iconColor": "purple",
+            "name": "Load tests",
+            "step": "10s",
+            "tagKeys": "scenario,commit",
+            "textFormat": "run {{run}}, commit {{commit}}",
+            "titleFormat": "Load test {{scenario}}",
+            "useValueForTime": false
+         }
+      ]
+   },
+   "description": "Is Private DNS for VPCs answering, and is configuration reaching it? Covers the resolvers at fd53::53 and fd53::54, the serving fleet, the control plane that compiles contexts, private zone readiness and broker delivery.",
+   "editable": true,
+   "links": [
+      {
+         "asDropdown": true,
+         "includeVars": false,
+         "keepTime": true,
+         "tags": [
+            "dns"
+         ],
+         "title": "DNS dashboards",
+         "type": "dashboards"
+      },
+      {
+         "icon": "dashboard",
+         "includeVars": false,
+         "keepTime": true,
+         "title": "Load test runs",
+         "type": "link",
+         "url": "/d/internal-dns-performance/private-dns-performance"
+      }
+   ],
+   "panels": [
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Serving replicas that are not available: node resolvers, regional routers, regional CoreDNS and public recursors. Readiness checks the listener address, the activated configuration and local DNS over UDP and TCP, so an unavailable member is not answering.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(kube_deployment_spec_replicas{namespace=~\"ns-.*\",deployment=~\"internal-dns-.*\"}) - sum(kube_deployment_status_replicas_available{namespace=~\"ns-.*\",deployment=~\"internal-dns-.*\"})",
+               "instant": true
+            }
+         ],
+         "title": "Serving replicas down",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Control-plane replicas available to compile contexts and publish configuration.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     },
+                     {
+                        "color": "green",
+                        "value": 2
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 4,
+            "y": 0
+         },
+         "id": 2,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(kube_deployment_status_replicas_available{namespace=\"internal-dns-system\",deployment=\"internal-dns-control-plane\"})",
+               "instant": true
+            }
+         ],
+         "title": "Control plane up",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of runs that failed in the last hour, for the worst control-plane loop. Each loop retries, so a few percent is noise; a loop near 100% cannot make progress. Loops with fewer than 10 runs in the hour are left out so one failure cannot read as 50%. Broker reads are left out because they wait for messages. Once the control plane reports conflicts on their own, update conflicts between the two replicas no longer count as failures.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.050000000000000003
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.5
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 8,
+            "y": 0
+         },
+         "id": 3,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(max(((sum by (loop, region, shard) (increase(internal_dns_loop_runs_total{namespace=\"internal-dns-system\",loop!=\"ack read\",result=\"error\"}[1h])) or 0 * sum by (loop, region, shard) (increase(internal_dns_loop_runs_total{namespace=\"internal-dns-system\",loop!=\"ack read\"}[1h]))) / sum by (loop, region, shard) (increase(internal_dns_loop_runs_total{namespace=\"internal-dns-system\",loop!=\"ack read\"}[1h]))) and on (loop, region, shard) sum by (loop, region, shard) (increase(internal_dns_loop_runs_total{namespace=\"internal-dns-system\",loop!=\"ack read\"}[1h])) >= 10)) or (max(((sum by (operation) (increase(internal_dns_operations_total{namespace=\"internal-dns-system\",operation!~\"ack read .*\",result=\"error\"}[1h])) or 0 * sum by (operation) (increase(internal_dns_operations_total{namespace=\"internal-dns-system\",operation!~\"ack read .*\"}[1h]))) / sum by (operation) (increase(internal_dns_operations_total{namespace=\"internal-dns-system\",operation!~\"ack read .*\"}[1h]))) and on (operation) sum by (operation) (increase(internal_dns_operations_total{namespace=\"internal-dns-system\",operation!~\"ack read .*\"}[1h])) >= 10)) or vector(0)",
+               "instant": true
+            }
+         ],
+         "title": "Worst loop error rate",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Time since the slowest periodic control-plane loop last succeeded on any replica. Acknowledgement steps only run when a member reports, so they are left out.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 120
+                     },
+                     {
+                        "color": "red",
+                        "value": 600
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 12,
+            "y": 0
+         },
+         "id": 4,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max(min by (loop, region, shard) (time() - internal_dns_loop_last_success_timestamp_seconds{namespace=\"internal-dns-system\",loop!~\"ack (read|apply|commit)\"})) or max(min by (operation) (time() - internal_dns_operation_last_success_timestamp_seconds{namespace=\"internal-dns-system\",operation!~\"ack (read|apply|commit) .*\"}))",
+               "instant": true
+            }
+         ],
+         "title": "Stalest loop",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Private zones whose Programmed condition is not true in their project. A pending zone answers SERVFAIL beneath its apex while the context keeps serving its other zones. A zone whose network has no serving members in its region stays pending; the table under Private zones and records lists each one with its reason.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 16,
+            "y": 0
+         },
+         "id": 5,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(count((dns_zone_status_condition{condition=\"Programmed\"} and on (\"milo.project.name\", namespace, name) dns_zone_info{visibility=\"Private\"}) != 1) or vector(0)) and on () count(dns_zone_info{visibility!=\"\"})",
+               "instant": true
+            }
+         ],
+         "title": "Private zones pending",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Fewest messages over the last 5 minutes that the most backed-up configuration consumer had not yet received: member publication and record consumers, and the control plane acknowledgement reader. Members keep serving their applied configuration while this is above zero, but changes are not reaching them. Member acknowledgement readers are left out: every member reads every heartbeat, and a new member replays the last day of history. They are under Configuration delivery.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 100
+                     },
+                     {
+                        "color": "red",
+                        "value": 1000
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 4,
+            "x": 20,
+            "y": 0
+         },
+         "id": 6,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max(min_over_time(nats_consumer_num_pending{namespace=\"internal-dns-system\",consumer_name=~\".*-(serving|records)|control-plane-.*-acks\"}[5m]))",
+               "instant": true
+            }
+         ],
+         "title": "Config backlog",
+         "type": "stat"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 4
+         },
+         "id": 7,
+         "title": "Resolver queries",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries each dnsdist front received: the node resolvers at fd53::53 and fd53::54 and the regional routers. Only members with dnsdist metrics turned on report.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 5
+         },
+         "id": 8,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, internal_dns_datum_net_tier, pod) (rate(dnsdist_queries{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} {{pod}}"
+            }
+         ],
+         "title": "Queries per resolver",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "What the resolvers sent back to clients. NXDOMAIN is expected for names outside a project. SERVFAIL means a backend failed or did not answer in time. A query can pass through more than one tier, so the tiers do not add up to a client total.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 5
+         },
+         "id": 9,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_noerror{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} NOERROR"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_nxdomain{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} NXDOMAIN"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_frontend_servfail{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} SERVFAIL"
+            }
+         ],
+         "title": "Answers by response code",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Time from query to answer at each tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket: anything under 1 ms is under 1 ms, not exactly that, and 1000 ms means 1 s or more.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 5
+         },
+         "id": 10,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} p50"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} p99"
+            }
+         ],
+         "title": "Answer time, p50 and p99",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries a backend did not answer in time, could not be sent to a backend, or were dropped by an access rule or for lack of a backend. Clients retry, so a short burst usually shows up as slow answers rather than failures.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 13
+         },
+         "id": 11,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_downstream_timeouts{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} backend timeout"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_downstream_send_errors{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} backend send error"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (internal_dns_datum_net_tier) (rate(dnsdist_acl_drops{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]) + rate(dnsdist_rule_drop{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]) + rate(dnsdist_no_policy{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{internal_dns_datum_net_tier}} dropped"
+            }
+         ],
+         "title": "Unanswered and dropped queries",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of queries each dnsdist front sent to CoreDNS over an already open TCP connection. Near 100% means connections are reused; a drop means each query is paying for a new connection.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 13
+         },
+         "id": 12,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, internal_dns_datum_net_tier, pod) (rate(dnsdist_server_tcpreusedconnections{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])) / (sum by (cluster, internal_dns_datum_net_tier, pod) (rate(dnsdist_server_tcpreusedconnections{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])) + sum by (cluster, internal_dns_datum_net_tier, pod) (rate(dnsdist_server_tcpnewconnections{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} {{pod}}"
+            }
+         ],
+         "title": "Backend connection reuse",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "CPU each serving pod used, in cores, split by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion). The pod name carries the tier: node, node-b, regional-front, regional-coredns or public-recursor.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 13
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+            }
+         ],
+         "title": "Serving CPU by container, cores",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 21
+         },
+         "id": 14,
+         "title": "Public recursor",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Questions each public recursor pod received per second.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 22
+         },
+         "id": 15,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{pod}}"
+            }
+         ],
+         "title": "Recursor queries",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of answers in each time band, across the recursor pods. Answers from cache land under 1 ms; anything over 100 ms waited on an authoritative server.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 60,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false,
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 22
+         },
+         "id": 16,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_answers0_1{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum(rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "under 1 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_answers1_10{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum(rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "1 to 10 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_answers10_100{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum(rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "10 to 100 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_answers100_1000{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum(rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "100 ms to 1 s"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_answers_slow{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum(rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "over 1 s"
+            }
+         ],
+         "title": "Recursor answer time, share of answers",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Moving average of the time each recursor pod took to answer, as the recursor reports it.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 22
+         },
+         "id": 17,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (cluster, pod) (pdns_recursor_qa_latency{internal_dns_datum_net_tier=\"public-recursor\"}) / 1000",
+               "legendFormat": "{{cluster}} {{pod}}"
+            }
+         ],
+         "title": "Recursor average answer time",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "What the public recursors sent back. NXDOMAIN is normal for names that do not exist; SERVFAIL means the recursor could not get an answer.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 30
+         },
+         "id": 18,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_noerror_answers{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "NOERROR"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_nxdomain_answers{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "NXDOMAIN"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_servfail_answers{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "SERVFAIL"
+            }
+         ],
+         "title": "Recursor answers by response code",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of questions each recursor pod answered with SERVFAIL. A rise usually means an upstream or authoritative server is failing.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 30
+         },
+         "id": 19,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (rate(pdns_recursor_servfail_answers{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / sum by (cluster, pod) (rate(pdns_recursor_questions{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{pod}}"
+            }
+         ],
+         "title": "Recursor SERVFAIL share",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Queries the recursor sent out that timed out or could not be sent, queries it dropped because it was at capacity or a resource limit, and answers that failed DNSSEC validation.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ops"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 30
+         },
+         "id": 20,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_outgoing_timeouts{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "outgoing timeouts"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_unreachables{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "server unreachable"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_resource_limits{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "resource limit"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_over_capacity_drops{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "dropped over capacity"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(rate(pdns_recursor_dnssec_result_bogus{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval]))",
+               "legendFormat": "DNSSEC bogus"
+            }
+         ],
+         "title": "Recursor upstream problems",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Share of lookups each recursor pod answered from its cache.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 38
+         },
+         "id": 21,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (rate(pdns_recursor_cache_hits{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) / (sum by (cluster, pod) (rate(pdns_recursor_cache_hits{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])) + sum by (cluster, pod) (rate(pdns_recursor_cache_misses{internal_dns_datum_net_tier=\"public-recursor\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{pod}}"
+            }
+         ],
+         "title": "Recursor cache hit ratio",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Entries in each pod's record cache (left axis) and queries it is resolving right now (right axis). Queries in flight that keep climbing mean the recursor is waiting on slow upstreams.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".* in flight"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 38
+         },
+         "id": 22,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (cluster, pod) (pdns_recursor_cache_entries{internal_dns_datum_net_tier=\"public-recursor\"})",
+               "legendFormat": "{{pod}} cache entries"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (cluster, pod) (pdns_recursor_concurrent_queries{internal_dns_datum_net_tier=\"public-recursor\"})",
+               "legendFormat": "{{pod}} in flight"
+            }
+         ],
+         "title": "Recursor cache size and queries in flight",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "CPU in cores (left axis) and working set memory (right axis) of each recursor container. A pod near its CPU limit answers late.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".* memory"
+                  },
+                  "properties": [
+                     {
+                        "id": "unit",
+                        "value": "bytes"
+                     },
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 38
+         },
+         "id": 23,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"}[$__rate_interval]))",
+               "legendFormat": "{{pod}} CPU"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"})",
+               "legendFormat": "{{pod}} memory"
+            }
+         ],
+         "title": "Recursor CPU and memory",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 46
+         },
+         "id": 24,
+         "title": "Serving fleet",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Available replicas of each serving deployment at each location. A member that drops to zero is out of the regional pool or, for the node resolver, out of service for its node.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 47
+         },
+         "id": 25,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (cluster, deployment) (kube_deployment_status_replicas_available{namespace=~\"ns-.*\",deployment=~\"internal-dns-.*\"})",
+               "legendFormat": "{{cluster}} {{deployment}}"
+            }
+         ],
+         "title": "Available replicas per member",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Serving pods failing readiness. Readiness stays local to the pod, so this reflects the member and not the consumer path through Galactic.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 47
+         },
+         "id": 26,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod) (kube_pod_status_ready{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",condition=\"false\"})",
+               "legendFormat": "{{cluster}} {{pod}}"
+            }
+         ],
+         "title": "Serving pods not ready",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Container restarts in serving pods. CoreDNS restarts during activation are expected; repeated restarts of one container are not.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 47
+         },
+         "id": 27,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod, container) (increase(kube_pod_container_status_restarts_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\"}[$__rate_interval]))",
+               "legendFormat": "{{pod}} {{container}}"
+            }
+         ],
+         "title": "Serving container restarts",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Working set memory of each serving pod, split by container. A container that climbs toward its limit is killed and restarted.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "bytes"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 47
+         },
+         "id": 28,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+            }
+         ],
+         "title": "Serving memory by container",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 55
+         },
+         "id": 29,
+         "title": "Control plane",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Completed runs of each control-plane loop. A successful run can be idle; it does not prove that an endpoint is serving.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ops"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 56
+         },
+         "id": 30,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (operation, result) (rate(internal_dns_operations_total{namespace=\"internal-dns-system\",operation=~\"$operation\"}[$__rate_interval]))",
+               "legendFormat": "{{operation}} {{result}}"
+            }
+         ],
+         "title": "Loop runs by result",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Failed runs per loop. Planner and outbox errors stop configuration reaching the fleet; acknowledgement errors stop status reaching projects.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ops"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 56
+         },
+         "id": 31,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (operation) (rate(internal_dns_operations_total{namespace=\"internal-dns-system\",operation=~\"$operation\",result=\"error\"}[$__rate_interval]))",
+               "legendFormat": "{{operation}}"
+            }
+         ],
+         "title": "Loop errors",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Age of the latest successful run of each loop, across control-plane replicas. Acknowledgement reads advance only when a member reports.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 56
+         },
+         "id": 32,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "min by (operation) (time() - internal_dns_operation_last_success_timestamp_seconds{namespace=\"internal-dns-system\",operation=~\"$operation\"})",
+               "legendFormat": "{{operation}}"
+            }
+         ],
+         "title": "Time since last success",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Reconciles of project resources across every source project. Each project runs its own controller, so they are summed here.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 60,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false,
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "min": 0,
+               "unit": "ops"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 64
+         },
+         "id": 33,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (result) (rate(controller_runtime_reconcile_total{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval]))",
+               "legendFormat": "{{result}}"
+            }
+         ],
+         "title": "Project reconciles by result",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Slowest 1% of project passes, and the slowest pass, read as the upper bound of its histogram bucket. Every pass reads the source project API directly, so this follows project API latency. On builds without internal_dns_project_pass_seconds both lines stop at 60 s.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 64
+         },
+         "id": 34,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(0.99, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "p99"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "histogram_quantile(1, sum by (le) (rate(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__rate_interval]))) or histogram_quantile(1, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__rate_interval])))",
+               "legendFormat": "slowest"
+            }
+         ],
+         "title": "Project pass time, p99 and slowest",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Project reconciles waiting, summed across projects. A queue that keeps growing means changes are not being compiled.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 64
+         },
+         "id": 35,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum(workqueue_depth{namespace=\"internal-dns-system\",name=~\"internal-dns-control-plane-.*\"})",
+               "legendFormat": "waiting"
+            }
+         ],
+         "title": "Reconcile queue depth",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 72
+         },
+         "id": 36,
+         "title": "Private zones and records",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Private zones across every project.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 73
+         },
+         "id": 37,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(count(dns_zone_info{visibility=\"Private\"}) or vector(0)) and on () count(dns_zone_info{visibility!=\"\"})",
+               "instant": true
+            }
+         ],
+         "title": "Private zones",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Record sets in private zones across every project.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "blue",
+                        "value": null
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 73
+         },
+         "id": 38,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(count(((dns_record_set_status_condition{condition=\"Programmed\"} * on (\"milo.project.name\", namespace, name) group_left (dns_zone_name) dns_record_set_info) and on (\"milo.project.name\", namespace, dns_zone_name) label_replace(dns_zone_info{visibility=\"Private\"}, \"dns_zone_name\", \"$1\", \"name\", \"(.*)\"))) or vector(0)) and on () count(dns_zone_info{visibility!=\"\"})",
+               "instant": true
+            }
+         ],
+         "title": "Private record sets",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Record sets in private zones whose Programmed condition is not true.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 73
+         },
+         "id": 39,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(count(((dns_record_set_status_condition{condition=\"Programmed\"} * on (\"milo.project.name\", namespace, name) group_left (dns_zone_name) dns_record_set_info) and on (\"milo.project.name\", namespace, dns_zone_name) label_replace(dns_zone_info{visibility=\"Private\"}, \"dns_zone_name\", \"$1\", \"name\", \"(.*)\")) != 1) or vector(0)) and on () count(dns_zone_info{visibility!=\"\"})",
+               "instant": true
+            }
+         ],
+         "title": "Private record sets not programmed",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. A network in a region with no Private DNS serving members stays Pending. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "thresholds"
+               },
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "red",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 73
+         },
+         "id": 40,
+         "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ],
+               "fields": "",
+               "values": false
+            },
+            "textMode": "value"
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "count((datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) and on (\"milo.project.name\", namespace, name, reason, status) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"}) >= on (\"milo.project.name\", namespace, name) group_left () max by (\"milo.project.name\", namespace, name) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"})))) or vector(0)",
+               "instant": true
+            }
+         ],
+         "title": "Networks not DNS-ready",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Every private zone whose Programmed condition is not true, with its reason.",
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 77
+         },
+         "id": 41,
+         "options": {
+            "showHeader": true,
+            "sortBy": [
+               {
+                  "desc": false,
+                  "displayName": "Project"
+               }
+            ]
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(dns_zone_status_condition{condition=\"Programmed\"} and on (\"milo.project.name\", namespace, name) dns_zone_info{visibility=\"Private\"}) != 1",
+               "format": "table",
+               "instant": true
+            }
+         ],
+         "title": "Private zones not programmed",
+         "transformations": [
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "Value": true
+                  },
+                  "includeByName": {
+                     "milo.project.name": true,
+                     "name": true,
+                     "namespace": true,
+                     "reason": true,
+                     "status": true
+                  },
+                  "indexByName": {
+                     "milo.project.name": 0,
+                     "name": 2,
+                     "namespace": 1,
+                     "reason": 4,
+                     "status": 3
+                  },
+                  "renameByName": {
+                     "milo.project.name": "Project",
+                     "name": "Zone",
+                     "namespace": "Namespace",
+                     "reason": "Reason",
+                     "status": "Programmed"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Every network in a region whose DNSReady condition is a fault, with its reason. Networks with nothing attached, with DNS turned off, or being deleted are left out.",
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 77
+         },
+         "id": 42,
+         "options": {
+            "showHeader": true,
+            "sortBy": [
+               {
+                  "desc": false,
+                  "displayName": "Project"
+               }
+            ]
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) and on (\"milo.project.name\", namespace, name, reason, status) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"}) >= on (\"milo.project.name\", namespace, name) group_left () max by (\"milo.project.name\", namespace, name) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"})))",
+               "format": "table",
+               "instant": true
+            }
+         ],
+         "title": "Networks not DNS-ready",
+         "transformations": [
+            {
+               "id": "organize",
+               "options": {
+                  "excludeByName": {
+                     "Time": true,
+                     "Value": true
+                  },
+                  "includeByName": {
+                     "milo.project.name": true,
+                     "name": true,
+                     "reason": true,
+                     "status": true
+                  },
+                  "indexByName": {
+                     "milo.project.name": 0,
+                     "name": 1,
+                     "reason": 3,
+                     "status": 2
+                  },
+                  "renameByName": {
+                     "milo.project.name": "Project",
+                     "name": "Network context",
+                     "reason": "Reason",
+                     "status": "DNSReady"
+                  }
+               }
+            }
+         ],
+         "type": "table"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 85
+         },
+         "id": 43,
+         "title": "Configuration delivery",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Publications and acknowledgements waiting for each broker consumer. Each serving member has its own consumers; one that climbs alone is a member that stopped reading.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 86
+         },
+         "id": 44,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (stream_name, consumer_name) (nats_consumer_num_pending{namespace=\"internal-dns-system\"})",
+               "legendFormat": "{{stream_name}} {{consumer_name}}"
+            }
+         ],
+         "title": "Undelivered messages per consumer",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Messages a consumer received and has not acknowledged. A member that cannot validate or activate a snapshot holds its messages here.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 86
+         },
+         "id": 45,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (stream_name, consumer_name) (nats_consumer_num_ack_pending{namespace=\"internal-dns-system\"})",
+               "legendFormat": "{{stream_name}} {{consumer_name}}"
+            }
+         ],
+         "title": "Delivered but not acknowledged",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Client connections on each broker server. The control-plane replicas and every serving member hold one each.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 86
+         },
+         "id": 46,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (pod) (nats_varz_connections{namespace=\"internal-dns-system\"})",
+               "legendFormat": "{{pod}}"
+            }
+         ],
+         "title": "Broker connections",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 94
+         },
+         "id": 47,
+         "title": "Load tests",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Worst time in each interval from a record write to the first answer from the VPC resolver, by test scenario and step. Bars on the right axis count changes that were never answered.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "points",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "pointSize": 4,
+                  "showPoints": "always",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".*never answered"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     },
+                     {
+                        "id": "custom.drawStyle",
+                        "value": "bars"
+                     },
+                     {
+                        "id": "unit",
+                        "value": "short"
+                     },
+                     {
+                        "id": "color",
+                        "value": {
+                           "fixedColor": "red",
+                           "mode": "fixed"
+                        }
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 95
+         },
+         "id": 48,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (scenario, step, resolver) (max_over_time(idns_perf_publish_lag_ms[$__interval]))",
+               "legendFormat": "{{scenario}} {{step}} {{resolver}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (scenario, step) (count_over_time(idns_perf_publish_missed[$__interval]))",
+               "legendFormat": "{{scenario}} {{step}} never answered"
+            }
+         ],
+         "title": "Time to answer a published change",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Worst per-second p99 of load test queries in each interval, by scenario and query kind, taken from the generator with the slowest answers. Timeouts count as 5000 ms.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "ms"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 95
+         },
+         "id": 49,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "max by (scenario, kind) (max_over_time(idns_perf_query_p99_ms[$__interval]))",
+               "legendFormat": "{{scenario}} {{kind}}"
+            }
+         ],
+         "title": "Load test query time (p99)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Average queries per second the load test sent, and failed queries per second, across all generators, by scenario and query kind.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 95
+         },
+         "id": 50,
+         "interval": "1s",
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (scenario, kind) (avg_over_time(idns_perf_query_qps[$__interval]))",
+               "legendFormat": "{{scenario}} {{kind}} sent"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (scenario, kind) (avg_over_time(idns_perf_query_failed[$__interval])) > 0",
+               "legendFormat": "{{scenario}} {{kind}} failed"
+            }
+         ],
+         "title": "Load test queries and failures",
+         "type": "timeseries"
+      }
+   ],
+   "refresh": "1m",
+   "schemaVersion": 41,
+   "tags": [
+      "dns",
+      "internal-dns",
+      "private-dns"
+   ],
+   "templating": {
+      "list": [
+         {
+            "current": {
+               "selected": false,
+               "text": "Service Metrics",
+               "value": "SERVICE_METRICS"
+            },
+            "hide": 0,
+            "label": "Data Source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "allValue": ".*",
+            "current": {
+               "selected": false,
+               "text": [
+                  "All"
+               ],
+               "value": [
+                  "$__all"
+               ]
+            },
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "label": "Control-plane loop",
+            "multi": true,
+            "name": "operation",
+            "query": "label_values(internal_dns_operations_total{namespace=\"internal-dns-system\"}, operation)",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-6h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "Private DNS",
+   "uid": "internal-dns"
+}

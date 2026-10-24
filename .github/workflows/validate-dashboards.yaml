@@ -1,0 +1,66 @@
+name: Validate Dashboards
+
+# Re-renders every Grafana dashboard from its jsonnet source and fails when the
+# committed JSON differs, so the OCI bundle always ships what the source says.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/validate-dashboards.yaml'
+      - 'hack/validate-dashboard-drift'
+      - 'observability/**'
+      - 'config/components/dashboards/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate-dashboards.yaml'
+      - 'hack/validate-dashboard-drift'
+      - 'observability/**'
+      - 'config/components/dashboards/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-dashboards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ github.token }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: zendesk/setup-jsonnet@v16
+        with:
+          version: v0.20.0
+
+      - name: Install jsonnet-bundler
+        run: go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@v0.6.0
+
+      - name: Cache jsonnet vendor directories
+        uses: actions/cache@v4
+        with:
+          path: observability/**/vendor
+          key: jsonnet-vendor-${{ hashFiles('observability/**/jsonnetfile.lock.json') }}
+
+      - name: Render dashboards
+        run: task -d observability/dashboards/private-dns install build
+
+      - name: Validate rendered dashboards are in sync
+        run: hack/validate-dashboard-drift
+
+      - name: Validate the dashboards component builds
+        # A component cannot be built on its own, so wrap it in a throwaway
+        # kustomization the way an installer would.
+        run: |
+          mkdir -p .dashboards-check
+          printf 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: dashboards-check\ncomponents:\n  - ../config/components/dashboards\n' > .dashboards-check/kustomization.yaml
+          kubectl kustomize .dashboards-check >/dev/null

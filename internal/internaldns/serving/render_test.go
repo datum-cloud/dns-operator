@@ -213,3 +213,59 @@ func TestNodeIdentityKeyMustMatchAcrossDaemons(t *testing.T) {
 		t.Fatal("relative identity key path accepted")
 	}
 }
+
+func TestRenderForwardsLoopbackReadinessCanaryBeforeClassifying(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	for _, bindings := range [][]model.Binding{s.Bindings, nil} {
+		s.Bindings = bindings
+		r, err := Render(c, s, map[string]bool{"bind-a": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []DNSDistRenderConfig{c.NodeDNSDist, c.ClusterDNSDist} {
+			config := string(r.Files[d.Path])
+			canary := `local function readinessCanary() local nmg = newNMG(); nmg:addMask("127.0.0.0/8"); nmg:addMask("::1/128"); return AndRule({NetmaskGroupRule(nmg, true, true),QClassRule(DNSClass.CHAOS),QTypeRule(DNSQType.TXT),QNameRule("ready.internal-dns.")}) end`
+			unavailable := `appendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule("` + d.PoolName + `"))}),RCodeAction(DNSRCode.SERVFAIL))`
+			forward := `appendRule(readinessCanary(),PoolAction("` + d.PoolName + `"))`
+			refuse := `appendRule(NotRule(TagRule("dns-context")), RCodeAction(DNSRCode.REFUSED))`
+			at := []int{strings.Index(config, canary), strings.Index(config, unavailable), strings.Index(config, forward), strings.Index(config, refuse)}
+			for i := range at {
+				if at[i] < 0 || i > 0 && at[i] < at[i-1] {
+					t.Fatalf("%s with %d bindings must define the loopback canary, answer SERVFAIL without a backend, then forward, all before refusing unclassified traffic: %v", d.Path, len(bindings), at)
+				}
+			}
+			if strings.Count(config, "readinessCanary()") != 3 {
+				t.Fatalf("%s uses the canary rule outside its two loopback rules", d.Path)
+			}
+		}
+	}
+}
+
+func TestRenderReadinessCanaryMatchesLocalProbeSourcesAndIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		listen string
+		mask   string
+	}{
+		{"0.0.0.0:53", ""},
+		{"[::]:53", ""},
+		{"127.0.0.1:53", ""},
+		{"10.253.0.5:53", `nmg:addMask("10.253.0.5/32");`},
+		{"[fd71::5]:53", `nmg:addMask("fd71::5/128");`},
+	} {
+		canary := string(renderDNSDistReadinessCanary(DNSDistRenderConfig{ListenAddress: tc.listen, PoolName: "pool"}))
+		if strings.Count(canary, "nmg:addMask(") != 2+min(len(tc.mask), 1) || tc.mask != "" && !strings.Contains(canary, tc.mask) {
+			t.Fatalf("%s canary sources:\n%s", tc.listen, canary)
+		}
+		if strings.Contains(canary, "SetEDNSOptionAction") {
+			t.Fatal("canary carries an identity option without an identity key")
+		}
+	}
+	keyed := string(renderDNSDistReadinessCanary(DNSDistRenderConfig{ListenAddress: "[::]:53", PoolName: "pool", IdentityKeyFile: "/run/identity.key"}))
+	identity := strings.Index(keyed, `appendRule(readinessCanary(),SetEDNSOptionAction(65431, internalDNSIdentityKey.."::1"))`)
+	forward := strings.Index(keyed, `appendRule(readinessCanary(),PoolAction("pool"))`)
+	if identity < 0 || forward < identity {
+		t.Fatalf("keyed canary must carry the identity option to the pool:\n%s", keyed)
+	}
+}

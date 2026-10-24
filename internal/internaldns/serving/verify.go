@@ -215,6 +215,12 @@ func publicationAnswerError(answer *dns.Msg, view PublicationView) error {
 }
 
 func exchangePublication(ctx context.Context, network, server, name string, view PublicationView, timeout time.Duration) (*dns.Msg, error) {
+	msg := new(dns.Msg)
+	msg.SetQuestion(name, dns.TypeSOA)
+	return exchangeProxied(ctx, network, server, msg, view, timeout)
+}
+
+func exchangeProxied(ctx context.Context, network, server string, msg *dns.Msg, view PublicationView, timeout time.Duration) (*dns.Msg, error) {
 	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, server)
 	if err != nil {
 		return nil, err
@@ -227,8 +233,6 @@ func exchangePublication(ctx context.Context, network, server, name string, view
 	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
-	msg := new(dns.Msg)
-	msg.SetQuestion(name, dns.TypeSOA)
 	wire, err := msg.Pack()
 	if err != nil {
 		return nil, err

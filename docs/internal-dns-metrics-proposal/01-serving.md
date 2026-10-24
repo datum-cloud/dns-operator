@@ -56,7 +56,7 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 
 | Metric | Type | Labels |
 |---|---|---|
-| `internal_dns_context_queries_total` | counter | `outcome` ∈ `served_zone`, `forwarded_next`, `forwarded_public`, `refused_unknown_context`, `refused_bad_destination`, `refused_bad_identity`, `refused_unsupported`, `refused_transfer`, `servfail_no_state`, `servfail_context_pending`, `servfail_zone_pending`, `servfail_no_upstream` |
+| `internal_dns_context_queries_total` | counter | `outcome` ∈ `served_zone`, `forwarded_next`, `forwarded_public`, `refused_unknown_context`, `refused_bad_destination`, `refused_bad_identity`, `refused_unsupported`, `refused_transfer`, `servfail_no_state`, `servfail_context_pending`, `servfail_zone_pending`, `servfail_no_upstream`, `readiness_canary`, `servfail_canary_bad_identity` |
 | `internal_dns_context_snapshot_contexts` | gauge | `state` ∈ `ready`, `pending` |
 | `internal_dns_context_snapshot_reloads_total` | counter | `result` ∈ `applied`, `rejected` |
 | `internal_dns_context_snapshot_applied_timestamp_seconds` | gauge | — |

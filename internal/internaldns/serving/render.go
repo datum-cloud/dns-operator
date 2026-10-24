@@ -354,7 +354,8 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 			fmt.Fprintf(&out, "internalDNSPools[%q] = true\nend\n", name)
 		}
 	}
-	fmt.Fprint(&out, "local function destination(address) local nmg = newNMG(); nmg:addMask(address); return NetmaskGroupRule(nmg, false, true) end\n\n")
+	out.WriteString(dnsdistDestinationHelper)
+	out.Write(renderDNSDistReadinessCanary(c))
 	for _, b := range bindings {
 		addr := b.ConsumerAddress
 		if cluster {
@@ -403,6 +404,71 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	}
 	fmt.Fprint(&out, "setRules(rules)\nend\n")
 	return out.Bytes()
+}
+
+const dnsdistDestinationHelper = "local function destination(address) local nmg = newNMG(); nmg:addMask(address); return NetmaskGroupRule(nmg, false, true) end\n\n"
+
+const (
+	dnsdistCanaryStart = "-- readiness canary\n"
+	dnsdistCanaryEnd   = "-- end readiness canary\n"
+)
+
+// The canary is accepted only from loopback and the listen address, the
+// sources a local probe can have, so tenants cannot reach the backend pool
+// without being classified into a context.
+func renderDNSDistReadinessCanary(c DNSDistRenderConfig) []byte {
+	var out bytes.Buffer
+	out.WriteString(dnsdistCanaryStart)
+	sources := []string{"127.0.0.0/8", "::1/128"}
+	if host, _, err := net.SplitHostPort(c.ListenAddress); err == nil {
+		if addr, err := netip.ParseAddr(host); err == nil && !addr.IsUnspecified() && !addr.IsLoopback() {
+			addr = addr.Unmap()
+			sources = append(sources, netip.PrefixFrom(addr, addr.BitLen()).String())
+		}
+	}
+	out.WriteString("local function readinessCanary() local nmg = newNMG();")
+	for _, source := range sources {
+		fmt.Fprintf(&out, " nmg:addMask(%q);", source)
+	}
+	fmt.Fprintf(&out, " return AndRule({NetmaskGroupRule(nmg, true, true),QClassRule(DNSClass.CHAOS),QTypeRule(DNSQType.TXT),QNameRule(%q)}) end\n", contextdns.ReadinessCanaryName)
+	fmt.Fprintf(&out, "getPool(%q)\nappendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\n", c.PoolName, c.PoolName)
+	if c.IdentityKeyFile != "" {
+		fmt.Fprintf(&out, "appendRule(readinessCanary(),SetEDNSOptionAction(%d, internalDNSIdentityKey..\"::1\"))\n", contextdns.IdentityOption)
+	}
+	fmt.Fprintf(&out, "appendRule(readinessCanary(),PoolAction(%q))\n", c.PoolName)
+	out.WriteString(dnsdistCanaryEnd)
+	return out.Bytes()
+}
+
+// withDNSDistReadinessCanary replaces the canary in retained rules, or adds it
+// to rules accepted before the canary existed. It reports false when neither
+// is possible.
+func withDNSDistReadinessCanary(c DNSDistRenderConfig, rules []byte) ([]byte, bool) {
+	canary := renderDNSDistReadinessCanary(c)
+	if before, rest, ok := bytes.Cut(rules, []byte(dnsdistCanaryStart)); ok {
+		_, after, ok := bytes.Cut(rest, []byte(dnsdistCanaryEnd))
+		if !ok {
+			return nil, false
+		}
+		return append(append(append([]byte(nil), before...), canary...), after...), true
+	}
+	before, after, ok := bytes.Cut(rules, []byte(dnsdistDestinationHelper))
+	if !ok {
+		return nil, false
+	}
+	return append(append(append(append([]byte(nil), before...), dnsdistDestinationHelper...), canary...), after...), true
+}
+
+func withoutDNSDistReadinessCanary(rules []byte) []byte {
+	before, rest, ok := bytes.Cut(rules, []byte(dnsdistCanaryStart))
+	if !ok {
+		return rules
+	}
+	_, after, ok := bytes.Cut(rest, []byte(dnsdistCanaryEnd))
+	if !ok {
+		return rules
+	}
+	return append(append([]byte(nil), before...), after...)
 }
 
 func dnsdistTransport(c DNSDistRenderConfig) string {

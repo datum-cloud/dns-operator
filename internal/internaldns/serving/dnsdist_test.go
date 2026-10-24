@@ -6,11 +6,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/miekg/dns"
 	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
@@ -191,5 +195,119 @@ func TestRefreshDropsRetainedRulesWhenTransportChanges(t *testing.T) {
 	refreshed, err := refreshDNSDistConfiguration(keyed, retained)
 	if err != nil || !bytes.Equal(refreshed, retained) {
 		t.Fatal("refresh with an unchanged transport lost accepted rules", err)
+	}
+}
+
+func TestRestartAddsReadinessCanaryToRulesFromAnOlderRelease(t *testing.T) {
+	for _, verify := range []bool{false, true} {
+		t.Run(fmt.Sprintf("verify=%v", verify), func(t *testing.T) {
+			cfg := regionalTestConfig(t)
+			cfg.Mode = ModeResolver
+			cfg.Render.Role = RenderNode
+			cfg.Render.NodeDNSDist.Path = filepath.Join(t.TempDir(), "node-dnsdist.conf")
+			if verify {
+				startRefusingDaemons(t, &cfg)
+			}
+			_, snapshot := renderFixture(t)
+			data := renderDNSDist(cfg.Render.NodeDNSDist, cfg.Render.NodeDNSDist.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+			old := withoutDNSDistReadinessCanary(data)
+			if bytes.Contains(old, []byte("readinessCanary")) {
+				t.Fatal("fixture still carries the canary")
+			}
+			if err := os.WriteFile(cfg.Render.NodeDNSDist.Path, old, 0644); err != nil {
+				t.Fatal(err)
+			}
+			agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			agent.state.Snapshot = &snapshot
+			agent.state.BindingFences, _ = advanceBindingFences(nil, snapshot)
+			agent.state.Active = &activeConfiguration{Snapshot: snapshot, Files: map[string][]byte{cfg.Render.NodeDNSDist.Path: old}}
+			agent.state.RenderedHash = hashFiles(agent.state.Active.Files)
+			if err := agent.store.Save(agent.state); err != nil {
+				t.Fatal(err)
+			}
+			if err := prepareDNSDistRouter(cfg.Render.NodeDNSDist); err != nil {
+				t.Fatal(err)
+			}
+			installed, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+			if err != nil || !bytes.Equal(installed, data) {
+				t.Fatalf("startup did not add the readiness canary to retained rules: %v", err)
+			}
+			runtimeDir := t.TempDir()
+			if err := restoreDaemonPermissions(cfg.StateDir, runtimeDir, []string{"coredns"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(runtimeDir, "allow-coredns")); err != nil {
+				t.Fatalf("adding the canary withheld daemon start permission: %v", err)
+			}
+			runner := &recordingRunner{}
+			restarted, err := NewAgent(cfg, Dependencies{Runner: runner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := time.Now()
+			if err := restarted.restoreActive(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.calls) != 0 || restarted.needsActivation || !bytes.Equal(restarted.state.Active.Files[cfg.Render.NodeDNSDist.Path], data) {
+				t.Fatalf("restart did not carry the canary into the approved checkpoint without a reload: %v", runner.calls)
+			}
+			if time.Since(started) > localDaemonStartGrace/2 {
+				t.Fatal("restart waited out the daemon start grace")
+			}
+			refreshed, err := refreshDNSDistConfiguration(cfg.Render.NodeDNSDist, data)
+			if err != nil || !bytes.Equal(refreshed, data) {
+				t.Fatalf("refreshing current rules changed them: %v", err)
+			}
+		})
+	}
+}
+
+// startRefusingDaemons stands in for node daemons from an older release, which
+// answer but refuse the readiness canary.
+func startRefusingDaemons(t *testing.T, cfg *Config) {
+	t.Helper()
+	coreDNS, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dnsdistTCP, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dnsdistUDP, err := net.ListenPacket("udp", dnsdistTCP.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
+		_ = w.WriteMsg(readinessCanaryReply(request, dns.RcodeRefused, ""))
+	})
+	udp := &dns.Server{PacketConn: dnsdistUDP, Handler: refuse}
+	tcp := &dns.Server{Listener: dnsdistTCP, Handler: refuse}
+	go func() { _ = udp.ActivateAndServe() }()
+	go func() { _ = tcp.ActivateAndServe() }()
+	go serveProxiedTCPDNS(coreDNS, dns.RcodeRefused, "")
+	t.Cleanup(func() { _ = udp.Shutdown(); _ = tcp.Shutdown(); _ = coreDNS.Close() })
+	cfg.UnsafeAllowNoDNSVerify = false
+	cfg.Render.NodeCoreDNS.ListenAddress = "127.0.0.1"
+	cfg.Render.NodeCoreDNS.Port = uint16(coreDNS.Addr().(*net.TCPAddr).Port)
+	cfg.Render.NodeDNSDist.ListenAddress = dnsdistTCP.Addr().String()
+}
+
+func TestRefreshFallsBackToStartupWhenTheCanaryCannotBePlaced(t *testing.T) {
+	config, snapshot := renderFixture(t)
+	router := config.NodeDNSDist
+	data := renderDNSDist(router, router.Backends, snapshot.Bindings, map[string]bool{"bind-a": true}, false, nil, nil)
+	startup := renderDNSDist(router, router.Backends, nil, nil, false, nil, nil)
+	for name, retained := range map[string][]byte{
+		"start without end": bytes.Replace(data, []byte(dnsdistCanaryEnd), nil, 1),
+		"no helper":         bytes.Replace(withoutDNSDistReadinessCanary(data), []byte(dnsdistDestinationHelper), nil, 1),
+	} {
+		refreshed, err := refreshDNSDistConfiguration(router, retained)
+		if err != nil || !bytes.Equal(refreshed, startup) {
+			t.Fatalf("%s: retained rules without a placeable canary were kept: %v", name, err)
+		}
 	}
 }

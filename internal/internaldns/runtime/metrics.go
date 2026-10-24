@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/util/flowcontrol"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -194,4 +196,32 @@ func (l *loopLiveness) check(*http.Request) error {
 		}
 	}
 	return errors.Join(stalled...)
+}
+
+var clientThrottle = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+	Name:    "internal_dns_kube_client_throttle_seconds",
+	Help:    "Time API requests waited for the client-side rate limiter, by client.",
+	Buckets: []float64{.001, .01, .05, .1, .25, .5, 1, 2.5, 5, 10},
+}, []string{"client"})
+
+func init() {
+	metrics.Registry.MustRegister(clientThrottle)
+}
+
+type timedRateLimiter struct {
+	flowcontrol.RateLimiter
+	wait prometheus.Observer
+}
+
+func (l *timedRateLimiter) Wait(ctx context.Context) error {
+	started := time.Now()
+	err := l.RateLimiter.Wait(ctx)
+	l.wait.Observe(time.Since(started).Seconds())
+	return err
+}
+
+func (l *timedRateLimiter) Accept() {
+	started := time.Now()
+	l.RateLimiter.Accept()
+	l.wait.Observe(time.Since(started).Seconds())
 }

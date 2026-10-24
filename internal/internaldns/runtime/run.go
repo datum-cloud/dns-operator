@@ -83,7 +83,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("load platform kubeconfig: %w", err)
 	}
-	applyKubeAPILimit(platformREST, cfg.PlatformKubeAPI)
+	applyKubeAPILimit(platformREST, cfg.PlatformKubeAPI, "platform")
 	platformClient, err := client.New(platformREST, client.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("create uncached platform client: %w", err)
@@ -107,7 +107,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			}
 			projectREST = loaded
 		}
-		applyKubeAPILimit(projectREST, p.KubeAPI)
+		applyKubeAPILimit(projectREST, p.KubeAPI, "project")
 		direct, err := client.New(projectREST, client.Options{Scheme: scheme})
 		if err != nil {
 			return projectRuntime{}, fmt.Errorf("create project %q direct client: %w", p.Name, err)
@@ -166,7 +166,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		if loadErr != nil {
 			return fmt.Errorf("load project discovery kubeconfig: %w", loadErr)
 		}
-		applyKubeAPILimit(discoveryREST, cfg.ProjectDiscovery.KubeAPI)
+		applyKubeAPILimit(discoveryREST, cfg.ProjectDiscovery.KubeAPI, "discovery")
 		discoveryClient, clientErr := client.New(discoveryREST, client.Options{Scheme: scheme})
 		if clientErr != nil {
 			return fmt.Errorf("create project discovery client: %w", clientErr)
@@ -484,10 +484,10 @@ func restConfig(path string) (*rest.Config, error) {
 // applyKubeAPILimit installs one token bucket on the REST config before that
 // config is shared by a manager and its uncached client. client-go otherwise
 // creates a separate default 5 QPS limiter for every constructed client.
-func applyKubeAPILimit(c *rest.Config, limits KubeAPIClientConfig) {
+func applyKubeAPILimit(c *rest.Config, limits KubeAPIClientConfig, name string) {
 	c.QPS = limits.QPS
 	c.Burst = limits.Burst
-	c.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(limits.QPS, limits.Burst)
+	c.RateLimiter = &timedRateLimiter{RateLimiter: flowcontrol.NewTokenBucketRateLimiter(limits.QPS, limits.Burst), wait: clientThrottle.WithLabelValues(name)}
 }
 
 func connectWithRetry(ctx context.Context, cfg transport.Config) (*transport.JetStream, error) {

@@ -55,7 +55,7 @@ func TestKubeAPIRateLimitDefaultsOverridesAndValidation(t *testing.T) {
 		t.Fatalf("source override was not preserved: %#v", base.Projects[0].KubeAPI)
 	}
 	restConfig := &rest.Config{}
-	applyKubeAPILimit(restConfig, base.Projects[0].KubeAPI)
+	applyKubeAPILimit(restConfig, base.Projects[0].KubeAPI, "project")
 	if restConfig.QPS != 30 || restConfig.Burst != 60 || restConfig.RateLimiter == nil {
 		t.Fatalf("REST client did not receive shared rate limiter: %#v", restConfig)
 	}

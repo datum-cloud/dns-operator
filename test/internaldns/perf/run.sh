@@ -6,11 +6,17 @@
 #                      run dns.js on every k6 instance at once
 #   run.sh propagate   rewrite a private TXT record on a timer
 #   run.sh down        delete everything run.sh created
+#   run.sh analyze [DIR]
+#                      per-step and per-second stats from a run's query records
 #
 # See README.md for the variables each command reads.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+if [[ ${1:-} == analyze ]]; then
+  shift
+  exec "$here/analyze.sh" "$@"
+fi
 
 : "${PROJECT:?set PROJECT to the Datum Cloud project to test in}"
 LOCATION=${LOCATION:-us-central-1}
@@ -82,8 +88,8 @@ run() {
   mkdir -p "$RESULTS"
   for pod in "${pods[@]}"; do
     datumctl compute exec --project "$PROJECT" "$pod" -c k6 -- \
-      env PRIVATE_NAMES="$names" DURATION="$DURATION" SUMMARY_PATH=/tmp/k6-summary.json "$@" \
-      k6 run --quiet /perf/dns.js >"$RESULTS/$pod.txt" 2>&1 &
+      env PRIVATE_NAMES="$names" DURATION="$DURATION" SUMMARY_PATH=/tmp/k6-summary.json K6_CSV_TIME_FORMAT=unix_milli "$@" \
+      k6 run --quiet --system-tags=scenario --out csv=/tmp/k6-queries.csv.gz /perf/dns.js >"$RESULTS/$pod.txt" 2>&1 &
     pids+=($!)
   done
   for i in "${!pods[@]}"; do
@@ -95,7 +101,18 @@ run() {
     echo "== $pod"
     if grep -q '^internal DNS load test' "$RESULTS/$pod.txt"; then
       sed -n '/^internal DNS load test/,$p' "$RESULTS/$pod.txt"
-      datumctl compute exec --project "$PROJECT" "$pod" -c k6 -- cat /tmp/k6-summary.json >"$RESULTS/$pod.json" || failed=1
+      # One exec for both files: the project allows only a few exec sessions.
+      if datumctl compute exec --project "$PROJECT" "$pod" -c k6 -- tar -C /tmp -cf - k6-summary.json k6-queries.csv.gz >"$RESULTS/$pod.tar" &&
+        tar -C "$RESULTS" -xf "$RESULTS/$pod.tar"; then
+        mv "$RESULTS/k6-summary.json" "$RESULTS/$pod.json"
+        mv "$RESULTS/k6-queries.csv.gz" "$RESULTS/$pod.csv.gz"
+        rm "$RESULTS/$pod.tar"
+      else
+        echo "$pod: could not copy the query records back; copying the summary alone" >&2
+        rm -f "$RESULTS/$pod.tar"
+        datumctl compute exec --project "$PROJECT" "$pod" -c k6 -- cat /tmp/k6-summary.json >"$RESULTS/$pod.json" || true
+        failed=1
+      fi
     else
       echo "$pod: no summary; output follows" >&2
       cat "$RESULTS/$pod.txt" >&2
@@ -103,6 +120,9 @@ run() {
     fi
   done
   echo "Results in $RESULTS"
+  if ls "$RESULTS"/*.csv.gz >/dev/null 2>&1; then
+    "$here/analyze.sh" "$RESULTS" || failed=1
+  fi
   return "$failed"
 }
 
@@ -137,5 +157,5 @@ cmd=${1:-}
 shift || true
 case $cmd in
   up | run | propagate | down) guard; "$cmd" "$@" ;;
-  *) sed -n '2,10p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,12p' "$0" >&2; exit 2 ;;
 esac

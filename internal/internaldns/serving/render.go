@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ type DNSDistRenderConfig struct {
 	PoolName        string          `json:"poolName"`
 	Backends        []model.Backend `json:"backends,omitempty"`
 	IdentityKeyFile string          `json:"identityKeyFile,omitempty"`
+	MetricsAddress  string          `json:"metricsAddress,omitempty"`
+	MetricsACLs     []string        `json:"metricsACLs,omitempty"`
 }
 
 type CoreDNSRenderConfig struct {
@@ -145,6 +148,9 @@ func validateRenderConfig(c RenderConfig) error {
 		if d.IdentityKeyFile != "" && !filepath.IsAbs(d.IdentityKeyFile) {
 			return fmt.Errorf("%s identity key file must be an absolute path", label)
 		}
+		if err := validateDNSDistMetrics(d); err != nil {
+			return fmt.Errorf("%s %w", label, err)
+		}
 	}
 	if (role == RenderNode || role == RenderBoth) && c.NodeDNSDist.IdentityKeyFile != c.NodeCoreDNS.IdentityKeyFile {
 		return errors.New("node dnsdist and node CoreDNS require the same identity key file")
@@ -174,6 +180,76 @@ func validateRenderConfig(c RenderConfig) error {
 		}
 	}
 	return nil
+}
+
+var envReference = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
+
+func validateDNSDistMetrics(d DNSDistRenderConfig) error {
+	if d.MetricsAddress == "" {
+		if len(d.MetricsACLs) > 0 {
+			return errors.New("metrics ACLs require a metrics address")
+		}
+		return nil
+	}
+	if _, err := metricsListenAddress(envReference.ReplaceAllString(d.MetricsAddress, "192.0.2.1")); err != nil {
+		return fmt.Errorf("metrics address %q: environment references may stand only for the host: %w", d.MetricsAddress, err)
+	}
+	if len(d.MetricsACLs) == 0 {
+		return errors.New("metrics address requires metrics ACLs naming the scrapers")
+	}
+	for _, acl := range d.MetricsACLs {
+		prefix, err := netip.ParsePrefix(acl)
+		if err != nil {
+			return fmt.Errorf("invalid metrics ACL %q", acl)
+		}
+		if prefix.Bits() == 0 {
+			return fmt.Errorf("metrics ACL %q admits every address", acl)
+		}
+	}
+	return nil
+}
+
+// Expands ${VAR} references when dnsdist starts, and turns metrics off rather
+// than failing startup when the result is not a specific IP address and port.
+const dnsdistMetricsAddressLua = `local function internalDNSMetricsAddress(raw)
+  local address = raw:gsub("%${([%w_]+)}", function(name) return os.getenv(name) or "" end)
+  local host, port = address:match("^%[(.*)%]:(%d+)$")
+  if not host then host, port = address:match("^(.*):(%d+)$") end
+  port = tonumber(port)
+  if not host or host == "" or not port or port == 0 or port > 65535 then return nil, address end
+  local ok, ca = pcall(newCA, host)
+  if not ok then return nil, address end
+  host = ca:toString():lower()
+  if host == "0.0.0.0" or host == "::" or host:match("^::ffff:0%.0%.0%.0$") or host:match("^::ffff:0:0$") then return nil, address end
+  if host:find(":") then return "[" .. host .. "]:" .. port, address end
+  return host .. ":" .. port, address
+end
+`
+
+// The web server gets a random password and API key nobody knows: dnsdist
+// accepts any credentials when none are set, which would open its API.
+const dnsdistWebSecretLua = `local handle = assert(io.open("/dev/urandom", "rb"))
+local secret = handle:read(32)
+handle:close()
+internalDNSWebSecret = hashPassword((secret:gsub(".", function(c) return string.format("%02x", c:byte()) end)))
+`
+
+func renderDNSDistMetricsStart(out *bytes.Buffer, c DNSDistRenderConfig) {
+	if c.MetricsAddress == "" {
+		return
+	}
+	out.WriteString("if os.getenv(\"INTERNAL_DNS_VALIDATE\") ~= \"1\" then\n" + dnsdistMetricsAddressLua)
+	fmt.Fprintf(out, "local address, raw = internalDNSMetricsAddress(%q)\nif address then\n", c.MetricsAddress)
+	out.WriteString(dnsdistWebSecretLua + "webserver(address)\n")
+	fmt.Fprint(out, "else\nerrlog(\"internal DNS: metrics address \" .. raw .. \" is not a specific IP address and port; metrics are off\")\nend\nend\n")
+}
+
+// Runs on every reload so ACL changes apply without a restart.
+func renderDNSDistMetricsAccess(out *bytes.Buffer, c DNSDistRenderConfig) {
+	if c.MetricsAddress == "" {
+		return
+	}
+	fmt.Fprintf(out, "if internalDNSWebSecret then\nsetWebserverConfig({acl=%q,password=internalDNSWebSecret,apiKey=internalDNSWebSecret,statsRequireAuthentication=false,apiRequiresAuthentication=true,dashboardRequiresAuthentication=true})\nend\n", strings.Join(c.MetricsACLs, ","))
 }
 
 func validateBackends(backends []model.Backend) error {
@@ -247,7 +323,9 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	for _, backend := range backends {
 		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy)
 	}
+	renderDNSDistMetricsStart(&out, c)
 	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
+	renderDNSDistMetricsAccess(&out, c)
 	fmt.Fprint(&out, dnsdistRulesBoundary+"local function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n")
 	if cluster {
 		pools := map[string]map[string]bool{}

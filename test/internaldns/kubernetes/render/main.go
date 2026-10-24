@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -248,7 +249,7 @@ func fleetPod(name, member, role string) object {
 		if role != nodeRole {
 			dnsdistMounts = append(dnsdistMounts, mount("identity", "/var/run/internal-dns/identity", true))
 		}
-		containers = append(containers, object{"name": "dnsdist", "image": serving.DNSDistImage, "command": []string{"/usr/local/bin/dnsdist"}, "args": []string{"--supervised", "--disable-syslog", "-C", "/etc/internal-dns/" + file}, "securityContext": sec, "volumeMounts": dnsdistMounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
+		containers = append(containers, object{"name": "dnsdist", "image": serving.DNSDistImage, "command": []string{"/usr/local/bin/dnsdist"}, "args": []string{"--supervised", "--disable-syslog", "-C", "/etc/internal-dns/" + file}, "env": []object{{"name": "POD_IP", "valueFrom": object{"fieldRef": object{"fieldPath": "status.podIP"}}}}, "securityContext": sec, "volumeMounts": dnsdistMounts, "resources": object{"requests": object{"cpu": "50m", "memory": "64Mi"}, "limits": object{"memory": "512Mi"}}})
 	}
 	volumes := []object{{"name": "config", "configMap": object{"name": name + "-config", "optional": true}}, credentialsVolume(member), {"name": "state", "persistentVolumeClaim": object{"claimName": name + "-state"}}, {"name": "daemon-config", "persistentVolumeClaim": object{"claimName": name + "-config"}}, {"name": "lease", "emptyDir": object{"medium": "Memory"}}, {"name": "runtime", "emptyDir": object{}}}
 	if role != nodeRole {
@@ -329,6 +330,17 @@ func client(path string) *kubernetes.Clientset {
 	must(err)
 	return cl
 }
+
+const dnsdistMetricsAddress = "[${POD_IP}]:8083"
+
+var dnsdistMetricsACLs = []string{"fd00::/8", "10.244.0.0/16"}
+
+func metricsURL(cl *kubernetes.Clientset, name string) string {
+	p, err := cl.CoreV1().Pods(ns).Get(context.Background(), name, metav1.GetOptions{})
+	must(err)
+	return "http://" + net.JoinHostPort(p.Status.PodIP, "8083")
+}
+
 func ipv6(cl *kubernetes.Clientset, name string) string {
 	p, err := cl.CoreV1().Pods(ns).Get(context.Background(), name, metav1.GetOptions{})
 	must(err)
@@ -442,12 +454,16 @@ func configure() {
 		if i == 0 {
 			c.Agent.Render.NodeDNSDist.Backends = cfg.NodeBackends
 			c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
+			c.Agent.Render.NodeDNSDist.MetricsAddress = dnsdistMetricsAddress
+			c.Agent.Render.NodeDNSDist.MetricsACLs = dnsdistMetricsACLs
 			c.Agent.Render.NodeCoreDNS.ListenAddress = "127.0.0.1"
 			c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{"127.0.0.1"}
 		}
 		if i == 1 {
 			c.Agent.Render.ClusterDNSDist.Backends = cfg.ClusterBackends
 			c.Agent.Render.ClusterDNSDist.ACLs = []string{nodeIP + "/128", frontIP + "/128", "::1/128"}
+			c.Agent.Render.ClusterDNSDist.MetricsAddress = dnsdistMetricsAddress
+			c.Agent.Render.ClusterDNSDist.MetricsACLs = dnsdistMetricsACLs
 		}
 		if i >= 2 {
 			c.Agent.Render.ClusterCoreDNS.ListenAddress = bindIP[i-2]
@@ -468,7 +484,7 @@ func configure() {
 	items = append(items, routes)
 	list("platform-configure.json", items)
 	// No tokens or certificate contents are included in the public contract.
-	write("environment.json", object{"platformKubeconfig": platform, "namespace": ns, "region": "us-central1", "shard": "shared-0", "probePod": "internal-dns-probe", "probeContainer": "probe", "probeBinary": "/dns-qualify", "controllerDeployments": []string{"control-a", "control-b"}, "brokerStatefulSet": "internal-dns-nats", "projects": projectRows, "regionalMembers": memberNames[2:], "members": memberNames, "limitations": []string{"Service-side route fixture, not Galactic VPC authorization", "Independent Kind project APIs, not Milo project discovery", "One host and one region, not independent regional failure"}})
+	write("environment.json", object{"platformKubeconfig": platform, "namespace": ns, "region": "us-central1", "shard": "shared-0", "probePod": "internal-dns-probe", "probeContainer": "probe", "probeBinary": "/dns-qualify", "controllerDeployments": []string{"control-a", "control-b"}, "brokerStatefulSet": "internal-dns-nats", "projects": projectRows, "regionalMembers": memberNames[2:], "members": memberNames, "dnsdistMetrics": []string{metricsURL(cl, podNames[0]), metricsURL(cl, podNames[1])}, "limitations": []string{"Service-side route fixture, not Galactic VPC authorization", "Independent Kind project APIs, not Milo project discovery", "One host and one region, not independent regional failure"}})
 }
 
 func publicRecursorIP(cl *kubernetes.Clientset) string {

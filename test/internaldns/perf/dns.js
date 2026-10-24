@@ -8,6 +8,16 @@ import exec from 'k6/execution';
 const env = (k, d) => (__ENV[k] === undefined || __ENV[k] === '' ? d : __ENV[k]);
 const list = (k, d) => env(k, d).split(',').map((s) => s.trim()).filter(Boolean);
 const int = (k, d) => parseInt(env(k, String(d)), 10);
+// k6 durations: a bare number of seconds, or parts such as 1m30s.
+const seconds = (d) => {
+  const text = String(d);
+  if (/^\d+(\.\d+)?$/.test(text)) return Number(text);
+  const parts = [...text.matchAll(/(\d+(?:\.\d+)?)(ms|s|m|h)/g)];
+  if (parts.length === 0 || parts.map((p) => p[0]).join('') !== text) {
+    throw new Error(`cannot read duration ${d}; use a k6 duration such as 90s or 1m30s`);
+  }
+  return parts.reduce((sum, p) => sum + Number(p[1]) * { ms: 0.001, s: 1, m: 60, h: 3600 }[p[2]], 0);
+};
 
 const RESOLVER = env('RESOLVER', '[fd53::53]:53');
 const DURATION = env('DURATION', '2m');
@@ -39,7 +49,11 @@ const propagationSeen = new Counter('idns_propagation_updates');
 
 // A comma list in RAMP (queries per second) turns the private scenario into a
 // step ramp, holding each step for STAGE_DURATION, to find where latency or
-// errors break down.
+// errors break down. Every sample is tagged with the step it was sent in, and
+// samples sent while moving between steps with "ramping".
+const RAMP_SECONDS = 10;
+const RAMP = list('RAMP', '').map(Number);
+const stageOf = {};
 function arrival(rate, ramp) {
   const vus = (r) => ({ preAllocatedVUs: Math.max(10, Math.ceil(r / 20)), maxVUs: Math.max(50, r * 2) });
   if (ramp.length === 0) {
@@ -47,7 +61,7 @@ function arrival(rate, ramp) {
   }
   const stages = [];
   for (const r of ramp) {
-    stages.push({ target: r, duration: '10s' }, { target: r, duration: STAGE_DURATION });
+    stages.push({ target: r, duration: `${RAMP_SECONDS}s` }, { target: r, duration: STAGE_DURATION });
   }
   return { executor: 'ramping-arrival-rate', startRate: ramp[0], timeUnit: '1s', stages, ...vus(Math.max(...ramp)) };
 }
@@ -57,13 +71,32 @@ const thresholds = {};
 // Thresholds also make k6 report each kind separately, so NO_THRESHOLDS keeps
 // them but makes them always pass.
 const enforce = !env('NO_THRESHOLDS', '');
+// Per-step submetrics exist only for thresholds, so these always pass.
+const STAGE_REASONS = ['ServerFailure', 'Timeout', 'Refused'];
 function add(kind, fn, names, rate, ramp = []) {
   if (names.length === 0 || rate <= 0) return;
   scenarios[kind] = { ...arrival(rate, ramp), exec: fn, tags: { kind } };
   thresholds[`idns_expected{kind:${kind}}`] = [enforce ? `rate>=${env('MIN_SUCCESS', '0.999')}` : 'rate>=0'];
   thresholds[`idns_query_ms{kind:${kind}}`] = [enforce ? `p(95)<${int('P95_MS', 50)}` : 'p(95)>=0'];
+  const steps = ramp.length > 0 ? ramp : [rate];
+  stageOf[kind] = ramp.length > 0 ? rampStage(ramp) : () => String(rate);
+  for (const step of steps) {
+    thresholds[`idns_expected{kind:${kind},stage:${step}}`] = ['rate>=0'];
+    thresholds[`idns_query_ms{kind:${kind},stage:${step}}`] = ['p(95)>=0'];
+    for (const r of STAGE_REASONS) thresholds[`idns_failures{kind:${kind},stage:${step},reason:${r}}`] = ['count>=0'];
+  }
 }
-add('private', 'queryPrivate', PRIVATE_NAMES, int('PRIVATE_RATE', 150), list('RAMP', '').map(Number));
+function rampStage(ramp) {
+  const hold = seconds(STAGE_DURATION);
+  return () => {
+    const elapsed = (Date.now() - exec.scenario.startTime) / 1000;
+    const step = Math.floor(elapsed / (RAMP_SECONDS + hold));
+    if (step >= ramp.length) return String(ramp[ramp.length - 1]);
+    const moving = step > 0 && ramp[step] !== ramp[step - 1] && elapsed - step * (RAMP_SECONDS + hold) < RAMP_SECONDS;
+    return moving ? 'ramping' : String(ramp[step]);
+  };
+}
+add('private', 'queryPrivate', PRIVATE_NAMES, int('PRIVATE_RATE', 150), RAMP);
 add('nxdomain', 'queryNXDomain', NXDOMAIN_NAMES, int('NXDOMAIN_RATE', 25));
 add('public', 'queryPublic', PUBLIC_NAMES, int('PUBLIC_RATE', 25));
 // The node resolver is shared with every other instance on the node, so cap the
@@ -92,9 +125,9 @@ function errorName(e) {
   return 'Other';
 }
 
-function fail(kind, reason) {
-  failures.add(1, { kind, reason });
-  (failuresBy[reason] || failuresBy.Other).add(1, { kind });
+function fail(kind, reason, stage) {
+  failures.add(1, { kind, reason, stage });
+  (failuresBy[reason] || failuresBy.Other).add(1, { kind, stage });
 }
 
 // Proves NXDOMAIN answers are recognised before trusting the nxdomain numbers:
@@ -113,6 +146,7 @@ export async function setup() {
 const pick = (names) => names[exec.scenario.iterationInTest % names.length];
 
 async function query(kind, name, type, expectNX) {
+  const stage = stageOf[kind]();
   const start = Date.now();
   let ok = false;
   let reason = '';
@@ -124,9 +158,9 @@ async function query(kind, name, type, expectNX) {
     reason = errorName(e);
     ok = expectNX && reason === 'NonExistingDomain';
   }
-  queryMs.add(Date.now() - start, { kind });
-  answered.add(ok, { kind });
-  if (!ok) fail(kind, reason);
+  queryMs.add(Date.now() - start, { kind, stage, outcome: ok ? 'ok' : reason });
+  answered.add(ok, { kind, stage });
+  if (!ok) fail(kind, reason, stage);
 }
 
 export async function queryPrivate() {
@@ -157,7 +191,7 @@ export async function propagation() {
       lastSeen = value;
     }
   } catch (e) {
-    fail('propagation', errorName(e));
+    fail('propagation', errorName(e), 'propagation');
   }
   sleep(PROPAGATION_POLL_MS / 1000);
 }
@@ -173,6 +207,24 @@ function fmt(m) {
   return JSON.stringify(v);
 }
 
+// One line per offered rate, so a ramp shows where it broke instead of an
+// average over every step.
+function stageLines(data, kind) {
+  const steps = kind === 'private' && RAMP.length > 0 ? RAMP : [scenarios[kind].rate];
+  const lines = ['    by offered rate (qps): expected, latency med/p95/p99/max, ServerFailure/Timeout/Refused'];
+  for (const step of [...new Set(steps)]) {
+    const e = data.metrics[`idns_expected{kind:${kind},stage:${step}}`];
+    const q = data.metrics[`idns_query_ms{kind:${kind},stage:${step}}`];
+    const counts = STAGE_REASONS.map((r) => {
+      const m = data.metrics[`idns_failures{kind:${kind},stage:${step},reason:${r}}`];
+      return m ? m.values.count : 0;
+    });
+    const latency = q ? ['med', 'p(95)', 'p(99)', 'max'].map((k) => q.values[k].toFixed(0)).join('/') : '-';
+    lines.push(`      ${String(step).padStart(5)}  ${fmt(e).padEnd(26)} ${latency.padEnd(16)} ${counts.join('/')}`);
+  }
+  return lines;
+}
+
 export function handleSummary(data) {
   const lines = [`internal DNS load test against ${RESOLVER}`];
   for (const kind of Object.keys(scenarios)) {
@@ -180,6 +232,7 @@ export function handleSummary(data) {
     lines.push(`  ${kind}`);
     lines.push(`    latency   ${fmt(data.metrics[`idns_query_ms{kind:${kind}}`])}`);
     lines.push(`    expected  ${fmt(data.metrics[`idns_expected{kind:${kind}}`])}`);
+    lines.push(...stageLines(data, kind));
   }
   if (PROPAGATION_NAME) {
     lines.push('  propagation');
@@ -193,7 +246,7 @@ export function handleSummary(data) {
   }
   lines.push(`  dropped iterations (generator saturated): ${data.metrics.dropped_iterations ? data.metrics.dropped_iterations.values.count : 0}`);
   for (const [name, m] of Object.entries(data.metrics)) {
-    if (m.thresholds) {
+    if (m.thresholds && !name.includes('stage:')) {
       for (const [t, r] of Object.entries(m.thresholds)) lines.push(`  ${enforce ? (r.ok ? 'PASS' : 'FAIL') : 'REPORT ONLY'} ${name} ${t}`);
     }
   }

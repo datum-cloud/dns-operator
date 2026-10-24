@@ -113,13 +113,10 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 			continue
 		}
-		result, next, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
+		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
-		}
-		if !next.IsZero() && (earliest.IsZero() || next.Before(earliest)) {
-			earliest = next
 		}
 		pending, err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now)
 		if err != nil {
@@ -257,25 +254,25 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 	return age
 }
 
-func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, time.Time, error) {
+func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	input.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{}
 	for i := range regs {
 		refs, err := r.readReferences(ctx, &regs[i])
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		input.RegistrationZoneReferences[regs[i].UID] = refs["zone"]
 	}
@@ -285,25 +282,25 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if !tombstone {
 		compiled, err := Compile(input)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		ownPlan = compiled.Plan
 		wire, err := WirePlan(compiled.Plan)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		payload, err = json.Marshal(wire)
 		if err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
-			return false, time.Time{}, err
+			return false, err
 		}
 	}
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	stateHash := hash
 	if !tombstone {
@@ -317,11 +314,11 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		stateHash = hash
 	}
 	if own.Spec.LastContentHash == stateHash {
-		return r.tombstoneAcknowledged(ctx, own), time.Time{}, nil
+		return r.tombstoneAcknowledged(ctx, own), nil
 	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	revision := own.Spec.NextRevision
 	if revision <= 0 {
@@ -334,21 +331,21 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	own.Spec.NextRevision = revision + 1
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(reservationBase, client.MergeFromWithOptimisticLock{})); err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
 	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
 	if err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
 	base := own.DeepCopy()
 	own.Spec.LastContentHash = stateHash
 	own.Spec.ActiveManifestName = manifest.Name
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		return false, time.Time{}, err
+		return false, err
 	}
-	return false, time.Time{}, nil
+	return false, nil
 }
 
 func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership) (int64, error) {

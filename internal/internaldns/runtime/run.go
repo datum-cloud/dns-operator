@@ -56,6 +56,7 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 	case roleControlPlane:
 		return runControlPlane(ctx, cfg, opts)
 	case roleAgent:
+		startLocalProfiler()
 		return runAgent(ctx, cfg)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)

@@ -70,7 +70,16 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 	}
 	owner := string(projectUID) + "/" + string(contextUID)
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
-	err = a.Client.Create(ctx, claim)
+	// Every project pass claims its destinations again; reading first keeps an
+	// existing claim from costing a rejected create.
+	switch err = a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &corev1.ConfigMap{}); {
+	case err == nil:
+		err = apierrors.NewAlreadyExists(corev1.Resource("configmaps"), claim.Name)
+	case apierrors.IsNotFound(err):
+		err = a.Client.Create(ctx, claim)
+	default:
+		return err
+	}
 	if err == nil {
 		if err := a.Client.Get(ctx, claimKey, &regionalClaim); err == nil {
 			if err := a.deleteClaim(ctx, claim); err != nil {

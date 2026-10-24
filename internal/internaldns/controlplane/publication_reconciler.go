@@ -27,10 +27,12 @@ const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publicati
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	now := r.Options.Now().UTC()
+	timer := newPhaseTimer()
 
 	if err := r.reconcileResolverContexts(ctx, ns, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.done("contexts")
 
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
@@ -43,6 +45,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
+	timer.done("list")
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
@@ -54,6 +57,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.done("associations")
 	var sources []client.Object
 	for i := range assocs.Items {
 		sources = append(sources, &assocs.Items[i])
@@ -75,9 +79,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.done("references")
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.done("bindings")
 	var earliest time.Time
 	var zoneErrors []error
 	held := map[types.UID]heldOwnership{}
@@ -89,6 +95,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		own, retryAt, err := r.holdOwnership(ctx, z)
 		held[z.UID] = heldOwnership{own: own, retryAt: retryAt, err: err}
 	}
+	timer.done("ownership")
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -114,11 +121,13 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, contributions.Items, records.Items, now)
+		timer.done("compile")
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
 		}
 		pending, err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now)
+		timer.done("status")
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue

@@ -2397,7 +2397,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.",
+         "description": "Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. A network in a region with no Private DNS serving members stays Pending. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -2447,7 +2447,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "count(datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) or vector(0)",
+               "expr": "count((datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) and on (\"milo.project.name\", namespace, name, reason, status) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"}) >= on (\"milo.project.name\", namespace, name) group_left () max by (\"milo.project.name\", namespace, name) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"})))) or vector(0)",
                "instant": true
             }
          ],
@@ -2554,7 +2554,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1",
+               "expr": "(datum_cloud_network_context_status_condition{condition=\"DNSReady\",reason!~\"NoAttachments|NoAttachedWorkloads|Disabled|Terminating\"} != 1) and on (\"milo.project.name\", namespace, name, reason, status) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"}) >= on (\"milo.project.name\", namespace, name) group_left () max by (\"milo.project.name\", namespace, name) (timestamp(datum_cloud_network_context_status_condition{condition=\"DNSReady\"})))",
                "format": "table",
                "instant": true
             }

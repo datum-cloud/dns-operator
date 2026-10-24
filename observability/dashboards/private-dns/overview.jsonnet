@@ -436,12 +436,18 @@ local zonesTable =
 
 // Networks report DNSReady false for reasons that are not faults: nothing
 // attached yet (NoAttachedWorkloads is its older name), DNS turned off, or
-// being deleted. Only the rest need attention.
-local networksNotDnsReady = 'datum_cloud_network_context_status_condition{condition="DNSReady",reason!~"NoAttachments|NoAttachedWorkloads|Disabled|Terminating"} != 1';
+// being deleted. Only the rest need attention. Each reason is its own series
+// and an old one lingers for a while after the reason changes, so only the
+// series with the newest sample for each network counts.
+local dnsReady = 'datum_cloud_network_context_status_condition{condition="DNSReady"}';
+local networkKey = '"milo.project.name", namespace, name';
+local networksNotDnsReady =
+  '(datum_cloud_network_context_status_condition{condition="DNSReady",reason!~"NoAttachments|NoAttachedWorkloads|Disabled|Terminating"} != 1) and on (%(k)s, reason, status) (timestamp(%(r)s) >= on (%(k)s) group_left () max by (%(k)s) (timestamp(%(r)s)))'
+  % { k: networkKey, r: dnsReady };
 
 local statNetworksNotReady = statPanel(
   'Networks not DNS-ready',
-  'Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.',
+  'Networks in a region whose DNSReady condition is not true, leaving out networks with nothing attached, with DNS turned off, or being deleted. A network in a region with no Private DNS serving members stays Pending. Workloads on these networks cannot resolve private names through fd53::53 and fd53::54. The table next to private zones lists each one with its reason.',
   'count(%s) or vector(0)' % networksNotDnsReady,
   'short',
   anyIsBad,

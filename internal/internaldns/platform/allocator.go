@@ -72,11 +72,17 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-destination-claim-" + model.OpaqueToken(region+"/"+address+"/"+fmt.Sprint(port)), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true", destinationProjectLabel: model.OpaqueToken(string(projectUID))}}, Data: map[string]string{"owner": owner, "region": region, "address": address, "port": fmt.Sprint(port)}}
 	// Every project pass claims its destinations again; reading first keeps an
 	// existing claim from costing a rejected create.
-	switch err = a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &corev1.ConfigMap{}); {
+	var existing corev1.ConfigMap
+	switch err = a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); {
 	case err == nil:
 		err = apierrors.NewAlreadyExists(corev1.Resource("configmaps"), claim.Name)
 	case apierrors.IsNotFound(err):
 		err = a.Client.Create(ctx, claim)
+		if apierrors.IsAlreadyExists(err) {
+			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
+				return err
+			}
+		}
 	default:
 		return err
 	}
@@ -92,10 +98,6 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return nil
 	}
 	if apierrors.IsAlreadyExists(err) {
-		var existing corev1.ConfigMap
-		if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
-			return err
-		}
 		if existing.Data["owner"] != owner || existing.Data["region"] != region || existing.Data["address"] != address || existing.Data["port"] != fmt.Sprint(port) {
 			var bindings dnsv1alpha1.DNSResolverBindingList
 			if err := a.Client.List(ctx, &bindings, client.InNamespace(a.Namespace)); err != nil {

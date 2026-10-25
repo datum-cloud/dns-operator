@@ -118,7 +118,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		return publicationStore.View(model.SafeToken(region))
 	}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes}
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient}
 	planners := cfg.plannerConfigs()
 	regions := make([]controlplane.ServingRegion, 0, len(planners))
 	for _, p := range planners {

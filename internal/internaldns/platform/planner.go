@@ -78,9 +78,9 @@ func (p *Planner) Step(ctx context.Context) error {
 	key := client.ObjectKey{Namespace: c.Namespace, Name: "dns-shard-owner-" + model.OpaqueToken(c.Region+"/"+c.Shard)}
 	var owner corev1.ConfigMap
 	if err := p.Client.Get(ctx, key, &owner); apierrors.IsNotFound(err) {
-		state := shardState{Holder: c.Identity, Epoch: 1, NextRevision: 1, LeaseUntil: now.Add(lease)}
+		state := shardState{Holder: c.Identity, Epoch: model.NextWriterEpoch(0, now), NextRevision: 1, LeaseUntil: now.Add(lease)}
 		b, _ := json.Marshal(state)
-		owner = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}, Data: map[string]string{"state": string(b)}}
+		owner = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{"internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}}, Data: map[string]string{"state": string(b)}}
 		if err := p.Client.Create(ctx, &owner); err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
@@ -97,7 +97,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			return nil
 		}
 		state.Holder = c.Identity
-		state.Epoch++
+		state.Epoch = model.NextWriterEpoch(state.Epoch, now)
 		state.ContentHash = ""
 		state.LeaseUntil = now.Add(lease)
 		b, _ := json.Marshal(state)

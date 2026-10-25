@@ -128,3 +128,16 @@ func TestEnvelopeHeaderIsFrozenAcrossVersions(t *testing.T) {
 		t.Fatalf("future envelope that breaks the frozen header must be malformed, got %v", err)
 	}
 }
+
+func TestNextWriterEpochOutranksEveryEarlierWriter(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	if got := NextWriterEpoch(4, now); got != 1_790_000_000 {
+		t.Fatalf("counter epoch: got %d", got)
+	}
+	if got := NextWriterEpoch(1_790_000_100, now); got != 1_790_000_101 {
+		t.Fatalf("epoch from a clock ahead of ours: got %d", got)
+	}
+	if got := NextWriterEpoch(0, time.Unix(-5, 0)); got != 1 {
+		t.Fatalf("first epoch before the Unix epoch: got %d", got)
+	}
+}

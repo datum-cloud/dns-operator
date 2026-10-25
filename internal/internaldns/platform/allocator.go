@@ -41,6 +41,9 @@ type Allocator struct {
 	// RegionalPrefixes gives a region its own regional resolver pool, routed to
 	// that region's regional router. Regions without one share ClusterPrefix.
 	RegionalPrefixes map[string]string
+	// RegionClient, when set, is the client a region's serving snapshot is
+	// read with, so one region's broker never holds up another's.
+	RegionClient func(region string) client.Client
 }
 
 // Allocate leases a context's regional address in a region. A region on the
@@ -206,7 +209,11 @@ func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha
 		snapshot, cached := snapshots[key]
 		if !cached {
 			var err error
-			if _, snapshot, err = LoadCommittedServingSnapshot(ctx, a.Client, a.Namespace, region, shard); err != nil {
+			reader := a.Client
+			if a.RegionClient != nil {
+				reader = a.RegionClient(region)
+			}
+			if _, snapshot, err = LoadCommittedServingSnapshot(ctx, reader, a.Namespace, region, shard); err != nil {
 				return false, err
 			}
 			snapshots[key] = snapshot

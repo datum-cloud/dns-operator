@@ -20,6 +20,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/controlplane"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
+	"go.miloapis.com/dns-operator/internal/internaldns/pubstore"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -92,11 +93,33 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
+	storeName := publicationStoreKubernetes
+	if cfg.PublicationStore != nil {
+		storeName = publicationStoreJetStream
+	}
+	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName); err != nil {
+		return err
+	}
+	var publicationStore *pubstore.PublicationStore
+	if cfg.PublicationStore != nil {
+		store, closeStore, err := openPublicationStore(ctx, cfg, platformClient)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		publicationStore, platformClient = store, store
+	}
 	regionalPrefixes, err := cfg.regionalPrefixes()
 	if err != nil {
 		return err
 	}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes}
+	regionalClient := func(region string) client.Client {
+		if publicationStore == nil {
+			return platformClient
+		}
+		return publicationStore.View(model.SafeToken(region))
+	}
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient}
 	planners := cfg.plannerConfigs()
 	regions := make([]controlplane.ServingRegion, 0, len(planners))
 	for _, p := range planners {
@@ -232,6 +255,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		go func() { errCh <- server.Start(ctx) }()
 	}
+	if publicationStore != nil {
+		go retryLoop(ctx, pubstore.CollectInterval, loopID{Loop: "publication store collect"}, live, publicationStore.Collect, errCh)
+	}
 	startProjectSources(ctx, projects)
 	if discovery == nil {
 		discovered.done()
@@ -252,15 +278,15 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	sinks := map[string]*platform.AckSink{}
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
-		planner := &platform.Planner{Client: platformClient, Allocator: allocator, Config: pc}
+		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc}
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
-		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
+		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks, live, outboxWakes)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, outboxWakes)
 	}, errCh)
 
 	select {

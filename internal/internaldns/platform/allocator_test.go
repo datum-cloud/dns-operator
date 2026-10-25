@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns-operator/internal/internaldns/pubstore"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +36,26 @@ func testClient(t *testing.T, objects ...client.Object) client.Client {
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithStatusSubresource(&dnsv1alpha1.DNSTransportOutbox{}, &dnsv1alpha1.DNSPublicationManifest{}, &dnsv1alpha1.DNSResolverBinding{}).Build()
+	builder := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&dnsv1alpha1.DNSTransportOutbox{}, &dnsv1alpha1.DNSPublicationManifest{}, &dnsv1alpha1.DNSResolverBinding{})
+	if os.Getenv("INTERNAL_DNS_TEST_PUBLICATION_STORE") != "memory" {
+		return builder.WithObjects(objects...).Build()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	store := pubstore.New(builder.Build(), pubstore.NewMemoryKV())
+	if err := store.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range objects {
+		if stored, err := store.Seed(ctx, obj); err != nil {
+			t.Fatal(err)
+		} else if !stored {
+			if err := store.Create(ctx, obj.DeepCopyObject().(client.Object)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return store
 }
 
 func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {

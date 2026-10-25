@@ -274,8 +274,39 @@ sequenceDiagram
 Each zone has one compiler owner, fenced by a compare-and-swap lease. Takeover
 advances the writer epoch; revisions increase within it. Agents reject older
 versions. The compiler stages immutable chunks and a manifest, then commits its
-active pointer. Kubernetes API storage retains this state and a durable outbox;
-exporters repair missing outboxes after crashes.
+active pointer. This state and a durable outbox live in platform Kubernetes API
+storage by default; exporters repair missing outboxes after crashes.
+
+The `publicationStore` option keeps the same records (ownership leases,
+manifests, chunks, outboxes and shard ownership) in a JetStream key-value bucket
+instead, so publishing does not wait on the platform API server. Resource
+versions are bucket revisions, so every lease, commit and status write keeps its
+compare-and-swap fence. A writer that creates or takes over a lease takes an
+epoch of at least the current Unix time, so a new or lost store never leaves
+agents fencing out the new writer. A publication is deleted ten minutes after a
+newer one of its zone was exported, unless a pending outbox depends on it.
+Tenant objects, resolver bindings, address claims and tenant status stay in the
+API server.
+
+The bucket exists on every region's broker. Shard leases and serving snapshots
+live on the broker of the region they serve, and each region's planner, outbox
+and acknowledgement loops look records up only in that region's bucket and the
+home bucket, so another region's broker never holds them up. Zone leases,
+manifests, chunks and their outboxes live together on the broker of
+`publicationStore.region`, so committing a zone needs only that broker, and
+delivering it to any region also needs that broker, until zone publication has
+one writer per zone and region. Regions that share a
+broker must name it with the same URL. Cleanup waits until every region's
+bucket has loaded.
+
+Leases live in the store, so every control-plane replica must use the same one.
+A ConfigMap named `internal-dns-publication-store` records the active store, and
+a replica configured for another store refuses to start. To switch, stop every
+replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
+start the replicas with the new setting. A first start on JetStream with no
+ConfigMap refuses to run while publication records exist in the API server.
+Once writer epochs follow the clock, downgrading to a release that counts
+epochs from one is not supported.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.

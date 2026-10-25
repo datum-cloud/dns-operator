@@ -92,7 +92,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
-	platformClient = &pubstore.EpochFloorClient{Client: platformClient, Now: time.Now}
+	storeName := publicationStoreKubernetes
+	if cfg.PublicationStore != nil {
+		storeName = publicationStoreJetStream
+	}
+	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName); err != nil {
+		return err
+	}
 	var publicationStore *pubstore.PublicationStore
 	if cfg.PublicationStore != nil {
 		store, closeStore, err := openPublicationStore(ctx, cfg, platformClient)

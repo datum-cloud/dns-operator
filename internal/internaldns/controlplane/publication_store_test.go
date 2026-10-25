@@ -74,7 +74,7 @@ func TestPublicationStoreKeepsPublicationRecordsOffTheAPIServer(t *testing.T) {
 	if err := store.Get(ctx, ownerKey, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if owner.Spec.ActiveManifestName == "" || owner.Spec.WriterEpoch < time.Now().Add(-time.Minute).Unix() {
+	if owner.Spec.ActiveManifestName == "" || owner.Spec.WriterEpoch != now.Unix() {
 		t.Fatalf("store ownership not committed at a wall-clock epoch: %#v", owner.Spec)
 	}
 	for _, list := range []client.ObjectList{&dnsv1alpha1.DNSPublicationOwnershipList{}, &dnsv1alpha1.DNSPublicationManifestList{}, &dnsv1alpha1.DNSPublicationChunkList{}, &dnsv1alpha1.DNSTransportOutboxList{}} {
@@ -109,8 +109,8 @@ func TestPublicationStoreKeepsPublicationRecordsOffTheAPIServer(t *testing.T) {
 	if err := store.Get(ctx, ownerKey, &taken); err != nil {
 		t.Fatal(err)
 	}
-	if taken.Spec.HolderIdentity != "writer-b" || taken.Spec.WriterEpoch != owner.Spec.WriterEpoch+1 {
-		t.Fatalf("takeover did not advance the epoch by one: before %d, after %#v", owner.Spec.WriterEpoch, taken.Spec)
+	if taken.Spec.HolderIdentity != "writer-b" || taken.Spec.WriterEpoch != now.Unix() {
+		t.Fatalf("takeover did not move the epoch to the takeover time: before %d, after %#v", owner.Spec.WriterEpoch, taken.Spec)
 	}
 }
 

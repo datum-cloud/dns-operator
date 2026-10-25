@@ -20,7 +20,7 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	bucket, err := bus.KeyValueBucket(ctx, cfg.PublicationStore.Bucket, cfg.PublicationStore.Replicas)
+	bucket, err := bus.KeyValueBucket(ctx, cfg.PublicationStore.Bucket, cfg.PublicationStore.Replicas, pubstore.WatchFilter())
 	if err != nil {
 		_ = bus.Close()
 		return nil, nil, err

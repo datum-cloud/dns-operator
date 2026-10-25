@@ -39,7 +39,7 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 	if err != nil || acquired == nil {
 		t.Fatalf("takeover failed: owner=%#v err=%v", acquired, err)
 	}
-	if acquired.Spec.HolderIdentity != "writer-b" || acquired.Spec.WriterEpoch != 5 || acquired.Spec.NextRevision != 12 || acquired.Spec.ActiveManifestName != "active-e4-r11" {
+	if acquired.Spec.HolderIdentity != "writer-b" || acquired.Spec.WriterEpoch != now.Unix() || acquired.Spec.NextRevision != 12 || acquired.Spec.ActiveManifestName != "active-e4-r11" {
 		t.Fatalf("takeover corrupted the durable fence: %#v", acquired.Spec)
 	}
 	writerA := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "platform", Identity: "writer-a", LeaseDuration: 30 * time.Second}}
@@ -57,7 +57,7 @@ func TestExpiredOwnershipTakeoverFencesResumedWriter(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "platform", Name: ownerName}, &current); err != nil {
 		t.Fatal(err)
 	}
-	if current.Spec.HolderIdentity != "writer-b" || current.Spec.WriterEpoch != 5 || current.Spec.ActiveManifestName != "active-e4-r11" {
+	if current.Spec.HolderIdentity != "writer-b" || current.Spec.WriterEpoch != now.Unix() || current.Spec.ActiveManifestName != "active-e4-r11" {
 		t.Fatalf("resumed writer regressed ownership: %#v", current.Spec)
 	}
 }
@@ -113,6 +113,7 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	// Stop A for longer than its lease, then let B take over the otherwise
 	// quiescent 90-second publication.
 	now = now.Add(11 * time.Second)
+	takeoverAt := now
 	options.Identity = "writer-b"
 	writerB := &Reconciler{Client: c, Scheme: s, Options: options}
 	result, err := writerB.Reconcile(ctx, request)
@@ -147,7 +148,7 @@ func TestQuiescentSurvivorRenewsOwnershipBeyondLeaseWindow(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "platform", Name: ownerName}, &owner); err != nil {
 		t.Fatal(err)
 	}
-	if owner.Spec.HolderIdentity != "writer-b" || owner.Spec.WriterEpoch != 2 {
+	if owner.Spec.HolderIdentity != "writer-b" || owner.Spec.WriterEpoch != takeoverAt.Unix() {
 		t.Fatalf("resumed old writer displaced healthy survivor: %#v", owner.Spec)
 	}
 }

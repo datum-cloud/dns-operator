@@ -281,11 +281,18 @@ The `publicationStore` option keeps the same records (ownership leases,
 manifests, chunks, outboxes and shard ownership) in a JetStream key-value bucket
 instead, so publishing does not wait on the platform API server. Resource
 versions are bucket revisions, so every lease, commit and status write keeps its
-compare-and-swap fence. Writer epochs start at the current Unix time, so a new or
-lost store never leaves agents fencing out the new writer. Superseded
-publications are deleted after ten minutes unless a pending outbox depends on
-them. Tenant objects, resolver bindings, address claims and tenant status stay
-in the API server.
+compare-and-swap fence. A writer that creates or takes over a lease takes an
+epoch of at least the current Unix time, so a new or lost store never leaves
+agents fencing out the new writer. A publication is deleted ten minutes after a
+newer one of its zone was exported, unless a pending outbox depends on it.
+Tenant objects, resolver bindings, address claims and tenant status stay in the
+API server.
+
+Leases live in the store, so every control-plane replica must use the same one.
+A ConfigMap named `internal-dns-publication-store` records the active store, and
+a replica configured for another store refuses to start. To switch, stop every
+replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
+start the replicas with the new setting.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.

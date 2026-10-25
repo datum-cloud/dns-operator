@@ -45,35 +45,64 @@ resolver bindings once per pass, and share them across zones. This changes no
 behaviour: every value is the same authoritative read, made once instead of once
 per zone.
 
-### 2. Ignore status-only self-events
+### 2. Ignore the controller's own status writes
 
-Only queue a pass for a create, a delete, or an update that changes generation,
-deletion time, finalizers or labels. A pass that writes a status an earlier phase
-of the same pass reads, such as a managed association's acceptance, returns a
-short requeue so bootstrap does not wait for the periodic pass.
+Skip an update only when it changes nothing but status and the status was written
+by this controller, identified by its field manager in the object's managed
+fields. Status written by anyone else still queues a pass. The ACK sink, for
+example, writes resolver binding member acknowledgements and registration
+publication conditions that a pass reads (`bindingAckCurrent`,
+`aggregatePublicationStatus`). Creates, deletes and changes to generation,
+deletion time, finalizers or labels always queue a pass.
+
+A pass that writes a status that an earlier phase of the same pass reads, such
+as a managed association's acceptance, returns a short requeue. Otherwise
+bootstrap would wait for the next lease-renewal pass.
 
 ### 3. Skip phases whose inputs did not change
 
-Keep the single `project` key. The event handler records which kinds changed
-since the last successful pass, and which zones the changed record sets name;
-it uses both the old and new object on update, so a record set that moves from
-zone A to zone B marks both. When only record sets changed, a pass:
+Keep the single `project` key. The event handler keeps a dirty set: the kinds
+that changed since the last successful pass, and the zones the changed record
+sets name. On update it uses both the old and the new object, so a record set
+that moves from zone A to zone B marks both zones.
+
+These kinds are dirty kinds. A change to any of them runs the full pass:
+DNSZone, DNSZoneAssociation, DNSResolverContext, DNSResolverAccessBinding,
+DNSNamingPolicy, DNSRegistration and DNSRecordContribution, plus resolver
+binding status from the ACK sink.
+
+When only record sets changed, a pass:
 
 - reads ownership of every private zone and renews leases as today;
-- lists record sets, registrations and contributions fresh, since a record set
+- lists record sets, registrations and contributions fresh, because a record set
   can take a name from a registration and change that registration's status;
-- skips the context, association, naming policy, pin, reference collection and
-  binding phases, using the values the last pass established;
-- compiles only the zones it marked, and writes status and publication status
-  for them as today.
+- skips the context, association, naming policy, pin and reference collection
+  phases and the writes of the binding phase, reusing the values from the last
+  full pass;
+- still reads resolver bindings live for publication targets, since a stale
+  binding set would send a zone to the wrong regions;
+- compiles only the zones it marked, and writes their status and publication
+  status as today.
 
-Any other changed kind, a missing record of the last pass, or a zone whose UID,
-generation or finalizer differs from the last pass runs the full pass.
+The full pass runs instead whenever:
 
-A per-zone input fingerprint (zone UID and generation, and the resource versions
-of its record sets, registrations, contributions, association pins and serving
-targets) also lets a full pass skip reading the previous plan for zones that
-cannot have changed.
+- a dirty kind changed;
+- this replica has no record of a last full pass, as after a restart or on a new
+  lease holder;
+- a zone's UID, generation or finalizer differs from the last pass;
+- a zone has a publication target change or withdrawal pending;
+- a full resync is due. A full pass runs at least every few minutes regardless,
+  so changes that never produced an event, such as a missed watch or a change
+  made while the lease holder was down, are corrected within that bound.
+
+A pass that fails or loses a lease partway keeps its dirty set, merged into the
+next pass.
+
+A per-zone fingerprint can also let a full pass skip reading the previous plan
+for zones that cannot have changed. It covers the zone's UID and generation, the
+generations of its record sets, registrations and contributions, its association
+pins, and its current and previous publication targets. Generations are used
+rather than resource versions so that status writes don't count as changes.
 
 ## Why not a second queue key per zone
 
@@ -96,15 +125,17 @@ networks, access, naming and registrations behave as today.
   default. Enable it in a test deployment and compare publish latency, pass time,
   queue wait and self-triggered pass counts with the internal DNS publish test.
 - While the option is new, run a full pass every N incremental passes, and
-  compare the plan hash each would have produced for the same zone, logging any
-  divergence.
+  compare the plan hash each would have produced for the same zone. A divergence
+  is logged, counted in a metric, and turns incremental passes off for that
+  project until the next restart. The full pass's plan is the one published.
 
 ## Risks
 
 - **Skipped phases going stale.** A skipped phase reuses values from the last
-  pass. Anything that could change them must mark its kind dirty, and every
-  input that is not watched (ownership, manifests, chunks, resolver bindings,
-  reference state) is still read live, as today.
+  full pass. Any watched input that could change them marks its kind dirty.
+  Ownership, manifests, chunks, resolver bindings and reference state are not
+  watched and are still read live, as today. The time-based full resync bounds
+  anything that slips through.
 - **Status from stale copies.** Status writes keep reading the object first and
   patching with an optimistic lock where another writer shares the status.
 - **Two replicas.** Both replicas receive every event; only the zone lease

@@ -635,13 +635,13 @@ func (r *Reconciler) getOrCreate(ctx context.Context, o client.Object) error {
 	if listed.find(o) {
 		return nil
 	}
+	if listed != nil {
+		listed.changed = true
+	}
 	desired := o.DeepCopyObject().(client.Object)
 	err := r.Get(ctx, key, o)
 	if err == nil {
 		return nil
-	}
-	if listed != nil && apierrors.IsNotFound(err) {
-		listed.changed = true
 	}
 	if !apierrors.IsNotFound(err) {
 		return err

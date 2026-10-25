@@ -827,4 +827,21 @@ func TestSameFenceAckRefreshDoesNotRewriteCheckpoint(t *testing.T) {
 	if after, err := os.ReadFile(checkpoint); err != nil || bytes.Equal(saved, after) {
 		t.Fatalf("a new fence was not persisted (err %v)", err)
 	}
+
+	rejected := ack
+	rejected.Phase, rejected.ObservedAt = model.AckRejected, now.Add(2*time.Second)
+	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 5, rejected)); err != nil {
+		t.Fatal(err)
+	}
+	ack.ObservedAt, ack.ValidUntil = now.Add(3*time.Second), now.Add(time.Minute+3*time.Second)
+	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 5, ack)); err != nil {
+		t.Fatal(err)
+	}
+	state, err := agent.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Acks["zone-a"]["regional-0/regional-0"].Rejected {
+		t.Fatal("a verified ack after a rejection at the same fence was not persisted")
+	}
 }

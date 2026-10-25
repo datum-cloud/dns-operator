@@ -59,7 +59,8 @@ data:
       "admission": {
         "enabled": true,
         "port": 9443,
-        "certDir": "/var/run/internal-dns/admission"
+        "certDir": "/var/run/internal-dns/admission",
+        "instancePublishers": ["<username compute writes project DNS objects as>"]
       }
     }
 ---

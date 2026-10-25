@@ -277,3 +277,56 @@ func TestRefusedManagedDomainWithdrawsExistingZone(t *testing.T) {
 		t.Fatalf("refused domain kept publishing: zones=%v associations=%d", zones.Items, len(associations.Items))
 	}
 }
+
+func TestAssociationInsideTheInstancesScopeIsNotAccepted(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "project", UID: "vpc-context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/vpc", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
+	shadow := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "project", UID: "shadow-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "web.instances.datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	shadowAssociation := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "project", UID: "shadow-association", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: shadow.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, shadow, shadowAssociation).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		obj.SetUID(types.UID(obj.GetName() + "-uid"))
+		obj.SetGeneration(1)
+		return cl.Create(ctx, obj, opts...)
+	}}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", ManagedDomainSuffixes: []string{"internal"}}}
+	r.Options.defaults()
+	ctx := context.Background()
+	now := time.Now()
+	if err := r.reconcileResolverContexts(ctx, "project", now); err != nil {
+		t.Fatal(err)
+	}
+	var zones dnsv1alpha1.DNSZoneList
+	if err := c.List(ctx, &zones); err != nil {
+		t.Fatal(err)
+	}
+	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
+	for i := range zones.Items {
+		zoneByName[zones.Items[i].Name] = &zones.Items[i]
+	}
+	var associations dnsv1alpha1.DNSZoneAssociationList
+	if err := c.List(ctx, &associations); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileAssociations(ctx, associations.Items, zoneByName, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.List(ctx, &associations); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range associations.Items {
+		accepted := apimeta.FindStatusCondition(a.Status.Conditions, dnsValueAccepted)
+		if accepted == nil {
+			t.Fatalf("%s has no Accepted condition", a.Name)
+		}
+		if a.Name == shadow.Name {
+			if accepted.Status != metav1.ConditionFalse || accepted.Reason != "ReservedScope" {
+				t.Fatalf("shadowing association accepted: %#v", accepted)
+			}
+		} else if accepted.Status != metav1.ConditionTrue {
+			t.Fatalf("managed association %s not accepted: %#v", a.Name, accepted)
+		}
+	}
+}

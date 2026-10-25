@@ -18,6 +18,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/dns/ownername"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
 // +kubebuilder:webhook:path=/validate-dns-networking-miloapis-com-v1alpha1-dnsrecordset,mutating=false,failurePolicy=ignore,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=create;update,versions=v1alpha1,name=vdnsrecordset.kb.io,admissionReviewVersions=v1
@@ -80,6 +81,28 @@ func refuseWildcardAlias(oldRS, rs *dnsv1alpha1.DNSRecordSet) error {
 		dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").GroupKind(), rs.Name, errs)
 }
 
+func refuseProviderScope(rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) error {
+	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || !model.IsManagedZone(zone) {
+		return nil
+	}
+	var errs field.ErrorList
+	for i, rec := range rs.Spec.Records {
+		if !model.InProviderScope(model.ZoneRelativeOwner(rec.Name, zone.Spec.DomainName)) {
+			continue
+		}
+		errs = append(errs, field.Invalid(
+			field.NewPath("spec", "records").Index(i).Child("name"),
+			rec.Name,
+			fmt.Sprintf("%q is reserved for instance names published by the platform", model.InstancesScope+"."+zone.Spec.DomainName),
+		))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(
+		dnsv1alpha1.GroupVersion.WithKind("DNSRecordSet").GroupKind(), rs.Name, errs)
+}
+
 func isWildcardName(name string) bool {
 	return name == "*" || strings.HasPrefix(name, "*.")
 }
@@ -98,6 +121,9 @@ func (v *DNSRecordSetValidator) refuseClaimedOwnerNames(ctx context.Context, old
 		logger.V(1).Info("skipping owner name conflict check; DNSZone lookup failed",
 			"zone", key.String(), "error", err)
 		return nil
+	}
+	if err := refuseProviderScope(rs, &zone); err != nil {
+		return err
 	}
 
 	claims := newOwnerClaims(rs, zone.Spec.DomainName)

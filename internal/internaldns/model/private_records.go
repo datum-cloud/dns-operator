@@ -3,6 +3,8 @@ package model
 import (
 	"fmt"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // OwnershipMarkerType is reserved for serving-only NODATA metadata (RFC 6895 private use).
@@ -27,4 +29,52 @@ func ValidatePrivateRecordOwner(owner, apex, recordType string) error {
 		return fmt.Errorf("a private zone apex cannot be a CNAME")
 	}
 	return nil
+}
+
+// InstancesScope is the label compute publishes instance names under in a
+// resolver context's managed zone, so an instance named web-01 answers as
+// web-01.instances.<zone>.
+const InstancesScope = "instances"
+
+// InProviderScope reports whether a zone-relative owner name falls inside a
+// scope reserved for a publishing provider.
+func InProviderScope(relativeOwner string) bool {
+	name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(relativeOwner), "."))
+	return name == InstancesScope || strings.HasSuffix(name, "."+InstancesScope)
+}
+
+// InsideInstancesScope reports whether domain is the instances scope of the
+// managed apex or a name below it.
+func InsideInstancesScope(domain, managedApex string) bool {
+	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
+	scope := InstancesScope + "." + strings.ToLower(strings.TrimSuffix(strings.TrimSpace(managedApex), "."))
+	return d == scope || strings.HasSuffix(d, "."+scope)
+}
+
+// ZoneRelativeOwner returns owner relative to apex, or "@" for the apex. A
+// name that already ends in the apex is treated as absolute with or without a
+// trailing dot, matching how private zones are compiled.
+func ZoneRelativeOwner(owner, apex string) string {
+	n := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(owner), "."))
+	a := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(apex), "."))
+	if n == "" || n == "@" || n == a {
+		return "@"
+	}
+	return strings.TrimSuffix(n, "."+a)
+}
+
+// ManagedZoneName names the managed zone a resolver context owns.
+func ManagedZoneName(contextUID string) string {
+	return "managed-" + OpaqueToken(contextUID)[:12]
+}
+
+// IsManagedZone reports whether zone is the managed zone of the resolver
+// context that controls it. The name is derived from the context's UID, so a
+// tenant zone cannot pass by copying the owner reference or the managed label.
+func IsManagedZone(zone metav1.Object) bool {
+	owner := metav1.GetControllerOf(zone)
+	if owner == nil || owner.Kind != "DNSResolverContext" || !strings.HasPrefix(owner.APIVersion, "dns.networking.miloapis.com/") {
+		return false
+	}
+	return zone.GetName() == ManagedZoneName(string(owner.UID))
 }

@@ -421,29 +421,29 @@ func (j *JetStream) SnapshotStore(ctx context.Context, bucket string) (*Snapshot
 // compare-and-swap loop so a delayed publisher cannot replace a current
 // bootstrap pointer with an older epoch or revision.
 func (s *SnapshotStore) Put(ctx context.Context, key string, env model.Envelope) (uint64, error) {
-	revision, head, err := s.put(ctx, key, env)
-	if err != nil || env.Kind != model.KindPublicationManifest {
+	revision, previous, err := s.put(ctx, key, env)
+	if err != nil || env.Kind != model.KindPublicationManifest || previous == nil {
 		return revision, err
 	}
 	// Pruning only bounds the bucket; a failure must not hold back publication.
-	if err := s.pruneSupersededChunks(ctx, key, head); err != nil {
+	if err := s.pruneSupersededChunks(ctx, key, *previous); err != nil {
 		logf.FromContext(ctx).Error(err, "prune superseded snapshot chunks", "manifest", key)
 	}
 	return revision, nil
 }
 
-// put stores env unless the key already holds a newer version, and returns
-// the version the key holds afterwards.
-func (s *SnapshotStore) put(ctx context.Context, key string, env model.Envelope) (uint64, model.Envelope, error) {
+// put stores env unless the key already holds a newer version. When env
+// replaces an older version, it also returns the version it replaced.
+func (s *SnapshotStore) put(ctx context.Context, key string, env model.Envelope) (uint64, *model.Envelope, error) {
 	if err := env.Validate(); err != nil {
-		return 0, model.Envelope{}, err
+		return 0, nil, err
 	}
 	if !validSnapshotKey(key) {
-		return 0, model.Envelope{}, fmt.Errorf("invalid snapshot key %q", key)
+		return 0, nil, fmt.Errorf("invalid snapshot key %q", key)
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
-		return 0, model.Envelope{}, err
+		return 0, nil, err
 	}
 	for attempt := 0; attempt < 8; attempt++ {
 		current, err := s.kv.Get(ctx, key)
@@ -452,32 +452,35 @@ func (s *SnapshotStore) put(ctx context.Context, key string, env model.Envelope)
 			if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 				continue
 			}
-			return revision, env, err
+			return revision, nil, err
 		}
 		if err != nil {
-			return 0, model.Envelope{}, err
+			return 0, nil, err
 		}
 		var old model.Envelope
 		if err := json.Unmarshal(current.Value(), &old); err != nil {
-			return 0, model.Envelope{}, fmt.Errorf("decode current snapshot %q: %w", key, err)
+			return 0, nil, fmt.Errorf("decode current snapshot %q: %w", key, err)
 		}
 		cmp := model.Compare(env.Epoch, env.Revision, old.Epoch, old.Revision)
 		if cmp < 0 {
-			return current.Revision(), old, nil
+			return current.Revision(), nil, nil
 		}
 		if cmp == 0 {
 			if model.Hash(current.Value()) != model.Hash(b) {
-				return 0, model.Envelope{}, fmt.Errorf("snapshot %q has conflicting content at epoch %d revision %d", key, env.Epoch, env.Revision)
+				return 0, nil, fmt.Errorf("snapshot %q has conflicting content at epoch %d revision %d", key, env.Epoch, env.Revision)
 			}
-			return current.Revision(), old, nil
+			return current.Revision(), nil, nil
 		}
 		revision, err := s.kv.Update(ctx, key, b, current.Revision())
 		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 			continue
 		}
-		return revision, env, err
+		if err != nil {
+			return 0, nil, err
+		}
+		return revision, &old, nil
 	}
-	return 0, model.Envelope{}, fmt.Errorf("snapshot %q CAS did not converge", key)
+	return 0, nil, fmt.Errorf("snapshot %q CAS did not converge", key)
 }
 
 func (s *SnapshotStore) Get(ctx context.Context, key string) (model.Envelope, error) {
@@ -532,10 +535,6 @@ func (s *SnapshotStore) List(ctx context.Context, prefix string) ([]model.Envelo
 
 func (s *SnapshotStore) keys(ctx context.Context, prefix string) ([]string, error) {
 	lister, err := s.kv.ListKeysFiltered(ctx, prefix+">")
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		// A new region's bucket is empty until its first snapshot.
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -556,38 +555,28 @@ func (s *SnapshotStore) keys(ctx context.Context, prefix string) ([]string, erro
 	return keys, nil
 }
 
-// pruneSupersededChunks purges a zone's chunk keys whose revision is older than
-// its manifest head once they have outlived the replay window. Nothing reads
-// them after that: bootstrap only reads chunks the head references.
-func (s *SnapshotStore) pruneSupersededChunks(ctx context.Context, manifestKey string, head model.Envelope) error {
+// pruneSupersededChunks purges a zone's chunk keys older than the head the new
+// manifest just replaced. The replaced head's own chunks stay until the next
+// move, so a member that read that head just before it moved can still finish
+// its bootstrap; nothing reads anything older.
+func (s *SnapshotStore) pruneSupersededChunks(ctx context.Context, manifestKey string, replaced model.Envelope) error {
 	idx := strings.LastIndex(manifestKey, snapshotManifestLabel)
 	if idx < 0 {
 		return nil
 	}
 	prefix, token := manifestKey[:idx], manifestKey[idx+len(snapshotManifestLabel):]
-	keys, err := s.keys(ctx, prefix+snapshotChunkLabel+token+".")
+	zonePrefix := prefix + snapshotChunkLabel + token + "."
+	keys, err := s.keys(ctx, zonePrefix)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 	for _, key := range keys {
 		var epoch, revision uint64
 		var index int
-		suffix := strings.TrimPrefix(key, prefix+snapshotChunkLabel+token+".")
-		if _, err := fmt.Sscanf(suffix, "e%d.r%d.i%d", &epoch, &revision, &index); err != nil {
+		if _, err := fmt.Sscanf(strings.TrimPrefix(key, zonePrefix), "e%d.r%d.i%d", &epoch, &revision, &index); err != nil {
 			continue
 		}
-		if model.Compare(epoch, revision, head.Epoch, head.Revision) >= 0 {
-			continue
-		}
-		entry, err := s.kv.Get(ctx, key)
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		if now.Sub(entry.Created()) < snapshotChunkReplayWindow {
+		if model.Compare(epoch, revision, replaced.Epoch, replaced.Revision) >= 0 {
 			continue
 		}
 		if err := s.kv.Purge(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -600,9 +589,6 @@ func (s *SnapshotStore) pruneSupersededChunks(ctx context.Context, manifestKey s
 const (
 	snapshotChunkLabel    = "chunk."
 	snapshotManifestLabel = "manifest."
-	// snapshotChunkReplayWindow keeps a superseded revision's chunks for a
-	// member that read the previous manifest head just before it moved.
-	snapshotChunkReplayWindow = 2 * time.Minute
 )
 
 func chunkRevisionPrefix(prefix, token string, epoch, revision uint64) string {

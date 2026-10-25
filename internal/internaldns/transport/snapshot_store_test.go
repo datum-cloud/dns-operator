@@ -96,9 +96,11 @@ type memoryLister struct{ keys chan string }
 func (l memoryLister) Keys() <-chan string { return l.keys }
 func (l memoryLister) Stop() error         { return nil }
 
+var snapshotTime = time.Date(2026, 10, 25, 22, 0, 0, 0, time.UTC)
+
 func snapshotEnvelope(t *testing.T, kind model.Kind, zone string, epoch, revision uint64, payload any) model.Envelope {
 	t.Helper()
-	env, err := model.NewEnvelope(kind, fmt.Sprintf("%s-%s-%d-%d", kind, zone, epoch, revision), "central", "shard", zone, epoch, revision, time.Now(), payload)
+	env, err := model.NewEnvelope(kind, fmt.Sprintf("%s-%s-%d-%d", kind, zone, epoch, revision), "central", "shard", zone, epoch, revision, snapshotTime, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,22 +161,37 @@ func TestSnapshotListReadsOnlyChunksOfManifestHeads(t *testing.T) {
 	}
 }
 
-func TestSnapshotManifestPrunesSupersededChunksAfterTheReplayWindow(t *testing.T) {
-	start := time.Now().Add(-time.Hour)
-	kv := newMemoryKeyValue(start)
+func TestSnapshotManifestKeepsTheReplacedHeadsChunks(t *testing.T) {
+	kv := newMemoryKeyValue(time.Now())
 	store := &SnapshotStore{kv: kv}
-	stale := putChunk(t, store, "zone-a", 1, 1)
-	kv.now = time.Now()
-	recent := putChunk(t, store, "zone-a", 1, 2)
-	current := putChunk(t, store, "zone-a", 2, 1)
-	next := putChunk(t, store, "zone-a", 2, 2)
+	first := putChunk(t, store, "zone-a", 1, 1)
+	second := putChunk(t, store, "zone-a", 1, 2)
+	third := putChunk(t, store, "zone-a", 1, 3)
 	otherZone := putChunk(t, store, "zone-b", 1, 1)
-	putManifest(t, store, "zone-a", 2, 1)
+	putManifest(t, store, "zone-a", 1, 2)
+	putManifest(t, store, "zone-a", 1, 2)
+	if len(kv.entries) != 5 {
+		t.Fatalf("a first or repeated head purged chunks: %d keys left", len(kv.entries))
+	}
 
-	for key, kept := range map[string]bool{stale: false, recent: true, current: true, next: true, otherZone: true} {
+	putManifest(t, store, "zone-a", 1, 3)
+	for key, kept := range map[string]bool{first: false, second: true, third: true, otherZone: true} {
 		if _, ok := kv.entries[key]; ok != kept {
-			t.Errorf("%s kept=%v, want %v", key, ok, kept)
+			t.Errorf("after moving to r3, %s kept=%v, want %v", key, ok, kept)
 		}
+	}
+
+	next := putChunk(t, store, "zone-a", 2, 1)
+	putManifest(t, store, "zone-a", 2, 1)
+	for key, kept := range map[string]bool{second: false, third: true, next: true, otherZone: true} {
+		if _, ok := kv.entries[key]; ok != kept {
+			t.Errorf("after moving to a new epoch, %s kept=%v, want %v", key, ok, kept)
+		}
+	}
+
+	putManifest(t, store, "zone-a", 1, 9)
+	if _, ok := kv.entries[third]; !ok {
+		t.Fatal("a delayed older head purged the current head's predecessor")
 	}
 }
 

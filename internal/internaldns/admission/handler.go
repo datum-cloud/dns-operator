@@ -321,7 +321,7 @@ func (h *Handler) refuseInstancesScope(req kubeadmission.Request, zone *dnsv1alp
 	}
 	for _, owner := range owners {
 		if model.InProviderScope(model.ZoneRelativeOwner(owner, zone.Spec.DomainName)) {
-			return fmt.Errorf("%q is reserved for instance names published by the platform", model.InstancesScope+"."+zone.Spec.DomainName)
+			return fmt.Errorf("%q is reserved for instance names published by the platform, and %q is not an instance publisher", model.InstancesScope+"."+zone.Spec.DomainName, req.UserInfo.Username)
 		}
 	}
 	return nil

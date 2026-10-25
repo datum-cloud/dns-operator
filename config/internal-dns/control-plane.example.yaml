@@ -60,7 +60,7 @@ data:
         "enabled": true,
         "port": 9443,
         "certDir": "/var/run/internal-dns/admission",
-        "instancePublishers": ["system:serviceaccount:example-compute:instance-publisher"]
+        "instancePublishers": ["<username compute writes project DNS objects as>"]
       }
     }
 ---

@@ -274,8 +274,18 @@ sequenceDiagram
 Each zone has one compiler owner, fenced by a compare-and-swap lease. Takeover
 advances the writer epoch; revisions increase within it. Agents reject older
 versions. The compiler stages immutable chunks and a manifest, then commits its
-active pointer. Kubernetes API storage retains this state and a durable outbox;
-exporters repair missing outboxes after crashes.
+active pointer. This state and a durable outbox live in platform Kubernetes API
+storage by default; exporters repair missing outboxes after crashes.
+
+The `publicationStore` option keeps the same records (ownership leases,
+manifests, chunks, outboxes and shard ownership) in a JetStream key-value bucket
+instead, so publishing does not wait on the platform API server. Resource
+versions are bucket revisions, so every lease, commit and status write keeps its
+compare-and-swap fence. Writer epochs start at the current Unix time, so a new or
+lost store never leaves agents fencing out the new writer. Superseded
+publications are deleted after ten minutes unless a pending outbox depends on
+them. Tenant objects, resolver bindings, address claims and tenant status stay
+in the API server.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.

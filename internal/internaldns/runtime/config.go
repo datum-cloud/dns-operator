@@ -85,6 +85,16 @@ type Config struct {
 	ManagedDomainSuffixes []string                  `json:"managedDomainSuffixes,omitempty"`
 	Agent                 serving.Config            `json:"agent,omitempty"`
 	Shards                []platform.PlannerConfig  `json:"shards,omitempty"`
+	PublicationStore      *PublicationStoreConfig   `json:"publicationStore,omitempty"`
+}
+
+// PublicationStoreConfig moves the control plane's publication records
+// (ownership leases, manifests, chunks, outboxes and shard ownership) from the
+// platform API server to a JetStream key-value bucket on one region's broker.
+type PublicationStoreConfig struct {
+	Region   string `json:"region"`
+	Bucket   string `json:"bucket"`
+	Replicas int    `json:"replicas,omitempty"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -218,6 +228,14 @@ func (c *Config) Validate(role string) error {
 	}
 	if err := validateKubeAPI("platformKubeAPI", c.PlatformKubeAPI); err != nil {
 		return err
+	}
+	if p := c.PublicationStore; p != nil {
+		if p.Region == "" || !validBucketName(p.Bucket) || p.Replicas < 0 {
+			return errors.New("publicationStore requires a region, a bucket name of letters, digits, - and _, and non-negative replicas")
+		}
+		if _, _, _, err := c.transportForRegion(p.Region); err != nil {
+			return fmt.Errorf("publicationStore: %w", err)
+		}
 	}
 	for i, suffix := range c.ManagedDomainSuffixes {
 		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
@@ -419,4 +437,16 @@ func (c Config) regionalPrefixes() (map[string]string, error) {
 		pools[region] = parsed
 	}
 	return result, nil
+}
+
+func validBucketName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

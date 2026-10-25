@@ -20,6 +20,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/controlplane"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
+	"go.miloapis.com/dns-operator/internal/internaldns/pubstore"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
@@ -91,6 +92,16 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
+	platformClient = &pubstore.EpochFloorClient{Client: platformClient, Now: time.Now}
+	var publicationStore *pubstore.PublicationStore
+	if cfg.PublicationStore != nil {
+		store, closeStore, err := openPublicationStore(ctx, cfg, platformClient)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		publicationStore, platformClient = store, store
+	}
 	regionalPrefixes, err := cfg.regionalPrefixes()
 	if err != nil {
 		return err
@@ -227,6 +238,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return err
 		}
 		go func() { errCh <- server.Start(ctx) }()
+	}
+	if publicationStore != nil {
+		go retryLoop(ctx, pubstore.CollectInterval, loopID{Loop: "publication store collect"}, live, publicationStore.Collect, errCh)
 	}
 	startProjectSources(ctx, projects)
 	if discovery == nil {

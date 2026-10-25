@@ -275,6 +275,67 @@ func TestEmptyPublicationUsesJSONArraysForRequiredSlices(t *testing.T) {
 	}
 }
 
+func TestZonePublishesOnlyToBoundRegions(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	network := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-a"}}
+	zone := fixture(now).Zone.DeepCopy()
+	zone.Namespace = "project"
+	zone.Finalizers = []string{privateZoneFinalizer}
+	assoc := fixture(now).Associations[0].DeepCopy()
+	assoc.Namespace = "project"
+	assoc.Name = "zone-prod"
+	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: "prod"}
+	assoc.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
+	reg := fixture(now).Registrations[0].DeepCopy()
+	reg.Namespace = "project"
+	contrib := fixture(now).Contributions[0].DeepCopy()
+	contrib.Namespace = "project"
+	contrib.Generation = 1
+	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", DestinationAddress: "fd53::11"}}
+	accessWest := accessEast.DeepCopy()
+	accessWest.Name = "prod-west"
+	accessWest.UID = "access-west"
+	accessWest.Spec.Region = "west"
+	accessWest.Spec.DestinationAddress = "fd53::12"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contrib, accessEast).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s2"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
+	for i := 0; i < 8; i++ {
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}); err != nil {
+			t.Fatalf("reconcile %d: %v", i, err)
+		}
+	}
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := c.List(ctx, &bindings); err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings.Items) != 1 || bindings.Items[0].Spec.Placement.Region != "east" {
+		t.Fatalf("want only the east binding, got %#v", bindings.Items)
+	}
+	var manifests dnsv1alpha1.DNSPublicationManifestList
+	if err := c.List(ctx, &manifests); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifests.Items) != 1 {
+		t.Fatalf("want one shared manifest, got %d: %#v", len(manifests.Items), manifests.Items)
+	}
+	m := manifests.Items[0]
+	if len(m.Spec.ServingTargets) != 1 || m.Spec.ServingTargets[0].Region != "east" || m.Spec.ServingTargets[0].Shard != "s1" {
+		t.Fatalf("a context bound only in east must publish only to east, got %#v", m.Spec.ServingTargets)
+	}
+	var outboxes dnsv1alpha1.DNSTransportOutboxList
+	if err := c.List(ctx, &outboxes); err != nil {
+		t.Fatal(err)
+	}
+	if len(outboxes.Items) != 2 {
+		t.Fatalf("want chunk+activation for east only, got %d", len(outboxes.Items))
+	}
+}
+
 func TestReconcilerPersistsFencedMultiRegionOutbox(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)

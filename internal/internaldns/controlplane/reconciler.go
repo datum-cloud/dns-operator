@@ -43,6 +43,9 @@ type ReconcilerOptions struct {
 	// and bounds how many project passes run at once, so a restart does not
 	// start a full pass of every project against the API server together.
 	PassSlots chan struct{}
+
+	// OnPublished, when set, is called after a pass commits a new publication.
+	OnPublished func()
 }
 
 type ServingRegion struct {

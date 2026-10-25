@@ -106,6 +106,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	identity := holderIdentity()
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
+	// A pass that commits a publication wakes the outbox loops, so it is sent
+	// without waiting for their next tick.
+	outboxWakes := &wakes{}
 	// Each project manager lists and watches its project's DNS resources as it
 	// starts, so pace starts rather than open every watch in the same second.
 	projectStarts := rate.NewLimiter(rate.Limit(10), 10)
@@ -141,7 +144,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots,
+				ProjectUID: project.ProjectUID, PassSlots: passSlots, OnPublished: outboxWakes.notify,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -257,7 +260,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks, live)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks, live, outboxWakes)
 	}, errCh)
 
 	select {
@@ -326,7 +329,7 @@ func startRegionalWorkers(planners []platform.PlannerConfig, run func(string, []
 	}
 }
 
-func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness) error {
+func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness, outboxWakes *wakes) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-region").WithValues("region", region)
 	for ctx.Err() == nil {
 		regional, err := connectRegional(ctx, cfg, []string{region})
@@ -373,7 +376,9 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		const ackWorkers = 4
 		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
-		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
+		wake, unsubscribe := outboxWakes.subscribe()
+		defer unsubscribe()
+		go wakeableLoop(workerCtx, 500*time.Millisecond, wake, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)
@@ -529,6 +534,12 @@ func connectWithRetry(ctx context.Context, cfg transport.Config) (*transport.Jet
 }
 
 func retryLoop(ctx context.Context, interval time.Duration, id loopID, live *loopLiveness, step func(context.Context) error, terminal chan<- error) {
+	wakeableLoop(ctx, interval, nil, id, live, step, terminal)
+}
+
+// wakeableLoop is retryLoop that also runs as soon as wake receives, so work
+// that has just been queued does not wait for the next tick.
+func wakeableLoop(ctx context.Context, interval time.Duration, wake <-chan struct{}, id loopID, live *loopLiveness, step func(context.Context) error, terminal chan<- error) {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns").WithValues("loop", id.operation())
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -549,6 +560,7 @@ func retryLoop(ctx context.Context, interval time.Duration, id loopID, live *loo
 			terminal <- nil
 			return
 		case <-ticker.C:
+		case <-wake:
 		}
 	}
 }
@@ -697,4 +709,37 @@ func newProcessIdentity() string {
 	// crypto/rand failure is exceptional. PID and startup time still prevent
 	// same-host processes from silently sharing a lease identity.
 	return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UTC().UnixNano())
+}
+
+// wakes fans one notification out to every subscriber without blocking; a
+// subscriber that is already due to run keeps a single pending wake.
+type wakes struct {
+	mu   sync.Mutex
+	subs map[chan struct{}]struct{}
+}
+
+func (w *wakes) subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	w.mu.Lock()
+	if w.subs == nil {
+		w.subs = map[chan struct{}]struct{}{}
+	}
+	w.subs[ch] = struct{}{}
+	w.mu.Unlock()
+	return ch, func() {
+		w.mu.Lock()
+		delete(w.subs, ch)
+		w.mu.Unlock()
+	}
+}
+
+func (w *wakes) notify() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for ch := range w.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }

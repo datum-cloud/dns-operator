@@ -293,6 +293,34 @@ func TestStaticTTLPreservedAndConflictsRejected(t *testing.T) {
 	}
 }
 
+func TestCompileRejectsTenantRecordsInProviderScope(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	in := fixture(now)
+	in.Registrations = nil
+	in.Contributions = nil
+	static := func(uid types.UID, owner string) dnsv1alpha1.DNSRecordSet {
+		return dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: string(uid), UID: uid}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: in.Zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: owner, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}
+	}
+	in.StaticRecords = []dnsv1alpha1.DNSRecordSet{
+		static("scoped", "web.instances"),
+		static("label", "instances"),
+		static("absolute", "web.instances."+in.Zone.Spec.DomainName+"."),
+		static("outside", "api"),
+	}
+	result, err := Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []types.UID{"scoped", "label", "absolute"} {
+		if result.Accepted[uid] || result.Reasons[uid] != "ReservedScope" {
+			t.Fatalf("%s accepted=%v reason=%q, want ReservedScope", uid, result.Accepted[uid], result.Reasons[uid])
+		}
+	}
+	if !result.Accepted["outside"] || len(result.Plan.RRsets) != 1 || result.Plan.RRsets[0].Name != "api" {
+		t.Fatalf("record outside the scope was not published: %#v", result.Plan.RRsets)
+	}
+}
+
 func TestCompileRejectsUnboundedDynamicTTL(t *testing.T) {
 	in := fixture(time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC))
 	in.Registrations[0].Spec.TTLSeconds = 2147483647

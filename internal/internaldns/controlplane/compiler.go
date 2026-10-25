@@ -546,6 +546,10 @@ func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[o
 				reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 				break
 			}
+			if model.InProviderScope(key.name) {
+				reasons[rs.UID] = dnsValueReservedScope
+				break
+			}
 			if _, err := recordContent(rs.Spec.RecordType, record); err != nil {
 				reasons[rs.UID] = "InvalidRecord"
 				break

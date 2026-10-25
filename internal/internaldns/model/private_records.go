@@ -28,3 +28,15 @@ func ValidatePrivateRecordOwner(owner, apex, recordType string) error {
 	}
 	return nil
 }
+
+// InstancesScope is the label compute publishes instance names under, so an
+// instance named web-01 answers as web-01.instances.<zone>.
+const InstancesScope = "instances"
+
+// InProviderScope reports whether a zone-relative owner name falls inside a
+// scope reserved for a publishing provider. Tenant records may not be created
+// there, so a scope's names are only ever answered by its provider.
+func InProviderScope(relativeOwner string) bool {
+	name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(relativeOwner), "."))
+	return name == InstancesScope || strings.HasSuffix(name, "."+InstancesScope)
+}

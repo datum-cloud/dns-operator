@@ -462,3 +462,43 @@ func withContent(rs *dnsv1alpha1.DNSRecordSet, content string) *dnsv1alpha1.DNSR
 	}
 	return rs
 }
+
+func TestDNSRecordSetValidator_ProviderScope(t *testing.T) {
+	t.Parallel()
+
+	scheme := validatorScheme(t)
+	zone := func(visibility dnsv1alpha1.DNSZoneVisibility) *dnsv1alpha1.DNSZone {
+		return &dnsv1alpha1.DNSZone{
+			ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
+			Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: visibility},
+		}
+	}
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	const hint = "reserved for instance names"
+
+	tests := []struct {
+		name        string
+		visibility  dnsv1alpha1.DNSZoneVisibility
+		owners      []string
+		wantRefused bool
+		wantIn      []string
+	}{
+		{name: "instance name in a private zone is refused", visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, owners: []string{"web.instances"}, wantRefused: true, wantIn: []string{hint, "spec.records[0].name"}},
+		{name: "scope label itself is refused", visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, owners: []string{"api", "Instances"}, wantRefused: true, wantIn: []string{hint, "spec.records[1].name"}},
+		{name: "absolute instance name is refused", visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, owners: []string{"a.b.instances.datum.internal."}, wantRefused: true, wantIn: []string{hint}},
+		{name: "name ending in the label without a dot is accepted", visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, owners: []string{"myinstances"}},
+		{name: "name under a label that contains instances is accepted", visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, owners: []string{"instances.web"}},
+		{name: "public zones are not scoped", visibility: dnsv1alpha1.DNSZoneVisibilityPublic, owners: []string{"web.instances"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			v := &DNSRecordSetValidator{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(zone(tc.visibility)).Build(),
+			}
+			_, err := v.ValidateCreate(context.Background(), recordSet("set", "my-zone", dnsv1alpha1.RRTypeTXT, base, tc.owners...))
+			assertRefusal(t, err, tc.wantRefused, tc.wantIn)
+		})
+	}
+}

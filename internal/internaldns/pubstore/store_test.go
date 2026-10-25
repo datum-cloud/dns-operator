@@ -271,9 +271,10 @@ func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
 	if err := store.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east", shardOwnerLabel: shardOwnerPrefix + "east"}}}
 	own := &dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}}
-	for _, obj := range []client.Object{out, own} {
+	zoneOut := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "zone-activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	for _, obj := range []client.Object{out, own, zoneOut} {
 		if err := store.Create(ctx, obj); err != nil {
 			t.Fatal(err)
 		}
@@ -283,6 +284,9 @@ func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
 	}
 	if _, _, err := home.Get(ctx, "own.platform.owner-a"); err != nil {
 		t.Fatalf("zone lease not in the home bucket: %v", err)
+	}
+	if _, _, err := home.Get(ctx, "out.platform.zone-activation-east"); err != nil {
+		t.Fatalf("zone publication outbox not with its manifest in the home bucket: %v", err)
 	}
 	base := out.DeepCopy()
 	out.Status.State = "Acknowledged"
@@ -294,7 +298,7 @@ func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
 		t.Fatalf("regional read: %v %#v", err, got.Status)
 	}
 	var list dnsv1.DNSTransportOutboxList
-	if err := store.List(ctx, &list); err != nil || len(list.Items) != 1 {
+	if err := store.List(ctx, &list); err != nil || len(list.Items) != 2 {
 		t.Fatalf("list across buckets: %v %d", err, len(list.Items))
 	}
 	relabelled := got.DeepCopy()
@@ -318,7 +322,7 @@ func TestRegionsSharingABrokerShareOneBucket(t *testing.T) {
 	if err := store.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east", shardOwnerLabel: shardOwnerPrefix + "east"}}}
 	if err := store.Create(ctx, out); err != nil {
 		t.Fatal(err)
 	}
@@ -352,13 +356,22 @@ func TestOneRegionsBrokerOutageLeavesTheOthersWorking(t *testing.T) {
 	if err := store.Get(ctx, client.ObjectKeyFromObject(own), own); !apierrors.IsNotFound(err) {
 		t.Fatalf("zone lease lookup depended on the regional broker: %v", err)
 	}
-	central := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-central", Namespace: "platform", Labels: map[string]string{regionLabel: "central"}}}
-	if err := store.Create(ctx, central); err != nil {
+	zoneOut := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "zone-activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	if err := store.Create(ctx, zoneOut); err != nil {
+		t.Fatalf("committing a zone needed the east broker: %v", err)
+	}
+	central := store.View("central")
+	var lease corev1.ConfigMap
+	if err := central.Get(ctx, client.ObjectKey{Namespace: "platform", Name: shardOwnerPrefix + "central"}, &lease); !apierrors.IsNotFound(err) {
+		t.Fatalf("central shard lease lookup depended on the east broker: %v", err)
+	}
+	serving := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "serving-central", Namespace: "platform", Labels: map[string]string{regionLabel: "central", shardOwnerLabel: shardOwnerPrefix + "central"}}}
+	if err := central.Create(ctx, serving); err != nil {
 		t.Fatal(err)
 	}
 	var found dnsv1.DNSTransportOutbox
-	if err := store.Get(ctx, client.ObjectKeyFromObject(central), &found); err != nil {
-		t.Fatalf("central record lookup depended on the regional broker: %v", err)
+	if err := central.Get(ctx, client.ObjectKeyFromObject(serving), &found); err != nil {
+		t.Fatalf("central record lookup depended on the east broker: %v", err)
 	}
 	if err := store.Collect(ctx); err == nil {
 		t.Fatal("collected without every region's records loaded")

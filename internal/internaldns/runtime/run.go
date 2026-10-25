@@ -113,6 +113,12 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if err != nil {
 		return err
 	}
+	regionalClient := func(region string) client.Client {
+		if publicationStore == nil {
+			return platformClient
+		}
+		return publicationStore.View(model.SafeToken(region))
+	}
 	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes}
 	planners := cfg.plannerConfigs()
 	regions := make([]controlplane.ServingRegion, 0, len(planners))
@@ -272,15 +278,15 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	sinks := map[string]*platform.AckSink{}
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
-		planner := &platform.Planner{Client: platformClient, Allocator: allocator, Config: pc}
+		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc}
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
-		sink := &platform.AckSink{Client: platformClient, Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
+		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, platformClient, sinks, live, outboxWakes)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, outboxWakes)
 	}, errCh)
 
 	select {

@@ -123,7 +123,9 @@ type PublicationStore struct {
 
 	lastPurge time.Time
 
-	mu      sync.RWMutex
+	scope []string
+
+	mu      *sync.RWMutex
 	index   map[string]indexed
 	pending map[string]bool
 	synced  chan struct{}
@@ -136,14 +138,29 @@ func New(api client.Client, kv KV) *PublicationStore {
 	return NewRegional(api, "", map[string]KV{"": kv}, nil)
 }
 
-// NewRegional keeps outboxes and shard leases labelled with a region (by its
-// safe token) in the bucket regions names for it, and every other record in
-// the home bucket. Buckets are keyed by physical bucket, so regions that share
+// NewRegional keeps shard leases and serving outboxes labelled with a region
+// (by its safe token) in the bucket regions names for it, and every other
+// record, including zone publications and their outboxes, in the home bucket,
+// so committing a zone needs only the home broker. Buckets are keyed by physical bucket, so regions that share
 // a broker name the same one.
 func NewRegional(api client.Client, home string, buckets map[string]KV, regions map[string]string) *PublicationStore {
-	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, index: map[string]indexed{}, synced: make(chan struct{})}
+	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, mu: &sync.RWMutex{}, index: map[string]indexed{}, pending: map[string]bool{}, synced: make(chan struct{})}
 }
 
+// View is the store as one region's loops use it: a record not yet in the
+// index is looked for only in the home bucket and that region's bucket, so
+// another region's broker never holds those loops up.
+func (s *PublicationStore) View(region string) *PublicationStore {
+	view := *s
+	view.scope = []string{s.home}
+	if bucket, ok := s.regions[region]; ok && bucket != s.home {
+		view.scope = append(view.scope, bucket)
+	}
+	return &view
+}
+
+// regional kinds may live outside the home bucket: shard leases and the
+// serving snapshots their planners write.
 func regional(kind *storedKind) bool { return kind == outboxKind || kind == shardKind }
 
 func (s *PublicationStore) bucketNames() []string {
@@ -162,7 +179,7 @@ func (s *PublicationStore) bucketNames() []string {
 
 // bucketFor is where a new obj is written.
 func (s *PublicationStore) bucketFor(kind *storedKind, obj client.Object) string {
-	if regional(kind) {
+	if kind == shardKind || kind == outboxKind && obj.GetLabels()[shardOwnerLabel] != "" {
 		if bucket, ok := s.regions[obj.GetLabels()[regionLabel]]; ok {
 			return bucket
 		}
@@ -194,7 +211,10 @@ func (s *PublicationStore) locate(ctx context.Context, kind *storedKind, key str
 		revision uint64
 		err      error
 	}
-	names := s.bucketNames()
+	names := s.scope
+	if names == nil {
+		names = s.bucketNames()
+	}
 	results := make(chan found, len(names))
 	for _, name := range names {
 		go func() {
@@ -223,10 +243,11 @@ func (s *PublicationStore) locate(ctx context.Context, kind *storedKind, key str
 // reachable yet is watched as soon as it is, so one region's broker never holds
 // up the others.
 func (s *PublicationStore) Start(ctx context.Context) error {
-	s.pending = map[string]bool{}
+	s.mu.Lock()
 	for name := range s.buckets {
 		s.pending[name] = true
 	}
+	s.mu.Unlock()
 	homeReady := make(chan error, 1)
 	for _, name := range s.bucketNames() {
 		ready := make(chan error, 1)

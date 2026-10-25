@@ -97,6 +97,7 @@ func storedKindFor(obj k8sruntime.Object, name string) *storedKind {
 }
 
 type indexed struct {
+	bucket   string
 	revision uint64
 	obj      client.Object
 }
@@ -106,40 +107,112 @@ type indexed struct {
 // in a JetStream key-value bucket and passes every other object to the API
 // server. A resource version is the bucket revision, so creates, updates and
 // optimistically locked patches keep the API server's compare-and-swap
-// contract. Lists are served from an index fed by the bucket watch and by this
-// client's own writes.
+// contract. Lists are served from an index fed by the bucket watches and by
+// this client's own writes.
+//
+// Each region may have its own bucket. A record labelled with a region lives in
+// that region's bucket, so publishing to a region needs only that region's
+// broker; any other record lives in the home bucket. Record names are unique
+// across buckets.
 type PublicationStore struct {
 	client.Client
-	kv  KV
-	now func() time.Time
+	home    string
+	buckets map[string]KV
+	now     func() time.Time
 
 	mu     sync.RWMutex
 	index  map[string]indexed
 	synced chan struct{}
 }
 
+const regionLabel = "internal-dns.miloapis.com/region"
+
+// New keeps every record in one bucket.
 func New(api client.Client, kv KV) *PublicationStore {
-	return &PublicationStore{Client: api, kv: kv, now: time.Now, index: map[string]indexed{}, synced: make(chan struct{})}
+	return NewRegional(api, "", map[string]KV{"": kv})
 }
 
-// Start watches the bucket until ctx ends and returns once the index holds
+// NewRegional keeps records labelled with a region (by its safe token) in
+// that region's bucket, and the rest in the home bucket.
+func NewRegional(api client.Client, home string, buckets map[string]KV) *PublicationStore {
+	return &PublicationStore{Client: api, home: home, buckets: buckets, now: time.Now, index: map[string]indexed{}, synced: make(chan struct{})}
+}
+
+func (s *PublicationStore) bucketNames() []string {
+	names := make([]string, 0, len(s.buckets))
+	for name := range s.buckets {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if (names[i] == s.home) != (names[j] == s.home) {
+			return names[i] == s.home
+		}
+		return names[i] < names[j]
+	})
+	return names
+}
+
+// bucketFor is where obj is written.
+func (s *PublicationStore) bucketFor(obj client.Object) string {
+	if region := obj.GetLabels()[regionLabel]; region != "" {
+		if _, ok := s.buckets[region]; ok {
+			return region
+		}
+	}
+	return s.home
+}
+
+// locate finds the bucket holding key: the one the index names, else the first
+// that has it, home first.
+func (s *PublicationStore) locate(ctx context.Context, key string) (string, []byte, uint64, error) {
+	s.mu.RLock()
+	entry, ok := s.index[key]
+	s.mu.RUnlock()
+	order := s.bucketNames()
+	if ok {
+		order = append([]string{entry.bucket}, order...)
+	}
+	tried := map[string]bool{}
+	for _, name := range order {
+		if tried[name] {
+			continue
+		}
+		tried[name] = true
+		value, revision, err := s.buckets[name].Get(ctx, key)
+		if errors.Is(err, transport.ErrKVNotFound) {
+			continue
+		}
+		return name, value, revision, err
+	}
+	return "", nil, 0, transport.ErrKVNotFound
+}
+
+// Start watches every bucket until ctx ends and returns once the index holds
 // every current record.
 func (s *PublicationStore) Start(ctx context.Context) error {
-	events, err := s.kv.Watch(ctx)
-	if err != nil {
-		return err
+	ready := make(chan error, len(s.buckets))
+	for _, name := range s.bucketNames() {
+		events, err := s.buckets[name].Watch(ctx)
+		if err != nil {
+			return err
+		}
+		go s.follow(ctx, name, events, ready)
 	}
-	ready := make(chan error, 1)
-	go s.follow(ctx, events, ready)
-	select {
-	case err := <-ready:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
+	for range s.buckets {
+		select {
+		case err := <-ready:
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	close(s.synced)
+	return nil
 }
 
-func (s *PublicationStore) follow(ctx context.Context, events <-chan *transport.KVEvent, ready chan<- error) {
+func (s *PublicationStore) follow(ctx context.Context, bucket string, events <-chan *transport.KVEvent, ready chan<- error) {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-publication-store")
 	first := true
 	for ctx.Err() == nil {
@@ -149,11 +222,10 @@ func (s *PublicationStore) follow(ctx context.Context, events <-chan *transport.
 		for event := range events {
 			if event == nil {
 				if replaying {
-					s.dropUnseen(seen, highest)
+					s.dropUnseen(bucket, seen, highest)
 					replaying = false
 					if first {
 						first = false
-						close(s.synced)
 						ready <- nil
 					}
 				}
@@ -163,15 +235,15 @@ func (s *PublicationStore) follow(ctx context.Context, events <-chan *transport.
 				seen[event.Key] = true
 				highest = max(highest, event.Revision)
 			}
-			s.apply(event.Key, event.Revision, event.Value)
+			s.apply(bucket, event.Key, event.Revision, event.Value)
 		}
 		if ctx.Err() != nil {
 			return
 		}
-		log.Info("publication store watch ended; rewatching")
+		log.Info("publication store watch ended; rewatching", "bucket", bucket)
 		for ctx.Err() == nil {
 			var err error
-			if events, err = s.kv.Watch(ctx); err == nil {
+			if events, err = s.buckets[bucket].Watch(ctx); err == nil {
 				break
 			}
 			log.Error(err, "publication store rewatch failed")
@@ -186,11 +258,11 @@ func (s *PublicationStore) follow(ctx context.Context, events <-chan *transport.
 
 // dropUnseen removes records deleted while the watch was down: a key the
 // replay did not carry and that no write after the replay has touched.
-func (s *PublicationStore) dropUnseen(seen map[string]bool, highest uint64) {
+func (s *PublicationStore) dropUnseen(bucket string, seen map[string]bool, highest uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, entry := range s.index {
-		if !seen[key] && entry.revision <= highest {
+		if entry.bucket == bucket && !seen[key] && entry.revision <= highest {
 			delete(s.index, key)
 		}
 	}
@@ -208,7 +280,7 @@ func kindForKey(key string) *storedKind {
 // apply records a bucket value in the index. A settled outbox is kept without
 // its payload, because nothing sends it again; a listed settled outbox
 // therefore carries no payload.
-func (s *PublicationStore) apply(key string, revision uint64, value []byte) {
+func (s *PublicationStore) apply(bucket, key string, revision uint64, value []byte) {
 	kind := kindForKey(key)
 	if kind == nil || !kind.indexed {
 		return
@@ -225,14 +297,17 @@ func (s *PublicationStore) apply(key string, revision uint64, value []byte) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if current, ok := s.index[key]; ok && current.revision >= revision {
+	if current, ok := s.index[key]; ok && current.bucket == bucket && current.revision >= revision {
 		return
 	}
 	if obj == nil {
+		if current, ok := s.index[key]; ok && current.bucket != bucket {
+			return
+		}
 		delete(s.index, key)
 		return
 	}
-	s.index[key] = indexed{revision: revision, obj: obj}
+	s.index[key] = indexed{bucket: bucket, revision: revision, obj: obj}
 }
 
 func decodeStored(value []byte, revision uint64, obj client.Object) error {
@@ -265,14 +340,14 @@ func (s *PublicationStore) Get(ctx context.Context, key client.ObjectKey, obj cl
 	if err != nil {
 		return err
 	}
-	value, revision, err := s.kv.Get(ctx, k)
+	bucket, value, revision, err := s.locate(ctx, k)
 	if errors.Is(err, transport.ErrKVNotFound) {
 		return apierrors.NewNotFound(kind.resource, key.Name)
 	}
 	if err != nil {
 		return err
 	}
-	s.apply(k, revision, value)
+	s.apply(bucket, k, revision, value)
 	return decodeStored(value, revision, obj)
 }
 
@@ -353,14 +428,15 @@ func (s *PublicationStore) Create(ctx context.Context, obj client.Object, opts .
 	if err != nil {
 		return err
 	}
-	revision, err := s.kv.Create(ctx, k, value)
+	bucket := s.bucketFor(next)
+	revision, err := s.buckets[bucket].Create(ctx, k, value)
 	if errors.Is(err, transport.ErrKVExists) {
 		return apierrors.NewAlreadyExists(kind.resource, obj.GetName())
 	}
 	if err != nil {
 		return err
 	}
-	s.apply(k, revision, value)
+	s.apply(bucket, k, revision, value)
 	return decodeStored(value, revision, obj)
 }
 
@@ -422,7 +498,7 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		return err
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		value, revision, err := s.kv.Get(ctx, k)
+		bucket, value, revision, err := s.locate(ctx, k)
 		if errors.Is(err, transport.ErrKVNotFound) {
 			return apierrors.NewNotFound(kind.resource, obj.GetName())
 		}
@@ -472,7 +548,10 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		if err != nil {
 			return err
 		}
-		written, err := s.kv.Update(ctx, k, out, revision)
+		if s.bucketFor(desired) != bucket {
+			return apierrors.NewBadRequest("a record cannot move between regions")
+		}
+		written, err := s.buckets[bucket].Update(ctx, k, out, revision)
 		if errors.Is(err, transport.ErrKVConflict) {
 			if conditional {
 				return modified(kind, obj)
@@ -482,7 +561,7 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		if err != nil {
 			return err
 		}
-		s.apply(k, written, out)
+		s.apply(bucket, k, written, out)
 		return decodeStored(out, written, obj)
 	}
 	return modified(kind, obj)
@@ -547,7 +626,7 @@ func (s *PublicationStore) Delete(ctx context.Context, obj client.Object, opts .
 	}
 	do := &client.DeleteOptions{}
 	do.ApplyOptions(opts)
-	value, revision, err := s.kv.Get(ctx, k)
+	bucket, value, revision, err := s.locate(ctx, k)
 	if errors.Is(err, transport.ErrKVNotFound) {
 		return apierrors.NewNotFound(kind.resource, obj.GetName())
 	}
@@ -563,13 +642,13 @@ func (s *PublicationStore) Delete(ctx context.Context, obj client.Object, opts .
 			return apierrors.NewConflict(kind.resource, obj.GetName(), errors.New("precondition failed"))
 		}
 	}
-	if err := s.kv.Delete(ctx, k, revision); errors.Is(err, transport.ErrKVConflict) {
+	if err := s.buckets[bucket].Delete(ctx, k, revision); errors.Is(err, transport.ErrKVConflict) {
 		return modified(kind, obj)
 	} else if err != nil {
 		return err
 	}
 	s.mu.Lock()
-	if current, ok := s.index[k]; ok && current.revision <= revision {
+	if current, ok := s.index[k]; ok && current.bucket == bucket && current.revision <= revision {
 		delete(s.index, k)
 	}
 	s.mu.Unlock()
@@ -662,11 +741,12 @@ func (s *PublicationStore) Seed(ctx context.Context, obj client.Object) (bool, e
 	if err != nil {
 		return true, err
 	}
-	revision, err := s.kv.Create(ctx, k, value)
+	bucket := s.bucketFor(next)
+	revision, err := s.buckets[bucket].Create(ctx, k, value)
 	if err != nil {
 		return true, err
 	}
-	s.apply(k, revision, value)
+	s.apply(bucket, k, revision, value)
 	return true, nil
 }
 

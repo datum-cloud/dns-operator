@@ -288,6 +288,12 @@ newer one of its zone was exported, unless a pending outbox depends on it.
 Tenant objects, resolver bindings, address claims and tenant status stay in the
 API server.
 
+The bucket exists on every region's broker. A record labelled with a region
+(transport outboxes and shard leases) lives on that region's broker, so a
+region's serving snapshots never wait on another region's broker. Zone leases,
+manifests and chunks live on the broker of `publicationStore.region` until zone
+publication has one writer per zone and region.
+
 Leases live in the store, so every control-plane replica must use the same one.
 A ConfigMap named `internal-dns-publication-store` records the active store, and
 a replica configured for another store refuses to start. To switch, stop every

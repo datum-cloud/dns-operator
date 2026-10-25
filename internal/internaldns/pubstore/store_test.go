@@ -260,3 +260,43 @@ func TestStoresSharingABucketSeeEachOthersWrites(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
+	ctx := t.Context()
+	home, east := NewMemoryKV(), NewMemoryKV()
+	store := NewRegional(fake.NewClientBuilder().Build(), "central", map[string]KV{"central": home, "east": east})
+	if err := store.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	own := &dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}}
+	for _, obj := range []client.Object{out, own} {
+		if err := store.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := east.Get(ctx, "out.platform.activation-east"); err != nil {
+		t.Fatalf("east outbox not in the east bucket: %v", err)
+	}
+	if _, _, err := home.Get(ctx, "own.platform.owner-a"); err != nil {
+		t.Fatalf("zone lease not in the home bucket: %v", err)
+	}
+	base := out.DeepCopy()
+	out.Status.State = "Acknowledged"
+	if err := store.Status().Patch(ctx, out, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		t.Fatalf("status patch through the regional bucket: %v", err)
+	}
+	var got dnsv1.DNSTransportOutbox
+	if err := store.Get(ctx, client.ObjectKeyFromObject(out), &got); err != nil || got.Status.State != "Acknowledged" {
+		t.Fatalf("regional read: %v %#v", err, got.Status)
+	}
+	var list dnsv1.DNSTransportOutboxList
+	if err := store.List(ctx, &list); err != nil || len(list.Items) != 1 {
+		t.Fatalf("list across buckets: %v %d", err, len(list.Items))
+	}
+	moved := got.DeepCopy()
+	moved.Labels[regionLabel] = "central"
+	if err := store.Update(ctx, moved); !apierrors.IsBadRequest(err) {
+		t.Fatalf("a record moved between regions: %v", err)
+	}
+}

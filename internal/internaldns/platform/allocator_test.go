@@ -50,7 +50,7 @@ func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			uid := types.UID(fmt.Sprintf("vpc-%d", i))
-			a, err := allocator.Allocate(ctx, "project", uid)
+			a, err := allocator.Allocate(ctx, "project", uid, "east")
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -72,15 +72,15 @@ func TestAddressClaimsAreConcurrentStableAndLifetimeScoped(t *testing.T) {
 	if len(addresses) != 40 {
 		t.Fatalf("got %d address claims", len(addresses))
 	}
-	a, err := allocator.Allocate(ctx, "project", "vpc-1")
+	a, err := allocator.Allocate(ctx, "project", "vpc-1", "east")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a2, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project", "vpc-1")
+	a2, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project", "vpc-1", "east")
 	if err != nil || a != a2 {
 		t.Fatal("allocator restart changed an existing lease")
 	}
-	replacement, err := allocator.Allocate(ctx, "project", "new-vpc-lifetime")
+	replacement, err := allocator.Allocate(ctx, "project", "new-vpc-lifetime", "east")
 	if err != nil || replacement == a {
 		t.Fatal("new resource lifetime reused the old address")
 	}
@@ -135,7 +135,7 @@ func TestServiceDestinationsCannotOverlapRegionalAddressPool(t *testing.T) {
 	ctx := context.Background()
 	for _, prefix := range []string{"", "fd80::/96"} {
 		allocator := Allocator{Client: testClient(t), Namespace: "platform", ClusterPrefix: prefix}
-		address, err := allocator.Allocate(ctx, "project-a", "context-a")
+		address, err := allocator.Allocate(ctx, "project-a", "context-a", "east")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +156,7 @@ func TestServiceDestinationsCannotOverlapRegionalAddressPool(t *testing.T) {
 func TestServiceDestinationCannotReuseRetainedRegionalClaim(t *testing.T) {
 	ctx := context.Background()
 	allocator := Allocator{Client: testClient(t), Namespace: "platform"}
-	address, err := allocator.Allocate(ctx, "project-a", "context-a")
+	address, err := allocator.Allocate(ctx, "project-a", "context-a", "east")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestRegionalAllocationSkipsClaimedServiceDestination(t *testing.T) {
 	if err := other.ClaimDestination(ctx, "project-b", "context-b", "region", taken, 53); err != nil {
 		t.Fatal(err)
 	}
-	address, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project-a", "context-a")
+	address, err := (&Allocator{Client: cl, Namespace: "platform"}).Allocate(ctx, "project-a", "context-a", "east")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,5 +367,42 @@ func TestClaimDestinationLabelsEarlierClaimsForRelease(t *testing.T) {
 	}
 	if _, ok := destinationClaims(t, cl)["fd70::1"]; ok {
 		t.Fatal("a claim made before project labels was never released")
+	}
+}
+
+func TestRegionsWithTheirOwnPoolLeaseSeparately(t *testing.T) {
+	ctx := context.Background()
+	cl := fake.NewClientBuilder().Build()
+	allocator := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96",
+		RegionalPrefixes: map[string]string{"west": "fd70:300::/96"}}
+
+	shared, err := allocator.Allocate(ctx, "project", "vpc-1", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := allocator.Allocate(ctx, "project", "vpc-1", "north")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != shared {
+		t.Fatalf("regions on the shared pool must keep one lease, got %s and %s", shared, again)
+	}
+	west, err := allocator.Allocate(ctx, "project", "vpc-1", "west")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !netip.MustParsePrefix("fd70:300::/96").Contains(netip.MustParseAddr(west)) {
+		t.Fatalf("west address %s is outside its own pool", west)
+	}
+	if !netip.MustParsePrefix("fd70:200::/96").Contains(netip.MustParseAddr(shared)) {
+		t.Fatalf("shared address %s is outside the shared pool", shared)
+	}
+	if west2, err := allocator.Allocate(ctx, "project", "vpc-1", "west"); err != nil || west2 != west {
+		t.Fatalf("west lease must be stable, got %s, %v", west2, err)
+	}
+
+	err = allocator.ClaimDestination(ctx, "project", "vpc-1", "west", "fd70:300::53", 53)
+	if !errors.Is(err, model.ErrDestinationRefused) {
+		t.Fatalf("a destination inside a regional pool must be refused, got %v", err)
 	}
 }

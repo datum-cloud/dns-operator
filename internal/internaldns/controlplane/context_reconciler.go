@@ -414,7 +414,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if r.Options.AddressAllocator == nil {
 				return errors.New("address allocator is required for context binding")
 			}
-			cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID)
+			cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region)
 			if err != nil {
 				return err
 			}

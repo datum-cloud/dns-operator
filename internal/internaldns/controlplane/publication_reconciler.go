@@ -100,7 +100,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
 		return ctrl.Result{}, err
 	}
-	ctx = withPinnedAssociationReferences(ctx)
 	timer.done("references")
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err

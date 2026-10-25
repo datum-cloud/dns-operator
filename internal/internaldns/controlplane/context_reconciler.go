@@ -20,8 +20,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -428,6 +426,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns || old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
+			if old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
+				r.bindingsLabelledAt = time.Time{}
+			}
 			baseOld := old.DeepCopy()
 			old.Spec = binding.Spec
 			old.Labels = binding.Labels
@@ -785,31 +786,27 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	return ready, nil
 }
 
+// bindingRelabelInterval bounds how long a binding written without the project
+// label, such as by an older replica during a rollout, stays out of the
+// labelled list.
+const bindingRelabelInterval = 10 * time.Minute
+
 // listProjectBindings lists this project's resolver bindings by label instead
-// of every project's bindings in the platform namespace. Bindings written
-// without the label, before it existed or by an older replica during a
-// rollout, come from a second list of unlabelled bindings, which is empty once
-// every binding carries the label; this project's are labelled as they are
-// found.
+// of every project's bindings in the platform namespace. Periodically it lists
+// everything once and labels this project's bindings that lack the label.
 func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.DNSResolverBindingList) error {
-	if err := r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{referenceProjectLabel: string(r.Options.ProjectUID)}); err != nil {
-		return err
+	if time.Since(r.bindingsLabelledAt) < bindingRelabelInterval {
+		return r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{referenceProjectLabel: string(r.Options.ProjectUID)})
 	}
-	unlabelled, err := labels.NewRequirement(referenceProjectLabel, selection.DoesNotExist, nil)
-	if err != nil {
-		return err
-	}
-	var legacy dnsv1alpha1.DNSResolverBindingList
-	if err := r.List(ctx, &legacy, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*unlabelled)}); err != nil {
+	if err := r.List(ctx, list, client.InNamespace(r.Options.PlatformNamespace)); err != nil {
 		return err
 	}
 	var failed []error
-	for i := range legacy.Items {
-		b := &legacy.Items[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID {
+	for i := range list.Items {
+		b := &list.Items[i]
+		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || b.Labels[referenceProjectLabel] == string(r.Options.ProjectUID) {
 			continue
 		}
-		list.Items = append(list.Items, *b)
 		base := b.DeepCopy()
 		if b.Labels == nil {
 			b.Labels = map[string]string{}
@@ -821,7 +818,9 @@ func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.
 	}
 	if len(failed) > 0 {
 		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
+		return nil
 	}
+	r.bindingsLabelledAt = time.Now()
 	return nil
 }
 

@@ -117,6 +117,8 @@ func (o *Outbox) Step(ctx context.Context) error {
 				out.Status.State = dnsValueSuperseded
 				if err := o.Client.Status().Patch(ctx, out, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil && first == nil {
 					first = err
+				} else if err == nil {
+					outboxSuperseded.WithLabelValues(string(env.Kind)).Inc()
 				}
 				states[out.Name] = dnsValueSuperseded
 			}
@@ -179,6 +181,9 @@ func (o *Outbox) Step(ctx context.Context) error {
 			current.Status.StreamSequence = ack.Sequence
 			current.Status.LastError = ""
 			states[out.Name] = dnsValueAcknowledged
+			if !env.PublishedAt.IsZero() {
+				outboxPublishAge.WithLabelValues(string(env.Kind)).Observe(now.Sub(env.PublishedAt).Seconds())
+			}
 		}
 		if patchErr := o.Client.Status().Patch(ctx, &current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); patchErr != nil {
 			if first == nil {

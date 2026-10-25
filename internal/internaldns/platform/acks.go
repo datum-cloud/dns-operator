@@ -464,6 +464,9 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 			refreshErrors = errors.Join(refreshErrors, err)
 			continue
 		}
+		if !s.projectsManifest(&m) {
+			continue
+		}
 		base := m.DeepCopy()
 		complete := s.publicationVerified(&m, now)
 		condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
@@ -493,6 +496,34 @@ func jsonEqualStatus(a, b interface{}) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// projectsManifest reports whether this shard's sink writes the manifest's
+// publication status and projections. Verification reads only the manifest's
+// own acknowledgements, so every sink would reach the same result; one sink per
+// manifest avoids repeating the writes and the project projections. It is the
+// lowest configured serving target, or for a manifest with none, the lowest
+// configured shard.
+func (s *AckSink) projectsManifest(m *dnsv1alpha1.DNSPublicationManifest) bool {
+	self := s.Region + "/" + s.Shard
+	lowest := ""
+	for _, target := range m.Spec.ServingTargets {
+		key := target.Region + "/" + target.Shard
+		if _, configured := s.PublicationRegions[key]; len(s.PublicationRegions) > 0 && !configured {
+			continue
+		}
+		if lowest == "" || key < lowest {
+			lowest = key
+		}
+	}
+	if lowest == "" {
+		for key := range s.PublicationRegions {
+			if lowest == "" || key < lowest {
+				lowest = key
+			}
+		}
+	}
+	return lowest == "" || lowest == self
 }
 
 func (s *AckSink) publicationVerified(m *dnsv1alpha1.DNSPublicationManifest, now time.Time) bool {

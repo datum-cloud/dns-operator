@@ -383,6 +383,30 @@ func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPub
 	return manifest.Spec.Revision, nil
 }
 
+// publicationTargetsForContext names the shards a context's zones publish to:
+// those where the context has a live resolver binding, since only those shards
+// hold a view of the zone and acknowledge it. A context bound nowhere yet keeps
+// every assigned shard, so its zones wait for a resolver instead of reporting
+// publication that nothing serves.
+func (r *Reconciler) publicationTargetsForContext(resolverContextUID types.UID, bindings []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
+	assigned := r.selectServingTargets(resolverContextUID, bindings)
+	var bound []ServingRegion
+	for _, target := range assigned {
+		for _, binding := range bindings {
+			if binding.Spec.Source.ProjectUID == r.Options.ProjectUID && binding.Spec.Source.ResolverContextRef.UID == resolverContextUID &&
+				binding.Spec.Placement.Region == target.Region && binding.Spec.Placement.Shard == target.Shard &&
+				!binding.Spec.Tombstone && binding.DeletionTimestamp.IsZero() {
+				bound = append(bound, target)
+				break
+			}
+		}
+	}
+	if len(bound) == 0 {
+		return assigned
+	}
+	return bound
+}
+
 func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
 	var bindings dnsv1alpha1.DNSResolverBindingList
 	if err := r.listProjectBindings(ctx, &bindings); err != nil {
@@ -390,7 +414,7 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	}
 	byKey := map[string]ServingRegion{}
 	for _, resolverContextUID := range contextsByUID {
-		for _, target := range r.selectServingTargets(resolverContextUID, bindings.Items) {
+		for _, target := range r.publicationTargetsForContext(resolverContextUID, bindings.Items) {
 			byKey[target.Region+"\x00"+target.Shard] = target
 		}
 	}

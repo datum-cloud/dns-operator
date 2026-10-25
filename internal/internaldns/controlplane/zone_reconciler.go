@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -131,19 +132,30 @@ func (r *Reconciler) queueZone(ctx context.Context, z *dnsv1alpha1.DNSZone) {
 	}
 }
 
-// reconcileQueueKey resolves a registration key to its zone and runs the zone.
+// reconcileQueueKey runs a zone key. A registration key only forwards to its
+// zone's key, so one zone never compiles on two workers at once.
 func (r *Reconciler) reconcileQueueKey(ctx context.Context, ns, name string) (ctrl.Result, error) {
 	if regName, ok := strings.CutPrefix(name, registrationQueuePrefix); ok {
 		var reg dnsv1alpha1.DNSRegistration
 		if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: regName}, &reg); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
-		name = reg.Spec.DNSZoneRef.Name
-	} else {
-		name = strings.TrimPrefix(name, zoneQueuePrefix)
+		if reg.Spec.DNSZoneRef.Name != "" {
+			r.queueZone(ctx, &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: reg.Spec.DNSZoneRef.Name}})
+		}
+		return ctrl.Result{}, nil
 	}
+	name = strings.TrimPrefix(name, zoneQueuePrefix)
 	if name == "" {
 		return ctrl.Result{}, nil
+	}
+	if slots := r.Options.ZoneSlots; slots != nil {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-ctx.Done():
+			return ctrl.Result{}, ctx.Err()
+		}
 	}
 	started := time.Now()
 	defer func() { zoneReconcileDuration.Observe(time.Since(started).Seconds()) }()
@@ -221,7 +233,7 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		return ctrl.Result{}, err
 	}
 	if own == nil {
-		return ctrl.Result{RequeueAfter: time.Until(retryAt)}, nil
+		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
 	}
 	released, err := r.compileZone(ctx, &z, own, zoneAssocs, regs.Items, registrationZones, contributions.Items, records.Items, now)
 	if err != nil {

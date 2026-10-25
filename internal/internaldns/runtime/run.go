@@ -128,6 +128,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	identity := holderIdentity()
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
+	zoneSlots := make(chan struct{}, maxConcurrentZoneCompiles)
 	// Each project manager lists and watches its project's DNS resources as it
 	// starts, so pace starts rather than open every watch in the same second.
 	projectStarts := rate.NewLimiter(rate.Limit(10), 10)
@@ -177,6 +178,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,
+				ZoneSlots:             zoneSlots,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
@@ -302,6 +304,10 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 // replica runs at once. Every project starts a full pass when the process
 // starts; unbounded, those passes hit the API server together.
 const maxConcurrentProjectPasses = 16
+
+// maxConcurrentZoneCompiles bounds how many zone keys one control-plane
+// replica compiles at once across every project when per-zone reconcile is on.
+const maxConcurrentZoneCompiles = 16
 
 // plannerInterval is a third of the ownership lease, capped so a new or
 // changed resolver binding never waits long for the shard planner when the

@@ -17,11 +17,14 @@ var (
 	ErrKVConflict = errors.New("key revision mismatch")
 )
 
-// KVEvent is one bucket change. Value is nil for a deletion.
+// KVEvent is one bucket change. Value is nil for a deletion. A Synced event
+// marks the end of the initial replay; its Revision is the bucket's last
+// revision when the watch started.
 type KVEvent struct {
 	Key      string
 	Value    []byte
 	Revision uint64
+	Synced   bool
 }
 
 // KVBucket is a compare-and-swap key-value bucket. Revisions increase across the
@@ -94,8 +97,15 @@ func (b *KVBucket) PurgeDeletes(ctx context.Context, age time.Duration) error {
 // follow (all keys when no filter was given), then nil once they are all
 // delivered, then each later change, until ctx ends.
 func (b *KVBucket) Watch(ctx context.Context) (<-chan *KVEvent, error) {
+	status, err := b.kv.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var started uint64
+	if s, ok := status.(*jetstream.KeyValueBucketStatus); ok {
+		started = s.StreamInfo().State.LastSeq
+	}
 	var w jetstream.KeyWatcher
-	var err error
 	if len(b.filter) > 0 {
 		w, err = b.kv.WatchFiltered(ctx, b.filter)
 	} else {
@@ -116,7 +126,7 @@ func (b *KVBucket) Watch(ctx context.Context) (<-chan *KVEvent, error) {
 				if !ok {
 					return
 				}
-				var event *KVEvent
+				event := &KVEvent{Synced: true, Revision: started}
 				if entry != nil {
 					event = &KVEvent{Key: entry.Key(), Revision: entry.Revision()}
 					if entry.Operation() == jetstream.KeyValuePut {

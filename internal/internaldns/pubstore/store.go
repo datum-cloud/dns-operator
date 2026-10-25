@@ -118,25 +118,33 @@ type PublicationStore struct {
 	client.Client
 	home    string
 	buckets map[string]KV
+	regions map[string]string
 	now     func() time.Time
 
-	mu     sync.RWMutex
-	index  map[string]indexed
-	synced chan struct{}
+	lastPurge time.Time
+
+	mu      sync.RWMutex
+	index   map[string]indexed
+	pending map[string]bool
+	synced  chan struct{}
 }
 
 const regionLabel = "internal-dns.miloapis.com/region"
 
 // New keeps every record in one bucket.
 func New(api client.Client, kv KV) *PublicationStore {
-	return NewRegional(api, "", map[string]KV{"": kv})
+	return NewRegional(api, "", map[string]KV{"": kv}, nil)
 }
 
-// NewRegional keeps records labelled with a region (by its safe token) in
-// that region's bucket, and the rest in the home bucket.
-func NewRegional(api client.Client, home string, buckets map[string]KV) *PublicationStore {
-	return &PublicationStore{Client: api, home: home, buckets: buckets, now: time.Now, index: map[string]indexed{}, synced: make(chan struct{})}
+// NewRegional keeps outboxes and shard leases labelled with a region (by its
+// safe token) in the bucket regions names for it, and every other record in
+// the home bucket. Buckets are keyed by physical bucket, so regions that share
+// a broker name the same one.
+func NewRegional(api client.Client, home string, buckets map[string]KV, regions map[string]string) *PublicationStore {
+	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, index: map[string]indexed{}, synced: make(chan struct{})}
 }
+
+func regional(kind *storedKind) bool { return kind == outboxKind || kind == shardKind }
 
 func (s *PublicationStore) bucketNames() []string {
 	names := make([]string, 0, len(s.buckets))
@@ -152,64 +160,114 @@ func (s *PublicationStore) bucketNames() []string {
 	return names
 }
 
-// bucketFor is where obj is written.
-func (s *PublicationStore) bucketFor(obj client.Object) string {
-	if region := obj.GetLabels()[regionLabel]; region != "" {
-		if _, ok := s.buckets[region]; ok {
-			return region
+// bucketFor is where a new obj is written.
+func (s *PublicationStore) bucketFor(kind *storedKind, obj client.Object) string {
+	if regional(kind) {
+		if bucket, ok := s.regions[obj.GetLabels()[regionLabel]]; ok {
+			return bucket
 		}
 	}
 	return s.home
 }
 
-// locate finds the bucket holding key: the one the index names, else the first
-// that has it, home first.
-func (s *PublicationStore) locate(ctx context.Context, key string) (string, []byte, uint64, error) {
+// locate finds the bucket holding key. Zone leases, manifests and chunks are
+// only ever in the home bucket. A regional record is where the index says;
+// one the index does not know yet is looked up in every bucket at once, and is
+// found as long as the bucket holding it answers.
+func (s *PublicationStore) locate(ctx context.Context, kind *storedKind, key string) (string, []byte, uint64, error) {
+	if !regional(kind) {
+		value, revision, err := s.buckets[s.home].Get(ctx, key)
+		return s.home, value, revision, err
+	}
 	s.mu.RLock()
 	entry, ok := s.index[key]
 	s.mu.RUnlock()
-	order := s.bucketNames()
 	if ok {
-		order = append([]string{entry.bucket}, order...)
+		value, revision, err := s.buckets[entry.bucket].Get(ctx, key)
+		if !errors.Is(err, transport.ErrKVNotFound) {
+			return entry.bucket, value, revision, err
+		}
 	}
-	tried := map[string]bool{}
-	for _, name := range order {
-		if tried[name] {
-			continue
+	type found struct {
+		bucket   string
+		value    []byte
+		revision uint64
+		err      error
+	}
+	names := s.bucketNames()
+	results := make(chan found, len(names))
+	for _, name := range names {
+		go func() {
+			value, revision, err := s.buckets[name].Get(ctx, key)
+			results <- found{name, value, revision, err}
+		}()
+	}
+	var failed error
+	for range names {
+		r := <-results
+		switch {
+		case r.err == nil:
+			return r.bucket, r.value, r.revision, nil
+		case !errors.Is(r.err, transport.ErrKVNotFound):
+			failed = r.err
 		}
-		tried[name] = true
-		value, revision, err := s.buckets[name].Get(ctx, key)
-		if errors.Is(err, transport.ErrKVNotFound) {
-			continue
-		}
-		return name, value, revision, err
+	}
+	if failed != nil {
+		return "", nil, 0, failed
 	}
 	return "", nil, 0, transport.ErrKVNotFound
 }
 
 // Start watches every bucket until ctx ends and returns once the index holds
-// every current record.
+// every record of the home bucket. A regional bucket whose broker is not
+// reachable yet is watched as soon as it is, so one region's broker never holds
+// up the others.
 func (s *PublicationStore) Start(ctx context.Context) error {
-	ready := make(chan error, len(s.buckets))
+	s.pending = map[string]bool{}
+	for name := range s.buckets {
+		s.pending[name] = true
+	}
+	homeReady := make(chan error, 1)
 	for _, name := range s.bucketNames() {
-		events, err := s.buckets[name].Watch(ctx)
+		ready := make(chan error, 1)
+		if name == s.home {
+			ready = homeReady
+		}
+		go func() {
+			for ctx.Err() == nil {
+				events, err := s.buckets[name].Watch(ctx)
+				if err == nil {
+					s.follow(ctx, name, events, ready)
+					return
+				}
+				if name == s.home {
+					ready <- err
+					return
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+				}
+			}
+		}()
+	}
+	select {
+	case err := <-homeReady:
 		if err != nil {
 			return err
 		}
-		go s.follow(ctx, name, events, ready)
-	}
-	for range s.buckets {
-		select {
-		case err := <-ready:
-			if err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	close(s.synced)
 	return nil
+}
+
+// complete reports whether the index holds every bucket's records.
+func (s *PublicationStore) complete() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.pending) == 0
 }
 
 func (s *PublicationStore) follow(ctx context.Context, bucket string, events <-chan *transport.KVEvent, ready chan<- error) {
@@ -220,12 +278,15 @@ func (s *PublicationStore) follow(ctx context.Context, bucket string, events <-c
 		var highest uint64
 		replaying := true
 		for event := range events {
-			if event == nil {
+			if event.Synced {
 				if replaying {
-					s.dropUnseen(bucket, seen, highest)
+					s.dropUnseen(bucket, seen, max(highest, event.Revision))
 					replaying = false
 					if first {
 						first = false
+						s.mu.Lock()
+						delete(s.pending, bucket)
+						s.mu.Unlock()
 						ready <- nil
 					}
 				}
@@ -340,7 +401,7 @@ func (s *PublicationStore) Get(ctx context.Context, key client.ObjectKey, obj cl
 	if err != nil {
 		return err
 	}
-	bucket, value, revision, err := s.locate(ctx, k)
+	bucket, value, revision, err := s.locate(ctx, kind, k)
 	if errors.Is(err, transport.ErrKVNotFound) {
 		return apierrors.NewNotFound(kind.resource, key.Name)
 	}
@@ -428,7 +489,13 @@ func (s *PublicationStore) Create(ctx context.Context, obj client.Object, opts .
 	if err != nil {
 		return err
 	}
-	bucket := s.bucketFor(next)
+	bucket := s.bucketFor(kind, next)
+	s.mu.RLock()
+	elsewhere, held := s.index[k]
+	s.mu.RUnlock()
+	if held && elsewhere.bucket != bucket {
+		return apierrors.NewAlreadyExists(kind.resource, obj.GetName())
+	}
 	revision, err := s.buckets[bucket].Create(ctx, k, value)
 	if errors.Is(err, transport.ErrKVExists) {
 		return apierrors.NewAlreadyExists(kind.resource, obj.GetName())
@@ -498,7 +565,7 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		return err
 	}
 	for attempt := 0; attempt < 16; attempt++ {
-		bucket, value, revision, err := s.locate(ctx, k)
+		bucket, value, revision, err := s.locate(ctx, kind, k)
 		if errors.Is(err, transport.ErrKVNotFound) {
 			return apierrors.NewNotFound(kind.resource, obj.GetName())
 		}
@@ -547,9 +614,6 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		out, err := json.Marshal(desired)
 		if err != nil {
 			return err
-		}
-		if s.bucketFor(desired) != bucket {
-			return apierrors.NewBadRequest("a record cannot move between regions")
 		}
 		written, err := s.buckets[bucket].Update(ctx, k, out, revision)
 		if errors.Is(err, transport.ErrKVConflict) {
@@ -626,7 +690,7 @@ func (s *PublicationStore) Delete(ctx context.Context, obj client.Object, opts .
 	}
 	do := &client.DeleteOptions{}
 	do.ApplyOptions(opts)
-	bucket, value, revision, err := s.locate(ctx, k)
+	bucket, value, revision, err := s.locate(ctx, kind, k)
 	if errors.Is(err, transport.ErrKVNotFound) {
 		return apierrors.NewNotFound(kind.resource, obj.GetName())
 	}
@@ -741,7 +805,7 @@ func (s *PublicationStore) Seed(ctx context.Context, obj client.Object) (bool, e
 	if err != nil {
 		return true, err
 	}
-	bucket := s.bucketFor(next)
+	bucket := s.bucketFor(kind, next)
 	revision, err := s.buckets[bucket].Create(ctx, k, value)
 	if err != nil {
 		return true, err

@@ -92,7 +92,7 @@ func (m *MemoryKV) Watch(ctx context.Context) (<-chan *transport.KVEvent, error)
 		v := m.values[k]
 		ch <- &transport.KVEvent{Key: k, Value: append([]byte(nil), v.value...), Revision: v.revision}
 	}
-	ch <- nil
+	ch <- &transport.KVEvent{Synced: true, Revision: m.revision}
 	m.watchers = append(m.watchers, ch)
 	go func() {
 		<-ctx.Done()

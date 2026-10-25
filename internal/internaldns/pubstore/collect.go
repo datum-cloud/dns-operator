@@ -22,7 +22,9 @@ import (
 const (
 	publicationRetention = 10 * time.Minute
 	// CollectInterval is how often Collect is meant to run.
-	CollectInterval    = time.Minute
+	CollectInterval = time.Minute
+	// Purging deletion markers reads the whole bucket, so it runs rarely.
+	purgeInterval      = time.Hour
 	shardOwnerLabel    = "internal-dns.miloapis.com/shard-owner"
 	outboxAcknowledged = "Acknowledged"
 	outboxSuperseded   = "Superseded"
@@ -40,6 +42,9 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 	case <-s.synced:
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+	if !s.complete() {
+		return errors.New("publication store has not loaded every region's bucket; not collecting")
 	}
 	now := s.now().UTC()
 	owners := map[types.UID]*dnsv1.DNSPublicationOwnership{}
@@ -126,6 +131,10 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 			remove(out)
 		}
 	}
+	if now.Sub(s.lastPurge) < purgeInterval {
+		return errors.Join(errs...)
+	}
+	s.lastPurge = now
 	for _, name := range s.bucketNames() {
 		if purger, ok := s.buckets[name].(interface {
 			PurgeDeletes(context.Context, time.Duration) error

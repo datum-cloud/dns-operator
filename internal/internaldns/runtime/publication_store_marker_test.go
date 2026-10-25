@@ -5,7 +5,9 @@ package runtime
 import (
 	"testing"
 
+	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -25,6 +27,24 @@ func TestControlPlaneRefusesAStoreOtherThanTheActiveOne(t *testing.T) {
 	}
 	if err := claimPublicationStore(ctx, api, "platform", publicationStoreJetStream); err == nil {
 		t.Fatal("a replica on another store started beside the active one")
+	}
+}
+
+func TestFirstJetStreamStartRefusesExistingAPIRecords(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := dnsv1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	lease := &dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}}
+	api := fake.NewClientBuilder().WithScheme(s).WithObjects(lease).Build()
+	if err := claimPublicationStore(t.Context(), api, "platform", publicationStoreJetStream); err == nil {
+		t.Fatal("switched to JetStream without the active-store marker while API leases exist")
+	}
+	if err := claimPublicationStore(t.Context(), api, "platform", publicationStoreKubernetes); err != nil {
+		t.Fatalf("API store on an upgraded cluster: %v", err)
 	}
 }
 

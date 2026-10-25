@@ -28,10 +28,6 @@ const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publicati
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	now := r.Options.Now().UTC()
 
-	if err := r.reconcileResolverContexts(ctx, ns, now); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
 	var regs dnsv1alpha1.DNSRegistrationList
@@ -41,6 +37,17 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	for _, item := range []client.ObjectList{&zones, &assocs, &regs, &contributions, &records, &policies} {
 		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
 			return ctrl.Result{}, err
+		}
+	}
+	listed := newListedManagedObjects(zones.Items, assocs.Items)
+	if err := r.reconcileResolverContexts(withListedManagedObjects(ctx, listed), ns, now); err != nil {
+		return ctrl.Result{}, err
+	}
+	if listed.changed {
+		for _, item := range []client.ObjectList{&zones, &assocs} {
+			if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}

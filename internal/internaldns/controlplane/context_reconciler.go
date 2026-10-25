@@ -630,8 +630,18 @@ func (r *Reconciler) selectServingTargets(resolverContextUID types.UID, existing
 // pass, which costs far more than a read once admission runs.
 func (r *Reconciler) getOrCreate(ctx context.Context, o client.Object) error {
 	key := client.ObjectKeyFromObject(o)
+	listed, _ := ctx.Value(listedManagedObjectsKey{}).(*listedManagedObjects)
+	if listed.find(o) {
+		return nil
+	}
+	if listed != nil {
+		listed.changed = true
+	}
 	desired := o.DeepCopyObject().(client.Object)
 	err := r.Get(ctx, key, o)
+	if err == nil {
+		return nil
+	}
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -728,6 +738,9 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 			continue
 		}
 		uid := obj.GetUID()
+		if listed, _ := ctx.Value(listedManagedObjectsKey{}).(*listedManagedObjects); listed != nil {
+			listed.changed = true
+		}
 		if err := r.Delete(ctx, obj, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
@@ -810,4 +823,51 @@ func (r *Reconciler) listProjectBindings(ctx context.Context, list *dnsv1alpha1.
 		ctrl.LoggerFrom(ctx).Error(errors.Join(failed...), "label resolver bindings with their project")
 	}
 	return nil
+}
+
+// listedManagedObjects lets the contexts phase use the zones and associations
+// the pass has just listed from the source API instead of reading each managed
+// zone and association again.
+type listedManagedObjects struct {
+	zones   map[string]*dnsv1alpha1.DNSZone
+	assocs  map[string]*dnsv1alpha1.DNSZoneAssociation
+	changed bool
+}
+
+type listedManagedObjectsKey struct{}
+
+func newListedManagedObjects(zones []dnsv1alpha1.DNSZone, assocs []dnsv1alpha1.DNSZoneAssociation) *listedManagedObjects {
+	l := &listedManagedObjects{zones: map[string]*dnsv1alpha1.DNSZone{}, assocs: map[string]*dnsv1alpha1.DNSZoneAssociation{}}
+	for i := range zones {
+		l.zones[zones[i].Namespace+"/"+zones[i].Name] = &zones[i]
+	}
+	for i := range assocs {
+		l.assocs[assocs[i].Namespace+"/"+assocs[i].Name] = &assocs[i]
+	}
+	return l
+}
+
+func withListedManagedObjects(ctx context.Context, l *listedManagedObjects) context.Context {
+	return context.WithValue(ctx, listedManagedObjectsKey{}, l)
+}
+
+// find copies the listed object with o's namespace and name into o.
+func (l *listedManagedObjects) find(o client.Object) bool {
+	if l == nil {
+		return false
+	}
+	key := o.GetNamespace() + "/" + o.GetName()
+	switch obj := o.(type) {
+	case *dnsv1alpha1.DNSZone:
+		if found, ok := l.zones[key]; ok {
+			found.DeepCopyInto(obj)
+			return true
+		}
+	case *dnsv1alpha1.DNSZoneAssociation:
+		if found, ok := l.assocs[key]; ok {
+			found.DeepCopyInto(obj)
+			return true
+		}
+	}
+	return false
 }

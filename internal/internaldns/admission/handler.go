@@ -14,6 +14,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,11 @@ var Resources = []string{"dnszoneassociations", "dnsregistrations", contribution
 // Handler uses an uncached client selected by authenticated project context.
 type Handler struct {
 	Client client.Client
+
+	// InstancePublishers lists the usernames allowed to publish names in the
+	// instances scope of a managed zone. Everyone else is refused there. When
+	// empty, publishing in the scope is not restricted by identity.
+	InstancePublishers []string
 
 	ClientForRequest func(context.Context, kubeadmission.Request) (client.Client, error)
 }
@@ -130,6 +136,15 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubead
 	if err != nil {
 		return err
 	}
+	var owners []string
+	for _, set := range contribution.Spec.RecordSets {
+		for _, record := range set.Records {
+			owners = append(owners, record.Name)
+		}
+	}
+	if err := h.refuseInstancesScope(req, zone, owners); err != nil {
+		return err
+	}
 	for _, set := range contribution.Spec.RecordSets {
 		if !containsType(registration.Spec.RecordTypes, set.RecordType) {
 			return fmt.Errorf("record type is outside the registration")
@@ -189,6 +204,29 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	}
 	if !resolverContext.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("resolver context is being deleted")
+	}
+	return refuseZoneInsideInstancesScope(ctx, cl, req.Namespace, a.Spec.DNSZoneRef.Name, &resolverContext)
+}
+
+// refuseZoneInsideInstancesScope stops a tenant zone at or below the managed
+// zone's instances scope from shadowing instance names in the same context.
+func refuseZoneInsideInstancesScope(ctx context.Context, cl client.Client, namespace, zoneName string, resolverContext *dnsv1alpha1.DNSResolverContext) error {
+	managedName := model.ManagedZoneName(string(resolverContext.UID))
+	if zoneName == managedName {
+		return nil
+	}
+	var managed dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: managedName}, &managed); apierrors.IsNotFound(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("managed zone lookup: %w", err)
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: zoneName}, &zone); err != nil {
+		return fmt.Errorf("private zone lookup: %w", err)
+	}
+	if model.IsManagedZone(&managed) && model.InsideInstancesScope(zone.Spec.DomainName, managed.Spec.DomainName) {
+		return fmt.Errorf("zone %q is inside %q, which is reserved for instance names published by the platform", zone.Spec.DomainName, model.InstancesScope+"."+managed.Spec.DomainName)
 	}
 	return nil
 }
@@ -271,6 +309,19 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 	for _, rt := range registration.Spec.RecordTypes {
 		if err := model.ValidatePrivateRecordOwner(registration.Spec.Name, zone.Spec.DomainName, string(rt)); err != nil {
 			return err
+		}
+	}
+	names := append([]string{registration.Spec.Name}, registration.Spec.ReservedDescendants...)
+	return h.refuseInstancesScope(req, zone, names)
+}
+
+func (h *Handler) refuseInstancesScope(req kubeadmission.Request, zone *dnsv1alpha1.DNSZone, owners []string) error {
+	if len(h.InstancePublishers) == 0 || !model.IsManagedZone(zone) || slices.Contains(h.InstancePublishers, req.UserInfo.Username) {
+		return nil
+	}
+	for _, owner := range owners {
+		if model.InProviderScope(model.ZoneRelativeOwner(owner, zone.Spec.DomainName)) {
+			return fmt.Errorf("%q is reserved for instance names published by the platform, and %q is not an instance publisher", model.InstancesScope+"."+zone.Spec.DomainName, req.UserInfo.Username)
 		}
 	}
 	return nil

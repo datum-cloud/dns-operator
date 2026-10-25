@@ -87,6 +87,7 @@ func (s stateStore) Load() (checkpoint, error) {
 	if state.Chunks == nil {
 		state.Chunks = map[string]map[string]model.PublicationChunk{}
 	}
+	pruneSupersededChunks(&state)
 	if state.Acks == nil {
 		state.Acks = map[string]map[string]replicaAck{}
 	}
@@ -117,6 +118,7 @@ func (s stateStore) Save(state checkpoint) error {
 	if state.FormatVersion != checkpointFormatVersion {
 		return fmt.Errorf("cannot write unsupported checkpoint format %d", state.FormatVersion)
 	}
+	pruneSupersededChunks(&state)
 	state.UpdatedAt = time.Now().UTC()
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
@@ -161,4 +163,23 @@ func prepareServingState(dir string) error {
 		return err
 	}
 	return nil
+}
+
+// pruneSupersededChunks drops staged chunks of every publication older than
+// its zone's applied fence. A chunk is needed only to verify a manifest that
+// has not been applied yet, and a manifest older than the fence is never
+// applied, so keeping them only grows the checkpoint.
+func pruneSupersededChunks(state *checkpoint) {
+	for manifest, chunks := range state.Chunks {
+		for _, c := range chunks {
+			applied := state.Publications[c.ZoneUID].Fence
+			if applied.Revision > 0 && model.Compare(c.WriterEpoch, c.Revision, applied.Epoch, applied.Revision) < 0 {
+				delete(state.Chunks, manifest)
+			}
+			break
+		}
+		if len(chunks) == 0 {
+			delete(state.Chunks, manifest)
+		}
+	}
 }

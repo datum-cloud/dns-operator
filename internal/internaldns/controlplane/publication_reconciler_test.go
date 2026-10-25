@@ -462,7 +462,7 @@ func TestSlowPassKeepsOwnershipLeaseAheadOfNextPass(t *testing.T) {
 		WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).
 		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if slow {
-				now = now.Add(400 * time.Millisecond)
+				now = now.Add(450 * time.Millisecond)
 			}
 			return cl.Get(ctx, key, obj, opts...)
 		}}).Build()

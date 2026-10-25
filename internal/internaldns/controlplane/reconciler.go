@@ -96,8 +96,6 @@ type Reconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Options   ReconcilerOptions
-
-	bindingsLabelledAt time.Time
 }
 
 func (r *Reconciler) sourceReader() client.Reader {

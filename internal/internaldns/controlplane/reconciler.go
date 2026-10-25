@@ -130,12 +130,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if slots := r.Options.PassSlots; slots != nil {
 		waited := time.Now()
+		// Waiting longer than a quarter lease could let this project's zone
+		// leases lapse behind other projects' slow passes, so after that the
+		// pass runs without a slot.
+		wait := time.NewTimer(r.Options.LeaseDuration / 4)
 		select {
 		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-wait.C:
 		case <-ctx.Done():
+			wait.Stop()
 			return ctrl.Result{}, ctx.Err()
 		}
-		defer func() { <-slots }()
+		wait.Stop()
 		passPhaseDuration.WithLabelValues("wait for slot").Observe(time.Since(waited).Seconds())
 	}
 	return r.reconcileProject(ctx, ns)

@@ -74,6 +74,7 @@ type projectRuntime struct {
 	config ProjectConfig
 	direct client.Client
 	start  func(context.Context) error
+	starts *rate.Limiter
 }
 
 func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
@@ -101,6 +102,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	identity := holderIdentity()
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
+	// Each project manager lists and watches its project's DNS resources as it
+	// starts, so pace starts rather than open every watch in the same second.
+	projectStarts := rate.NewLimiter(rate.Limit(10), 10)
 	makeProject := func(p ProjectConfig, sourceREST *rest.Config) (projectRuntime, error) {
 		projectREST := rest.CopyConfig(sourceREST)
 		if p.Kubeconfig != "" {
@@ -152,7 +156,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			}
 			return mgr.Start(startCtx)
 		}
-		return projectRuntime{config: project, direct: direct, start: start}, nil
+		return projectRuntime{config: project, direct: direct, start: start, starts: projectStarts}, nil
 	}
 	projects := make([]projectRuntime, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
@@ -267,11 +271,6 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 }
 
-// projectStarts paces how fast project managers start, each listing and
-// watching its project's DNS resources, so a restart with hundreds of projects
-// does not open every watch against the API server in the same second.
-var projectStarts = rate.NewLimiter(rate.Limit(10), 10)
-
 // maxConcurrentProjectPasses bounds how many project passes one control-plane
 // replica runs at once. Every project starts a full pass when the process
 // starts; unbounded, those passes hit the API server together.
@@ -295,7 +294,7 @@ func runProjectSource(ctx context.Context, project projectRuntime) {
 	}
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-project-source").WithValues("project", name)
 	for ctx.Err() == nil {
-		if projectStarts.Wait(ctx) != nil {
+		if project.starts != nil && project.starts.Wait(ctx) != nil {
 			return
 		}
 		err := project.start(ctx)

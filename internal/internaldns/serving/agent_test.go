@@ -1,6 +1,7 @@
 package serving
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -773,5 +774,57 @@ func TestExpiredAckDrainsWhileAgentIsBusy(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expired ACK waited for the agent lock")
+	}
+}
+
+func TestSameFenceAckRefreshDoesNotRewriteCheckpoint(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	renderConfig, snapshot := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	ack := model.MemberAck{MemberID: "regional-0", ReplicaID: "regional-0", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := filepath.Join(dir, "state", "checkpoint.json")
+	saved, err := os.ReadFile(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ack.ObservedAt, ack.ValidUntil = now.Add(time.Second), now.Add(time.Minute+time.Second)
+	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 4, ack)); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"].ValidUntil; !got.Equal(ack.ValidUntil) {
+		t.Fatalf("refresh did not extend the lease in memory: %s", got)
+	}
+	if after, err := os.ReadFile(checkpoint); err != nil || !bytes.Equal(saved, after) {
+		t.Fatalf("same-fence refresh rewrote the checkpoint (err %v)", err)
+	}
+
+	ack.Revision = 5
+	if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, "zone-a", 2, 5, ack)); err != nil {
+		t.Fatal(err)
+	}
+	if after, err := os.ReadFile(checkpoint); err != nil || bytes.Equal(saved, after) {
+		t.Fatalf("a new fence was not persisted (err %v)", err)
 	}
 }

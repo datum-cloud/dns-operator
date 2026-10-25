@@ -17,9 +17,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 type ReconcilerOptions struct {
@@ -43,6 +45,11 @@ type ReconcilerOptions struct {
 	// and bounds how many project passes run at once, so a restart does not
 	// start a full pass of every project against the API server together.
 	PassSlots chan struct{}
+
+	// PerZoneReconcile moves compiling and publishing zones out of the project
+	// pass into zone keys that record, registration and contribution changes
+	// queue directly, so a record change does not wait for a project pass.
+	PerZoneReconcile bool
 }
 
 type ServingRegion struct {
@@ -100,6 +107,8 @@ type Reconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Options   ReconcilerOptions
+
+	zoneQueue chan event.GenericEvent
 }
 
 func (r *Reconciler) sourceReader() client.Reader {
@@ -125,6 +134,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if ns == "" {
 		return ctrl.Result{}, nil
+	}
+	if req.Name != projectQueueKey && r.Options.PerZoneReconcile {
+		return r.reconcileQueueKey(ctx, ns, req.Name)
 	}
 	if slots := r.Options.PassSlots; slots != nil {
 		// Waiting longer than a quarter lease could let this project's zone
@@ -154,6 +166,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Every pass reconciles the whole project, so every event shares one key:
 	// the queue then holds at most one pending pass per project. Contribution
 	// status is written by this controller and never needs another pass.
+	if r.Options.PerZoneReconcile {
+		return r.setupPerZone(mgr, controllerName, enqueue)
+	}
 	b := ctrl.NewControllerManagedBy(mgr).Named(controllerName).
 		WithOptions(controller.Options{RateLimiter: projectRateLimiter()}).
 		Watches(&dnsv1alpha1.DNSRecordContribution{}, enqueue, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
@@ -162,6 +177,28 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 
+}
+
+// zoneWorkers bounds how many keys of one project run at once. Keys never run
+// concurrently with themselves, so the project pass keeps a worker of its own.
+const zoneWorkers = 4
+
+// setupPerZone watches record inputs per zone. The project pass keeps every
+// project-wide input and hands zones to the zone keys through zoneQueue.
+func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler.EventHandler) error {
+	r.zoneQueue = make(chan event.GenericEvent, 1024)
+	generation := builder.WithPredicates(predicate.GenerationChangedPredicate{})
+	return ctrl.NewControllerManagedBy(mgr).Named(name).
+		WithOptions(controller.Options{RateLimiter: projectRateLimiter(), MaxConcurrentReconciles: zoneWorkers}).
+		Watches(&dnsv1alpha1.DNSRecordSet{}, zoneEvents{keys: recordSetZone}, generation).
+		Watches(&dnsv1alpha1.DNSRegistration{}, zoneEvents{keys: registrationZone}, generation).
+		Watches(&dnsv1alpha1.DNSRecordContribution{}, zoneEvents{keys: contributionRegistration}, generation).
+		Watches(&dnsv1alpha1.DNSZone{}, project).
+		Watches(&dnsv1alpha1.DNSZone{}, zoneEvents{keys: zoneItself}, generation).
+		Watches(&dnsv1alpha1.DNSZoneAssociation{}, project).Watches(&dnsv1alpha1.DNSNamingPolicy{}, project).
+		Watches(&dnsv1alpha1.DNSResolverContext{}, project).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, project).
+		WatchesRawSource(source.Channel(r.zoneQueue, zoneEvents{keys: zoneItself})).
+		Complete(r)
 }
 
 // A whole project shares one queue key, so its backoff delays every name in it.

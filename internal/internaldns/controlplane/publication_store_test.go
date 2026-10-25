@@ -81,7 +81,7 @@ func TestPublicationStoreKeepsPublicationRecordsOffTheAPIServer(t *testing.T) {
 		if err := api.List(ctx, list); err != nil {
 			t.Fatal(err)
 		}
-		if items, _ := metaItems(list); items != 0 {
+		if items := metaItems(list); items != 0 {
 			t.Fatalf("%T reached the API server: %d items", list, items)
 		}
 	}
@@ -114,16 +114,16 @@ func TestPublicationStoreKeepsPublicationRecordsOffTheAPIServer(t *testing.T) {
 	}
 }
 
-func metaItems(list client.ObjectList) (int, error) {
+func metaItems(list client.ObjectList) int {
 	switch l := list.(type) {
 	case *dnsv1alpha1.DNSPublicationOwnershipList:
-		return len(l.Items), nil
+		return len(l.Items)
 	case *dnsv1alpha1.DNSPublicationManifestList:
-		return len(l.Items), nil
+		return len(l.Items)
 	case *dnsv1alpha1.DNSPublicationChunkList:
-		return len(l.Items), nil
+		return len(l.Items)
 	case *dnsv1alpha1.DNSTransportOutboxList:
-		return len(l.Items), nil
+		return len(l.Items)
 	}
-	return 0, nil
+	return 0
 }

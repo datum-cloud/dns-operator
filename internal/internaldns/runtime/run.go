@@ -23,6 +23,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -98,6 +99,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 
 	identity := holderIdentity()
 	var discoveryReader client.Reader
+	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
 	makeProject := func(p ProjectConfig, sourceREST *rest.Config) (projectRuntime, error) {
 		projectREST := rest.CopyConfig(sourceREST)
 		if p.Kubeconfig != "" {
@@ -130,7 +132,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID,
+				ProjectUID: project.ProjectUID, PassSlots: passSlots,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -260,6 +262,16 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 }
 
+// projectStarts paces how fast project managers start, each listing and
+// watching its project's DNS resources, so a restart with hundreds of projects
+// does not open every watch against the API server in the same second.
+var projectStarts = rate.NewLimiter(rate.Limit(10), 10)
+
+// maxConcurrentProjectPasses bounds how many project passes one control-plane
+// replica runs at once. Every project starts a full pass when the process
+// starts; unbounded, those passes hit the API server together.
+const maxConcurrentProjectPasses = 16
+
 // plannerInterval is a third of the ownership lease, capped so a new or
 // changed resolver binding never waits long for the shard planner when the
 // lease is long. The lease still governs renewal and takeover.
@@ -280,6 +292,9 @@ func runProjectSource(ctx context.Context, project projectRuntime) {
 	}
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-project-source").WithValues("project", name)
 	for ctx.Err() == nil {
+		if projectStarts.Wait(ctx) != nil {
+			return
+		}
 		err := project.start(ctx)
 		if ctx.Err() != nil {
 			return

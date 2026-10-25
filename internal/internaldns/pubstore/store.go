@@ -558,11 +558,11 @@ func (s *PublicationStore) patch(ctx context.Context, kind *storedKind, obj clie
 	if err != nil {
 		return err
 	}
-	var fields map[string]any
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var patched map[string]any
+	if err := json.Unmarshal(data, &patched); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
-	meta, _ := fields["metadata"].(map[string]any)
+	meta, _ := patched["metadata"].(map[string]any)
 	_, conditional := meta["resourceVersion"]
 	return s.write(ctx, kind, obj, subresource, func(current map[string]any) (map[string]any, bool, error) {
 		base, err := json.Marshal(current)

@@ -145,7 +145,8 @@ func seedPublications(t *testing.T, store *PublicationStore, dependsOn ...string
 	t.Helper()
 	now := time.Now()
 	exported := map[string]time.Time{"r1": now.Add(-2 * time.Hour), "r2": now.Add(-time.Hour), "r3": now.Add(-time.Minute)}
-	objects := []client.Object{&dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}, Spec: dnsv1.DNSPublicationOwnershipSpec{ZoneUID: "zone-a", ActiveManifestName: "r3"}}}
+	objects := make([]client.Object, 0, 11)
+	objects = append(objects, &dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}, Spec: dnsv1.DNSPublicationOwnershipSpec{ZoneUID: "zone-a", ActiveManifestName: "r3"}})
 	for i, name := range []string{"r1", "r2", "r3"} {
 		at := metav1.NewTime(exported[name])
 		objects = append(objects,
@@ -201,7 +202,8 @@ func TestCollectDeletesOnlyServingOutboxesOlderThanTheActiveOne(t *testing.T) {
 	store, _, kv := newStore(t)
 	old := metav1.NewTime(time.Now().Add(-time.Hour))
 	lease := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: shardOwnerPrefix + "east", Namespace: "platform", UID: "shard"}, Data: map[string]string{"state": `{"epoch":7,"activeOutbox":"serving-r5"}`}}
-	objects := []client.Object{lease}
+	objects := make([]client.Object, 0, 4)
+	objects = append(objects, lease)
 	for _, r := range []struct {
 		name     string
 		epoch    int64

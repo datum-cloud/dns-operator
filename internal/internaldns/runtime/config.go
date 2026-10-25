@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -289,6 +290,9 @@ func (c *Config) Validate(role string) error {
 		}
 		shardPairs[key] = true
 	}
+	if _, err := c.regionalPrefixes(); err != nil {
+		return err
+	}
 	for _, planner := range c.plannerConfigs() {
 		if _, _, _, err := c.transportForRegion(planner.Region); err != nil {
 			return err
@@ -368,4 +372,51 @@ func (c KubeAPIClientConfig) requestTimeout() time.Duration {
 }
 func (c Config) ownershipLease() time.Duration {
 	return time.Duration(c.OwnershipLeaseSeconds) * time.Second
+}
+
+// regionalPrefixes maps each region with its own regional resolver pool to it.
+// Every shard of a region must agree, and pools must not overlap each other or
+// the shared clusterPrefix.
+func (c Config) regionalPrefixes() (map[string]string, error) {
+	result := map[string]string{}
+	for _, s := range c.Shards {
+		if s.ClusterPrefix == "" {
+			continue
+		}
+		if existing, ok := result[s.Region]; ok && existing != s.ClusterPrefix {
+			return nil, fmt.Errorf("region %q has conflicting clusterPrefix values %q and %q", s.Region, existing, s.ClusterPrefix)
+		}
+		result[s.Region] = s.ClusterPrefix
+	}
+	for _, s := range c.Shards {
+		if s.ClusterPrefix == "" {
+			if _, ok := result[s.Region]; ok {
+				return nil, fmt.Errorf("region %q sets clusterPrefix on some shards but not others", s.Region)
+			}
+		}
+	}
+	shared, err := platform.ParseRegionalPrefix(c.ClusterPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("clusterPrefix: %w", err)
+	}
+	pools := map[string]netip.Prefix{"": shared}
+	for region, prefix := range result {
+		if prefix == "" {
+			continue
+		}
+		parsed, err := platform.ParseRegionalPrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("region %q clusterPrefix: %w", region, err)
+		}
+		for other, existing := range pools {
+			if existing.Overlaps(parsed) {
+				if other == "" {
+					return nil, fmt.Errorf("region %q clusterPrefix %q overlaps the shared clusterPrefix", region, prefix)
+				}
+				return nil, fmt.Errorf("region %q clusterPrefix %q overlaps region %q", region, prefix, other)
+			}
+		}
+		pools[region] = parsed
+	}
+	return result, nil
 }

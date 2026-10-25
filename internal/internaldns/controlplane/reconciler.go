@@ -55,7 +55,7 @@ type ServingRegion struct {
 // ReleaseDestinations frees the project's destination claims outside held
 // (keys from model.DestinationKey) once nothing routes them.
 type AddressAllocator interface {
-	Allocate(context.Context, types.UID, types.UID) (cluster string, err error)
+	Allocate(ctx context.Context, projectUID, contextUID types.UID, region string) (cluster string, err error)
 	ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error
 	ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error
 }
@@ -100,8 +100,6 @@ type Reconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Options   ReconcilerOptions
-
-	bindingsLabelledAt time.Time
 }
 
 func (r *Reconciler) sourceReader() client.Reader {

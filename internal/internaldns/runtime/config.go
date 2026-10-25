@@ -90,6 +90,11 @@ type Config struct {
 	Agent                 serving.Config            `json:"agent,omitempty"`
 	Shards                []platform.PlannerConfig  `json:"shards,omitempty"`
 	PublicationStore      *PublicationStoreConfig   `json:"publicationStore,omitempty"`
+	// SwitchPublicationStore lets this control plane record its configured
+	// publication store as the active one when the platform records the other
+	// store. Set it only for a rollout that stops every replica before
+	// starting new ones.
+	SwitchPublicationStore bool `json:"switchPublicationStore,omitempty"`
 }
 
 // PublicationStoreConfig moves the control plane's publication records

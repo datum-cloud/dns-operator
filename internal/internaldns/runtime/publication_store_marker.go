@@ -24,18 +24,18 @@ const (
 // the store, so replicas on different stores would each hold every lease and
 // publish as two writers. Switching stores means stopping every replica and
 // changing the marker first.
-func claimPublicationStore(ctx context.Context, api client.Client, namespace, store string) error {
+func claimPublicationStore(ctx context.Context, api client.Client, namespace, store string, switching bool) error {
 	var marker corev1.ConfigMap
 	key := client.ObjectKey{Namespace: namespace, Name: publicationStoreMarker}
 	err := api.Get(ctx, key, &marker)
 	if apierrors.IsNotFound(err) {
-		if store != publicationStoreKubernetes {
+		if store != publicationStoreKubernetes && !switching {
 			var leases dnsv1.DNSPublicationOwnershipList
 			if err := api.List(ctx, &leases, client.InNamespace(namespace), client.Limit(1)); err != nil {
 				return fmt.Errorf("check for publication records in the API server: %w", err)
 			}
 			if len(leases.Items) > 0 {
-				return fmt.Errorf("publication records exist in the API server but no ConfigMap %s/%s records the active store; stop every control-plane replica and create it with data.store %q to switch", namespace, publicationStoreMarker, store)
+				return fmt.Errorf("publication records exist in the API server but no ConfigMap %s/%s records the active store; stop every control-plane replica, then create it with data.store %q or start with switchPublicationStore", namespace, publicationStoreMarker, store)
 			}
 		}
 		marker = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: namespace}, Data: map[string]string{"store": store}}
@@ -49,8 +49,15 @@ func claimPublicationStore(ctx context.Context, api client.Client, namespace, st
 	if err != nil {
 		return fmt.Errorf("read publication store marker: %w", err)
 	}
-	if active := marker.Data["store"]; active != store {
-		return fmt.Errorf("publication store %q is active in ConfigMap %s/%s but this control plane is configured for %q; stop every control-plane replica and set data.store to %q before switching", active, namespace, publicationStoreMarker, store, store)
+	if active := marker.Data["store"]; active != store && switching {
+		base := marker.DeepCopy()
+		if marker.Data == nil {
+			marker.Data = map[string]string{}
+		}
+		marker.Data["store"] = store
+		return api.Patch(ctx, &marker, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	} else if active != store {
+		return fmt.Errorf("publication store %q is active in ConfigMap %s/%s but this control plane is configured for %q; stop every control-plane replica, then set data.store to %q or start with switchPublicationStore", active, namespace, publicationStoreMarker, store, store)
 	}
 	return nil
 }

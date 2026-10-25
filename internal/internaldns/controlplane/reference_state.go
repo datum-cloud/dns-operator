@@ -183,15 +183,32 @@ type associationReferences struct {
 }
 
 func (r *Reconciler) associationReferences(ctx context.Context, associations []dnsv1.DNSZoneAssociation) (map[types.UID]associationReferences, error) {
+	pinned, _ := ctx.Value(pinnedAssociationReferencesKey{}).(map[types.UID]associationReferences)
 	result := map[types.UID]associationReferences{}
 	for i := range associations {
+		if refs, ok := pinned[associations[i].UID]; ok {
+			result[associations[i].UID] = refs
+			continue
+		}
 		refs, err := r.readReferences(ctx, &associations[i])
 		if err != nil {
 			return nil, err
 		}
 		result[associations[i].UID] = associationReferences{Zone: refs["zone"], Context: refs["context"]}
+		if pinned != nil {
+			pinned[associations[i].UID] = result[associations[i].UID]
+		}
 	}
 	return result, nil
+}
+
+type pinnedAssociationReferencesKey struct{}
+
+// withPinnedAssociationReferences remembers each association's references for
+// the zone loop of a pass. Every association is pinned before that loop, so
+// the stored references cannot change within it.
+func withPinnedAssociationReferences(ctx context.Context) context.Context {
+	return context.WithValue(ctx, pinnedAssociationReferencesKey{}, map[types.UID]associationReferences{})
 }
 
 func hasResolvedReferenceStatus(source client.Object) bool {

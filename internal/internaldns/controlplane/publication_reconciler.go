@@ -108,6 +108,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	timer.done("bindings")
 	var earliest time.Time
 	var zoneErrors []error
+	ctx = withZoneLoopReads(withPinnedAssociationReferences(ctx))
 	held := map[types.UID]heldOwnership{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
@@ -423,8 +424,8 @@ func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPub
 }
 
 func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
-	var bindings dnsv1alpha1.DNSResolverBindingList
-	if err := r.listProjectBindings(ctx, &bindings); err != nil {
+	bindings, err := r.zoneLoopBindings(ctx)
+	if err != nil {
 		return nil, err
 	}
 	byKey := map[string]ServingRegion{}
@@ -805,8 +806,8 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 			}
 		}
 	}
-	var current dnsv1alpha1.DNSRecordContributionList
-	if err := reader.List(ctx, &current, client.InNamespace(namespace)); err != nil {
+	current, err := zoneLoopContributions(ctx, reader, namespace)
+	if err != nil {
 		return nil, err
 	}
 	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(names))
@@ -816,4 +817,50 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 		}
 	}
 	return confirmed, nil
+}
+
+// zoneLoopReads holds reads that give the same answer for every zone in a pass.
+// They are taken lazily inside the zone loop, after the binding phase has
+// written its bindings, so every zone sees the same post-phase state.
+type zoneLoopReads struct {
+	bindings      *dnsv1alpha1.DNSResolverBindingList
+	contributions map[string]*dnsv1alpha1.DNSRecordContributionList
+}
+
+type zoneLoopReadsKey struct{}
+
+func withZoneLoopReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, zoneLoopReadsKey{}, &zoneLoopReads{contributions: map[string]*dnsv1alpha1.DNSRecordContributionList{}})
+}
+
+func (r *Reconciler) zoneLoopBindings(ctx context.Context) (dnsv1alpha1.DNSResolverBindingList, error) {
+	reads, _ := ctx.Value(zoneLoopReadsKey{}).(*zoneLoopReads)
+	if reads != nil && reads.bindings != nil {
+		return *reads.bindings.DeepCopy(), nil
+	}
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := r.listProjectBindings(ctx, &bindings); err != nil {
+		return bindings, err
+	}
+	if reads != nil {
+		reads.bindings = bindings.DeepCopy()
+	}
+	return bindings, nil
+}
+
+func zoneLoopContributions(ctx context.Context, reader client.Reader, namespace string) (dnsv1alpha1.DNSRecordContributionList, error) {
+	reads, _ := ctx.Value(zoneLoopReadsKey{}).(*zoneLoopReads)
+	if reads != nil {
+		if listed, ok := reads.contributions[namespace]; ok {
+			return *listed.DeepCopy(), nil
+		}
+	}
+	var current dnsv1alpha1.DNSRecordContributionList
+	if err := reader.List(ctx, &current, client.InNamespace(namespace)); err != nil {
+		return current, err
+	}
+	if reads != nil {
+		reads.contributions[namespace] = current.DeepCopy()
+	}
+	return current, nil
 }

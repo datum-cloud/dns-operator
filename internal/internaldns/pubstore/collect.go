@@ -126,11 +126,13 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 			remove(out)
 		}
 	}
-	if purger, ok := s.kv.(interface {
-		PurgeDeletes(context.Context, time.Duration) error
-	}); ok {
-		if err := purger.PurgeDeletes(ctx, publicationRetention); err != nil {
-			errs = append(errs, fmt.Errorf("purge deletion markers: %w", err))
+	for _, name := range s.bucketNames() {
+		if purger, ok := s.buckets[name].(interface {
+			PurgeDeletes(context.Context, time.Duration) error
+		}); ok {
+			if err := purger.PurgeDeletes(ctx, publicationRetention); err != nil {
+				errs = append(errs, fmt.Errorf("purge deletion markers in bucket %q: %w", name, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

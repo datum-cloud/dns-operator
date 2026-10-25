@@ -857,3 +857,54 @@ www 300 IN A 203.0.113.10
 	mustContain(t, h.stderr(), "the zone's SOA record")
 	mustContain(t, h.stderr(), "the zone's apex NS records")
 }
+
+// --- which record set apply writes into -------------------------------------
+//
+// A type is not one object. When several sets of a type exist, each desired
+// record has to land in the one that already holds its name; writing them all
+// into whichever sorted first left the real holder stale and gave the zone two
+// entries for one key, which is what the backend reports as Conflict.
+
+// Without --prune the file merges into the values already at the name — in the
+// set that holds it, never beside a copy in another object.
+func TestApplyWritesIntoTheSetHoldingTheName(t *testing.T) {
+	first := recordSet(dnsv1alpha1.RRTypeA, aEntry("blog", "203.0.113.1", ttl(300)))
+	holder := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", ttl(300)))
+	holder.Name = first.Name + "-extra"
+
+	h := newHarness(t, testZone(), first, holder)
+	path := zoneFilePath(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.99\n")
+	requireNoError(t, h.run("record", "apply", testDomain, "-f", path, "--yes"))
+
+	got := h.getSet(t, holder.Name)
+	if len(got.Spec.Records) != 2 {
+		t.Errorf("holder has %d entries, want 2 (merge without --prune): %+v", len(got.Spec.Records), got.Spec.Records)
+	}
+	for _, e := range h.getSet(t, first.Name).Spec.Records {
+		if e.Name == "www" {
+			t.Fatalf("www was duplicated into the set that merely sorted first")
+		}
+	}
+}
+
+// --prune makes the file the whole truth, and it has to be the whole truth for
+// each set separately: the holding set is replaced, and a set holding unrelated
+// names the file still declares is left alone.
+func TestApplyPruneActsOnTheHoldingSet(t *testing.T) {
+	first := recordSet(dnsv1alpha1.RRTypeA, aEntry("blog", "203.0.113.1", ttl(300)))
+	holder := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.10", ttl(300)))
+	holder.Name = first.Name + "-extra"
+
+	h := newHarness(t, testZone(), first, holder)
+	path := zoneFilePath(t, "$ORIGIN example.com.\nwww 300 IN A 203.0.113.99\nblog 300 IN A 203.0.113.1\n")
+	requireNoError(t, h.run("record", "apply", testDomain, "-f", path, "--prune", "--yes"))
+
+	got := h.getSet(t, holder.Name)
+	if len(got.Spec.Records) != 1 || got.Spec.Records[0].A.Content != "203.0.113.99" {
+		t.Errorf("holder = %+v, want only 203.0.113.99", got.Spec.Records)
+	}
+	other := h.getSet(t, first.Name)
+	if len(other.Spec.Records) != 1 || other.Spec.Records[0].Name != "blog" {
+		t.Errorf("the other set = %+v, want blog untouched", other.Spec.Records)
+	}
+}

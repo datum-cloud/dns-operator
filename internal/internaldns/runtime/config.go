@@ -395,20 +395,19 @@ func (c Config) regionalPrefixes() (map[string]string, error) {
 			}
 		}
 	}
-	pools := map[string]netip.Prefix{}
-	if c.ClusterPrefix != "" {
-		shared, err := netip.ParsePrefix(c.ClusterPrefix)
-		if err != nil {
-			return nil, fmt.Errorf("clusterPrefix: %w", err)
-		}
-		pools[""] = shared.Masked()
+	shared, err := platform.ParseRegionalPrefix(c.ClusterPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("clusterPrefix: %w", err)
 	}
+	pools := map[string]netip.Prefix{"": shared}
 	for region, prefix := range result {
-		parsed, err := netip.ParsePrefix(prefix)
-		if err != nil || !parsed.Addr().Is6() || parsed.Bits() > 112 {
-			return nil, fmt.Errorf("region %q clusterPrefix must be IPv6 with at least 16 host bits: %q", region, prefix)
+		if prefix == "" {
+			continue
 		}
-		parsed = parsed.Masked()
+		parsed, err := platform.ParseRegionalPrefix(prefix)
+		if err != nil {
+			return nil, fmt.Errorf("region %q clusterPrefix: %w", region, err)
+		}
 		for other, existing := range pools {
 			if existing.Overlaps(parsed) {
 				if other == "" {

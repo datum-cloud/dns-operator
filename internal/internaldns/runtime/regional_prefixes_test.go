@@ -52,4 +52,11 @@ func TestRegionalPrefixes(t *testing.T) {
 			}
 		}
 	}
+
+	if _, err := (Config{Shards: []platform.PlannerConfig{shard("west", "a", "fd54::/96")}}).regionalPrefixes(); err == nil || !strings.Contains(err.Error(), "overlaps the shared") {
+		t.Errorf("a pool inside the default shared pool must be refused, got %v", err)
+	}
+	if _, err := (Config{ClusterPrefix: "10.0.0.0/8"}).regionalPrefixes(); err == nil {
+		t.Error("an IPv4 shared pool must be refused")
+	}
 }

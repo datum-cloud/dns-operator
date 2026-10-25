@@ -52,11 +52,22 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 		return "", err
 	}
 	owner := string(projectUID) + "/" + string(contextUID)
-	if _, own := a.RegionalPrefixes[region]; own {
+	_, own := a.RegionalPrefixes[region]
+	if own {
 		owner += "/" + region
 	}
 	lease, err := a.reserve(ctx, string(projectUID), string(contextUID), owner, prefix)
-	return lease.ClusterAddress, err
+	if err != nil {
+		return "", err
+	}
+	// A region's pool is fixed once leased from: a lease outside it means the
+	// pool was renumbered, and its regional router no longer routes the lease.
+	if own {
+		if address, parseErr := netip.ParseAddr(lease.ClusterAddress); parseErr != nil || !prefix.Contains(address) {
+			return "", fmt.Errorf("region %q lease %s is outside its regional pool %s; regional pools cannot be renumbered", region, lease.ClusterAddress, prefix)
+		}
+	}
+	return lease.ClusterAddress, nil
 }
 
 // ClaimDestination atomically reserves an integration-selected service
@@ -328,21 +339,21 @@ func addressInPrefix(prefix netip.Prefix, owner string, salt int) string {
 
 func (a *Allocator) prefixFor(region string) (netip.Prefix, error) {
 	if prefix, ok := a.RegionalPrefixes[region]; ok {
-		return parseRegionalPrefix(prefix)
+		return ParseRegionalPrefix(prefix)
 	}
-	return parseRegionalPrefix(a.ClusterPrefix)
+	return ParseRegionalPrefix(a.ClusterPrefix)
 }
 
 // pools lists every regional resolver pool, which service destinations must
 // stay out of.
 func (a *Allocator) pools() ([]netip.Prefix, error) {
-	shared, err := parseRegionalPrefix(a.ClusterPrefix)
+	shared, err := ParseRegionalPrefix(a.ClusterPrefix)
 	if err != nil {
 		return nil, err
 	}
 	result := []netip.Prefix{shared}
 	for _, prefix := range a.RegionalPrefixes {
-		parsed, err := parseRegionalPrefix(prefix)
+		parsed, err := ParseRegionalPrefix(prefix)
 		if err != nil {
 			return nil, err
 		}
@@ -351,7 +362,9 @@ func (a *Allocator) pools() ([]netip.Prefix, error) {
 	return result, nil
 }
 
-func parseRegionalPrefix(prefix string) (netip.Prefix, error) {
+// ParseRegionalPrefix validates a regional resolver pool. An empty prefix is
+// the default shared pool.
+func ParseRegionalPrefix(prefix string) (netip.Prefix, error) {
 	if prefix == "" {
 		prefix = "fd54::/64"
 	}

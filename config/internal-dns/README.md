@@ -99,7 +99,12 @@ The control plane leases each resolver context a regional address from
 region, give each region's shards their own `clusterPrefix` so a region's node
 resolvers forward to its own regional tier. Regions without one share the
 top-level pool and the context's one address, so adding a pool later never
-readdresses existing bindings. Pools must not overlap.
+readdresses existing bindings. Pools must not overlap, and a region's pool
+cannot be renumbered once leased from. A region that gains a pool keeps its
+existing bindings on shared-pool addresses, so it must route the shared pool to
+its own regional tier as well until those bindings are gone. A new pool also
+refuses any service destination inside it, including ones already accepted, so
+choose pools clear of the destinations integrations use.
 
 Consumer and regional listener prefixes must be local routes in their dnsdist
 network namespaces. Galactic authorizes and translates the consumer path to a

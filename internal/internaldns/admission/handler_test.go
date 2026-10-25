@@ -324,6 +324,10 @@ func TestInstancesScopeIsReservedForPublishers(t *testing.T) {
 	if got := h.Handle(context.Background(), request("dnsrecordcontributions", "compute", contribution, nil)); !got.Allowed {
 		t.Fatalf("publisher contribution rejected: %v", got.Result)
 	}
+	h.InstancePublishers = nil
+	if got := h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)); !got.Allowed {
+		t.Fatalf("an unconfigured publisher list restricted the scope: %v", got.Result)
+	}
 }
 
 func TestAssociationCannotShadowTheInstancesScope(t *testing.T) {

@@ -37,7 +37,8 @@ type Handler struct {
 	Client client.Client
 
 	// InstancePublishers lists the usernames allowed to publish names in the
-	// instances scope of a managed zone. Everyone else is refused there.
+	// instances scope of a managed zone. Everyone else is refused there. When
+	// empty, publishing in the scope is not restricted by identity.
 	InstancePublishers []string
 
 	ClientForRequest func(context.Context, kubeadmission.Request) (client.Client, error)
@@ -315,7 +316,7 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 }
 
 func (h *Handler) refuseInstancesScope(req kubeadmission.Request, zone *dnsv1alpha1.DNSZone, owners []string) error {
-	if !model.IsManagedZone(zone) || slices.Contains(h.InstancePublishers, req.UserInfo.Username) {
+	if len(h.InstancePublishers) == 0 || !model.IsManagedZone(zone) || slices.Contains(h.InstancePublishers, req.UserInfo.Username) {
 		return nil
 	}
 	for _, owner := range owners {

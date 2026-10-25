@@ -55,7 +55,8 @@ type AdmissionConfig struct {
 	Port    int    `json:"port,omitempty"`
 	CertDir string `json:"certDir,omitempty"`
 	// InstancePublishers lists the usernames allowed to publish instance names
-	// in a managed zone's instances scope.
+	// in a managed zone's instances scope. Leaving it empty leaves the scope
+	// open to any writer the API server authorizes.
 	InstancePublishers []string `json:"instancePublishers,omitempty"`
 }
 

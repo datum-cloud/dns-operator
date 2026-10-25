@@ -82,14 +82,12 @@ func refuseWildcardAlias(oldRS, rs *dnsv1alpha1.DNSRecordSet) error {
 }
 
 func refuseProviderScope(rs *dnsv1alpha1.DNSRecordSet, zone *dnsv1alpha1.DNSZone) error {
-	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
+	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || !model.IsManagedZone(zone) {
 		return nil
 	}
-	apex := ownername.Qualify("@", zone.Spec.DomainName)
 	var errs field.ErrorList
 	for i, rec := range rs.Spec.Records {
-		relative := strings.TrimSuffix(ownername.Qualify(rec.Name, zone.Spec.DomainName), "."+apex)
-		if !model.InProviderScope(relative) {
+		if !model.InProviderScope(model.ZoneRelativeOwner(rec.Name, zone.Spec.DomainName)) {
 			continue
 		}
 		errs = append(errs, field.Invalid(

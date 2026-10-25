@@ -6,6 +6,7 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -298,6 +299,9 @@ func TestCompileRejectsTenantRecordsInProviderScope(t *testing.T) {
 	in := fixture(now)
 	in.Registrations = nil
 	in.Contributions = nil
+	controller := true
+	in.Zone.Name = model.ManagedZoneName("ctx-uid")
+	in.Zone.OwnerReferences = []metav1.OwnerReference{{APIVersion: dnsv1alpha1.GroupVersion.String(), Kind: "DNSResolverContext", Name: "ctx", UID: "ctx-uid", Controller: &controller}}
 	static := func(uid types.UID, owner string) dnsv1alpha1.DNSRecordSet {
 		return dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: string(uid), UID: uid}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: in.Zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: owner, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}
 	}
@@ -318,6 +322,20 @@ func TestCompileRejectsTenantRecordsInProviderScope(t *testing.T) {
 	}
 	if !result.Accepted["outside"] || len(result.Plan.RRsets) != 1 || result.Plan.RRsets[0].Name != "api" {
 		t.Fatalf("record outside the scope was not published: %#v", result.Plan.RRsets)
+	}
+
+	in.Zone.OwnerReferences = nil
+	result, err = Compile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for uid, reason := range result.Reasons {
+		if reason == "ReservedScope" {
+			t.Fatalf("a tenant's own private zone reserved the scope for %s", uid)
+		}
+	}
+	if !result.Accepted["absolute"] || !result.Accepted["label"] {
+		t.Fatalf("scoped names in a tenant's own private zone were not published: %#v", result.Reasons)
 	}
 }
 

@@ -383,15 +383,11 @@ func (r *Reconciler) activeRevision(ctx context.Context, own *dnsv1alpha1.DNSPub
 	return manifest.Spec.Revision, nil
 }
 
-// publicationTargetsForContext names the shards a context's zones publish to:
-// those where the context has a live resolver binding, since only those shards
-// hold a view of the zone and acknowledge it. A context bound nowhere yet keeps
-// every assigned shard, so its zones wait for a resolver instead of reporting
-// publication that nothing serves.
-func (r *Reconciler) publicationTargetsForContext(resolverContextUID types.UID, bindings []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
-	assigned := r.selectServingTargets(resolverContextUID, bindings)
+// boundTargets names the assigned shards where a context has a live resolver
+// binding. Only those shards hold a view of its zones and acknowledge them.
+func (r *Reconciler) boundTargets(resolverContextUID types.UID, bindings []dnsv1alpha1.DNSResolverBinding) []ServingRegion {
 	var bound []ServingRegion
-	for _, target := range assigned {
+	for _, target := range r.selectServingTargets(resolverContextUID, bindings) {
 		for _, binding := range bindings {
 			if binding.Spec.Source.ProjectUID == r.Options.ProjectUID && binding.Spec.Source.ResolverContextRef.UID == resolverContextUID &&
 				binding.Spec.Placement.Region == target.Region && binding.Spec.Placement.Shard == target.Shard &&
@@ -401,9 +397,6 @@ func (r *Reconciler) publicationTargetsForContext(resolverContextUID types.UID, 
 			}
 		}
 	}
-	if len(bound) == 0 {
-		return assigned
-	}
 	return bound
 }
 
@@ -412,10 +405,20 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	if err := r.listProjectBindings(ctx, &bindings); err != nil {
 		return nil, err
 	}
+	// A zone publishes to the shards where any of its contexts is bound. A zone
+	// none of whose contexts is bound anywhere yet keeps every assigned shard, so
+	// it waits for a resolver instead of reporting publication nothing serves.
 	byKey := map[string]ServingRegion{}
 	for _, resolverContextUID := range contextsByUID {
-		for _, target := range r.publicationTargetsForContext(resolverContextUID, bindings.Items) {
+		for _, target := range r.boundTargets(resolverContextUID, bindings.Items) {
 			byKey[target.Region+"\x00"+target.Shard] = target
+		}
+	}
+	if len(byKey) == 0 {
+		for _, resolverContextUID := range contextsByUID {
+			for _, target := range r.selectServingTargets(resolverContextUID, bindings.Items) {
+				byKey[target.Region+"\x00"+target.Shard] = target
+			}
 		}
 	}
 	if includePrevious && own.Spec.ActiveManifestName != "" {

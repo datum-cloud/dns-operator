@@ -396,3 +396,26 @@ func TestReplayDropsRecordsDeletedWhileTheWatchWasDown(t *testing.T) {
 		t.Fatal("kept a record the replay up to its revision did not carry")
 	}
 }
+
+func TestStoreKeepsInt64FieldsExact(t *testing.T) {
+	ctx := t.Context()
+	store, _, _ := newStore(t)
+	m := &dnsv1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "pub", Namespace: "platform"}}
+	if err := store.Create(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	const observed = int64(1792959197970605803)
+	base := m.DeepCopy()
+	m.Status.ReplicaAcknowledgements = []dnsv1.DNSApplyAcknowledgement{{MemberID: "a", ObservedUnixNano: observed}}
+	if err := store.Status().Patch(ctx, m, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	base = m.DeepCopy()
+	m.Spec.Revision = 2
+	if err := store.Patch(ctx, m, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Status.ReplicaAcknowledgements[0].ObservedUnixNano; got != observed {
+		t.Fatalf("int64 rounded through the store: got %d want %d", got, observed)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 
+	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,15 @@ func claimPublicationStore(ctx context.Context, api client.Client, namespace, st
 	key := client.ObjectKey{Namespace: namespace, Name: publicationStoreMarker}
 	err := api.Get(ctx, key, &marker)
 	if apierrors.IsNotFound(err) {
+		if store != publicationStoreKubernetes {
+			var leases dnsv1.DNSPublicationOwnershipList
+			if err := api.List(ctx, &leases, client.InNamespace(namespace), client.Limit(1)); err != nil {
+				return fmt.Errorf("check for publication records in the API server: %w", err)
+			}
+			if len(leases.Items) > 0 {
+				return fmt.Errorf("publication records exist in the API server but no ConfigMap %s/%s records the active store; stop every control-plane replica and create it with data.store %q to switch", namespace, publicationStoreMarker, store)
+			}
+		}
 		marker = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: namespace}, Data: map[string]string{"store": store}}
 		if err := api.Create(ctx, &marker); err == nil {
 			return nil

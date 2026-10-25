@@ -288,17 +288,22 @@ newer one of its zone was exported, unless a pending outbox depends on it.
 Tenant objects, resolver bindings, address claims and tenant status stay in the
 API server.
 
-The bucket exists on every region's broker. A record labelled with a region
-(transport outboxes and shard leases) lives on that region's broker, so a
-region's serving snapshots never wait on another region's broker. Zone leases,
-manifests and chunks live on the broker of `publicationStore.region` until zone
-publication has one writer per zone and region.
+The bucket exists on every region's broker. Transport outboxes and shard leases
+live on the broker of the region they serve, so a region's deliveries and
+serving snapshots never wait on another region's broker, and a region whose
+broker is down does not stop the control plane from starting or publishing to
+other regions. Zone leases, manifests and chunks live on the broker of
+`publicationStore.region` until zone publication has one writer per zone and
+region.
 
 Leases live in the store, so every control-plane replica must use the same one.
 A ConfigMap named `internal-dns-publication-store` records the active store, and
 a replica configured for another store refuses to start. To switch, stop every
 replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
-start the replicas with the new setting.
+start the replicas with the new setting. A first start on JetStream with no
+ConfigMap refuses to run while publication records exist in the API server.
+Once writer epochs follow the clock, downgrading to a release that counts
+epochs from one is not supported.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.

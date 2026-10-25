@@ -3,10 +3,13 @@
 package pubstore
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -264,7 +267,7 @@ func TestStoresSharingABucketSeeEachOthersWrites(t *testing.T) {
 func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
 	ctx := t.Context()
 	home, east := NewMemoryKV(), NewMemoryKV()
-	store := NewRegional(fake.NewClientBuilder().Build(), "central", map[string]KV{"central": home, "east": east})
+	store := NewRegional(fake.NewClientBuilder().Build(), "central", map[string]KV{"central": home, "east": east}, map[string]string{"central": "central", "east": "east"})
 	if err := store.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -294,9 +297,89 @@ func TestRegionalRecordsLiveInTheirRegionsBucket(t *testing.T) {
 	if err := store.List(ctx, &list); err != nil || len(list.Items) != 1 {
 		t.Fatalf("list across buckets: %v %d", err, len(list.Items))
 	}
-	moved := got.DeepCopy()
-	moved.Labels[regionLabel] = "central"
-	if err := store.Update(ctx, moved); !apierrors.IsBadRequest(err) {
-		t.Fatalf("a record moved between regions: %v", err)
+	relabelled := got.DeepCopy()
+	relabelled.Labels[regionLabel] = "central"
+	if err := store.Update(ctx, relabelled); err != nil {
+		t.Fatalf("update of a relabelled record: %v", err)
+	}
+	if _, _, err := east.Get(ctx, "out.platform.activation-east"); err != nil {
+		t.Fatalf("relabelled record left the bucket that holds it: %v", err)
+	}
+	duplicate := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform"}}
+	if err := store.Create(ctx, duplicate); !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("same name created in a second bucket: %v", err)
+	}
+}
+
+func TestRegionsSharingABrokerShareOneBucket(t *testing.T) {
+	ctx := t.Context()
+	shared := NewMemoryKV()
+	store := NewRegional(fake.NewClientBuilder().Build(), "broker", map[string]KV{"broker": shared}, map[string]string{"central": "broker", "east": "broker"})
+	if err := store.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-east", Namespace: "platform", Labels: map[string]string{regionLabel: "east"}}}
+	if err := store.Create(ctx, out); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		base := out.DeepCopy()
+		out.Status.Attempts = int32(i + 1)
+		if err := store.Status().Patch(ctx, out, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			t.Fatalf("write %d on a shared broker: %v", i, err)
+		}
+	}
+}
+
+type unreachableKV struct{ *MemoryKV }
+
+func (unreachableKV) Get(context.Context, string) ([]byte, uint64, error) {
+	return nil, 0, errors.New("broker unreachable")
+}
+
+func (unreachableKV) Watch(context.Context) (<-chan *transport.KVEvent, error) {
+	return nil, errors.New("broker unreachable")
+}
+
+func TestOneRegionsBrokerOutageLeavesTheOthersWorking(t *testing.T) {
+	ctx := t.Context()
+	home := NewMemoryKV()
+	store := NewRegional(fake.NewClientBuilder().Build(), "central", map[string]KV{"central": home, "east": unreachableKV{NewMemoryKV()}}, map[string]string{"central": "central", "east": "east"})
+	if err := store.Start(ctx); err != nil {
+		t.Fatalf("start waited on an unreachable regional broker: %v", err)
+	}
+	own := &dnsv1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-a", Namespace: "platform"}}
+	if err := store.Get(ctx, client.ObjectKeyFromObject(own), own); !apierrors.IsNotFound(err) {
+		t.Fatalf("zone lease lookup depended on the regional broker: %v", err)
+	}
+	central := &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: "activation-central", Namespace: "platform", Labels: map[string]string{regionLabel: "central"}}}
+	if err := store.Create(ctx, central); err != nil {
+		t.Fatal(err)
+	}
+	var found dnsv1.DNSTransportOutbox
+	if err := store.Get(ctx, client.ObjectKeyFromObject(central), &found); err != nil {
+		t.Fatalf("central record lookup depended on the regional broker: %v", err)
+	}
+	if err := store.Collect(ctx); err == nil {
+		t.Fatal("collected without every region's records loaded")
+	}
+}
+
+func TestReplayDropsRecordsDeletedWhileTheWatchWasDown(t *testing.T) {
+	store, _, kv := newStore(t)
+	store.apply("", "out.platform.gone", 7, []byte(`{"metadata":{"name":"gone","namespace":"platform"}}`))
+	store.dropUnseen("", map[string]bool{}, kv.revision)
+	store.mu.RLock()
+	_, kept := store.index["out.platform.gone"]
+	store.mu.RUnlock()
+	if !kept {
+		t.Fatal("dropped a record newer than the replay")
+	}
+	store.dropUnseen("", map[string]bool{}, 7)
+	store.mu.RLock()
+	_, kept = store.index["out.platform.gone"]
+	store.mu.RUnlock()
+	if kept {
+		t.Fatal("kept a record the replay up to its revision did not carry")
 	}
 }

@@ -39,6 +39,10 @@ type ReconcilerOptions struct {
 	// fall strictly below. Empty means DefaultManagedDomainSuffixes.
 	ManagedDomainSuffixes []string
 	ServingRegions        []ServingRegion
+	// PassSlots, when set, is shared by every project reconciler in a process
+	// and bounds how many project passes run at once, so a restart does not
+	// start a full pass of every project against the API server together.
+	PassSlots chan struct{}
 }
 
 type ServingRegion struct {
@@ -123,6 +127,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	if ns == "" {
 		return ctrl.Result{}, nil
+	}
+	if slots := r.Options.PassSlots; slots != nil {
+		waited := time.Now()
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return ctrl.Result{}, ctx.Err()
+		}
+		defer func() { <-slots }()
+		passPhaseDuration.WithLabelValues("wait for slot").Observe(time.Since(waited).Seconds())
 	}
 	return r.reconcileProject(ctx, ns)
 }

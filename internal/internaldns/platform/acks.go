@@ -418,18 +418,19 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
-	var bindings dnsv1alpha1.DNSResolverBindingList
-	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace), client.MatchingLabels{"internal-dns.miloapis.com/region": model.SafeToken(s.Region), "internal-dns.miloapis.com/shard": model.SafeToken(s.Shard)}); err != nil {
-		return err
-	}
-	envelope, snapshot, err := LoadCommittedServingSnapshot(ctx, s.Client, s.Namespace, s.Region, s.Shard)
-	if err != nil {
-		return err
-	}
 	// A conflicting write to one binding must not stop the rest of the pass:
 	// manifest publication status and project projections run after the
 	// bindings, and ack writes contend with this loop on every busy binding.
+	// This shard's own failures skip only its bindings: one sink writes each
+	// manifest's status, so a failing shard must not leave publication it owns
+	// unrefreshed as acknowledgements expire.
 	var refreshErrors error
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	envelope, snapshot, err := s.shardState(ctx, &bindings)
+	if err != nil {
+		refreshErrors = err
+		bindings.Items = nil
+	}
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
@@ -464,6 +465,9 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 			refreshErrors = errors.Join(refreshErrors, err)
 			continue
 		}
+		if !s.projectsManifest(&m) {
+			continue
+		}
 		base := m.DeepCopy()
 		complete := s.publicationVerified(&m, now)
 		condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
@@ -493,6 +497,41 @@ func jsonEqualStatus(a, b interface{}) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// projectsManifest reports whether this shard's sink writes the manifest's
+// publication status and projections. Verification reads only the manifest's
+// own acknowledgements, so every sink would reach the same result; one sink per
+// manifest avoids repeating the writes and the project projections. It is the
+// lowest configured serving target, or for a manifest with none, the lowest
+// configured shard.
+func (s *AckSink) shardState(ctx context.Context, bindings *dnsv1alpha1.DNSResolverBindingList) (*model.Envelope, *model.ServingSnapshot, error) {
+	if err := s.Client.List(ctx, bindings, client.InNamespace(s.Namespace), client.MatchingLabels{"internal-dns.miloapis.com/region": model.SafeToken(s.Region), "internal-dns.miloapis.com/shard": model.SafeToken(s.Shard)}); err != nil {
+		return nil, nil, err
+	}
+	return LoadCommittedServingSnapshot(ctx, s.Client, s.Namespace, s.Region, s.Shard)
+}
+
+func (s *AckSink) projectsManifest(m *dnsv1alpha1.DNSPublicationManifest) bool {
+	self := s.Region + "/" + s.Shard
+	lowest := ""
+	for _, target := range m.Spec.ServingTargets {
+		key := target.Region + "/" + target.Shard
+		if _, configured := s.PublicationRegions[key]; len(s.PublicationRegions) > 0 && !configured {
+			continue
+		}
+		if lowest == "" || key < lowest {
+			lowest = key
+		}
+	}
+	if lowest == "" {
+		for key := range s.PublicationRegions {
+			if lowest == "" || key < lowest {
+				lowest = key
+			}
+		}
+	}
+	return lowest == "" || lowest == self
 }
 
 func (s *AckSink) publicationVerified(m *dnsv1alpha1.DNSPublicationManifest, now time.Time) bool {

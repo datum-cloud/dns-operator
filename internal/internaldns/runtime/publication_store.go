@@ -17,8 +17,9 @@ import (
 )
 
 // openPublicationStore opens the bucket on every region's broker, so each
-// region's records live with that region's broker. Regions that share one
-// broker, by URL, share its bucket.
+// region's records live with that region's broker. Regions whose transports
+// name the same URL share that broker's bucket; regions that share a broker
+// must name it with the same URL.
 func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*pubstore.PublicationStore, func(), error) {
 	regions := []string{cfg.PublicationStore.Region}
 	if len(cfg.RegionalTransports) > 0 {
@@ -31,9 +32,11 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 	if err != nil {
 		return nil, nil, err
 	}
+	homeURL := home.URL
 	storeCtx, cancel := context.WithCancel(ctx)
 	buckets := map[string]pubstore.KV{}
 	byRegion := map[string]string{}
+	byURL := map[string]string{}
 	var opened []*lazyBucket
 	for _, region := range regions {
 		natsConfig, _, _, err := cfg.transportForRegion(region)
@@ -41,25 +44,29 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 			cancel()
 			return nil, nil, err
 		}
-		if _, ok := buckets[natsConfig.URL]; !ok {
-			natsConfig.Name += "-publication-store"
-			lazy := &lazyBucket{url: natsConfig.URL}
-			opened = append(opened, lazy)
-			buckets[natsConfig.URL] = lazy
-			if natsConfig.URL == home.URL {
-				if err := lazy.open(storeCtx, natsConfig, cfg.PublicationStore); err != nil {
-					cancel()
-					return nil, nil, err
-				}
-			} else {
-				go func() {
-					if err := lazy.open(storeCtx, natsConfig, cfg.PublicationStore); err != nil && storeCtx.Err() == nil {
-						ctrl.LoggerFrom(ctx).Error(err, "regional publication store unavailable", "url", natsConfig.URL)
-					}
-				}()
-			}
+		token := model.SafeToken(region)
+		if shared, ok := byURL[natsConfig.URL]; ok {
+			byRegion[token] = shared
+			continue
 		}
-		byRegion[model.SafeToken(region)] = natsConfig.URL
+		byURL[natsConfig.URL] = token
+		byRegion[token] = token
+		natsConfig.Name += "-publication-store"
+		lazy := &lazyBucket{region: region}
+		opened = append(opened, lazy)
+		buckets[token] = lazy
+		if natsConfig.URL == homeURL {
+			if err := lazy.open(storeCtx, natsConfig, cfg.PublicationStore); err != nil {
+				cancel()
+				return nil, nil, err
+			}
+		} else {
+			go func() {
+				if err := lazy.open(storeCtx, natsConfig, cfg.PublicationStore); err != nil && storeCtx.Err() == nil {
+					ctrl.LoggerFrom(ctx).Error(err, "regional publication store unavailable", "region", region)
+				}
+			}()
+		}
 	}
 	closeAll := func() {
 		cancel()
@@ -67,7 +74,7 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 			lazy.close()
 		}
 	}
-	store := pubstore.NewRegional(api, home.URL, buckets, byRegion)
+	store := pubstore.NewRegional(api, byURL[homeURL], buckets, byRegion)
 	if err := store.Start(storeCtx); err != nil {
 		closeAll()
 		return nil, nil, fmt.Errorf("load publication store: %w", err)
@@ -80,10 +87,11 @@ var errBucketUnavailable = errors.New("publication store bucket is not connected
 // lazyBucket is a regional bucket whose broker may come up after the control
 // plane; until it does, every request to it fails and the rest are unaffected.
 type lazyBucket struct {
-	url string
-	mu  sync.RWMutex
-	kv  pubstore.KV
-	bus *transport.JetStream
+	region string
+	mu     sync.RWMutex
+	kv     pubstore.KV
+	bus    *transport.JetStream
+	closed bool
 }
 
 func (b *lazyBucket) open(ctx context.Context, natsConfig transport.Config, store *PublicationStoreConfig) error {
@@ -95,15 +103,19 @@ func (b *lazyBucket) open(ctx context.Context, natsConfig transport.Config, stor
 		bucket, err := bus.KeyValueBucket(ctx, store.Bucket, store.Replicas, pubstore.WatchFilter())
 		if err == nil {
 			b.mu.Lock()
+			defer b.mu.Unlock()
+			if ctx.Err() != nil || b.closed {
+				_ = bus.Close()
+				return ctx.Err()
+			}
 			b.kv, b.bus = pubstore.Instrumented(bucket), bus
-			b.mu.Unlock()
 			return nil
 		}
 		if ctx.Err() != nil {
 			_ = bus.Close()
 			return err
 		}
-		ctrl.LoggerFrom(ctx).Error(err, "open publication store bucket; retrying", "url", b.url)
+		ctrl.LoggerFrom(ctx).Error(err, "open publication store bucket; retrying", "region", b.region)
 		if !waitForRetry(ctx) {
 			_ = bus.Close()
 			return ctx.Err()
@@ -114,6 +126,7 @@ func (b *lazyBucket) open(ctx context.Context, natsConfig transport.Config, stor
 func (b *lazyBucket) close() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.closed = true
 	if b.bus != nil {
 		_ = b.bus.Close()
 	}

@@ -97,7 +97,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if cfg.PublicationStore != nil {
 		storeName = publicationStoreJetStream
 	}
-	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName); err != nil {
+	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName, cfg.SwitchPublicationStore); err != nil {
 		return err
 	}
 	var publicationStore *pubstore.PublicationStore

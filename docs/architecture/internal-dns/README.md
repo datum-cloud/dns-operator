@@ -303,7 +303,10 @@ Leases live in the store, so every control-plane replica must use the same one.
 A ConfigMap named `internal-dns-publication-store` records the active store, and
 a replica configured for another store refuses to start. To switch, stop every
 replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
-start the replicas with the new setting. A first start on JetStream with no
+start the replicas with the new setting. Alternatively, set
+`switchPublicationStore` in a rollout that stops every replica before starting
+new ones, such as a Deployment with the `Recreate` strategy; the first new
+replica then records its store as the active one. A first start on JetStream with no
 ConfigMap refuses to run while publication records exist in the API server.
 Once writer epochs follow the clock, downgrading to a release that counts
 epochs from one is not supported.

@@ -30,6 +30,9 @@ type PlannerConfig struct {
 	NodeBackends    []model.Backend
 	ClusterBackends []model.Backend
 	Members         []model.Member
+	// ClusterPrefix gives the shard's region its own regional resolver pool.
+	// Empty shares the control plane's clusterPrefix.
+	ClusterPrefix string `json:"clusterPrefix,omitempty"`
 	// Hard safety budgets; production values require capacity qualification.
 	MaxBindings      int `json:"maxBindings,omitempty"`
 	MaxSnapshotBytes int `json:"maxSnapshotBytes,omitempty"`

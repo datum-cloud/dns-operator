@@ -89,7 +89,11 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		return fmt.Errorf("create uncached platform client: %w", err)
 	}
 	platformClient = &deadlineClient{Client: platformClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix}
+	regionalPrefixes, err := cfg.regionalPrefixes()
+	if err != nil {
+		return err
+	}
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes}
 	planners := cfg.plannerConfigs()
 	regions := make([]controlplane.ServingRegion, 0, len(planners))
 	for _, p := range planners {

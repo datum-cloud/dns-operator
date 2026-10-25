@@ -48,7 +48,7 @@ func (c *accessListSnapshotClient) List(ctx context.Context, list client.ObjectL
 	return c.Client.List(ctx, list, opts...)
 }
 
-func (testAllocator) Allocate(context.Context, types.UID, types.UID) (string, error) {
+func (testAllocator) Allocate(context.Context, types.UID, types.UID, string) (string, error) {
 	return "fd54::10", nil
 }
 

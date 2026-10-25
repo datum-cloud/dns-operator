@@ -38,10 +38,24 @@ type Allocator struct {
 	Client        client.Client
 	Namespace     string
 	ClusterPrefix string
+	// RegionalPrefixes gives a region its own regional resolver pool, routed to
+	// that region's regional router. Regions without one share ClusterPrefix.
+	RegionalPrefixes map[string]string
 }
 
-func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.UID) (string, error) {
-	lease, err := a.reserve(ctx, string(projectUID), string(contextUID))
+// Allocate leases a context's regional address in a region. A region on the
+// shared pool keeps the context's one lease across regions, as before regions
+// had their own pools; a region with its own pool leases separately.
+func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.UID, region string) (string, error) {
+	prefix, err := a.prefixFor(region)
+	if err != nil {
+		return "", err
+	}
+	owner := string(projectUID) + "/" + string(contextUID)
+	if _, own := a.RegionalPrefixes[region]; own {
+		owner += "/" + region
+	}
+	lease, err := a.reserve(ctx, string(projectUID), string(contextUID), owner, prefix)
 	return lease.ClusterAddress, err
 }
 
@@ -53,12 +67,14 @@ func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID
 		return fmt.Errorf("%w: destination claim identity, region, IP, and DNS port are required", model.ErrDestinationRefused)
 	}
 	parsed = parsed.Unmap()
-	prefix, err := a.regionalPrefix()
+	pools, err := a.pools()
 	if err != nil {
 		return err
 	}
-	if prefix.Contains(parsed) {
-		return fmt.Errorf("%w: service destination must be outside the regional resolver address pool", model.ErrDestinationRefused)
+	for _, prefix := range pools {
+		if prefix.Contains(parsed) {
+			return fmt.Errorf("%w: service destination must be outside the regional resolver address pools", model.ErrDestinationRefused)
+		}
 	}
 	address = parsed.String()
 	var regionalClaim corev1.ConfigMap
@@ -227,15 +243,9 @@ func (a *Allocator) deleteClaim(ctx context.Context, claim *corev1.ConfigMap) er
 	return err
 }
 
-func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID string) (AddressLease, error) {
+func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner string, parsed netip.Prefix) (AddressLease, error) {
 	if a.Client == nil || a.Namespace == "" || projectUID == "" || contextUID == "" {
 		return AddressLease{}, fmt.Errorf("allocator requires a client, namespace, and immutable project/context identities")
-	}
-	owner := projectUID + "/" + contextUID
-
-	parsed, err := a.regionalPrefix()
-	if err != nil {
-		return AddressLease{}, err
 	}
 	key := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}
 	var stored corev1.ConfigMap
@@ -316,8 +326,32 @@ func addressInPrefix(prefix netip.Prefix, owner string, salt int) string {
 	return netip.AddrFrom16(base).String()
 }
 
-func (a *Allocator) regionalPrefix() (netip.Prefix, error) {
-	prefix := a.ClusterPrefix
+func (a *Allocator) prefixFor(region string) (netip.Prefix, error) {
+	if prefix, ok := a.RegionalPrefixes[region]; ok {
+		return parseRegionalPrefix(prefix)
+	}
+	return parseRegionalPrefix(a.ClusterPrefix)
+}
+
+// pools lists every regional resolver pool, which service destinations must
+// stay out of.
+func (a *Allocator) pools() ([]netip.Prefix, error) {
+	shared, err := parseRegionalPrefix(a.ClusterPrefix)
+	if err != nil {
+		return nil, err
+	}
+	result := []netip.Prefix{shared}
+	for _, prefix := range a.RegionalPrefixes {
+		parsed, err := parseRegionalPrefix(prefix)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, parsed)
+	}
+	return result, nil
+}
+
+func parseRegionalPrefix(prefix string) (netip.Prefix, error) {
 	if prefix == "" {
 		prefix = "fd54::/64"
 	}

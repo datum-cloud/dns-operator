@@ -3,6 +3,7 @@
 package pubstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -573,7 +574,7 @@ func (s *PublicationStore) patch(ctx context.Context, kind *storedKind, obj clie
 			return nil, false, apierrors.NewBadRequest(err.Error())
 		}
 		var out map[string]any
-		return out, conditional, json.Unmarshal(merged, &out)
+		return out, conditional, decodeMap(merged, &out)
 	})
 }
 
@@ -698,7 +699,7 @@ func toMap(obj any) (map[string]any, error) {
 		return nil, err
 	}
 	var out map[string]any
-	return out, json.Unmarshal(b, &out)
+	return out, decodeMap(b, &out)
 }
 
 func (s *PublicationStore) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
@@ -846,4 +847,12 @@ func (s *PublicationStore) Watch(ctx context.Context, list client.ObjectList, op
 		return nil, errors.New("API client does not serve watches")
 	}
 	return w.Watch(ctx, list, opts...)
+}
+
+// decodeMap keeps numbers exact: a float64 would round nanosecond timestamps
+// and other int64 fields.
+func decodeMap(b []byte, out *map[string]any) error {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	return d.Decode(out)
 }

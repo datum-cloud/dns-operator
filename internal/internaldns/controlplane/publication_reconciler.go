@@ -87,6 +87,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	registrationZones := make(map[types.UID]dnsv1alpha1.DNSObjectReference, len(regs.Items))
 	for i := range regs.Items {
 		registration := &regs.Items[i]
+		if r.Options.PerZoneReconcile {
+			// The zone key pins its registrations right before compiling.
+			sources = append(sources, registration)
+			continue
+		}
 		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
 		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
 			ref.UID, ref.Generation = zone.UID, zone.Generation
@@ -133,6 +138,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		lease := held[z.UID]
+		if r.Options.PerZoneReconcile && apierrors.IsConflict(lease.err) {
+			// The zone key renewed the lease first.
+			r.queueZone(ctx, z)
+			continue
+		}
 		if lease.err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, lease.err))
 			continue
@@ -141,6 +151,10 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			if earliest.IsZero() || lease.retryAt.Before(earliest) {
 				earliest = lease.retryAt
 			}
+			continue
+		}
+		if r.Options.PerZoneReconcile {
+			r.queueZone(ctx, z)
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)

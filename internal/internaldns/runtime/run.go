@@ -180,6 +180,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
+				PerZoneReconcile:      cfg.PerZoneReconcile,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)

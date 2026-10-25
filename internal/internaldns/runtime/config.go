@@ -86,10 +86,13 @@ type Config struct {
 	Admission             AdmissionConfig           `json:"admission,omitempty"`
 	OwnershipLeaseSeconds int64                     `json:"ownershipLeaseSeconds,omitempty"`
 	PrivateZoneClassName  string                    `json:"privateZoneClassName,omitempty"`
-	ManagedDomainSuffixes []string                  `json:"managedDomainSuffixes,omitempty"`
-	Agent                 serving.Config            `json:"agent,omitempty"`
-	Shards                []platform.PlannerConfig  `json:"shards,omitempty"`
-	PublicationStore      *PublicationStoreConfig   `json:"publicationStore,omitempty"`
+	// PerZoneReconcile compiles each zone on its own queue key, so a record
+	// change publishes without waiting for its project's pass.
+	PerZoneReconcile      bool                     `json:"perZoneReconcile,omitempty"`
+	ManagedDomainSuffixes []string                 `json:"managedDomainSuffixes,omitempty"`
+	Agent                 serving.Config           `json:"agent,omitempty"`
+	Shards                []platform.PlannerConfig `json:"shards,omitempty"`
+	PublicationStore      *PublicationStoreConfig  `json:"publicationStore,omitempty"`
 	// SwitchPublicationStore lets this control plane record its configured
 	// publication store as the active one when the platform records the other
 	// store. Set it only for a rollout that stops every replica before

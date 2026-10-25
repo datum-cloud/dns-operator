@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -31,8 +32,9 @@ var _ KV = (*transport.KVBucket)(nil)
 
 // Collect deletes publication records nothing can use again: a manifest, its
 // chunks and its outboxes once a strictly newer manifest of the zone is active
-// and the retention has passed, and a shard's settled serving outboxes other
-// than its active one. Anything a pending outbox still depends on is kept.
+// and was exported more than the retention ago, and a shard's settled serving
+// outboxes strictly older than its active one. Anything a pending outbox still
+// depends on is kept. It then purges deletion markers older than the retention.
 func (s *PublicationStore) Collect(ctx context.Context) error {
 	select {
 	case <-s.synced:
@@ -42,7 +44,6 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 	now := s.now().UTC()
 	owners := map[types.UID]*dnsv1.DNSPublicationOwnership{}
 	manifests := map[string]*dnsv1.DNSPublicationManifest{}
-	shards := map[string]*corev1.ConfigMap{}
 	var outboxes []*dnsv1.DNSTransportOutbox
 	s.mu.RLock()
 	for _, entry := range s.index {
@@ -53,8 +54,6 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 			manifests[o.Name] = o
 		case *dnsv1.DNSTransportOutbox:
 			outboxes = append(outboxes, o)
-		case *corev1.ConfigMap:
-			shards[o.Name] = o
 		}
 	}
 	s.mu.RUnlock()
@@ -73,19 +72,27 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 	}
 	var errs []error
 	remove := func(obj client.Object) bool {
-		if err := s.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+		if err := s.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 			errs = append(errs, err)
 			return false
 		}
 		return true
 	}
+	byZone := map[types.UID][]*dnsv1.DNSPublicationManifest{}
+	for _, m := range manifests {
+		byZone[m.Spec.ZoneRef.UID] = append(byZone[m.Spec.ZoneRef.UID], m)
+	}
 	for name, m := range manifests {
 		own := owners[m.Spec.ZoneRef.UID]
-		if own == nil || own.Spec.ActiveManifestName == name || now.Sub(m.Spec.GeneratedAt.Time) < publicationRetention {
+		if own == nil || own.Spec.ActiveManifestName == name {
 			continue
 		}
 		active := manifests[own.Spec.ActiveManifestName]
 		if active == nil || model.Compare(uint64(active.Spec.WriterEpoch), uint64(active.Spec.Revision), uint64(m.Spec.WriterEpoch), uint64(m.Spec.Revision)) <= 0 {
+			continue
+		}
+		superseded, ok := supersededAt(m, byZone[m.Spec.ZoneRef.UID])
+		if !ok || now.Sub(superseded) < publicationRetention {
 			continue
 		}
 		held := false
@@ -107,20 +114,66 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 		}
 	}
 	for _, out := range outboxes {
-		owner := out.Labels[shardOwnerLabel]
-		if owner == "" || !settled(out) || protected[out.Name] || now.Sub(out.CreationTimestamp.Time) < publicationRetention {
+		if out.Labels[shardOwnerLabel] == "" || !settled(out) || protected[out.Name] || now.Sub(out.CreationTimestamp.Time) < publicationRetention {
 			continue
 		}
-		cm := shards[owner]
-		var state struct {
-			ActiveOutbox string `json:"activeOutbox"`
-		}
-		if cm == nil || json.Unmarshal([]byte(cm.Data["state"]), &state) != nil || state.ActiveOutbox == out.Name {
+		older, err := s.olderThanActiveServing(ctx, out)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
-		remove(out)
+		if older {
+			remove(out)
+		}
+	}
+	if purger, ok := s.kv.(interface {
+		PurgeDeletes(context.Context, time.Duration) error
+	}); ok {
+		if err := purger.PurgeDeletes(ctx, publicationRetention); err != nil {
+			errs = append(errs, fmt.Errorf("purge deletion markers: %w", err))
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// supersededAt is when a newer publication of the zone was first exported,
+// which only a committed publication ever is. Retention runs from then, not
+// from when m itself was generated.
+func supersededAt(m *dnsv1.DNSPublicationManifest, zone []*dnsv1.DNSPublicationManifest) (time.Time, bool) {
+	var at time.Time
+	for _, newer := range zone {
+		if newer.Status.ExportedAt == nil || model.Compare(uint64(newer.Spec.WriterEpoch), uint64(newer.Spec.Revision), uint64(m.Spec.WriterEpoch), uint64(m.Spec.Revision)) <= 0 {
+			continue
+		}
+		if at.IsZero() || newer.Status.ExportedAt.Time.Before(at) {
+			at = newer.Status.ExportedAt.Time
+		}
+	}
+	return at, !at.IsZero()
+}
+
+// olderThanActiveServing reads the shard's lease and active serving outbox
+// from the bucket, not the index, and reports whether out is strictly older.
+func (s *PublicationStore) olderThanActiveServing(ctx context.Context, out *dnsv1.DNSTransportOutbox) (bool, error) {
+	var cm corev1.ConfigMap
+	if err := s.Get(ctx, client.ObjectKey{Namespace: out.Namespace, Name: out.Labels[shardOwnerLabel]}, &cm); apierrors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	var state struct {
+		ActiveOutbox string `json:"activeOutbox"`
+	}
+	if err := json.Unmarshal([]byte(cm.Data["state"]), &state); err != nil || state.ActiveOutbox == "" || state.ActiveOutbox == out.Name {
+		return false, nil
+	}
+	var active dnsv1.DNSTransportOutbox
+	if err := s.Get(ctx, client.ObjectKey{Namespace: out.Namespace, Name: state.ActiveOutbox}, &active); apierrors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return active.Spec.ResourceUID == out.Spec.ResourceUID && model.Compare(uint64(active.Spec.WriterEpoch), uint64(active.Spec.Revision), uint64(out.Spec.WriterEpoch), uint64(out.Spec.Revision)) > 0, nil
 }
 
 func settled(out *dnsv1.DNSTransportOutbox) bool {

@@ -536,6 +536,14 @@ func VerifyManifest(m PublicationManifest, chunks []PublicationChunk) ([]byte, e
 	return payload, nil
 }
 
+// NextWriterEpoch is the epoch a writer takes when it creates or takes over a
+// lease: above the stored one and at least the current Unix time, so a writer
+// whose lease record was lost, or moved between stores, still outranks every
+// fence agents hold.
+func NextWriterEpoch(stored uint64, now time.Time) uint64 {
+	return max(stored+1, uint64(max(now.Unix(), 0)))
+}
+
 func Compare(epoch, revision, currentEpoch, currentRevision uint64) int {
 	if epoch < currentEpoch || (epoch == currentEpoch && revision < currentRevision) {
 		return -1

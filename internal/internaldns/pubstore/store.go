@@ -60,6 +60,18 @@ var (
 	storedKinds   = []*storedKind{ownershipKind, manifestKind, chunkKind, outboxKind, shardKind}
 )
 
+// WatchFilter names the keys the store's index follows. Chunks stay out of it:
+// they are read only by name.
+func WatchFilter() []string {
+	var filter []string
+	for _, kind := range storedKinds {
+		if kind.indexed {
+			filter = append(filter, kind.prefix+">")
+		}
+	}
+	return filter
+}
+
 func dnsResource(resource string) schema.GroupResource {
 	return schema.GroupResource{Group: dnsv1.GroupVersion.Group, Resource: resource}
 }
@@ -193,6 +205,9 @@ func kindForKey(key string) *storedKind {
 	return nil
 }
 
+// apply records a bucket value in the index. A settled outbox is kept without
+// its payload, because nothing sends it again; a listed settled outbox
+// therefore carries no payload.
 func (s *PublicationStore) apply(key string, revision uint64, value []byte) {
 	kind := kindForKey(key)
 	if kind == nil || !kind.indexed {
@@ -204,10 +219,17 @@ func (s *PublicationStore) apply(key string, revision uint64, value []byte) {
 		if err := decodeStored(value, revision, obj); err != nil {
 			return
 		}
+		if out, ok := obj.(*dnsv1.DNSTransportOutbox); ok && settled(out) {
+			out.Spec.Payload = nil
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if current, ok := s.index[key]; ok && current.revision >= revision {
+		return
+	}
+	if obj == nil {
+		delete(s.index, key)
 		return
 	}
 	s.index[key] = indexed{revision: revision, obj: obj}
@@ -264,6 +286,13 @@ func (s *PublicationStore) List(ctx context.Context, list client.ObjectList, opt
 	}
 	lo := &client.ListOptions{}
 	lo.ApplyOptions(opts)
+	if lo.FieldSelector != nil {
+		for _, r := range lo.FieldSelector.Requirements() {
+			if _, ok := storedFields(kind.newObj())[r.Field]; !ok {
+				return apierrors.NewBadRequest(fmt.Sprintf("field selector %q is not supported for %s", r.Field, kind.resource))
+			}
+		}
+	}
 	select {
 	case <-s.synced:
 	case <-ctx.Done():
@@ -271,8 +300,8 @@ func (s *PublicationStore) List(ctx context.Context, list client.ObjectList, opt
 	}
 	s.mu.RLock()
 	keys := make([]string, 0, len(s.index))
-	for k, entry := range s.index {
-		if entry.obj != nil && strings.HasPrefix(k, kind.prefix) {
+	for k := range s.index {
+		if strings.HasPrefix(k, kind.prefix) {
 			keys = append(keys, k)
 		}
 	}
@@ -320,7 +349,6 @@ func (s *PublicationStore) Create(ctx context.Context, obj client.Object, opts .
 	next.SetCreationTimestamp(metav1.NewTime(s.now().UTC()))
 	next.SetGeneration(1)
 	next.SetManagedFields(nil)
-	RaiseWriterEpoch(next, true, s.now())
 	value, err := json.Marshal(next)
 	if err != nil {
 		return err
@@ -341,12 +369,10 @@ func (s *PublicationStore) Update(ctx context.Context, obj client.Object, opts .
 	if kind == nil {
 		return s.Client.Update(ctx, obj, opts...)
 	}
-	if obj.GetResourceVersion() == "" {
-		return apierrors.NewBadRequest("resourceVersion must be specified for an update")
-	}
+	conditional := obj.GetResourceVersion() != ""
 	return s.write(ctx, kind, obj, "", func(map[string]any) (map[string]any, bool, error) {
 		desired, err := toMap(obj)
-		return desired, true, err
+		return desired, conditional, err
 	})
 }
 
@@ -442,7 +468,6 @@ func (s *PublicationStore) write(ctx context.Context, kind *storedKind, obj clie
 		if specChanged(stored, desired) {
 			desired.SetGeneration(stored.GetGeneration() + 1)
 		}
-		RaiseWriterEpoch(desired, false, s.now())
 		out, err := json.Marshal(desired)
 		if err != nil {
 			return err
@@ -544,8 +569,8 @@ func (s *PublicationStore) Delete(ctx context.Context, obj client.Object, opts .
 		return err
 	}
 	s.mu.Lock()
-	if current, ok := s.index[k]; !ok || current.revision <= revision {
-		s.index[k] = indexed{revision: revision + 1}
+	if current, ok := s.index[k]; ok && current.revision <= revision {
+		delete(s.index, k)
 	}
 	s.mu.Unlock()
 	return nil
@@ -593,12 +618,10 @@ func (w *storeStatus) Update(ctx context.Context, obj client.Object, opts ...cli
 	if !kind.status {
 		return apierrors.NewNotFound(kind.resource, obj.GetName()+"/status")
 	}
-	if obj.GetResourceVersion() == "" {
-		return apierrors.NewBadRequest("resourceVersion must be specified for an update")
-	}
+	conditional := obj.GetResourceVersion() != ""
 	return w.store.write(ctx, kind, obj, "status", func(map[string]any) (map[string]any, bool, error) {
 		desired, err := toMap(obj)
-		return desired, true, err
+		return desired, conditional, err
 	})
 }
 

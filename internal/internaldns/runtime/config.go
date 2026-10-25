@@ -229,13 +229,8 @@ func (c *Config) Validate(role string) error {
 	if err := validateKubeAPI("platformKubeAPI", c.PlatformKubeAPI); err != nil {
 		return err
 	}
-	if p := c.PublicationStore; p != nil {
-		if p.Region == "" || !validBucketName(p.Bucket) || p.Replicas < 0 {
-			return errors.New("publicationStore requires a region, a bucket name of letters, digits, - and _, and non-negative replicas")
-		}
-		if _, _, _, err := c.transportForRegion(p.Region); err != nil {
-			return fmt.Errorf("publicationStore: %w", err)
-		}
+	if err := c.validatePublicationStore(); err != nil {
+		return err
 	}
 	for i, suffix := range c.ManagedDomainSuffixes {
 		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
@@ -437,6 +432,20 @@ func (c Config) regionalPrefixes() (map[string]string, error) {
 		pools[region] = parsed
 	}
 	return result, nil
+}
+
+func (c Config) validatePublicationStore() error {
+	p := c.PublicationStore
+	if p == nil {
+		return nil
+	}
+	if p.Region == "" || !validBucketName(p.Bucket) || p.Replicas < 0 {
+		return errors.New("publicationStore requires a region, a bucket name of letters, digits, - and _, and non-negative replicas")
+	}
+	if _, _, _, err := c.transportForRegion(p.Region); err != nil {
+		return fmt.Errorf("publicationStore: %w", err)
+	}
+	return nil
 }
 
 func validBucketName(s string) bool {

@@ -67,3 +67,16 @@ func (k instrumentedKV) Delete(ctx context.Context, key string, revision uint64)
 	observe("delete", started, err)
 	return err
 }
+
+func (k instrumentedKV) PurgeDeletes(ctx context.Context, age time.Duration) error {
+	purger, ok := k.KV.(interface {
+		PurgeDeletes(context.Context, time.Duration) error
+	})
+	if !ok {
+		return nil
+	}
+	started := time.Now()
+	err := purger.PurgeDeletes(ctx, age)
+	observe("purge", started, err)
+	return err
+}

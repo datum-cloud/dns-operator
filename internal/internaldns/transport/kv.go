@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -25,17 +26,28 @@ type KVEvent struct {
 
 // KVBucket is a compare-and-swap key-value bucket. Revisions increase across the
 // whole bucket, so a newer revision of a key always compares greater.
-type KVBucket struct{ kv jetstream.KeyValue }
+type KVBucket struct {
+	kv     jetstream.KeyValue
+	filter []string
+}
 
-func (j *JetStream) KeyValueBucket(ctx context.Context, bucket string, replicas int) (*KVBucket, error) {
+// KeyValueBucket opens bucket, creating it with replicas only when it does not
+// exist, so a restart never rewrites the configuration of a live bucket.
+func (j *JetStream) KeyValueBucket(ctx context.Context, bucket string, replicas int, filter []string) (*KVBucket, error) {
 	if bucket == "" {
 		return nil, errors.New("bucket is required")
 	}
-	kv, err := j.js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Description: "internal DNS control-plane publication state", History: 1, Storage: jetstream.FileStorage, Replicas: replicas})
-	if err != nil {
-		return nil, fmt.Errorf("ensure bucket %q: %w", bucket, err)
+	kv, err := j.js.KeyValue(ctx, bucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		kv, err = j.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Description: "internal DNS control-plane publication state", History: 1, Storage: jetstream.FileStorage, Replicas: replicas})
+		if errors.Is(err, jetstream.ErrBucketExists) {
+			kv, err = j.js.KeyValue(ctx, bucket)
+		}
 	}
-	return &KVBucket{kv: kv}, nil
+	if err != nil {
+		return nil, fmt.Errorf("open bucket %q: %w", bucket, err)
+	}
+	return &KVBucket{kv: kv, filter: filter}, nil
 }
 
 func (b *KVBucket) Get(ctx context.Context, key string) ([]byte, uint64, error) {
@@ -73,10 +85,22 @@ func (b *KVBucket) Delete(ctx context.Context, key string, revision uint64) erro
 	return err
 }
 
-// Watch sends every current value, then nil once they are all delivered, then
-// each later change, until ctx ends.
+// PurgeDeletes removes deletion markers older than age.
+func (b *KVBucket) PurgeDeletes(ctx context.Context, age time.Duration) error {
+	return b.kv.PurgeDeletes(ctx, jetstream.DeleteMarkersOlderThan(age))
+}
+
+// Watch sends every current value of the keys the bucket was opened to
+// follow (all keys when no filter was given), then nil once they are all
+// delivered, then each later change, until ctx ends.
 func (b *KVBucket) Watch(ctx context.Context) (<-chan *KVEvent, error) {
-	w, err := b.kv.WatchAll(ctx)
+	var w jetstream.KeyWatcher
+	var err error
+	if len(b.filter) > 0 {
+		w, err = b.kv.WatchFiltered(ctx, b.filter)
+	} else {
+		w, err = b.kv.WatchAll(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}

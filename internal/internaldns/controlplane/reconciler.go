@@ -53,6 +53,9 @@ type ReconcilerOptions struct {
 	// pass into zone keys that record, registration and contribution changes
 	// queue directly, so a record change does not wait for a project pass.
 	PerZoneReconcile bool
+	// ZoneSlots, when set, is shared by every project reconciler in a process
+	// and bounds how many zone keys compile at once across all projects.
+	ZoneSlots chan struct{}
 }
 
 type ServingRegion struct {
@@ -184,8 +187,8 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 }
 
-// zoneWorkers bounds how many keys of one project run at once. Keys never run
-// concurrently with themselves, so the project pass keeps a worker of its own.
+// zoneWorkers bounds how many keys of one project run at once, the project
+// pass included. A key never runs on two workers at once.
 const zoneWorkers = 4
 
 // setupPerZone watches record inputs per zone. The project pass keeps every

@@ -139,7 +139,7 @@ func TestPerZoneRecordChangePublishesWithoutAProjectPass(t *testing.T) {
 	}
 }
 
-func TestPerZoneContributionKeyFindsItsZone(t *testing.T) {
+func TestPerZoneContributionKeyForwardsToItsZone(t *testing.T) {
 	h, _ := newPerZoneHarness(t)
 	h.settle()
 	var contribs dnsv1alpha1.DNSRecordContributionList
@@ -150,8 +150,15 @@ func TestPerZoneContributionKeyFindsItsZone(t *testing.T) {
 	if len(reqs) != 1 {
 		t.Fatalf("contribution keys %v", reqs)
 	}
-	if res := h.run(reqs[0].Name); res.RequeueAfter < 0 {
-		t.Fatalf("unexpected result %v", res)
+	for len(h.r.zoneQueue) > 0 {
+		<-h.r.zoneQueue
+	}
+	h.run(reqs[0].Name)
+	if len(h.r.zoneQueue) != 1 {
+		t.Fatalf("registration key queued %d zone keys, want 1", len(h.r.zoneQueue))
+	}
+	if e := <-h.r.zoneQueue; e.Object.GetName() != "private" {
+		t.Fatalf("registration key queued zone %q", e.Object.GetName())
 	}
 }
 

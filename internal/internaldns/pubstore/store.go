@@ -110,10 +110,10 @@ type indexed struct {
 // contract. Lists are served from an index fed by the bucket watches and by
 // this client's own writes.
 //
-// Each region may have its own bucket. A record labelled with a region lives in
-// that region's bucket, so publishing to a region needs only that region's
-// broker; any other record lives in the home bucket. Record names are unique
-// across buckets.
+// Each region may have its own bucket. Shard leases and serving outboxes
+// labelled with a region live in that region's bucket; every other record,
+// including zone publications and their outboxes, lives in the home bucket.
+// Record names are unique across buckets.
 type PublicationStore struct {
 	client.Client
 	home    string
@@ -189,8 +189,9 @@ func (s *PublicationStore) bucketFor(kind *storedKind, obj client.Object) string
 
 // locate finds the bucket holding key. Zone leases, manifests and chunks are
 // only ever in the home bucket. A regional record is where the index says;
-// one the index does not know yet is looked up in every bucket at once, and is
-// found as long as the bucket holding it answers.
+// one the index does not know yet is looked up at once in every bucket in
+// scope (all of them, or a view's home and region), and is found as long as the
+// bucket holding it answers.
 func (s *PublicationStore) locate(ctx context.Context, kind *storedKind, key string) (string, []byte, uint64, error) {
 	if !regional(kind) {
 		value, revision, err := s.buckets[s.home].Get(ctx, key)

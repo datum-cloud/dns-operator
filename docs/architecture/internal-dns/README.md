@@ -293,8 +293,9 @@ live on the broker of the region they serve, and each region's planner, outbox
 and acknowledgement loops look records up only in that region's bucket and the
 home bucket, so another region's broker never holds them up. Zone leases,
 manifests, chunks and their outboxes live together on the broker of
-`publicationStore.region`, so committing a zone needs only that broker, until
-zone publication has one writer per zone and region. Regions that share a
+`publicationStore.region`, so committing a zone needs only that broker, and
+delivering it to any region also needs that broker, until zone publication has
+one writer per zone and region. Regions that share a
 broker must name it with the same URL. Cleanup waits until every region's
 bucket has loaded.
 

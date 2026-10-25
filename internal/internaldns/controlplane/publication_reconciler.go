@@ -39,11 +39,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	}()
 	timer := newPhaseTimer(ctx)
 
-	if err := r.reconcileResolverContexts(ctx, ns, now); err != nil {
-		return ctrl.Result{}, err
-	}
-	timer.done("contexts")
-
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
 	var regs dnsv1alpha1.DNSRegistrationList
@@ -56,6 +51,19 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		}
 	}
 	timer.done("list")
+
+	listed := newListedManagedObjects(zones.Items, assocs.Items)
+	if err := r.reconcileResolverContexts(withListedManagedObjects(ctx, listed), ns, now); err != nil {
+		return ctrl.Result{}, err
+	}
+	if listed.changed {
+		for _, item := range []client.ObjectList{&zones, &assocs} {
+			if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+	timer.done("contexts")
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
 	for i := range zones.Items {
 		z := &zones.Items[i]

@@ -1,0 +1,24 @@
+name: Test Internal DNS Performance Export
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-internal-dns-perf.yaml'
+      - 'test/internaldns/perf/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-internal-dns-perf.yaml'
+      - 'test/internaldns/perf/**'
+
+jobs:
+  test-export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax
+        run: bash -n test/internaldns/perf/run.sh test/internaldns/perf/report.sh
+      - name: Verify export from raw generator fixtures
+        run: python3 -m unittest discover -s test/internaldns/perf -p 'test_report.py'
+      - name: Verify k6 scenario metadata
+        run: node test/internaldns/perf/test-metadata.cjs

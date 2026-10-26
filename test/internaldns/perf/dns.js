@@ -2,7 +2,7 @@
 // instance against its VPC resolver. See README.md for the knobs.
 import dns from 'k6/x/dns';
 import { sleep } from 'k6';
-import { Counter, Rate, Trend } from 'k6/metrics';
+import { Counter, Gauge, Rate, Trend } from 'k6/metrics';
 import exec from 'k6/execution';
 
 const env = (k, d) => (__ENV[k] === undefined || __ENV[k] === '' ? d : __ENV[k]);
@@ -40,6 +40,10 @@ const PROPAGATION_POLL_MS = int('PROPAGATION_POLL_MS', 100);
 
 const answered = new Rate('idns_expected');
 const queryMs = new Trend('idns_query_ms', true);
+// One marker per VU/scenario preserves the actual executor start in CSV.
+// Reporters use it to align offered rates when generators start apart.
+const scenarioStartMs = new Gauge('idns_scenario_start_ms');
+const startedScenarios = new Set();
 const failures = new Counter('idns_failures');
 // One counter per failure reason so the summary can break failures down.
 const REASONS = ['NonExistingDomain', 'ServerFailure', 'Refused', 'Timeout', 'Answered', 'Empty', 'Other'];
@@ -146,6 +150,10 @@ export async function setup() {
 const pick = (names) => names[exec.scenario.iterationInTest % names.length];
 
 async function query(kind, name, type, expectNX) {
+  if (!startedScenarios.has(kind)) {
+    scenarioStartMs.add(exec.scenario.startTime, { kind });
+    startedScenarios.add(kind);
+  }
   const stage = stageOf[kind]();
   const start = Date.now();
   let ok = false;
@@ -226,6 +234,7 @@ function stageLines(data, kind) {
 }
 
 export function handleSummary(data) {
+  data.idns = { version: 1, resolver: RESOLVER, scenarios };
   const lines = [`internal DNS load test against ${RESOLVER}`];
   for (const kind of Object.keys(scenarios)) {
     if (kind === 'propagation') continue;

@@ -8,14 +8,17 @@
 #   run.sh down        delete everything run.sh created
 #   run.sh analyze [DIR]
 #                      per-step and per-second stats from a run's query records
+#   run.sh report DIR [SCENARIO]
+#                      analyze and export a completed run to dashboard metrics
 #
 # See README.md for the variables each command reads.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [[ ${1:-} == analyze ]]; then
+if [[ ${1:-} == analyze || ${1:-} == report ]]; then
+  command=$1
   shift
-  exec "$here/analyze.sh" "$@"
+  exec "$here/$command.sh" "$@"
 fi
 
 : "${PROJECT:?set PROJECT to the Datum Cloud project to test in}"
@@ -85,7 +88,12 @@ run() {
   local -a pods=() pids=()
   names=$(instances idns-perf-target "$TARGETS" | sed 's/$/.datum.internal/' | paste -sd, -)
   while IFS= read -r pod; do pods+=("$pod"); done < <(instances idns-perf-k6 "$GENERATORS")
+  if [[ -e "$RESULTS" ]]; then
+    echo "refusing to reuse results directory $RESULTS; choose a new RESULTS path" >&2
+    return 1
+  fi
   mkdir -p "$RESULTS"
+  printf '%s\n' "${pods[@]}" >"$RESULTS/generators.txt"
   for pod in "${pods[@]}"; do
     datumctl compute exec --project "$PROJECT" "$pod" -c k6 -- \
       env PRIVATE_NAMES="$names" DURATION="$DURATION" SUMMARY_PATH=/tmp/k6-summary.json K6_CSV_TIME_FORMAT=unix_milli "$@" \
@@ -121,7 +129,13 @@ run() {
   done
   echo "Results in $RESULTS"
   if ls "$RESULTS"/*.csv.gz >/dev/null 2>&1; then
-    "$here/analyze.sh" "$RESULTS" || failed=1
+    if "$here/analyze.sh" "$RESULTS"; then
+      if [[ -n "${IMPORT_URL:-}" ]]; then
+        python3 "$here/report.py" "$RESULTS" "${SCENARIO:-query}" || failed=1
+      fi
+    else
+      failed=1
+    fi
   fi
   return "$failed"
 }

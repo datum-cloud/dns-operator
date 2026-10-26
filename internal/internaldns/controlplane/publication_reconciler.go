@@ -563,7 +563,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 	key := client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}
 	err := r.Get(ctx, key, o)
 	if apierrors.IsNotFound(err) {
-		o = &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: key.Namespace}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: z.UID, HolderIdentity: r.Options.Identity, WriterEpoch: 1, NextRevision: 1, LeaseUntil: metav1.NewTime(now.Add(r.Options.LeaseDuration))}}
+		o = &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: key.Namespace}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: z.UID, HolderIdentity: r.Options.Identity, WriterEpoch: int64(model.NextWriterEpoch(0, now)), NextRevision: 1, LeaseUntil: metav1.NewTime(now.Add(r.Options.LeaseDuration))}}
 		if err := r.Create(ctx, o); err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, time.Time{}, err
 		}
@@ -581,7 +581,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 		}
 		base := o.DeepCopy()
 		o.Spec.HolderIdentity = r.Options.Identity
-		o.Spec.WriterEpoch++
+		o.Spec.WriterEpoch = int64(model.NextWriterEpoch(uint64(o.Spec.WriterEpoch), now))
 		o.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
 		if err := r.Patch(ctx, o, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return nil, time.Time{}, err

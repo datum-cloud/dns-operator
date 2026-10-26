@@ -106,5 +106,5 @@ type DNSZoneList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSZone{}, &DNSZoneList{})
+	register(&DNSZone{}, &DNSZoneList{})
 }

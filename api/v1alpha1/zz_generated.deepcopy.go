@@ -9,7 +9,7 @@ package v1alpha1
 import (
 	"go.datum.net/network-services-operator/api/v1alpha"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
-	runtime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 )
 

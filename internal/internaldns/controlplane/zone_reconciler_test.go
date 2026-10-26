@@ -190,3 +190,36 @@ func TestPerZoneWaitsForAssociationPinsAtTheZoneGeneration(t *testing.T) {
 		t.Fatal("zone key published while its association was pinned to an older zone generation")
 	}
 }
+
+func TestPerZoneProjectPassQueuesOnlyChangedZones(t *testing.T) {
+	h, zone := newPerZoneHarness(t)
+	h.settle()
+	for len(h.r.zoneQueue) > 0 {
+		<-h.r.zoneQueue
+	}
+	h.run(projectQueueKey)
+	if n := len(h.r.zoneQueue); n != 0 {
+		t.Fatalf("an unchanged project pass queued %d zones", n)
+	}
+
+	var current dnsv1alpha1.DNSZone
+	if err := h.c.Get(h.ctx, client.ObjectKeyFromObject(zone), &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Generation++
+	if err := h.c.Update(h.ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	h.run(projectQueueKey)
+	if n := len(h.r.zoneQueue); n != 1 {
+		t.Fatalf("a changed zone was queued %d times, want once", n)
+	}
+	<-h.r.zoneQueue
+
+	later := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC).Add(zoneResync)
+	h.r.Options.Now = func() time.Time { return later }
+	h.run(projectQueueKey)
+	if n := len(h.r.zoneQueue); n != 1 {
+		t.Fatalf("resync queued %d zones, want the unchanged zone once", n)
+	}
+}

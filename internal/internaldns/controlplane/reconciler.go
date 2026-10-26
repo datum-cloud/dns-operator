@@ -5,6 +5,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -115,6 +116,9 @@ type Reconciler struct {
 	Options   ReconcilerOptions
 
 	zoneQueue chan event.GenericEvent
+	// queuedZones maps a zone UID to the project-wide inputs it was last
+	// queued with.
+	queuedZones sync.Map
 }
 
 func (r *Reconciler) sourceReader() client.Reader {

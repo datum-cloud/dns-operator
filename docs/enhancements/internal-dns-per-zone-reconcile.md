@@ -155,16 +155,17 @@ read path as it is:
 - Built: zone keys for record sets, registrations (a new watch) and
   contributions, queued after 75 ms; contribution events forward to their
   registration's zone key, so a zone compiles on one worker at a time; the
-  project pass renews leases and hands every held zone to its key; a zone key
-  waits while any of its associations is pinned against an older zone
-  generation; a process-wide limit on concurrent zone compiles.
-- Not yet built: reads from the watch cache and the fence and access re-read
-  checks that go with them (zone keys still read from the API server, as the
-  pass does); optimistic locks on input status patches; the ACK sink queuing
-  zones; the shadow compile on resync. Until reads move to the cache, each zone
-  key lists its namespace's associations, registrations, contributions and
-  record sets, so the project pass queuing every held zone costs one set of
-  lists per zone per half lease.
+  project pass renews leases and queues a held zone only when its project-wide
+  inputs (the zone, the writer epoch, its associations, the resolver bindings)
+  changed, or every five minutes; a zone key waits while any of its
+  associations is pinned against an older zone generation; a process-wide
+  limit on concurrent zone compiles.
+- Not yet built: reads from the watch cache. Each zone key still lists its
+  namespace's inputs live. Reading them from the cache safely needs one
+  consistent source for registrations, contributions and record sets, which
+  the incremental compile's in-memory zone state provides. Also not built:
+  optimistic locks on input status patches, the ACK sink queuing zones, and
+  the shadow compile on resync.
 
 ## Regions
 

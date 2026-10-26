@@ -154,7 +154,12 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		if r.Options.PerZoneReconcile {
-			r.queueZone(ctx, z)
+			bindings, err := r.zoneLoopBindings(ctx)
+			if err != nil {
+				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
+				continue
+			}
+			r.queueZoneIfChanged(ctx, z, zoneProjectInputs(z, lease.own, assocs.Items, bindings.Items), now)
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)

@@ -139,7 +139,7 @@ func bindingInputs(bindings []dnsv1alpha1.DNSResolverBinding) string {
 	h := sha256.New()
 	for i := range bindings {
 		b := &bindings[i]
-		fmt.Fprintf(h, "binding %s %d %v\n", b.UID, b.Generation, b.DeletionTimestamp)
+		_, _ = fmt.Fprintf(h, "binding %s %d %v\n", b.UID, b.Generation, b.DeletionTimestamp)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -150,11 +150,11 @@ func bindingInputs(bindings []dnsv1alpha1.DNSResolverBinding) string {
 // events queue the zone.
 func zoneProjectInputs(z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, bindings string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "zone %s %d %v %v epoch %d bindings %s\n", z.UID, z.Generation, z.DeletionTimestamp, z.Finalizers, own.Spec.WriterEpoch, bindings)
+	_, _ = fmt.Fprintf(h, "zone %s %d %v %v epoch %d bindings %s\n", z.UID, z.Generation, z.DeletionTimestamp, z.Finalizers, own.Spec.WriterEpoch, bindings)
 	for i := range assocs {
 		a := &assocs[i]
 		if a.Spec.DNSZoneRef.Name == z.Name {
-			fmt.Fprintf(h, "assoc %s %s\n", a.UID, a.ResourceVersion)
+			_, _ = fmt.Fprintf(h, "assoc %s %s\n", a.UID, a.ResourceVersion)
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))

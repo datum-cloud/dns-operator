@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -127,6 +128,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	identity := holderIdentity()
+	// stopping is set when the process is told to exit, so reconcilers stop
+	// taking zone leases before the leases are released.
+	var stopping atomic.Bool
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
 	zoneSlots := make(chan struct{}, maxConcurrentZoneCompiles)
@@ -168,7 +172,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots, OnPublished: outboxWakes.notify,
+				ProjectUID: project.ProjectUID, PassSlots: passSlots, OnPublished: outboxWakes.notify, Stopping: stopping.Load,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -295,13 +299,48 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 
 	select {
 	case <-ctx.Done():
+		stopping.Store(true)
+		releaseZoneLeases(platformClient, cfg.PlatformNamespace, identity)
 		return nil
 	case err := <-errCh:
+		stopping.Store(true)
+		releaseZoneLeases(platformClient, cfg.PlatformNamespace, identity)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return err
 	}
+}
+
+// leaseReleaseTimeout bounds lease release at shutdown, well inside the
+// default 30 s termination grace period.
+const leaseReleaseTimeout = 10 * time.Second
+
+// leaseReleaseSettle lets compiles that were already past their lease check
+// finish before a second release pass catches any lease they extended.
+const leaseReleaseSettle = 2 * time.Second
+
+// releaseZoneLeases hands this process's zone leases over on exit, so the
+// next control plane publishes at once instead of after a lease duration.
+func releaseZoneLeases(c client.Client, namespace, identity string) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+	defer cancel()
+	log := ctrl.Log.WithName("internal-dns-lease-release")
+	total := 0
+	for pass := 0; pass < 2; pass++ {
+		if pass > 0 {
+			select {
+			case <-time.After(leaseReleaseSettle):
+			case <-ctx.Done():
+			}
+		}
+		released, err := controlplane.ReleaseOwnership(ctx, c, namespace, identity, time.Now().UTC())
+		total += released
+		if err != nil {
+			log.Error(err, "release zone leases")
+		}
+	}
+	log.Info("released zone leases", "count", total)
 }
 
 // maxConcurrentProjectPasses bounds how many project passes one control-plane

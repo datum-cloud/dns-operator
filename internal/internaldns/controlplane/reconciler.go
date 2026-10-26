@@ -57,6 +57,9 @@ type ReconcilerOptions struct {
 	// ZoneSlots, when set, is shared by every project reconciler in a process
 	// and bounds how many zone keys compile at once across all projects.
 	ZoneSlots chan struct{}
+	// Stopping, when set and true, stops the reconciler taking or renewing
+	// zone leases so the process can release them before it exits.
+	Stopping func() bool
 }
 
 type ServingRegion struct {

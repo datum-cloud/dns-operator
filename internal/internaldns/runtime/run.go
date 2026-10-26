@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -126,6 +127,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	identity := holderIdentity()
+	// stopping is set when the process is told to exit, so reconcilers stop
+	// taking zone leases before the leases are released.
+	var stopping atomic.Bool
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
 	// Each project manager lists and watches its project's DNS resources as it
@@ -163,7 +167,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots,
+				ProjectUID: project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -273,9 +277,11 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	sinks := map[string]*platform.AckSink{}
+	shardPlanners := make([]*platform.Planner, 0, len(planners))
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
-		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc}
+		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc, Stopping: stopping.Load}
+		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
@@ -288,13 +294,59 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 
 	select {
 	case <-ctx.Done():
+		stopping.Store(true)
+		releaseLeases(platformClient, cfg.PlatformNamespace, identity, shardPlanners)
 		return nil
 	case err := <-errCh:
+		stopping.Store(true)
+		releaseLeases(platformClient, cfg.PlatformNamespace, identity, shardPlanners)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return err
 	}
+}
+
+// leaseReleaseTimeout bounds lease release at shutdown, well inside the
+// default 30 s termination grace period.
+const leaseReleaseTimeout = 10 * time.Second
+
+// leaseReleaseSettle lets compiles that were already past their lease check
+// finish before a second release pass catches any lease they extended.
+const leaseReleaseSettle = 2 * time.Second
+
+// releaseLeases hands this process's zone and shard leases over on exit, so
+// the next control plane publishes and plans at once instead of after a lease
+// duration.
+func releaseLeases(c client.Client, namespace, identity string, planners []*platform.Planner) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+	defer cancel()
+	log := ctrl.Log.WithName("internal-dns-lease-release")
+	zones, skipped, shards := 0, 0, 0
+	for pass := 0; pass < 2; pass++ {
+		if pass > 0 {
+			select {
+			case <-time.After(leaseReleaseSettle):
+			case <-ctx.Done():
+			}
+		}
+		released, conflicted, err := controlplane.ReleaseOwnership(ctx, c, namespace, identity, time.Now().UTC())
+		zones += released
+		skipped = conflicted
+		if err != nil {
+			log.Error(err, "release zone leases")
+		}
+		for _, p := range planners {
+			ok, err := p.Release(ctx, time.Now().UTC())
+			if err != nil {
+				log.Error(err, "release shard lease", "region", p.Config.Region, "shard", p.Config.Shard)
+			}
+			if ok {
+				shards++
+			}
+		}
+	}
+	log.Info("released leases", "zones", zones, "shards", shards, "zonesSkippedOnLastPass", skipped)
 }
 
 // maxConcurrentProjectPasses bounds how many project passes one control-plane

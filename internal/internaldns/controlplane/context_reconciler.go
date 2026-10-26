@@ -191,7 +191,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		if !valid {
 			status, reason, msg = metav1.ConditionFalse, "InvalidIdentity", "consumerID is required and context must be live"
 			if duplicate {
-				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
+				reason, msg = dnsValueDuplicateConsumerID, "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
 				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
@@ -540,7 +540,7 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return false, nil
 	}
 	if ready.Status != metav1.ConditionTrue {
-		return ready.Reason == "InvalidIdentity" || ready.Reason == "DuplicateConsumerID" || ready.Reason == "InvalidManagedDomain", nil
+		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == "InvalidManagedDomain", nil
 	}
 	if access.Generation < binding.Spec.Source.AccessBindingRef.Generation {
 		return false, nil

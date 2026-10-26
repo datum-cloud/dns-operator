@@ -190,3 +190,74 @@ func TestPerZoneWaitsForAssociationPinsAtTheZoneGeneration(t *testing.T) {
 		t.Fatal("zone key published while its association was pinned to an older zone generation")
 	}
 }
+
+func TestReadsBehindComparesCachedGenerationsWithPublishedFences(t *testing.T) {
+	previous := &PublicationPlan{
+		Registrations: []RegistrationFence{{UID: "reg", Generation: 3}},
+		Contributions: []ContributionFence{{UID: "contrib", Generation: 5}},
+	}
+	reg := func(g int64) []dnsv1alpha1.DNSRegistration {
+		return []dnsv1alpha1.DNSRegistration{{ObjectMeta: metav1.ObjectMeta{UID: "reg", Generation: g}}}
+	}
+	contrib := func(g int64) []dnsv1alpha1.DNSRecordContribution {
+		return []dnsv1alpha1.DNSRecordContribution{{ObjectMeta: metav1.ObjectMeta{UID: "contrib", Generation: g}}}
+	}
+	for _, tt := range []struct {
+		name   string
+		regs   []dnsv1alpha1.DNSRegistration
+		cs     []dnsv1alpha1.DNSRecordContribution
+		behind bool
+	}{
+		{"current", reg(3), contrib(5), false},
+		{"newer", reg(4), contrib(6), false},
+		{"registration behind", reg(2), contrib(5), true},
+		{"contribution behind", reg(3), contrib(4), true},
+		{"deleted since", nil, nil, false},
+	} {
+		if got := readsBehind(previous, tt.regs, tt.cs); got != tt.behind {
+			t.Errorf("%s: behind=%v, want %v", tt.name, got, tt.behind)
+		}
+	}
+	if readsBehind(nil, reg(1), contrib(1)) {
+		t.Error("a zone with no publication cannot be behind it")
+	}
+}
+
+type staleContributions struct {
+	client.Reader
+}
+
+func (s staleContributions) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := s.Reader.List(ctx, list, opts...); err != nil {
+		return err
+	}
+	if cs, ok := list.(*dnsv1alpha1.DNSRecordContributionList); ok {
+		for i := range cs.Items {
+			cs.Items[i].Generation--
+		}
+	}
+	return nil
+}
+
+func TestPerZoneWaitsForACacheBehindThePublication(t *testing.T) {
+	h, zone := newPerZoneHarness(t)
+	h.settle()
+	var owners dnsv1alpha1.DNSPublicationOwnershipList
+	if err := h.c.List(h.ctx, &owners); err != nil || len(owners.Items) != 1 {
+		t.Fatalf("ownership: %v", err)
+	}
+	published := owners.Items[0].Spec.ActiveManifestName
+
+	h.r.ZoneReader = staleContributions{Reader: h.c}
+	if res := h.run(zoneQueuePrefix + zone.Name); res.RequeueAfter != cacheBehindRetry {
+		t.Fatalf("zone key compiled from a cache older than its publication: %v", res)
+	}
+	if err := h.c.List(h.ctx, &owners); err != nil {
+		t.Fatal(err)
+	}
+	if owners.Items[0].Spec.ActiveManifestName != published {
+		t.Fatal("zone key published from a stale cache")
+	}
+	h.r.ZoneReader = h.c
+	h.run(zoneQueuePrefix + zone.Name)
+}

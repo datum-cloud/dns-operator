@@ -5,6 +5,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -115,6 +116,12 @@ type Reconciler struct {
 	Options   ReconcilerOptions
 
 	zoneQueue chan event.GenericEvent
+	// ZoneReader serves zone keys' reads of associations, registrations,
+	// contributions and record sets, normally the project's watch cache.
+	ZoneReader client.Reader
+	// identityVerifiedAt is the unix nano time zone keys last saw the project
+	// identity verified.
+	identityVerifiedAt atomic.Int64
 }
 
 func (r *Reconciler) sourceReader() client.Reader {
@@ -129,10 +136,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if r.Options.ProjectUID == "" {
 		return ctrl.Result{}, errors.New("projectUID is required")
 	}
-	if r.Options.VerifyProjectIdentity != nil {
-		if err := r.Options.VerifyProjectIdentity(ctx); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.verifyIdentity(ctx, req.Name == projectQueueKey); err != nil {
+		return ctrl.Result{}, err
 	}
 	ns := r.Options.ProjectNamespace
 	if ns == "" {
@@ -162,6 +167,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		passPhaseDuration.WithLabelValues("wait for slot").Observe(time.Since(waited).Seconds())
 	}
 	return r.reconcileProject(ctx, ns)
+}
+
+// identityReuse is how long a zone key relies on an earlier verification of
+// the project identity. The project pass verifies on every pass.
+const identityReuse = 10 * time.Second
+
+func (r *Reconciler) verifyIdentity(ctx context.Context, always bool) error {
+	if r.Options.VerifyProjectIdentity == nil {
+		return nil
+	}
+	if !always && time.Since(time.Unix(0, r.identityVerifiedAt.Load())) < identityReuse {
+		return nil
+	}
+	if err := r.Options.VerifyProjectIdentity(ctx); err != nil {
+		r.identityVerifiedAt.Store(0)
+		return err
+	}
+	r.identityVerifiedAt.Store(time.Now().UnixNano())
+	return nil
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -195,6 +219,9 @@ const zoneWorkers = 4
 // project-wide input and hands zones to the zone keys through zoneQueue.
 func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler.EventHandler) error {
 	r.zoneQueue = make(chan event.GenericEvent, 1024)
+	if r.ZoneReader == nil {
+		r.ZoneReader = mgr.GetCache()
+	}
 	generation := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	return ctrl.NewControllerManagedBy(mgr).Named(name).
 		WithOptions(controller.Options{RateLimiter: projectRateLimiter(), MaxConcurrentReconciles: zoneWorkers}).

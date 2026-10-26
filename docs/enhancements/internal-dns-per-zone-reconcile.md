@@ -158,13 +158,15 @@ read path as it is:
   project pass renews leases and hands every held zone to its key; a zone key
   waits while any of its associations is pinned against an older zone
   generation; a process-wide limit on concurrent zone compiles.
-- Not yet built: reads from the watch cache and the fence and access re-read
-  checks that go with them (zone keys still read from the API server, as the
-  pass does); optimistic locks on input status patches; the ACK sink queuing
-  zones; the shadow compile on resync. Until reads move to the cache, each zone
-  key lists its namespace's associations, registrations, contributions and
-  record sets, so the project pass queuing every held zone costs one set of
-  lists per zone per half lease.
+- Zone keys read associations, registrations, contributions and record sets
+  from the project's watch cache. Before compiling, a zone key compares the
+  cached generation of each registration and contribution with the fences in
+  the zone's current publication and waits if the cache is behind. The zone
+  itself, association pins, leases and the contribution confirmation still read
+  live. Zone keys reuse a project identity check for up to 10 s.
+- Not yet built: the fresh re-read of associations and contexts right before
+  persisting; optimistic locks on input status patches; the ACK sink queuing
+  zones; the shadow compile on resync.
 
 ## Regions
 

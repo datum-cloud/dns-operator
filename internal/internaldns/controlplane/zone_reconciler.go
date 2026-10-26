@@ -36,6 +36,10 @@ const zoneQueueDelay = 75 * time.Millisecond
 // pass or another replica without the exponential backoff an error would get.
 const zoneConflictRetry = 200 * time.Millisecond
 
+// cacheBehindRetry waits for the watch cache to catch up with what the zone
+// has already published.
+const cacheBehindRetry = 100 * time.Millisecond
+
 // staleAssociationRetry waits for the project pass to pin an association
 // against the zone's current generation.
 const staleAssociationRetry = time.Second
@@ -187,8 +191,12 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	var regs dnsv1alpha1.DNSRegistrationList
 	var contributions dnsv1alpha1.DNSRecordContributionList
 	var records dnsv1alpha1.DNSRecordSetList
+	reader := client.Reader(r.Client)
+	if r.ZoneReader != nil {
+		reader = r.ZoneReader
+	}
 	for _, item := range []client.ObjectList{&assocs, &regs, &contributions, &records} {
-		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
+		if err := reader.List(ctx, item, client.InNamespace(ns)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -236,6 +244,15 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	if own == nil {
 		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
 	}
+	if r.ZoneReader != nil {
+		previous, err := r.loadPrevious(ctx, own)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if readsBehind(previous, regs.Items, contributions.Items) {
+			return ctrl.Result{RequeueAfter: cacheBehindRetry}, nil
+		}
+	}
 	released, err := r.compileZone(ctx, &z, own, zoneAssocs, regs.Items, registrationZones, contributions.Items, records.Items, now)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -256,4 +273,32 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: max(pending.Sub(r.Options.Now().UTC()), zoneQueueDelay)}, nil
+}
+
+// readsBehind reports whether the cached registrations or contributions are
+// older than the ones the zone's current publication was compiled from.
+// Compiling from them could withdraw or roll back published records.
+func readsBehind(previous *PublicationPlan, regs []dnsv1alpha1.DNSRegistration, contributions []dnsv1alpha1.DNSRecordContribution) bool {
+	if previous == nil {
+		return false
+	}
+	regGeneration := make(map[types.UID]int64, len(regs))
+	for i := range regs {
+		regGeneration[regs[i].UID] = regs[i].Generation
+	}
+	for _, fence := range previous.Registrations {
+		if g, ok := regGeneration[fence.UID]; ok && g < fence.Generation {
+			return true
+		}
+	}
+	contributionGeneration := make(map[types.UID]int64, len(contributions))
+	for i := range contributions {
+		contributionGeneration[contributions[i].UID] = contributions[i].Generation
+	}
+	for _, fence := range previous.Contributions {
+		if g, ok := contributionGeneration[fence.UID]; ok && g < fence.Generation {
+			return true
+		}
+	}
+	return false
 }

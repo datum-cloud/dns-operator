@@ -338,12 +338,13 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		hash = model.EmptyContentHash()
 		stateHash = hash
 	}
-	if own.Spec.LastContentHash == stateHash {
-		return r.tombstoneAcknowledged(ctx, own), nil
-	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
 		return false, err
+	}
+	// An older epoch's outbox cannot activate after ownership moves.
+	if previousRevision > 0 && own.Spec.LastContentHash == stateHash {
+		return r.tombstoneAcknowledged(ctx, own), nil
 	}
 	revision := own.Spec.NextRevision
 	if revision <= 0 {

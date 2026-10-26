@@ -136,8 +136,8 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		}
 		if r.Options.PerZoneReconcile {
 			if bindingsFingerprint == "" {
-				bindings, err := r.zoneLoopBindings(ctx)
-				if err != nil {
+				var bindings dnsv1alpha1.DNSResolverBindingList
+				if err := r.listProjectBindings(ctx, &bindings); err != nil {
 					zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 					break
 				}

@@ -6,15 +6,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
+
+var regionLeader = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+	Name: "internal_dns_region_leader",
+	Help: "1 while this process leads the region's outbox and acknowledgement refresh.",
+}, []string{"region"})
+
+func init() {
+	metrics.Registry.MustRegister(regionLeader)
+}
 
 // RegionLease elects one control-plane process per region to run the region's
 // outbox and acknowledgement refresh. It only takes and renews a lease, so a
@@ -31,6 +43,8 @@ type RegionLease struct {
 	Stopping func() bool
 
 	leadUntil atomic.Int64
+	// mu keeps a release from racing a renewal that started before it.
+	mu sync.Mutex
 }
 
 type regionLeaseState struct {
@@ -38,8 +52,10 @@ type regionLeaseState struct {
 	LeaseUntil time.Time `json:"leaseUntil"`
 }
 
+// key names the lease like a shard lease, so a publication store keeps it in
+// the region's own bucket with the shard leases instead of the project API.
 func (l *RegionLease) key() client.ObjectKey {
-	return client.ObjectKey{Namespace: l.Namespace, Name: "dns-region-leader-" + model.OpaqueToken(l.Region)}
+	return client.ObjectKey{Namespace: l.Namespace, Name: "dns-shard-owner-region-" + model.OpaqueToken(l.Region)}
 }
 
 func (l *RegionLease) now() time.Time {
@@ -56,16 +72,30 @@ func (l *RegionLease) duration() time.Duration {
 	return l.LeaseDuration
 }
 
-// Leads reports whether this process holds the region lease.
+// Leads reports whether this process holds the region lease. A holder stops
+// leading a third of a lease before the lease ends, so it is done before a
+// standby can take over.
 func (l *RegionLease) Leads(now time.Time) bool {
-	return now.UnixNano() < l.leadUntil.Load()
+	return now.Add(l.duration()/3).UnixNano() < l.leadUntil.Load()
+}
+
+func (l *RegionLease) setLeadUntil(t time.Time) {
+	if t.IsZero() {
+		l.leadUntil.Store(0)
+		regionLeader.WithLabelValues(l.Region).Set(0)
+		return
+	}
+	l.leadUntil.Store(t.UnixNano())
+	regionLeader.WithLabelValues(l.Region).Set(1)
 }
 
 // Step takes the lease when it is free or expired, and renews it once a third
 // of it has passed.
 func (l *RegionLease) Step(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.Stopping != nil && l.Stopping() {
-		l.leadUntil.Store(0)
+		l.setLeadUntil(time.Time{})
 		return nil
 	}
 	now, lease := l.now(), l.duration()
@@ -80,7 +110,7 @@ func (l *RegionLease) Step(ctx context.Context) error {
 			}
 			return err
 		}
-		l.leadUntil.Store(now.Add(lease).UnixNano())
+		l.setLeadUntil(now.Add(lease))
 		return nil
 	}
 	if err != nil {
@@ -91,11 +121,11 @@ func (l *RegionLease) Step(ctx context.Context) error {
 		return fmt.Errorf("invalid region lease: %w", err)
 	}
 	if state.Holder != l.Identity && state.LeaseUntil.After(now) {
-		l.leadUntil.Store(0)
+		l.setLeadUntil(time.Time{})
 		return nil
 	}
 	if state.Holder == l.Identity && state.LeaseUntil.Sub(now) > lease*2/3 {
-		l.leadUntil.Store(state.LeaseUntil.UnixNano())
+		l.setLeadUntil(state.LeaseUntil)
 		return nil
 	}
 	state = regionLeaseState{Holder: l.Identity, LeaseUntil: now.Add(lease)}
@@ -103,19 +133,21 @@ func (l *RegionLease) Step(ctx context.Context) error {
 	cm.Data["state"] = string(b)
 	if err := l.Client.Update(ctx, &cm); err != nil {
 		if apierrors.IsConflict(err) {
-			l.leadUntil.Store(0)
+			l.setLeadUntil(time.Time{})
 			return nil
 		}
 		return err
 	}
-	l.leadUntil.Store(state.LeaseUntil.UnixNano())
+	l.setLeadUntil(state.LeaseUntil)
 	return nil
 }
 
 // Release ends the lease if this process holds it, so another process leads
 // the region at once. It reports whether it released a lease.
 func (l *RegionLease) Release(ctx context.Context) (bool, error) {
-	l.leadUntil.Store(0)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.setLeadUntil(time.Time{})
 	now := l.now()
 	var cm corev1.ConfigMap
 	if err := l.Client.Get(ctx, l.key(), &cm); err != nil {

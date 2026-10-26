@@ -232,7 +232,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}))
 	}
 
-	errCh := make(chan error, len(projects)+len(planners)*3+8)
+	errCh := make(chan error, len(projects)+len(planners)*4+8)
 	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
 		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, platformREST, nil)
 		if err != nil {

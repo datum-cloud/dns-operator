@@ -46,7 +46,9 @@ is behind its own option and not yet on main.
 
 Each project keeps the zone inputs it already watches (record sets,
 registrations, contributions, associations, naming policies) in its watch
-cache, indexed by zone. A zone key compiles from that index instead of listing
+cache, indexed by zone. The source of those watches is pluggable: today it is
+the project API; a regional control plane can watch copies of the same objects
+in its own cluster. The compiler path makes no assumption about which. A zone key compiles from that index instead of listing
 the namespace. The plan it produces is exactly what a full compile produces
 today. The previous plan is cached in memory by manifest name, so a compile
 does not re-read every chunk of the active manifest.

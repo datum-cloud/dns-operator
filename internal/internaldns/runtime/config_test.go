@@ -261,3 +261,24 @@ func TestManagedDomainSuffixesValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestCachedZoneInputsRequiresPerZoneReconcile(t *testing.T) {
+	cfg := Config{CachedZoneInputs: true}
+	if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "requires perZoneReconcile") {
+		t.Fatalf("invalid cache configuration accepted: %v", err)
+	}
+	cfg = Config{PerZoneReconcile: true, CachedZoneInputs: true,
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Members:  []model.Member{{MemberID: "regional-1", Role: "regional"}},
+	}
+	if err := cfg.Validate(roleControlPlane); err != nil {
+		t.Fatal(err)
+	}
+	var defaults Config
+	defaults.defaults()
+	if defaults.CachedZoneInputs {
+		t.Fatal("cache enabled by default")
+	}
+}

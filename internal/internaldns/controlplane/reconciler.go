@@ -54,6 +54,7 @@ type ReconcilerOptions struct {
 	// pass into zone keys that record, registration and contribution changes
 	// queue directly, so a record change does not wait for a project pass.
 	PerZoneReconcile bool
+	CachedZoneInputs bool
 	// ZoneSlots, when set, is shared by every project reconciler in a process
 	// and bounds how many zone keys compile at once across all projects.
 	ZoneSlots chan struct{}
@@ -114,14 +115,17 @@ type Options = ReconcilerOptions
 // Reconciler compiles records within a configured project scope.
 type Reconciler struct {
 	client.Client
-	APIReader client.Reader
-	Scheme    *runtime.Scheme
-	Options   ReconcilerOptions
+	APIReader   client.Reader
+	InputReader client.Reader
+	Scheme      *runtime.Scheme
+	Options     ReconcilerOptions
 
 	zoneQueue chan event.GenericEvent
 	// queuedZones maps a zone UID to the project-wide inputs it was last
 	// queued with.
-	queuedZones sync.Map
+	queuedZones   sync.Map
+	zoneInputs    sync.Map
+	previousPlans sync.Map
 }
 
 func (r *Reconciler) sourceReader() client.Reader {
@@ -201,6 +205,11 @@ const zoneWorkers = 4
 // setupPerZone watches record inputs per zone. The project pass keeps every
 // project-wide input and hands zones to the zone keys through zoneQueue.
 func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler.EventHandler) error {
+	if r.Options.CachedZoneInputs {
+		if err := r.setupInputIndexes(mgr); err != nil {
+			return err
+		}
+	}
 	r.zoneQueue = make(chan event.GenericEvent, 1024)
 	generation := builder.WithPredicates(predicate.GenerationChangedPredicate{})
 	return ctrl.NewControllerManagedBy(mgr).Named(name).

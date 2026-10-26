@@ -338,9 +338,11 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		return false, err
 	}
 	timer.done("zone load")
-	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
-	if err != nil {
-		return false, err
+	if session := inputSession(ctx); session == nil || !session.cached {
+		cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
+		if err != nil {
+			return false, err
+		}
 	}
 	timer.done("zone confirm")
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
@@ -353,12 +355,17 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
+	var accepted map[types.UID]bool
 	if !tombstone {
-		compiled, err := Compile(input)
+		compiled, used, err := r.compileCachedInputs(ctx, input)
 		if err != nil {
 			return false, err
 		}
+		regs, cs, records = used.Registrations, used.Contributions, used.StaticRecords
+		input = used
+
 		ownPlan = compiled.Plan
+		accepted = compiled.Accepted
 		wire, err := WirePlan(compiled.Plan)
 		if err != nil {
 			return false, err
@@ -390,12 +397,21 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		hash = model.EmptyContentHash()
 		stateHash = hash
 	}
+	if session := inputSession(ctx); session != nil {
+		if err := session.guard(input); err != nil {
+			return false, err
+		}
+	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
 		return false, err
 	}
 	// An older epoch's outbox cannot activate after ownership moves.
 	if previousRevision > 0 && own.Spec.LastContentHash == stateHash {
+		if session := inputSession(ctx); session != nil {
+			session.state.accepted = accepted
+			session.state.liveCompiled = true
+		}
 		return r.tombstoneAcknowledged(ctx, own), nil
 	}
 	revision := own.Spec.NextRevision
@@ -431,6 +447,10 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		r.Options.OnPublished()
 	}
 	timer.done("zone persist")
+	if session := inputSession(ctx); session != nil {
+		session.state.accepted = accepted
+		session.state.liveCompiled = true
+	}
 	return false, nil
 }
 
@@ -660,9 +680,22 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 	return o, time.Time{}, nil
 }
 
+type cachedPreviousPlan struct {
+	manifest string
+	plan     *PublicationPlan
+}
+
 func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublicationOwnership) (*PublicationPlan, error) {
 	if o.Spec.ActiveManifestName == "" {
 		return nil, nil
+	}
+	if r.Options.CachedZoneInputs {
+		if value, ok := r.previousPlans.Load(o.Spec.ZoneUID); ok {
+			cached := value.(cachedPreviousPlan)
+			if cached.manifest == o.Spec.ActiveManifestName {
+				return cached.plan, nil
+			}
+		}
 	}
 	var m dnsv1alpha1.DNSPublicationManifest
 	if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: o.Spec.ActiveManifestName}, &m); err != nil {
@@ -702,25 +735,54 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	for _, f := range wire.ObservationFences {
 		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired, SourceName: f.SourceName})
 	}
+	for _, f := range wire.Registrations {
+		p.Registrations = append(p.Registrations, RegistrationFence{UID: types.UID(f.UID), Generation: int64(f.Generation)})
+	}
+	if r.Options.CachedZoneInputs {
+		r.previousPlans.Store(o.Spec.ZoneUID, cachedPreviousPlan{manifest: o.Spec.ActiveManifestName, plan: p})
+	}
 	return p, nil
 }
 
+func (r *Reconciler) patchInputStatus(ctx context.Context, source client.Object, apply func(client.Object)) error {
+	desired := source.DeepCopyObject().(client.Object)
+	apply(desired)
+	if jsonEqual(source, desired) {
+		return nil
+	}
+	current := source.DeepCopyObject().(client.Object)
+	if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(source), current); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if current.GetUID() != source.GetUID() || current.GetGeneration() != source.GetGeneration() || !reflect.DeepEqual(current.GetDeletionTimestamp(), source.GetDeletionTimestamp()) {
+		return cacheConflict(source.GetName())
+	}
+	base := current.DeepCopyObject().(client.Object)
+	apply(current)
+	if jsonEqual(base, current) {
+		return nil
+	}
+	return r.Status().Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
 func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.DNSZone, result CompileResult, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) error {
+	condition := func(uid types.UID, generation int64, conditions *[]metav1.Condition) {
+		reason := result.Reasons[uid]
+		if reason == "" {
+			reason = dnsValueAccepted
+		}
+		setCondition(conditions, dnsValueAccepted, boolCondition(result.Accepted[uid]), reason, reason, generation, now)
+	}
 	for i := range records {
 		record := &records[i]
 		if record.Spec.DNSZoneRef.Name != zone.Name || !record.DeletionTimestamp.IsZero() {
 			continue
 		}
-		base := record.DeepCopy()
-		reason := result.Reasons[record.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
-		if !reflect.DeepEqual(base.Status, record.Status) {
-			if err := r.Status().Patch(ctx, record, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
+		if err := r.patchInputStatus(ctx, record, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRecordSet)
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
+			return err
 		}
 	}
 	relevant := map[types.UID]bool{}
@@ -730,25 +792,17 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			continue
 		}
 		relevant[reg.UID] = true
-		accepted := result.Accepted[reg.UID]
-		reason := result.Reasons[reg.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		base := reg.DeepCopy()
-		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
-		if !accepted {
-			reg.Status.CanonicalFQDN = ""
-			reg.Status.PublicationWriterEpoch = 0
-			reg.Status.PublicationRevision = 0
-			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
-		}
-		reg.Status.ObservedGeneration = reg.Generation
-		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
-		if jsonEqual(base.Status, reg.Status) {
-			continue
-		}
-		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.patchInputStatus(ctx, reg, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRegistration)
+			v.Status.CanonicalFQDN = absoluteOwner(v.Spec.Name, result.Plan.ZoneApex)
+			if !result.Accepted[v.UID] {
+				v.Status.CanonicalFQDN = ""
+				v.Status.PublicationWriterEpoch, v.Status.PublicationRevision = 0, 0
+				projectstatus.Published(&v.Status.Conditions, false, v.Generation, now)
+			}
+			v.Status.ObservedGeneration = v.Generation
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
 			return err
 		}
 	}
@@ -757,18 +811,11 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		if !relevant[c.Spec.RegistrationRef.UID] {
 			continue
 		}
-		accepted := result.Accepted[c.UID]
-		reason := result.Reasons[c.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		base := c.DeepCopy()
-		c.Status.ObservedGeneration = c.Generation
-		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
-		if jsonEqual(base.Status, c.Status) {
-			continue
-		}
-		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.patchInputStatus(ctx, c, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRecordContribution)
+			v.Status.ObservedGeneration = v.Generation
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
 			return err
 		}
 	}

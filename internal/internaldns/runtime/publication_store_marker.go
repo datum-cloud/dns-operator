@@ -17,6 +17,10 @@ const (
 	publicationStoreMarker     = "internal-dns-publication-store"
 	publicationStoreKubernetes = "kubernetes"
 	publicationStoreJetStream  = "jetstream"
+	// publicationStoreRegional is a JetStream store per region, each owned by
+	// that region's control plane. It is a store of its own because a control
+	// plane that publishes every region must not run beside regional ones.
+	publicationStoreRegional = "jetstream-regional"
 )
 
 // claimPublicationStore refuses to start a control plane whose publication

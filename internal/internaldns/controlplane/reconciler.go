@@ -5,6 +5,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -39,6 +40,11 @@ type ReconcilerOptions struct {
 	// fall strictly below. Empty means DefaultManagedDomainSuffixes.
 	ManagedDomainSuffixes []string
 	ServingRegions        []ServingRegion
+	// Regions limits this reconciler to the serving regions its control plane
+	// publishes when each region runs its own. ServingRegions still lists every
+	// region, so contexts keep one shard assignment everywhere. Empty means
+	// this reconciler publishes every region.
+	Regions []string
 	// PassSlots, when set, is shared by every project reconciler in a process
 	// and bounds how many project passes run at once, so a restart does not
 	// start a full pass of every project against the API server together.
@@ -91,6 +97,14 @@ func (o ReconcilerOptions) servingRegions() []ServingRegion {
 	}
 	return []ServingRegion{{Region: o.Region, Shard: o.Shard}}
 }
+
+// local reports whether this reconciler publishes region.
+func (o ReconcilerOptions) local(region string) bool {
+	return !o.regional() || slices.Contains(o.Regions, region)
+}
+
+// regional reports whether each region runs its own control plane.
+func (o ReconcilerOptions) regional() bool { return len(o.Regions) > 0 }
 
 type Options = ReconcilerOptions
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	"k8s.io/client-go/rest"
@@ -258,6 +259,45 @@ func TestManagedDomainSuffixesValidation(t *testing.T) {
 		invalid.ManagedDomainSuffixes = []string{suffix}
 		if err := invalid.Validate(roleControlPlane); err == nil {
 			t.Fatalf("invalid managed domain suffix %q was accepted", suffix)
+		}
+	}
+}
+
+func TestRegionsValidation(t *testing.T) {
+	base := Config{
+		Region: "central", Shard: "one",
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Shards: []platform.PlannerConfig{
+			{Region: "central", Shard: "one", Members: []model.Member{{MemberID: "regional-central", Role: "regional"}}},
+			{Region: "east", Shard: "one", Members: []model.Member{{MemberID: "regional-east", Role: "regional"}}},
+		},
+	}
+	valid := base
+	valid.Regions = []string{"east"}
+	valid.PublicationStore = &PublicationStoreConfig{Region: "east", Bucket: "PUBLICATIONS"}
+	if err := valid.Validate(roleControlPlane); err != nil {
+		t.Fatalf("one region's control plane rejected: %v", err)
+	}
+	if got := valid.localPlanners(); len(got) != 1 || got[0].Region != "east" {
+		t.Fatalf("local planners = %#v", got)
+	}
+	for name, change := range map[string]func(*Config){
+		"no store":              func(c *Config) { c.PublicationStore = nil },
+		"store in other region": func(c *Config) { c.PublicationStore.Region = "central" },
+		"unknown region":        func(c *Config) { c.Regions = []string{"west"} },
+		"duplicate region":      func(c *Config) { c.Regions = []string{"east", "east"} },
+		"other region's broker": func(c *Config) {
+			c.RegionalTransports = []RegionalTransportConfig{{Region: "central", NATS: base.NATS, Stream: base.Stream}, {Region: "east", NATS: base.NATS, Stream: base.Stream}}
+		},
+	} {
+		invalid := valid
+		store := *valid.PublicationStore
+		invalid.PublicationStore = &store
+		change(&invalid)
+		if err := invalid.Validate(roleControlPlane); err == nil {
+			t.Fatalf("%s: accepted", name)
 		}
 	}
 }

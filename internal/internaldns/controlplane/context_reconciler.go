@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -315,6 +316,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			zonesByContext[refs.Context.UID] = append(zonesByContext[refs.Context.UID], z.UID)
 		}
 	}
+	// Another region's control plane claims, binds and reports on access in
+	// its region.
+	accesses.Items = slices.DeleteFunc(accesses.Items, func(a dnsv1alpha1.DNSResolverAccessBinding) bool { return !r.Options.local(a.Spec.Region) })
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
 	held := map[string]bool{}
@@ -458,7 +462,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	}
 	for i := range existing.Items {
 		b := &existing.Items[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] || b.Spec.Tombstone {
+		if !r.ownsBinding(b) || desired[b.Name] || b.Spec.Tombstone {
 			continue
 		}
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
@@ -499,6 +503,12 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 	}
 	return r.releaseDestinations(ctx, held)
+}
+
+// ownsBinding reports whether b is this project's binding in a region this
+// control plane publishes.
+func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
+	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && r.Options.local(b.Spec.Placement.Region)
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

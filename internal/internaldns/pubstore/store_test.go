@@ -421,3 +421,38 @@ func TestStoreKeepsInt64FieldsExact(t *testing.T) {
 		t.Fatalf("int64 rounded through the store: got %d want %d", got, observed)
 	}
 }
+
+func TestRegionsCannotShareABucket(t *testing.T) {
+	ctx := t.Context()
+	store, _, _ := newStore(t)
+	if err := store.ClaimRegions(ctx, []string{"west", "east"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClaimRegions(ctx, []string{"east", "west"}, false); err != nil {
+		t.Fatalf("the same regions in another order must keep the claim: %v", err)
+	}
+	if err := store.ClaimRegions(ctx, []string{"north"}, false); err == nil {
+		t.Fatal("another region's control plane claimed a bucket that is already owned")
+	}
+	if err := store.ClaimRegions(ctx, []string{"north"}, true); err != nil {
+		t.Fatalf("a stopped rollout must be able to move the bucket: %v", err)
+	}
+	if err := store.ClaimRegions(ctx, []string{"east", "west"}, false); err == nil {
+		t.Fatal("the bucket's previous owner reclaimed it without a takeover")
+	}
+}
+
+func TestRegionalStoreCollectsOtherRegionsOutboxes(t *testing.T) {
+	ctx := t.Context()
+	store, _, kv := newStore(t)
+	store.OnlyRegions([]string{"us-east-1"})
+	for _, o := range []struct{ name, region string }{{"east-pending", "us-east-1"}, {"central-pending", "us-central-1"}} {
+		if _, err := store.Seed(ctx, &dnsv1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: o.name, Namespace: "platform", Labels: map[string]string{regionLabel: o.region}}, Spec: dnsv1.DNSTransportOutboxSpec{ResourceUID: "zone", WriterEpoch: 1, Revision: 1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertKept(t, kv, map[string]bool{"out.platform.east-pending": true, "out.platform.central-pending": false})
+}

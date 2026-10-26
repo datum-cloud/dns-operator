@@ -427,3 +427,24 @@ func TestRegionsWithTheirOwnPoolLeaseSeparately(t *testing.T) {
 		t.Fatalf("a destination inside a regional pool must be refused, got %v", err)
 	}
 }
+
+func TestRegionalAllocatorReleasesOnlyItsRegionsClaims(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	allocator := Allocator{Client: cl, Namespace: "platform", Regions: []string{"east"}}
+	for _, region := range []string{"east", "west"} {
+		if err := allocator.ClaimDestination(ctx, "project-a", "context-a", region, "fd70::"+map[string]string{"east": "1", "west": "2"}[region], 53); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	got := destinationClaims(t, cl)
+	if _, ok := got["fd70::1"]; ok {
+		t.Fatal("an unheld claim in this region was not released")
+	}
+	if _, ok := got["fd70::2"]; !ok {
+		t.Fatal("another region's claim was released by this region's control plane")
+	}
+}

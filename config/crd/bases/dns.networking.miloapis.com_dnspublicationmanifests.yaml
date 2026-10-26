@@ -94,6 +94,15 @@ spec:
                   - uid
                   type: object
                 type: array
+              expectedRegions:
+                description: |-
+                  ExpectedRegions names every region the zone is served in, including
+                  regions another control plane publishes. Set only when a control plane
+                  runs in each region; ServingTargets then lists only this one's targets.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               generatedAt:
                 format: date-time
                 type: string

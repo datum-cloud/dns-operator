@@ -68,6 +68,13 @@ type DNSZoneStatus struct {
 	// DomainRef references the Domain this zone belongs to.
 	// +optional
 	DomainRef *DomainRef `json:"domainRef,omitempty"`
+
+	// Regions reports each serving region's publication of a private zone when
+	// a control plane runs in each region.
+	// +listType=map
+	// +listMapKey=region
+	// +optional
+	Regions []DNSRegionPublicationStatus `json:"regions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

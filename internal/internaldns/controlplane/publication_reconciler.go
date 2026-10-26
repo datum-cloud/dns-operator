@@ -684,6 +684,9 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	for _, f := range wire.ObservationFences {
 		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired, SourceName: f.SourceName})
 	}
+	for _, f := range wire.Registrations {
+		p.Registrations = append(p.Registrations, RegistrationFence{UID: types.UID(f.UID), Generation: int64(f.Generation)})
+	}
 	return p, nil
 }
 
@@ -699,10 +702,23 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			reason = dnsValueAccepted
 		}
 		setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
-		if !reflect.DeepEqual(base.Status, record.Status) {
-			if err := r.Status().Patch(ctx, record, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if reflect.DeepEqual(base.Status, record.Status) {
+			continue
+		}
+		if cachedInputs(ctx) {
+			fresh, err := r.freshInput(ctx, record, base.Generation)
+			if fresh == nil || err != nil {
 				return err
 			}
+			record = fresh.(*dnsv1alpha1.DNSRecordSet)
+			base = record.DeepCopy()
+			setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
+			if reflect.DeepEqual(base.Status, record.Status) {
+				continue
+			}
+		}
+		if err := r.Status().Patch(ctx, record, statusPatch(ctx, base)); err != nil && !apierrors.IsNotFound(err) {
+			return err
 		}
 	}
 	relevant := map[types.UID]bool{}
@@ -717,20 +733,35 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		if reason == "" {
 			reason = dnsValueAccepted
 		}
-		base := reg.DeepCopy()
-		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
-		if !accepted {
-			reg.Status.CanonicalFQDN = ""
-			reg.Status.PublicationWriterEpoch = 0
-			reg.Status.PublicationRevision = 0
-			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
+		apply := func(reg *dnsv1alpha1.DNSRegistration) {
+			reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
+			if !accepted {
+				reg.Status.CanonicalFQDN = ""
+				reg.Status.PublicationWriterEpoch = 0
+				reg.Status.PublicationRevision = 0
+				projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
+			}
+			reg.Status.ObservedGeneration = reg.Generation
+			setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
 		}
-		reg.Status.ObservedGeneration = reg.Generation
-		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
+		base := reg.DeepCopy()
+		apply(reg)
 		if jsonEqual(base.Status, reg.Status) {
 			continue
 		}
-		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if cachedInputs(ctx) {
+			fresh, err := r.freshInput(ctx, reg, base.Generation)
+			if fresh == nil || err != nil {
+				return err
+			}
+			reg = fresh.(*dnsv1alpha1.DNSRegistration)
+			base = reg.DeepCopy()
+			apply(reg)
+			if jsonEqual(base.Status, reg.Status) {
+				continue
+			}
+		}
+		if err := r.Status().Patch(ctx, reg, statusPatch(ctx, base)); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

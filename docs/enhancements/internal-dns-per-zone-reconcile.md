@@ -158,15 +158,16 @@ read path as it is:
   project pass renews leases and hands every held zone to its key; a zone key
   waits while any of its associations is pinned against an older zone
   generation; a process-wide limit on concurrent zone compiles.
-- Zone keys read associations, registrations, contributions and record sets
-  from the project's watch cache. Before compiling, a zone key compares the
-  cached generation of each registration and contribution with the fences in
-  the zone's current publication and waits if the cache is behind. The zone
-  itself, association pins, leases and the contribution confirmation still read
-  live. Zone keys reuse a project identity check for up to 10 s.
-- Not yet built: the fresh re-read of associations and contexts right before
-  persisting; optimistic locks on input status patches; the ACK sink queuing
-  zones; the shadow compile on resync.
+- Zone keys read registrations, contributions and record sets from the
+  project's watch cache, but only while the zone's current publication was
+  written by the same process. The cache only moves forward, so it is at least
+  as new as that publication's inputs; after a restart or a lease takeover the
+  first compile reads live. Associations, the zone, association pins, leases
+  and the contribution confirmation always read live, and status patches built
+  from cached inputs re-read the object and use an optimistic lock. Zone keys
+  reuse a project identity check for up to 10 s.
+- Not yet built: re-reading resolver contexts right before persisting; the
+  ACK sink queuing zones; the shadow compile on resync.
 
 ## Regions
 

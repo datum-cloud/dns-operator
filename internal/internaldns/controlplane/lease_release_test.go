@@ -31,8 +31,8 @@ func TestReleasedLeasesAreTakenOverAtOnce(t *testing.T) {
 		owner("expired", "old", now.Add(-time.Minute)),
 	).Build()
 
-	released, err := ReleaseOwnership(ctx, c, "platform", "old", now)
-	if err != nil || released != 1 {
+	released, skipped, err := ReleaseOwnership(ctx, c, "platform", "old", now)
+	if err != nil || released != 1 || skipped != 0 {
 		t.Fatalf("released %d leases, err %v; want only the live lease this process holds", released, err)
 	}
 	get := func(zone types.UID) dnsv1alpha1.DNSPublicationOwnership {

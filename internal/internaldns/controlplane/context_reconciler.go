@@ -507,9 +507,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 }
 
 // ownsBinding reports whether b is this project's binding in a region this
-// control plane publishes.
+// control plane publishes, or in a region no control plane serves any more.
 func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
-	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && r.Options.local(b.Spec.Placement.Region)
+	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && (r.Options.local(b.Spec.Placement.Region) || !r.servesRegion(b.Spec.Placement.Region))
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

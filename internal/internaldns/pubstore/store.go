@@ -190,7 +190,7 @@ func (s *PublicationStore) ClaimRegions(ctx context.Context, regions []string) e
 	if bytes.Equal(current, want) {
 		return nil
 	}
-	return fmt.Errorf("publication bucket belongs to the control plane for regions %q, not %q; give each region its own bucket", current, want)
+	return fmt.Errorf("publication bucket belongs to the control plane for regions %q, not %q; give each region its own bucket, or, with every control plane on it stopped, delete the bucket's %q key to hand it to other regions", current, want, regionsKey)
 }
 
 // View is the store as one region's loops use it: a record not yet in the

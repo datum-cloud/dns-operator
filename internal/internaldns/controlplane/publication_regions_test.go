@@ -196,9 +196,11 @@ func TestEachRegionPublishesItsOwnTargets(t *testing.T) {
 }
 
 func TestLastRegionReleasesTheSharedFinalizer(t *testing.T) {
-	east := &Reconciler{Options: ReconcilerOptions{Regions: []string{"east"}}}
-	west := &Reconciler{Options: ReconcilerOptions{Regions: []string{"west"}}}
-	z := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{privateZoneFinalizer, privateZoneFinalizer + ".east", privateZoneFinalizer + ".west", "other/finalizer"}}}
+	serving := []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s1"}}
+	east := &Reconciler{Options: ReconcilerOptions{Regions: []string{"east"}, ServingRegions: serving}}
+	west := &Reconciler{Options: ReconcilerOptions{Regions: []string{"west"}, ServingRegions: serving}}
+	// "gone" is a region no control plane serves any more.
+	z := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Finalizers: []string{privateZoneFinalizer, privateZoneFinalizer + ".east", privateZoneFinalizer + ".west", privateZoneFinalizer + ".gone", "other/finalizer"}}}
 	east.releaseZone(z)
 	if !slices.Equal(z.Finalizers, []string{privateZoneFinalizer, privateZoneFinalizer + ".west", "other/finalizer"}) {
 		t.Fatalf("after east withdrew: %v", z.Finalizers)

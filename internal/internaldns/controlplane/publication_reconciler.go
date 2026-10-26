@@ -41,16 +41,42 @@ func (r *Reconciler) holdsZone(z *dnsv1alpha1.DNSZone) bool {
 	return r.Options.regional() || controllerutil.ContainsFinalizer(z, privateZoneFinalizer)
 }
 
-// holdRegions adds a finalizer for each region z is served in, including
-// regions another control plane publishes, so that a zone is not removed while
-// any region still serves it, even when that region's control plane is down.
-func (r *Reconciler) holdRegions(ctx context.Context, z *dnsv1alpha1.DNSZone, regions []string) error {
+// holdRegions adds a finalizer for each region where one of z's contexts is
+// bound, including regions another control plane publishes, and for this
+// control plane's own regions, so that a zone is not removed while any region
+// still serves it, even when that region's control plane is down. A zone bound
+// nowhere is published to every region but held only by those that publish it,
+// so a region without a control plane cannot block its deletion.
+func (r *Reconciler) holdRegions(ctx context.Context, z *dnsv1alpha1.DNSZone, expected []string, contexts []types.UID) error {
+	held := func(region string) bool { return controllerutil.ContainsFinalizer(z, regionFinalizer(region)) }
+	var regions []string
+	for _, region := range r.Options.Regions {
+		if !held(region) {
+			regions = append(regions, region)
+		}
+	}
+	// Bound regions are a subset of the expected ones, so a zone already held
+	// in every expected region needs no binding list.
+	if len(regions) == 0 && !slices.ContainsFunc(expected, func(region string) bool { return !held(region) }) {
+		return nil
+	}
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := r.listProjectBindings(ctx, &bindings); err != nil {
+		return err
+	}
+	for _, contextUID := range contexts {
+		for _, target := range r.boundTargets(contextUID, bindings.Items) {
+			if !held(target.Region) && !slices.Contains(regions, target.Region) {
+				regions = append(regions, target.Region)
+			}
+		}
+	}
+	if len(regions) == 0 {
+		return nil
+	}
 	base := z.DeepCopy()
 	for _, region := range regions {
 		controllerutil.AddFinalizer(z, regionFinalizer(region))
-	}
-	if len(base.Finalizers) == len(z.Finalizers) {
-		return nil
 	}
 	return r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
@@ -65,6 +91,14 @@ func (r *Reconciler) releaseZone(z *dnsv1alpha1.DNSZone) {
 	}
 	for _, region := range r.Options.Regions {
 		controllerutil.RemoveFinalizer(z, regionFinalizer(region))
+	}
+	// A region no control plane serves any more cannot withdraw the zone, and
+	// every control plane can tell, so any of them drops its finalizer.
+	for _, f := range slices.Clone(z.Finalizers) {
+		region, ok := strings.CutPrefix(f, privateZoneFinalizer+".")
+		if ok && !slices.ContainsFunc(r.Options.servingRegions(), func(s ServingRegion) bool { return model.SafeToken(s.Region) == region }) {
+			controllerutil.RemoveFinalizer(z, f)
+		}
 	}
 	for _, f := range z.Finalizers {
 		if strings.HasPrefix(f, privateZoneFinalizer+".") {
@@ -156,7 +190,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		if z.DeletionTimestamp.IsZero() && !r.holdsZone(z) {
 			base := z.DeepCopy()
 			controllerutil.AddFinalizer(z, privateZoneFinalizer)
-			if err := r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
 				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 			continue
@@ -190,7 +224,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			r.releaseZone(z)
 			// Other regions edit the same list, so a stale copy must not drop
 			// their finalizers.
-			if err := r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			patch := client.MergeFrom(base)
+			if r.Options.regional() {
+				patch = client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+			}
+			if err := r.Patch(ctx, z, patch); err != nil {
 				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 		}
@@ -436,7 +474,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 			return tombstone, nil
 		}
 		if !tombstone {
-			if err := r.holdRegions(ctx, z, expectedRegions); err != nil {
+			if err := r.holdRegions(ctx, z, expectedRegions, ownPlan.ContextUIDs); err != nil {
 				return false, err
 			}
 		}

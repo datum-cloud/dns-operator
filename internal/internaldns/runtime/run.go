@@ -163,9 +163,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
-			// Manager caches deliver watch events only. Every reconciliation read goes
-			// to the source API so a partition cannot refresh access mappings from stale
-			// contexts, access bindings, associations, registrations, or producer observations.
+			// Access decisions use the source API. The optional zone input cache
+			// is supplied by SetupWithManager and guarded per writer epoch.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
 				ProjectUID: project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
@@ -182,6 +181,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,
+				CachedZoneInputs:      cfg.CachedZoneInputs,
 				ZoneSlots:             zoneSlots,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {

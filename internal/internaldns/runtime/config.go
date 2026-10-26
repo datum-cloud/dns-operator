@@ -89,6 +89,7 @@ type Config struct {
 	// PerZoneReconcile compiles each zone on its own queue key, so a record
 	// change publishes without waiting for its project's pass.
 	PerZoneReconcile      bool                     `json:"perZoneReconcile,omitempty"`
+	CachedZoneInputs      bool                     `json:"cachedZoneInputs,omitempty"`
 	ManagedDomainSuffixes []string                 `json:"managedDomainSuffixes,omitempty"`
 	Agent                 serving.Config           `json:"agent,omitempty"`
 	Shards                []platform.PlannerConfig `json:"shards,omitempty"`
@@ -189,6 +190,9 @@ func validateKubeAPI(name string, c KubeAPIClientConfig) error {
 
 func (c *Config) Validate(role string) error {
 	c.defaults()
+	if c.CachedZoneInputs && !c.PerZoneReconcile {
+		return fmt.Errorf("cachedZoneInputs requires perZoneReconcile")
+	}
 	switch role {
 	case roleControlPlane, roleAgent, roleReadiness, roleServing, rolePrepare:
 	default:

@@ -239,14 +239,26 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	}
 
 	var assocs dnsv1alpha1.DNSZoneAssociationList
-	var regs dnsv1alpha1.DNSRegistrationList
-	var contributions dnsv1alpha1.DNSRecordContributionList
-	var records dnsv1alpha1.DNSRecordSetList
-	for _, item := range []client.ObjectList{&assocs, &regs, &contributions, &records} {
-		if err := r.List(ctx, item, client.InNamespace(ns)); err != nil {
-			return ctrl.Result{}, err
-		}
+	if err := r.List(ctx, &assocs, client.InNamespace(ns)); err != nil {
+		return ctrl.Result{}, err
 	}
+	own, retryAt, err := r.holdOwnership(ctx, &z)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if own == nil {
+		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
+	}
+	inputs, session, err := r.selectZoneInputs(ctx, &z, own)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if session != nil {
+		ctx = context.WithValue(ctx, zoneInputContextKey{}, session)
+	}
+	regs := dnsv1alpha1.DNSRegistrationList{Items: inputs.registrations}
+	contributions := dnsv1alpha1.DNSRecordContributionList{Items: inputs.contributions}
+	records := dnsv1alpha1.DNSRecordSetList{Items: inputs.records}
 
 	zoneAssocs := make([]dnsv1alpha1.DNSZoneAssociation, 0, len(assocs.Items))
 	for _, a := range assocs.Items {
@@ -266,30 +278,17 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		}
 	}
 
-	registrationZones := map[types.UID]dnsv1alpha1.DNSObjectReference{}
-	for i := range regs.Items {
-		reg := &regs.Items[i]
-		if reg.Spec.DNSZoneRef.Name != z.Name {
-			continue
-		}
-		ref := dnsv1alpha1.DNSObjectReference{Name: z.Name}
-		if z.DeletionTimestamp.IsZero() {
-			ref.UID, ref.Generation = z.UID, z.Generation
-		}
-		pinned, _, err := r.pinReferences(ctx, reg, map[string]dnsv1alpha1.DNSObjectReference{"zone": ref})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		registrationZones[reg.UID] = pinned["zone"]
-	}
-
-	own, retryAt, err := r.holdOwnership(ctx, &z)
+	registrationZones, err := r.pinZoneRegistrations(ctx, &z, regs.Items)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if own == nil {
-		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
+	if session != nil {
+		session.guard, err = r.guardZoneAccess(ctx, &z, zoneAssocs)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
+
 	released, err := r.compileZone(ctx, &z, own, zoneAssocs, regs.Items, registrationZones, contributions.Items, records.Items, now)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -305,6 +304,8 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 			return ctrl.Result{}, err
 		}
 		r.queuedZones.Delete(z.UID)
+		r.zoneInputs.Delete(z.UID)
+		r.previousPlans.Delete(z.UID)
 		return ctrl.Result{}, nil
 	}
 	if !z.DeletionTimestamp.IsZero() {

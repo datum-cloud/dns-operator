@@ -238,7 +238,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}))
 	}
 
-	errCh := make(chan error, len(projects)+len(planners)*3+8)
+	errCh := make(chan error, len(projects)+len(planners)*4+8)
 	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
 		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, platformREST, nil)
 		if err != nil {
@@ -280,6 +280,18 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	sinks := map[string]*platform.AckSink{}
+	// One process per region runs the region's outbox and acknowledgement
+	// refresh, so replicas do not race each other's writes. The lease only
+	// elects; it depends on nothing else the control plane does.
+	regionLeases := map[string]*platform.RegionLease{}
+	for _, pc := range planners {
+		if regionLeases[pc.Region] != nil {
+			continue
+		}
+		l := &platform.RegionLease{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, Region: pc.Region, Identity: identity, LeaseDuration: cfg.ownershipLease(), Stopping: stopping.Load}
+		regionLeases[pc.Region] = l
+		go retryLoop(ctx, regionLeaseInterval(l.LeaseDuration), loopID{Loop: "region lease", Region: pc.Region}, live, l.Step, errCh)
+	}
 	shardPlanners := make([]*platform.Planner, 0, len(planners))
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
@@ -289,11 +301,12 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
-		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
+		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, regionLeases[region])
 	}, errCh)
+	defer releaseRegionLeases(&stopping, regionLeases)
 
 	select {
 	case <-ctx.Done():
@@ -307,6 +320,36 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// whileLeading runs step only while this process holds the region lease;
+// otherwise the step is a successful no-op, so the replica stays healthy.
+func whileLeading(step func(context.Context) error, lease *platform.RegionLease) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if lease == nil || !lease.Leads(time.Now()) {
+			return nil
+		}
+		return step(ctx)
+	}
+}
+
+// regionLeaseInterval renews the region lease well before a third of it has
+// passed, so a holder never looks expired between steps.
+func regionLeaseInterval(lease time.Duration) time.Duration {
+	return max(lease/6, time.Second)
+}
+
+// releaseRegionLeases hands the region leases over on exit, so another
+// process runs the regions' outboxes at once.
+func releaseRegionLeases(stopping *atomic.Bool, leases map[string]*platform.RegionLease) {
+	stopping.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for region, l := range leases {
+		if _, err := l.Release(ctx); err != nil {
+			ctrl.Log.WithName("internal-dns-region-lease").Error(err, "release region lease", "region", region)
+		}
 	}
 }
 
@@ -411,7 +454,7 @@ func startRegionalWorkers(planners []platform.PlannerConfig, run func(string, []
 	}
 }
 
-func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness) error {
+func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness, lease *platform.RegionLease) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-region").WithValues("region", region)
 	for ctx.Err() == nil {
 		regional, err := connectRegional(ctx, cfg, []string{region})
@@ -458,7 +501,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		const ackWorkers = 4
 		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
-		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
+		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, whileLeading(outbox.Step, lease), localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)

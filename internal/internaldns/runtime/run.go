@@ -163,11 +163,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
-			// Manager caches deliver watch events. Reconciliation reads go to the source
-			// API so a partition cannot refresh access mappings from stale contexts,
-			// access bindings, associations, registrations, or producer observations.
-			// With per-zone reconcile, zone keys read registrations, contributions and
-			// record sets from the cache once they have published the zone themselves.
+			// Manager caches deliver watch events only. Every reconciliation read goes
+			// to the source API so a partition cannot refresh access mappings from stale
+			// contexts, access bindings, associations, registrations, or producer observations.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
 				ProjectUID: project.ProjectUID, PassSlots: passSlots, OnPublished: outboxWakes.notify,

@@ -36,6 +36,10 @@ const zoneQueueDelay = 75 * time.Millisecond
 // pass or another replica without the exponential backoff an error would get.
 const zoneConflictRetry = 200 * time.Millisecond
 
+// cacheBehindRetry waits for the watch cache to catch up with what the zone
+// has already published.
+const cacheBehindRetry = 100 * time.Millisecond
+
 // staleAssociationRetry waits for the project pass to pin an association
 // against the zone's current generation.
 const staleAssociationRetry = time.Second
@@ -187,29 +191,11 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	var regs dnsv1alpha1.DNSRegistrationList
 	var contributions dnsv1alpha1.DNSRecordContributionList
 	var records dnsv1alpha1.DNSRecordSetList
-	own, retryAt, err := r.holdOwnership(ctx, &z)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if own == nil {
-		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
-	}
-	// Associations decide which networks may resolve the zone, so they are
-	// always read live. The other inputs come from the watch cache only while
-	// the zone's current publication was written by this process: the cache
-	// only moves forward, so it is at least as new as what that publication
-	// was compiled from. After a restart or a lease takeover the first compile
-	// reads live, so a cache behind another writer cannot roll the zone back.
 	reader := client.Reader(r.Client)
-	cached := r.ZoneReader != nil && r.publishedHere(z.UID, own.Spec.ActiveManifestName)
-	if cached {
+	if r.ZoneReader != nil {
 		reader = r.ZoneReader
-		ctx = withCachedInputs(ctx)
 	}
-	if err := r.List(ctx, &assocs, client.InNamespace(ns)); err != nil {
-		return ctrl.Result{}, err
-	}
-	for _, item := range []client.ObjectList{&regs, &contributions, &records} {
+	for _, item := range []client.ObjectList{&assocs, &regs, &contributions, &records} {
 		if err := reader.List(ctx, item, client.InNamespace(ns)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -251,11 +237,26 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		registrationZones[reg.UID] = pinned["zone"]
 	}
 
+	own, retryAt, err := r.holdOwnership(ctx, &z)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if own == nil {
+		return ctrl.Result{RequeueAfter: max(time.Until(retryAt), zoneQueueDelay)}, nil
+	}
+	if r.ZoneReader != nil {
+		previous, err := r.loadPrevious(ctx, own)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if readsBehind(previous, regs.Items, contributions.Items) {
+			return ctrl.Result{RequeueAfter: cacheBehindRetry}, nil
+		}
+	}
 	released, err := r.compileZone(ctx, &z, own, zoneAssocs, regs.Items, registrationZones, contributions.Items, records.Items, now)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	r.recordPublished(z.UID, own.Spec.ActiveManifestName)
 	pending, err := r.aggregatePublicationStatus(ctx, &z, regs.Items, contributions.Items, now)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -274,54 +275,30 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	return ctrl.Result{RequeueAfter: max(pending.Sub(r.Options.Now().UTC()), zoneQueueDelay)}, nil
 }
 
-// publishedHere reports whether manifest is the last publication this process
-// wrote for the zone. A zone with no publication has nothing to roll back.
-func (r *Reconciler) publishedHere(zone types.UID, manifest string) bool {
-	if manifest == "" {
-		return true
+// readsBehind reports whether the cached registrations or contributions are
+// older than the ones the zone's current publication was compiled from.
+// Compiling from them could withdraw or roll back published records.
+func readsBehind(previous *PublicationPlan, regs []dnsv1alpha1.DNSRegistration, contributions []dnsv1alpha1.DNSRecordContribution) bool {
+	if previous == nil {
+		return false
 	}
-	last, ok := r.published.Load(zone)
-	return ok && last == manifest
-}
-
-func (r *Reconciler) recordPublished(zone types.UID, manifest string) {
-	if manifest != "" {
-		r.published.Store(zone, manifest)
+	regGeneration := make(map[types.UID]int64, len(regs))
+	for i := range regs {
+		regGeneration[regs[i].UID] = regs[i].Generation
 	}
-}
-
-type cachedInputsKey struct{}
-
-// withCachedInputs marks a compile whose record sets and registrations came
-// from the watch cache, so status patches start from a live copy instead.
-func withCachedInputs(ctx context.Context) context.Context {
-	return context.WithValue(ctx, cachedInputsKey{}, true)
-}
-
-func cachedInputs(ctx context.Context) bool {
-	cached, _ := ctx.Value(cachedInputsKey{}).(bool)
-	return cached
-}
-
-// freshInput re-reads a cached input before its status is patched. It returns
-// nil when the object is gone or its spec has moved on, since the event for
-// that change queues the zone again.
-func (r *Reconciler) freshInput(ctx context.Context, cached client.Object, generation int64) (client.Object, error) {
-	fresh := cached.DeepCopyObject().(client.Object)
-	if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(cached), fresh); err != nil {
-		return nil, client.IgnoreNotFound(err)
+	for _, fence := range previous.Registrations {
+		if g, ok := regGeneration[fence.UID]; ok && g < fence.Generation {
+			return true
+		}
 	}
-	if fresh.GetUID() != cached.GetUID() || fresh.GetGeneration() != generation {
-		return nil, nil
+	contributionGeneration := make(map[types.UID]int64, len(contributions))
+	for i := range contributions {
+		contributionGeneration[contributions[i].UID] = contributions[i].Generation
 	}
-	return fresh, nil
-}
-
-// statusPatch locks status patches built from a live re-read, so they cannot
-// erase a condition another writer set since.
-func statusPatch(ctx context.Context, base client.Object) client.Patch {
-	if cachedInputs(ctx) {
-		return client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+	for _, fence := range previous.Contributions {
+		if g, ok := contributionGeneration[fence.UID]; ok && g < fence.Generation {
+			return true
+		}
 	}
-	return client.MergeFrom(base)
+	return false
 }

@@ -5,7 +5,6 @@ package controlplane
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -123,8 +122,6 @@ type Reconciler struct {
 	// identityVerifiedAt is the unix nano time zone keys last saw the project
 	// identity verified.
 	identityVerifiedAt atomic.Int64
-	// published maps a zone UID to the last manifest this process wrote.
-	published sync.Map
 }
 
 func (r *Reconciler) sourceReader() client.Reader {
@@ -180,16 +177,14 @@ func (r *Reconciler) verifyIdentity(ctx context.Context, always bool) error {
 	if r.Options.VerifyProjectIdentity == nil {
 		return nil
 	}
-	seen := r.identityVerifiedAt.Load()
-	if !always && time.Since(time.Unix(0, seen)) < identityReuse {
+	if !always && time.Since(time.Unix(0, r.identityVerifiedAt.Load())) < identityReuse {
 		return nil
 	}
 	if err := r.Options.VerifyProjectIdentity(ctx); err != nil {
 		r.identityVerifiedAt.Store(0)
 		return err
 	}
-	// A failure recorded while this check ran wins over this success.
-	r.identityVerifiedAt.CompareAndSwap(seen, time.Now().UnixNano())
+	r.identityVerifiedAt.Store(time.Now().UnixNano())
 	return nil
 }
 

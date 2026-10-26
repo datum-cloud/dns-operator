@@ -5,7 +5,6 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"sync"
 	"testing"
 	"time"
 
@@ -192,62 +191,73 @@ func TestPerZoneWaitsForAssociationPinsAtTheZoneGeneration(t *testing.T) {
 	}
 }
 
-// staleCache has not yet seen any record set.
-type staleCache struct {
+func TestReadsBehindComparesCachedGenerationsWithPublishedFences(t *testing.T) {
+	previous := &PublicationPlan{
+		Registrations: []RegistrationFence{{UID: "reg", Generation: 3}},
+		Contributions: []ContributionFence{{UID: "contrib", Generation: 5}},
+	}
+	reg := func(g int64) []dnsv1alpha1.DNSRegistration {
+		return []dnsv1alpha1.DNSRegistration{{ObjectMeta: metav1.ObjectMeta{UID: "reg", Generation: g}}}
+	}
+	contrib := func(g int64) []dnsv1alpha1.DNSRecordContribution {
+		return []dnsv1alpha1.DNSRecordContribution{{ObjectMeta: metav1.ObjectMeta{UID: "contrib", Generation: g}}}
+	}
+	for _, tt := range []struct {
+		name   string
+		regs   []dnsv1alpha1.DNSRegistration
+		cs     []dnsv1alpha1.DNSRecordContribution
+		behind bool
+	}{
+		{"current", reg(3), contrib(5), false},
+		{"newer", reg(4), contrib(6), false},
+		{"registration behind", reg(2), contrib(5), true},
+		{"contribution behind", reg(3), contrib(4), true},
+		{"deleted since", nil, nil, false},
+	} {
+		if got := readsBehind(previous, tt.regs, tt.cs); got != tt.behind {
+			t.Errorf("%s: behind=%v, want %v", tt.name, got, tt.behind)
+		}
+	}
+	if readsBehind(nil, reg(1), contrib(1)) {
+		t.Error("a zone with no publication cannot be behind it")
+	}
+}
+
+type staleContributions struct {
 	client.Reader
 }
 
-func (s staleCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	if rs, ok := list.(*dnsv1alpha1.DNSRecordSetList); ok {
-		rs.Items = nil
-		return nil
+func (s staleContributions) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := s.Reader.List(ctx, list, opts...); err != nil {
+		return err
 	}
-	return s.Reader.List(ctx, list, opts...)
+	if cs, ok := list.(*dnsv1alpha1.DNSRecordContributionList); ok {
+		for i := range cs.Items {
+			cs.Items[i].Generation--
+		}
+	}
+	return nil
 }
 
-func TestPerZoneReadsLiveUntilItHasPublishedTheZoneItself(t *testing.T) {
+func TestPerZoneWaitsForACacheBehindThePublication(t *testing.T) {
 	h, zone := newPerZoneHarness(t)
-	ttl := int64(30)
-	rs := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "static", Namespace: "project", UID: "static"}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "kept", TTL: &ttl, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.10"}}}}}
-	if err := h.c.Create(h.ctx, rs); err != nil {
-		t.Fatal(err)
-	}
 	h.settle()
 	var owners dnsv1alpha1.DNSPublicationOwnershipList
 	if err := h.c.List(h.ctx, &owners); err != nil || len(owners.Items) != 1 {
 		t.Fatalf("ownership: %v", err)
 	}
 	published := owners.Items[0].Spec.ActiveManifestName
-	if len(h.publishedNames()) != 2 {
-		t.Fatalf("setup published %v", h.publishedNames())
-	}
 
-	// A restarted process has published nothing yet, so a cache that is
-	// behind the current publication must not be used.
-	h.r.published = sync.Map{}
-	h.r.ZoneReader = staleCache{Reader: h.c}
-	h.run(zoneQueuePrefix + zone.Name)
+	h.r.ZoneReader = staleContributions{Reader: h.c}
+	if res := h.run(zoneQueuePrefix + zone.Name); res.RequeueAfter != cacheBehindRetry {
+		t.Fatalf("zone key compiled from a cache older than its publication: %v", res)
+	}
 	if err := h.c.List(h.ctx, &owners); err != nil {
 		t.Fatal(err)
 	}
 	if owners.Items[0].Spec.ActiveManifestName != published {
-		t.Fatal("first compile after a restart published from a stale cache")
+		t.Fatal("zone key published from a stale cache")
 	}
-	if !h.r.publishedHere(zone.UID, published) {
-		t.Fatal("a live compile did not mark the publication as this process's own")
-	}
-}
-
-func TestPublishedHereTracksThisProcessWrites(t *testing.T) {
-	r := &Reconciler{}
-	if !r.publishedHere("zone", "") {
-		t.Error("a zone with no publication has nothing to roll back")
-	}
-	if r.publishedHere("zone", "pub-1") {
-		t.Error("another writer's publication counted as this process's own")
-	}
-	r.recordPublished("zone", "pub-1")
-	if !r.publishedHere("zone", "pub-1") || r.publishedHere("zone", "pub-2") {
-		t.Error("publishedHere does not follow the last manifest this process wrote")
-	}
+	h.r.ZoneReader = h.c
+	h.run(zoneQueuePrefix + zone.Name)
 }

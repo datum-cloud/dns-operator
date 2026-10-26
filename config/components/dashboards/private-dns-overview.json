@@ -845,8 +845,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (cluster, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
-               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving CPU by container, cores",
@@ -1540,8 +1540,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (cluster, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"}[$__rate_interval]))",
-               "legendFormat": "{{pod}} CPU"
+               "expr": "max by (cluster, namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} CPU"
             },
             {
                "datasource": {
@@ -1549,8 +1549,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (cluster, pod) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"})",
-               "legendFormat": "{{pod}} memory"
+               "expr": "max by (cluster, namespace, pod) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} memory"
             }
          ],
          "title": "Recursor CPU and memory",
@@ -1805,8 +1805,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (cluster, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"})",
-               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving memory by container",

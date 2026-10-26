@@ -404,7 +404,7 @@ local loopTime = ts(
 local controlPlaneCpu = ts(
   'Control plane and broker CPU, cores',
   'CPU used by each control-plane and broker pod, by container.',
-  [qRange('max by (pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % controlPlane, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % controlPlane, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
   grid(8, 8, 8, 69),
 );
@@ -412,7 +412,7 @@ local controlPlaneCpu = ts(
 local controlPlaneMemory = ts(
   'Control plane and broker memory',
   'Working set memory of each control-plane and broker pod, by container.',
-  [qRange('max by (pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % controlPlane, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % controlPlane, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
   grid(8, 8, 16, 69),
 );
@@ -468,7 +468,7 @@ local resolverLatency = ts(
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion).',
-  [qRange('max by (pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % memberPods, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % memberPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
   grid(8, 8, 8, 86),
 );
@@ -476,7 +476,7 @@ local fleetCpu = ts(
 local fleetMemory = ts(
   'Serving memory by container',
   'Working set memory of each serving pod, by container.',
-  [qRange('max by (pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % memberPods, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % memberPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
   grid(8, 8, 16, 86),
 );

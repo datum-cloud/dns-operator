@@ -1878,8 +1878,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
-               "legendFormat": "{{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Control plane and broker CPU, cores",
@@ -1939,8 +1939,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (pod, container) (container_memory_working_set_bytes{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"})",
-               "legendFormat": "{{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Control plane and broker memory",
@@ -2292,8 +2292,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
-               "legendFormat": "{{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving CPU by container, cores",
@@ -2353,8 +2353,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "max by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
-               "legendFormat": "{{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving memory by container",

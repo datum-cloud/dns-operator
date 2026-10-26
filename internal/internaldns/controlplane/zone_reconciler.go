@@ -4,6 +4,9 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 
@@ -119,6 +122,52 @@ func contributionRegistration(o client.Object) []reconcile.Request {
 
 func zoneItself(o client.Object) []reconcile.Request {
 	return []reconcile.Request{zoneRequest(o.GetNamespace(), o.GetName())}
+}
+
+// zoneResync is how often the project pass queues a zone whose project-wide
+// inputs have not changed, as a backstop for a missed event.
+const zoneResync = 5 * time.Minute
+
+type queuedZone struct {
+	inputs string
+	at     time.Time
+}
+
+// zoneProjectInputs fingerprints what the project pass decides for a zone: the
+// zone itself, the writer epoch it holds, the zone's associations and their
+// status, and the resolver bindings that pick its serving targets. Record
+// inputs are left out; their own events queue the zone.
+func zoneProjectInputs(z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, bindings []dnsv1alpha1.DNSResolverBinding) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "zone %s %d %v %v epoch %d\n", z.UID, z.Generation, z.DeletionTimestamp, z.Finalizers, own.Spec.WriterEpoch)
+	for i := range assocs {
+		a := &assocs[i]
+		if a.Spec.DNSZoneRef.Name == z.Name {
+			fmt.Fprintf(h, "assoc %s %s\n", a.UID, a.ResourceVersion)
+		}
+	}
+	for i := range bindings {
+		b := &bindings[i]
+		fmt.Fprintf(h, "binding %s %d %v", b.UID, b.Generation, b.DeletionTimestamp)
+		for _, c := range b.Status.Conditions {
+			fmt.Fprintf(h, " %s=%s", c.Type, c.Status)
+		}
+		fmt.Fprintln(h)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// queueZoneIfChanged queues a zone when its project-wide inputs changed since
+// it was last queued, or once per zoneResync.
+func (r *Reconciler) queueZoneIfChanged(ctx context.Context, z *dnsv1alpha1.DNSZone, inputs string, now time.Time) {
+	if last, ok := r.queuedZones.Load(z.UID); ok {
+		q := last.(queuedZone)
+		if q.inputs == inputs && now.Sub(q.at) < zoneResync {
+			return
+		}
+	}
+	r.queuedZones.Store(z.UID, queuedZone{inputs: inputs, at: now})
+	r.queueZone(ctx, z)
 }
 
 // queueZone hands a zone from the project pass to the zone controller.

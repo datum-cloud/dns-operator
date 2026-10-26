@@ -185,7 +185,7 @@ local backendReuse = ts(
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, in cores, split by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion). The pod name carries the tier: node, node-b, regional-front, regional-coredns or public-recursor.',
-  [qRange('sum by (cluster, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % fleetPods, '{{cluster}} {{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % fleetPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
   grid(8, 8, 16, 13),
 );
@@ -288,8 +288,8 @@ local recursorResources = ts(
   'Recursor CPU and memory',
   'CPU in cores (left axis) and working set memory (right axis) of each recursor container. A pod near its CPU limit answers late.',
   [
-    qRange('sum by (cluster, pod) (rate(container_cpu_usage_seconds_total{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"}[$__rate_interval]))', '{{pod}} CPU'),
-    qRange('sum by (cluster, pod) (container_memory_working_set_bytes{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"})', '{{pod}} memory'),
+    qRange('max by (cluster, namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"}[$__rate_interval]))', '{{cluster}} {{namespace}} {{pod}} CPU'),
+    qRange('max by (cluster, namespace, pod) (container_memory_working_set_bytes{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"})', '{{cluster}} {{namespace}} {{pod}} memory'),
   ],
   'short',
   grid(8, 8, 16, 38),
@@ -328,7 +328,7 @@ local fleetRestarts = ts(
 local fleetMemory = ts(
   'Serving memory by container',
   'Working set memory of each serving pod, split by container. A container that climbs toward its limit is killed and restarted.',
-  [qRange('sum by (cluster, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % fleetPods, '{{cluster}} {{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % fleetPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
   grid(8, 6, 18, 47),
 );

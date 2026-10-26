@@ -20,9 +20,9 @@ what made per-zone reconcile double the control plane's API requests.
 
 ## Goals
 
-- Record, registration and contribution changes are applied to in-memory zone
-  state from watch events, without listing the namespace.
-- Only the names a change touches are re-checked against the zone's rules.
+- Record, registration and contribution changes reach the compiler from
+  in-memory zone inputs kept current by watch events, without listing the
+  namespace.
 - A new zone version writes and sends only the chunks that changed.
 - Every version stays a complete, verifiable snapshot, numbered by writer epoch
   and revision, so members still catch up by taking the latest version and
@@ -31,102 +31,127 @@ what made per-zone reconcile double the control plane's API requests.
 
 ## Non-goals
 
-- Diff-based versions that depend on a base revision. They need ordered
-  delivery and gap repair on every member.
-- Incremental loading inside the serving process. Members still render and
-  reload a zone; that can follow once zones with thousands of records exist.
+- Incremental rule evaluation. The compiler's rules form a conflict graph:
+  static record sets claim before registrations, rejection is all or nothing
+  per object, contributions depend on claims at every name they write, and SRV
+  rejection runs to a fixed point. A change can cascade across names. A full
+  compile from memory takes under 5 ms, so phase 1 keeps it.
+- Diff-based versions that depend on a base revision.
+- Incremental loading inside the serving process.
 
-## Phase 1: in-memory zone state
+## Phase 1: in-memory zone inputs
 
-Each project keeps one state object per zone, built from the project's watch
-cache: the zone's record sets, registrations, contributions and associations,
-indexed by zone and by owner name.
+Each project keeps the zone inputs it already watches (record sets,
+registrations, contributions, associations) in its watch cache, indexed by
+zone. A zone key compiles from that index instead of listing the namespace.
+The plan it produces is exactly what a full compile produces today.
 
 ### Consistency
 
-Mixing cached and live reads is what made a plain cache switch unsafe, so the
-zone state reads every input from the cache and checks it against what the
-zone has already published:
+Mixing cached and live reads is what made a plain cache switch unsafe. Each
+informer only moves forward, but kinds can lag each other, and a new writer's
+cache can lag the writer it replaces. The rules:
 
-- **Fences for every input.** Publications already carry fences for
-  registrations and contributions. Record sets get the same: UID and
-  generation. Before compiling, the zone compares the cached generation of
-  every fenced object with its fence and waits while any is behind.
-- **Missing fenced objects.** A fenced object missing from the cache is
-  confirmed gone with one live read by name before the zone compiles without
-  it. Registration and record set fences carry the object name for this.
-- **References across kinds.** A contribution that names a registration
-  generation newer than the cached registration waits for the cache.
-- **Access decisions stay live.** The zone, its associations and their
-  resolver contexts are re-read live right before persisting, compared by UID,
-  generation and the Accepted condition. Any difference requeues.
-- **Status writes.** Status patches re-read the object and use an optimistic
-  lock.
-
-### Incremental rule checks
-
-The compiler's rules span records: the oldest claimant owns a name, CNAME
-excludes other types at its owner, SRV targets must have addresses, tenant
-records stay out of reserved scopes, and contributions are fenced. The zone
-state keeps an index per rule:
-
-- owner name to claimants, ordered by creation time and UID;
-- owner name to record types, for CNAME exclusivity;
-- SRV target name to the SRV sources that point at it.
-
-A change recomputes only the owner names it touches, plus SRV sources whose
-target lost or gained an address. The output is the same plan a full compile
-produces. A full compile runs at startup, when the rule set changes, and as a
-periodic shadow check that compares plan hashes and counts mismatches.
-
-Memory is roughly the size of the zone's inputs: a few hundred bytes per
-record set, about 30 MB for 1,000 zones of 100 record sets.
+- **Fresh start per epoch.** When a writer starts a new epoch (startup or lease
+  takeover), its first compile of the zone reads every input live, and the
+  zone switches to cached inputs only once each cached kind has reached that
+  live read's resource versions.
+- **No withdrawal from skew.** A compile that would reject or drop a record
+  that the current publication accepted, because of a generation mismatch
+  between kinds (a contribution naming a newer or older registration
+  generation than the cached one) or a reference pin that does not match, is
+  treated as the cache catching up: the zone requeues and keeps its current
+  publication. Rejections that do not depend on cross-kind generations, such as
+  name conflicts, publish as today.
+- **Fences.** Registration and contribution fences in the current publication
+  are compared with cached generations before compiling; a cache behind its
+  fences waits. A fenced object missing from the cache is confirmed gone with
+  one live read before the zone compiles without it.
+- **Access decisions stay live.** The zone, its associations, their resolver
+  contexts, reference pins and resolver bindings are re-read live right before
+  persisting and compared by UID, generation and the Accepted condition. Any
+  difference requeues.
+- **Status writes** re-read the object and use an optimistic lock.
 
 ## Phase 2: content-addressed chunks
 
 Today a version's chunks are the compiled plan cut into fixed-size byte
-ranges, so any change rewrites every chunk after it.
+ranges, each tied to one manifest by its UID, epoch and revision, so any
+change rewrites and resends every chunk.
 
-- **Stable chunks.** The plan is split into groups of record sets by a hash of
-  the owner name, plus one header chunk with the zone's owners and fences.
-  Each chunk is canonical JSON and is named by its SHA-256.
-- **Manifests list hashes.** A manifest still names its zone, epoch, revision
-  and previous revision, and lists its chunk hashes in order with the hash of
-  the assembled plan. Every version remains a complete snapshot.
-- **Write and send only new chunks.** The writer stores and sends a chunk only
-  when its hash is not already in that region's store. Unchanged groups are
-  reused by hash.
-- **Members keep chunks by hash.** The checkpoint and bootstrap key chunks by
-  hash instead of by manifest and index, and keep the chunks the applied and
-  pending manifests reference.
-- **No-op detection.** The state hash becomes the ordered chunk hashes plus the
-  serving targets and expected regions. No new chunks and no target change
-  means no new version.
+### Chunks
+
+- The plan is split into groups by a hash of the owner name. Owners and fences
+  are grouped the same way, so no chunk grows with the whole zone.
+- Each chunk is canonical JSON named by its SHA-256 and carries only its zone
+  and hash, not a manifest identity.
+- A manifest lists its chunk hashes in order and the hash of the assembled
+  plan, and still names its zone, epoch, revision and previous revision. Every
+  version is a complete snapshot.
+- No-op detection compares the ordered chunk hash list plus the serving targets
+  and expected regions. Removing or reverting a group adds no chunk but changes
+  the list, so it still publishes.
+
+### Delivery
+
+- **Dedupe on acknowledged export.** A writer skips sending a chunk only when
+  that chunk was acknowledged by the broker for the same zone, region and shard.
+  Presence in the store is not enough: a crash or a lost commit can leave a
+  staged chunk that was never exported.
+- **Activation waits for every referenced chunk.** A manifest's activation
+  depends on the export of every chunk it lists, reused ones included, and no
+  chunk export referenced by a pending manifest is ever marked superseded.
+- **Members fetch what they lack.** A member that receives a manifest
+  referencing a chunk it does not hold reads it by hash from the region's
+  snapshot store. This is the path after a long outage beyond the stream's
+  retention, a recreated durable, a newly added shard, a lease takeover, or the
+  switch to regional writers. The snapshot store keeps every chunk that any
+  retained manifest head references, per zone and shard.
+
+### Collection
+
+Chunks are shared between versions, so nothing deletes a chunk with its
+manifest. Each store (the publication store, the regional snapshot store, and
+a member's checkpoint) keeps a reference count per zone and shard over the
+manifests it retains: the current head and the head it replaced. A chunk is
+collected when no retained manifest references it. Members count over their
+applied and pending manifests.
+
+### Fences
+
+Contribution fences are lifetime high-water marks and grow without bound.
+Phase 2 bounds them: a fence for a contribution that has been retired for
+longer than the replay window is dropped, together with its contribution's
+records, which were already withdrawn.
 
 ### Regions
 
-Each region's writer applies the same input events to its own zone state and
-keeps its own (epoch, revision) chain. A chunk is reused only if that region's
-store already holds it. A new epoch, from a lease takeover or a region's first
-publication, needs nothing special: the manifest lists every chunk hash, and a
-member fetches any it lacks.
+Each region's writer applies the same input events to its own zone inputs and
+keeps its own (epoch, revision) chain. Dedupe and reference counts are per zone,
+region and shard. A new epoch needs nothing special: the manifest lists every
+chunk hash, and a member fetches any it lacks from its region's store.
 
 ## Rollout
 
-- Phase 1 behind an option on top of per-zone reconcile. The shadow full
-  compile runs for every zone while the option is new.
-- Phase 2 needs serving members that understand hash-keyed chunks before any
-  writer produces them. Members ship first and accept both forms; writers
-  switch behind an option; the old form is removed after every member has run
-  the new code through one restart.
+- Phase 1 behind an option on top of per-zone reconcile. A shadow compile from
+  live reads runs on resync while the option is new and counts plan-hash
+  mismatches.
+- Phase 2 changes the chunk envelope and the member checkpoint. Members ship
+  first: they read both chunk forms and write a checkpoint format that the
+  previous release can still load, so a member rollback stays possible. Writers
+  switch behind an option once every member runs the new code. The old form is
+  removed after members have run it through one restart.
 - Each phase is measured with the internal DNS publish test, API request rate
   and bytes sent per publication.
 
 ## Risks
 
-- **A missed index update** produces a plan that differs from a full compile.
-  The shadow check counts it and the option can be turned off.
-- **Cache lag** delays a publication but cannot roll one back while every
-  input is fenced.
-- **Chunk store growth.** Chunks no manifest references are removed once no
-  applied or pending manifest in that region names them.
+- **Cache skew** delays publication rather than withdrawing records, by the
+  rules above; the shadow compile counts any mismatch, and the option can be
+  turned off.
+- **A member that cannot reach the snapshot store** cannot apply a version that
+  reuses a chunk it lacks. It keeps serving its current version and reports
+  the version as unapplied.
+- **Reference counting bugs** could collect a chunk a head still needs. The
+  writer verifies every head's chunks are present before activating it, and
+  members verify the assembled plan hash.

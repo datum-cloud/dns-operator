@@ -273,17 +273,22 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	sinks := map[string]*platform.AckSink{}
+	// Every replica runs the planners, which elect one holder per shard. Only
+	// the holder runs the shard's ACK refresh and its region's outbox, so
+	// replicas do not race each other's writes.
+	regionLeaders := map[string][]*platform.Planner{}
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
 		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc}
+		regionLeaders[pc.Region] = append(regionLeaders[pc.Region], planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
-		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
+		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, planner), errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, regionLeaders[region])
 	}, errCh)
 
 	select {
@@ -294,6 +299,21 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// whileLeading runs step only while this process holds the lease of one of
+// the leaders' shards; otherwise the step is a successful no-op, so loop
+// liveness still reports the replica healthy.
+func whileLeading(step func(context.Context) error, leaders ...*platform.Planner) func(context.Context) error {
+	return func(ctx context.Context) error {
+		now := time.Now()
+		for _, leader := range leaders {
+			if leader.Leads(now) {
+				return step(ctx)
+			}
+		}
+		return nil
 	}
 }
 
@@ -352,7 +372,7 @@ func startRegionalWorkers(planners []platform.PlannerConfig, run func(string, []
 	}
 }
 
-func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness) error {
+func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness, leaders []*platform.Planner) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-region").WithValues("region", region)
 	for ctx.Err() == nil {
 		regional, err := connectRegional(ctx, cfg, []string{region})
@@ -399,7 +419,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		const ackWorkers = 4
 		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
-		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
+		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, whileLeading(outbox.Step, leaders...), localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)

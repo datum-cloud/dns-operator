@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -60,6 +61,17 @@ type Planner struct {
 	// bytes are reused until the active outbox changes.
 	priorOutbox  string
 	priorPayload []byte
+
+	// leadUntil is the unix nano time until which this process last saw itself
+	// holding the shard lease.
+	leadUntil atomic.Int64
+}
+
+// Leads reports whether this process held the shard lease when the planner
+// last looked, and the lease has not run out since. Work that one replica
+// should do for the shard's region is gated on it.
+func (p *Planner) Leads(now time.Time) bool {
+	return now.UnixNano() < p.leadUntil.Load()
 }
 
 func (p *Planner) Step(ctx context.Context) error {
@@ -94,6 +106,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	if state.Holder != c.Identity {
 		if state.LeaseUntil.After(now) {
+			p.leadUntil.Store(0)
 			return nil
 		}
 		state.Holder = c.Identity
@@ -106,6 +119,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			return err
 		}
 	}
+	p.leadUntil.Store(state.LeaseUntil.UnixNano())
 	var bindings dnsv1alpha1.DNSResolverBindingList
 	if err := p.Client.List(ctx, &bindings, client.InNamespace(c.Namespace), client.MatchingLabels{"internal-dns.miloapis.com/region": model.SafeToken(c.Region), "internal-dns.miloapis.com/shard": model.SafeToken(c.Shard)}); err != nil {
 		return err

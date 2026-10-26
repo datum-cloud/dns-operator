@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -315,6 +316,10 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			zonesByContext[refs.Context.UID] = append(zonesByContext[refs.Context.UID], z.UID)
 		}
 	}
+	// Another region's control plane claims, binds and reports on access in
+	// its region. Every control plane rejects a region none of them serves,
+	// with the same status.
+	accesses.Items = slices.DeleteFunc(accesses.Items, r.otherRegionsAccess)
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
 	held := map[string]bool{}
@@ -353,7 +358,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else {
 			destination = parsed.Unmap().String()
 		}
-		if _, ok := r.targetForRegion(spec.Region); !ok {
+		if !r.servesRegion(spec.Region) {
 			valid = false
 		}
 		key := spec.Region + "\x00" + spec.DestinationAddress
@@ -458,7 +463,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	}
 	for i := range existing.Items {
 		b := &existing.Items[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] || b.Spec.Tombstone {
+		if !r.ownsBinding(b) || desired[b.Name] || b.Spec.Tombstone {
 			continue
 		}
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
@@ -499,6 +504,12 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 	}
 	return r.releaseDestinations(ctx, held)
+}
+
+// ownsBinding reports whether b is this project's binding in a region this
+// control plane publishes, or in a region no control plane serves any more.
+func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
+	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && (r.Options.local(b.Spec.Placement.Region) || !r.servesRegion(b.Spec.Placement.Region))
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
@@ -558,13 +569,19 @@ func (r *Reconciler) shardForContextRegion(contextUID types.UID, region string, 
 	return ""
 }
 
-func (r *Reconciler) targetForRegion(region string) (ServingRegion, bool) {
+func (r *Reconciler) servesRegion(region string) bool {
 	for _, s := range r.Options.servingRegions() {
 		if s.Region == region {
-			return s, true
+			return true
 		}
 	}
-	return ServingRegion{}, false
+	return false
+}
+
+// otherRegionsAccess reports whether a belongs to another region's control
+// plane. Access in a region nobody serves is rejected by every control plane.
+func (r *Reconciler) otherRegionsAccess(a dnsv1alpha1.DNSResolverAccessBinding) bool {
+	return r.servesRegion(a.Spec.Region) && !r.Options.local(a.Spec.Region)
 }
 
 func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) bool {

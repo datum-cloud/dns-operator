@@ -90,3 +90,27 @@ func TestAStopThenStartRolloutSwitchesTheActiveStore(t *testing.T) {
 		t.Fatalf("replica on the switched store: %v", err)
 	}
 }
+
+func TestRegionalStoresCannotSwitchBack(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := dnsv1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	api := fake.NewClientBuilder().WithScheme(s).Build()
+	ctx := t.Context()
+	if err := claimPublicationStore(ctx, api, "platform", publicationStoreJetStream, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := claimPublicationStore(ctx, api, "platform", publicationStoreRegional, true); err != nil {
+		t.Fatalf("a stopped rollout must switch to regional stores: %v", err)
+	}
+	if err := claimPublicationStore(ctx, api, "platform", publicationStoreRegional, true); err != nil {
+		t.Fatalf("a second region's control plane on regional stores: %v", err)
+	}
+	if err := claimPublicationStore(ctx, api, "platform", publicationStoreJetStream, true); err == nil {
+		t.Fatal("switched back from regional stores to the shared writer")
+	}
+}

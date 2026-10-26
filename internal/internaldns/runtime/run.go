@@ -97,6 +97,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	if cfg.PublicationStore != nil {
 		storeName = publicationStoreJetStream
 	}
+	if len(cfg.Regions) > 0 {
+		storeName = publicationStoreRegional
+	}
 	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName, cfg.SwitchPublicationStore); err != nil {
 		return err
 	}
@@ -119,12 +122,14 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		return publicationStore.View(model.SafeToken(region))
 	}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient}
-	planners := cfg.plannerConfigs()
-	regions := make([]controlplane.ServingRegion, 0, len(planners))
-	for _, p := range planners {
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient, Regions: cfg.Regions}
+	// Every region's shards keep contexts on one assignment; this control
+	// plane runs only the planners of the regions it publishes.
+	regions := make([]controlplane.ServingRegion, 0, len(cfg.plannerConfigs()))
+	for _, p := range cfg.plannerConfigs() {
 		regions = append(regions, controlplane.ServingRegion{Region: p.Region, Shard: p.Shard})
 	}
+	planners := cfg.localPlanners()
 
 	identity := holderIdentity()
 	// stopping is set when the process is told to exit, so reconcilers stop
@@ -178,7 +183,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
 				LeaseDuration:        cfg.ownershipLease(),
 				AddressAllocator:     allocator,
-				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
+				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
@@ -284,7 +289,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
-			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
+			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, Regions: cfg.Regions}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
 	}

@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -95,6 +96,14 @@ type Config struct {
 	// store. Set it only for a rollout that stops every replica before
 	// starting new ones.
 	SwitchPublicationStore bool `json:"switchPublicationStore,omitempty"`
+	// Regions limits this control plane to the regions it publishes, so each
+	// region can run its own and keep publishing while another is down. Shards
+	// keeps every region, so contexts get the same shard assignment from every
+	// control plane, but this one plans, publishes and acknowledges only these
+	// regions and needs no broker for the rest. It requires a publication store
+	// on one of these regions' brokers that no other region shares. Empty
+	// means this control plane publishes every region.
+	Regions []string `json:"regions,omitempty"`
 }
 
 // PublicationStoreConfig moves the control plane's publication records
@@ -241,6 +250,9 @@ func (c *Config) Validate(role string) error {
 	if err := c.validatePublicationStore(); err != nil {
 		return err
 	}
+	if err := c.validateRegions(); err != nil {
+		return err
+	}
 	for i, suffix := range c.ManagedDomainSuffixes {
 		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
 			return fmt.Errorf("managedDomainSuffixes[%d] must be a lowercase DNS subdomain: %q", i, suffix)
@@ -316,6 +328,9 @@ func (c *Config) Validate(role string) error {
 		return err
 	}
 	for _, planner := range c.plannerConfigs() {
+		if !c.publishes(planner.Region) {
+			continue
+		}
 		if _, _, _, err := c.transportForRegion(planner.Region); err != nil {
 			return err
 		}
@@ -455,6 +470,48 @@ func (c Config) validatePublicationStore() error {
 		return fmt.Errorf("publicationStore: %w", err)
 	}
 	return nil
+}
+
+func (c Config) validateRegions() error {
+	if len(c.Regions) == 0 {
+		return nil
+	}
+	configured := map[string]bool{}
+	for _, p := range c.plannerConfigs() {
+		configured[p.Region] = true
+	}
+	seen := map[string]bool{}
+	for i, region := range c.Regions {
+		if region == "" || seen[region] || !configured[region] {
+			return fmt.Errorf("regions[%d] %q must be a configured shard region listed once", i, region)
+		}
+		seen[region] = true
+	}
+	if c.PublicationStore == nil || !seen[c.PublicationStore.Region] {
+		return errors.New("regions requires a publicationStore on one of its regions' brokers")
+	}
+	for _, regional := range c.RegionalTransports {
+		if !seen[regional.Region] {
+			return fmt.Errorf("regional transport %s is outside regions; another region's control plane connects to it", regional.Region)
+		}
+	}
+	return nil
+}
+
+// publishes reports whether this control plane publishes region.
+func (c Config) publishes(region string) bool {
+	return len(c.Regions) == 0 || slices.Contains(c.Regions, region)
+}
+
+// localPlanners are the shards this control plane plans and acknowledges.
+func (c Config) localPlanners() []platform.PlannerConfig {
+	var local []platform.PlannerConfig
+	for _, p := range c.plannerConfigs() {
+		if c.publishes(p.Region) {
+			local = append(local, p)
+		}
+	}
+	return local
 }
 
 func validBucketName(s string) bool {

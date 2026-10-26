@@ -44,7 +44,11 @@ type AckSink struct {
 	Region             string
 	Shard              string
 	Members            []model.Member
-	Now                func() time.Time
+	// Regions, when set, are the regions this sink's control plane publishes
+	// while every other region runs its own. Project status then records each
+	// region's verdict separately.
+	Regions []string
+	Now     func() time.Time
 }
 
 func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope) error {
@@ -250,8 +254,21 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				continue
 			}
 			base := z.DeepCopy()
-			projectstatus.Published(&z.Status.Conditions, complete, z.Generation, now)
-			projectstatus.Programmed(&z.Status.Conditions, hasApplied(m.Status.ReplicaAcknowledgements, m.Spec.WriterEpoch, m.Spec.Revision), z.Generation, now)
+			applied := hasApplied(m.Status.ReplicaAcknowledgements, m.Spec.WriterEpoch, m.Spec.Revision)
+			if len(s.Regions) == 0 {
+				projectstatus.Published(&z.Status.Conditions, complete, z.Generation, now)
+				projectstatus.Programmed(&z.Status.Conditions, applied, z.Generation, now)
+			} else {
+				projectstatus.RecordRegions(&z.Status.Regions, s.Regions, m.Spec.ExpectedRegions, z.Generation, m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+					e.Published, e.Programmed = complete, applied
+				})
+				projectstatus.PublishedForRegions(&z.Status.Conditions, z.Status.Regions, m.Spec.ExpectedRegions, complete, z.Generation, now)
+				programmed := applied
+				if len(m.Spec.ExpectedRegions) > 0 {
+					programmed = projectstatus.AnyRegion(z.Status.Regions, m.Spec.ExpectedRegions, z.Generation, func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Programmed })
+				}
+				projectstatus.Programmed(&z.Status.Conditions, programmed, z.Generation, now)
+			}
 			if !jsonEqualStatus(base.Status, z.Status) {
 				if err := projectClient.Status().Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 					projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s update zone %s status: %w", ns, z.Name, err))
@@ -315,10 +332,22 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 					}
 				}
 				base := r.DeepCopy()
-				r.Status.PublicationWriterEpoch = m.Spec.WriterEpoch
-				r.Status.PublicationRevision = m.Spec.Revision
-				projectstatus.Published(&r.Status.Conditions, complete, r.Generation, now)
-				projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				if len(s.Regions) == 0 {
+					r.Status.PublicationWriterEpoch = m.Spec.WriterEpoch
+					r.Status.PublicationRevision = m.Spec.Revision
+					projectstatus.Published(&r.Status.Conditions, complete, r.Generation, now)
+					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				} else {
+					r.Status.PublicationWriterEpoch, r.Status.PublicationRevision = 0, 0
+					projectstatus.RecordRegions(&r.Status.Regions, s.Regions, m.Spec.ExpectedRegions, r.Generation, m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+						e.Published, e.Available = complete, available
+					})
+					projectstatus.PublishedForRegions(&r.Status.Conditions, r.Status.Regions, m.Spec.ExpectedRegions, complete, r.Generation, now)
+					if len(m.Spec.ExpectedRegions) > 0 {
+						available = projectstatus.AnyRegion(r.Status.Regions, m.Spec.ExpectedRegions, r.Generation, func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Available })
+					}
+					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				}
 				if !jsonEqualStatus(base.Status, r.Status) {
 					if err := projectClient.Status().Patch(ctx, r, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 						projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s update registration %s status: %w", ns, r.Name, err))

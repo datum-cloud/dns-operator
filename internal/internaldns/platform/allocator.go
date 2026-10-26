@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,9 @@ type Allocator struct {
 	// RegionClient, when set, is the client a region's serving snapshot is
 	// read with, so one region's broker never holds up another's.
 	RegionClient func(region string) client.Client
+	// Regions, when set, are the only regions whose destination claims this
+	// allocator releases; each other region's control plane releases its own.
+	Regions []string
 }
 
 // Allocate leases a context's regional address in a region. A region on the
@@ -174,7 +178,7 @@ func (a *Allocator) ReleaseDestinations(ctx context.Context, projectUID types.UI
 	for i := range claims.Items {
 		claim := &claims.Items[i]
 		region, address := claim.Data["region"], claim.Data["address"]
-		if region == "" || !strings.HasPrefix(claim.Data["owner"], string(projectUID)+"/") || held[model.DestinationKey(region, address)] {
+		if region == "" || !strings.HasPrefix(claim.Data["owner"], string(projectUID)+"/") || held[model.DestinationKey(region, address)] || len(a.Regions) > 0 && !slices.Contains(a.Regions, region) {
 			continue
 		}
 		if bindings == nil {

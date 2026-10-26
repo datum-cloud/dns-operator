@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -24,6 +26,87 @@ import (
 )
 
 const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publication"
+
+// regionFinalizer holds a private zone until region's control plane has
+// withdrawn it, when each region runs its own.
+func regionFinalizer(region string) string {
+	return privateZoneFinalizer + "." + model.SafeToken(region)
+}
+
+// holdsZone reports whether this control plane may publish z. A control plane
+// that publishes every region holds the shared finalizer first. Regional
+// control planes add a finalizer for every region a zone is served in before
+// they publish it (holdRegions), so they need none to start.
+func (r *Reconciler) holdsZone(z *dnsv1alpha1.DNSZone) bool {
+	return r.Options.regional() || controllerutil.ContainsFinalizer(z, privateZoneFinalizer)
+}
+
+// holdRegions adds a finalizer for each region where one of z's contexts is
+// bound, including regions another control plane publishes, and for this
+// control plane's own regions, so that a zone is not removed while any region
+// still serves it, even when that region's control plane is down. A zone bound
+// nowhere is published to every region but held only by those that publish it,
+// so a region without a control plane cannot block its deletion.
+func (r *Reconciler) holdRegions(ctx context.Context, z *dnsv1alpha1.DNSZone, expected []string, contexts []types.UID) error {
+	held := func(region string) bool { return controllerutil.ContainsFinalizer(z, regionFinalizer(region)) }
+	var regions []string
+	for _, region := range r.Options.Regions {
+		if !held(region) {
+			regions = append(regions, region)
+		}
+	}
+	// Bound regions are a subset of the expected ones, so a zone already held
+	// in every expected region needs no binding list.
+	if len(regions) == 0 && !slices.ContainsFunc(expected, func(region string) bool { return !held(region) }) {
+		return nil
+	}
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := r.listProjectBindings(ctx, &bindings); err != nil {
+		return err
+	}
+	for _, contextUID := range contexts {
+		for _, target := range r.boundTargets(contextUID, bindings.Items) {
+			if !held(target.Region) && !slices.Contains(regions, target.Region) {
+				regions = append(regions, target.Region)
+			}
+		}
+	}
+	if len(regions) == 0 {
+		return nil
+	}
+	base := z.DeepCopy()
+	for _, region := range regions {
+		controllerutil.AddFinalizer(z, regionFinalizer(region))
+	}
+	return r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// releaseZone removes this control plane's finalizers from a withdrawn zone.
+// The shared finalizer from before regions had their own control planes goes
+// with the last region's.
+func (r *Reconciler) releaseZone(z *dnsv1alpha1.DNSZone) {
+	if !r.Options.regional() {
+		controllerutil.RemoveFinalizer(z, privateZoneFinalizer)
+		return
+	}
+	for _, region := range r.Options.Regions {
+		controllerutil.RemoveFinalizer(z, regionFinalizer(region))
+	}
+	// A region no control plane serves any more cannot withdraw the zone, and
+	// every control plane can tell, so any of them drops its finalizer.
+	for _, f := range slices.Clone(z.Finalizers) {
+		region, ok := strings.CutPrefix(f, privateZoneFinalizer+".")
+		if ok && !slices.ContainsFunc(r.Options.servingRegions(), func(s ServingRegion) bool { return model.SafeToken(s.Region) == region }) {
+			controllerutil.RemoveFinalizer(z, f)
+		}
+	}
+	for _, f := range z.Finalizers {
+		if strings.HasPrefix(f, privateZoneFinalizer+".") {
+			return
+		}
+	}
+	controllerutil.RemoveFinalizer(z, privateZoneFinalizer)
+}
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	now := r.Options.Now().UTC()
@@ -93,7 +176,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	held := map[types.UID]heldOwnership{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
-		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || (z.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(z, privateZoneFinalizer)) {
+		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || (z.DeletionTimestamp.IsZero() && !r.holdsZone(z)) {
 			continue
 		}
 		own, retryAt, err := r.holdOwnership(ctx, z)
@@ -104,7 +187,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
 			continue
 		}
-		if z.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(z, privateZoneFinalizer) {
+		if z.DeletionTimestamp.IsZero() && !r.holdsZone(z) {
 			base := z.DeepCopy()
 			controllerutil.AddFinalizer(z, privateZoneFinalizer)
 			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
@@ -138,8 +221,14 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		}
 		if !z.DeletionTimestamp.IsZero() && result {
 			base := z.DeepCopy()
-			controllerutil.RemoveFinalizer(z, privateZoneFinalizer)
-			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
+			r.releaseZone(z)
+			// Other regions edit the same list, so a stale copy must not drop
+			// their finalizers.
+			patch := client.MergeFrom(base)
+			if r.Options.regional() {
+				patch = client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})
+			}
+			if err := r.Patch(ctx, z, patch); err != nil {
 				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 		}
@@ -205,9 +294,15 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		}
 		regUIDs[reg.UID] = true
 		apply := func(reg *dnsv1alpha1.DNSRegistration) {
-			reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
-			reg.Status.PublicationRevision = manifest.Spec.Revision
-			projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
+			if !r.Options.regional() {
+				reg.Status.PublicationWriterEpoch = manifest.Spec.WriterEpoch
+				reg.Status.PublicationRevision = manifest.Spec.Revision
+				projectstatus.Published(&reg.Status.Conditions, published, reg.Generation, now)
+				return
+			}
+			reg.Status.PublicationWriterEpoch, reg.Status.PublicationRevision = 0, 0
+			r.setRegions(&reg.Status.Regions, &manifest, reg.Generation, func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			projectstatus.PublishedForRegions(&reg.Status.Conditions, reg.Status.Regions, manifest.Spec.ExpectedRegions, published, reg.Generation, now)
 		}
 		listed := reg.DeepCopy()
 		apply(listed)
@@ -259,8 +354,21 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		base := c.DeepCopy()
 		status := metav1.ConditionFalse
 		reason, msg := "PendingReplicaVerification", "publication awaits required replica verification"
-		if published {
-			c.Status.PublishedRevision = manifest.Spec.Revision
+		everywhere := published
+		if r.Options.regional() {
+			c.Status.PublishedRevision = 0
+			r.setRegions(&c.Status.Regions, &manifest, c.Generation, func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			if pending := projectstatus.PendingRegions(c.Status.Regions, manifest.Spec.ExpectedRegions, c.Generation); len(manifest.Spec.ExpectedRegions) > 0 {
+				everywhere = len(pending) == 0
+				if !everywhere {
+					msg += " in " + strings.Join(pending, ", ")
+				}
+			}
+		}
+		if everywhere {
+			if !r.Options.regional() {
+				c.Status.PublishedRevision = manifest.Spec.Revision
+			}
 			status = metav1.ConditionTrue
 			reason = "Published"
 			msg = "contribution revision is verified by required serving replicas"
@@ -273,6 +381,10 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		}
 	}
 	return recheck, nil
+}
+
+func (r *Reconciler) setRegions(entries *[]dnsv1alpha1.DNSRegionPublicationStatus, m *dnsv1alpha1.DNSPublicationManifest, generation int64, change func(*dnsv1alpha1.DNSRegionPublicationStatus)) {
+	projectstatus.RecordRegions(entries, r.Options.Regions, m.Spec.ExpectedRegions, generation, m.Spec.WriterEpoch, m.Spec.Revision, change)
 }
 
 // publishedRecheckDelay polls a fresh manifest for its Published verdict
@@ -327,12 +439,56 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if err != nil {
 		return false, err
 	}
+	var expectedRegions []string
+	if r.Options.regional() {
+		// Each region's control plane publishes only its own targets, and
+		// records every region the zone is served in so project status can wait
+		// for all of them.
+		local := servingTargets[:0:0]
+		for _, target := range servingTargets {
+			if !slices.Contains(expectedRegions, target.Region) {
+				expectedRegions = append(expectedRegions, target.Region)
+			}
+			if r.Options.local(target.Region) {
+				local = append(local, target)
+			}
+		}
+		if tombstone && own.Spec.ActiveManifestName != "" {
+			// A withdrawal has no contexts left; it stays expected wherever the
+			// zone was, so no region reports it withdrawn for the others.
+			var previous dnsv1alpha1.DNSPublicationManifest
+			if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: own.Spec.ActiveManifestName}, &previous); err != nil {
+				return false, err
+			}
+			for _, region := range previous.Spec.ExpectedRegions {
+				if !slices.Contains(expectedRegions, region) {
+					expectedRegions = append(expectedRegions, region)
+				}
+			}
+		}
+		sort.Strings(expectedRegions)
+		servingTargets = local
+		if len(servingTargets) == 0 && own.Spec.ActiveManifestName == "" {
+			// Nothing in this region has served the zone, so there is nothing to
+			// publish or withdraw here.
+			return tombstone, nil
+		}
+		if !tombstone {
+			if err := r.holdRegions(ctx, z, expectedRegions, ownPlan.ContextUIDs); err != nil {
+				return false, err
+			}
+		}
+	}
 	stateHash := hash
 	if !tombstone {
 		fenceBytes, _ := json.Marshal(ownPlan.Contributions)
 		stateHash = model.Hash(append(append([]byte(nil), payload...), fenceBytes...))
 		targetBytes, _ := json.Marshal(servingTargets)
 		stateHash = model.Hash(append([]byte(stateHash), targetBytes...))
+		if expectedRegions != nil {
+			regionBytes, _ := json.Marshal(expectedRegions)
+			stateHash = model.Hash(append([]byte(stateHash), regionBytes...))
+		}
 	}
 	if tombstone {
 		hash = model.EmptyContentHash()
@@ -364,7 +520,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
-	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
+	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, expectedRegions, now)
 	if err != nil {
 		return false, err
 	}
@@ -456,7 +612,7 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	return result, nil
 }
 
-func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, contextUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
+func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, contextUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, expectedRegions []string, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
 	contextUIDs = append([]types.UID{}, contextUIDs...)
 	refs := []dnsv1alpha1.DNSPublicationChunkReference{}
 	depsByRegion := map[string][]string{}
@@ -500,7 +656,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	for _, target := range servingTargets {
 		apiTargets = append(apiTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets, ExpectedRegions: expectedRegions}}
 	if err := r.createImmutable(ctx, m); err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ func TestCommittedUntargetedTombstoneCompletes(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&dnsv1alpha1.DNSPublicationManifest{}).Build()
 	r := &Reconciler{Client: cl, Options: ReconcilerOptions{PlatformNamespace: "platform", ChunkSize: 1024}}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "orphan", UID: "zone-orphan"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "orphan.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	manifest, err := r.persistPublication(ctx, zone, "tombstone", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, now)
+	manifest, err := r.persistPublication(ctx, zone, "tombstone", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,6 +63,25 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 	}
 	s.mu.RUnlock()
 
+	var errs []error
+	remove := func(obj client.Object) bool {
+		if err := s.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			errs = append(errs, err)
+			return false
+		}
+		return true
+	}
+	if s.regionsOnly != nil {
+		kept := outboxes[:0]
+		for _, out := range outboxes {
+			if region := out.Labels[regionLabel]; region != "" && !s.regionsOnly[region] {
+				remove(out)
+				continue
+			}
+			kept = append(kept, out)
+		}
+		outboxes = kept
+	}
 	protected := map[string]bool{}
 	byManifest := map[string][]*dnsv1.DNSTransportOutbox{}
 	for _, out := range outboxes {
@@ -74,14 +93,6 @@ func (s *PublicationStore) Collect(ctx context.Context) error {
 		if out.Spec.ManifestRef.Name != "" {
 			byManifest[out.Spec.ManifestRef.Name] = append(byManifest[out.Spec.ManifestRef.Name], out)
 		}
-	}
-	var errs []error
-	remove := func(obj client.Object) bool {
-		if err := s.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
-			errs = append(errs, err)
-			return false
-		}
-		return true
 	}
 	byZone := map[types.UID][]*dnsv1.DNSPublicationManifest{}
 	for _, m := range manifests {

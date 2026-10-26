@@ -311,6 +311,43 @@ ConfigMap refuses to run while publication records exist in the API server.
 Once writer epochs follow the clock, downgrading to a release that counts
 epochs from one is not supported.
 
+#### A control plane per region
+
+The `regions` option runs one control plane per region, so a region keeps
+publishing while another region, its broker or its control plane is down. Each
+control plane lists every region's shards, so a context gets the same shard
+assignment everywhere, but it plans, publishes and acknowledges only its own
+regions and connects only to their brokers. Its publication store lives on its
+own region's broker, and the bucket records which regions own it, so a control
+plane for other regions refuses to start on it.
+
+Each region's control plane holds its own lease for every zone, compiles the
+zone and commits a manifest with only its own serving targets. Writer epochs
+and revisions are ordered within a region; members only see their own region's.
+A manifest also names every region the zone is served in, so project status can
+wait for all of them: zones, registrations and contributions report each
+region's publication in `status.regions`, and `Published` names the regions
+still pending instead of one region's outage hiding the others' progress.
+Access bindings, resolver bindings and destination claims are handled by the
+control plane of the binding's region; access in a region no control plane
+serves is rejected by all of them. Before a region first publishes a zone, it
+adds a finalizer for every region the zone is served in, so a zone is not
+removed while any region still serves it, even one whose control plane is
+down. Each region removes its own finalizer once it has withdrawn the zone. A
+region taken out of service leaves its finalizers on zones it served, and they
+must be removed by hand.
+
+The project API stays shared: every region reads its inputs from it and writes
+status to it. Moving to regional control planes uses the stopped rollout above,
+with `data.store` set to `jetstream-regional`; serving members keep answering
+from their checkpoints during the switch, and each region's first writer epoch
+is above the shared writer's. Serving outboxes for other regions left in a
+region's bucket by the shared writer are collected. Until each region first
+compiles a zone, its project status may briefly read not published, and a
+zone deleted in that window is withdrawn from a region that has not compiled it
+yet only when its resolver bindings drop the zone. Switching back to a control
+plane for every region is not supported.
+
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.
 New allocations that exceed capacity report a condition. If an update cannot

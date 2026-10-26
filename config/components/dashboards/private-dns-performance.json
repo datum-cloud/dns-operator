@@ -1878,7 +1878,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "expr": "max by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],
@@ -1939,7 +1939,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"})",
+               "expr": "max by (pod, container) (container_memory_working_set_bytes{namespace=\"internal-dns-system\",container!=\"\",container!=\"POD\"})",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],
@@ -2292,7 +2292,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "expr": "max by (pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],
@@ -2353,7 +2353,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
+               "expr": "max by (pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",container!=\"\",container!=\"POD\"})",
                "legendFormat": "{{pod}} {{container}}"
             }
          ],

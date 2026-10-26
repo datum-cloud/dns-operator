@@ -147,6 +147,38 @@ admission for record sets, 0.4 to 0.9 s today, which is outside this controller.
   legitimately be in flight. A mismatch is logged and counted in a metric, the
   zone is queued, and the alert tells an operator to turn the option off.
 
+## Implementation status
+
+The first cut, behind `perZoneReconcile`, ships the event routing and leaves the
+read path as it is:
+
+- Built: zone keys for record sets, registrations (a new watch) and
+  contributions, queued after 75 ms; contribution events forward to their
+  registration's zone key, so a zone compiles on one worker at a time; the
+  project pass renews leases and queues a held zone only when its project-wide
+  inputs (the zone, the writer epoch, its associations, the resolver bindings)
+  changed, or every five minutes; a zone key waits while any of its
+  associations is pinned against an older zone generation; a process-wide
+  limit on concurrent zone compiles.
+- Not yet built: reads from the watch cache. Each zone key still lists its
+  namespace's inputs live. Reading them from the cache safely needs one
+  consistent source for registrations, contributions and record sets, which
+  the incremental compile's in-memory zone state provides. Also not built:
+  optimistic locks on input status patches, the ACK sink queuing zones, and
+  the shadow compile on resync.
+
+## Regions
+
+Every region must keep publishing when another region or the central control
+plane is down. Zone keys do not change where publications are written, so this
+proposal does not make that true on its own. A per-region writer would need:
+
+- zone inputs readable in the region, from a regional replica of the project
+  API or a regional publication store;
+- a lease and writer epoch per zone and region, so regions fence independently;
+- acknowledgements consumed and aggregated in the region, with project status
+  merged from regions rather than gating any region's publication.
+
 ## Risks
 
 - **Missed mappings.** An input that can change a zone but is not in the event

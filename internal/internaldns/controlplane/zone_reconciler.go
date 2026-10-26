@@ -133,26 +133,29 @@ type queuedZone struct {
 	at     time.Time
 }
 
+// bindingInputs fingerprints the resolver bindings that pick a zone's serving
+// targets. Targets read only binding specs and deletion, so status is left out.
+func bindingInputs(bindings []dnsv1alpha1.DNSResolverBinding) string {
+	h := sha256.New()
+	for i := range bindings {
+		b := &bindings[i]
+		fmt.Fprintf(h, "binding %s %d %v\n", b.UID, b.Generation, b.DeletionTimestamp)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // zoneProjectInputs fingerprints what the project pass decides for a zone: the
 // zone itself, the writer epoch it holds, the zone's associations and their
-// status, and the resolver bindings that pick its serving targets. Record
-// inputs are left out; their own events queue the zone.
-func zoneProjectInputs(z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, bindings []dnsv1alpha1.DNSResolverBinding) string {
+// status, and the resolver bindings. Record inputs are left out; their own
+// events queue the zone.
+func zoneProjectInputs(z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, bindings string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "zone %s %d %v %v epoch %d\n", z.UID, z.Generation, z.DeletionTimestamp, z.Finalizers, own.Spec.WriterEpoch)
+	fmt.Fprintf(h, "zone %s %d %v %v epoch %d bindings %s\n", z.UID, z.Generation, z.DeletionTimestamp, z.Finalizers, own.Spec.WriterEpoch, bindings)
 	for i := range assocs {
 		a := &assocs[i]
 		if a.Spec.DNSZoneRef.Name == z.Name {
 			fmt.Fprintf(h, "assoc %s %s\n", a.UID, a.ResourceVersion)
 		}
-	}
-	for i := range bindings {
-		b := &bindings[i]
-		fmt.Fprintf(h, "binding %s %d %v", b.UID, b.Generation, b.DeletionTimestamp)
-		for _, c := range b.Status.Conditions {
-			fmt.Fprintf(h, " %s=%s", c.Type, c.Status)
-		}
-		fmt.Fprintln(h)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -166,18 +169,21 @@ func (r *Reconciler) queueZoneIfChanged(ctx context.Context, z *dnsv1alpha1.DNSZ
 			return
 		}
 	}
-	r.queuedZones.Store(z.UID, queuedZone{inputs: inputs, at: now})
-	r.queueZone(ctx, z)
+	if r.queueZone(ctx, z) {
+		r.queuedZones.Store(z.UID, queuedZone{inputs: inputs, at: now})
+	}
 }
 
 // queueZone hands a zone from the project pass to the zone controller.
-func (r *Reconciler) queueZone(ctx context.Context, z *dnsv1alpha1.DNSZone) {
+func (r *Reconciler) queueZone(ctx context.Context, z *dnsv1alpha1.DNSZone) bool {
 	if r.zoneQueue == nil {
-		return
+		return false
 	}
 	select {
 	case r.zoneQueue <- event.GenericEvent{Object: z}:
+		return true
 	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -298,7 +304,12 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 		if err := r.Patch(ctx, &z, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
+		r.queuedZones.Delete(z.UID)
 		return ctrl.Result{}, nil
+	}
+	if !z.DeletionTimestamp.IsZero() {
+		// The tombstone was just published; check for its acknowledgement.
+		return ctrl.Result{RequeueAfter: staleAssociationRetry}, nil
 	}
 	if pending.IsZero() {
 		return ctrl.Result{}, nil

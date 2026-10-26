@@ -63,16 +63,16 @@ cache can lag the writer it replaces. The rules:
   live input is in the cache with the same UID and an equal or newer
   generation, and every cached input that the live read did not return has
   left the cache. Resource versions are not compared; they are opaque on this
-  API.
-- **Skew-caused rejections are confirmed live.** Three rejection reasons can
-  come from one kind's cache lagging another's: a contribution's registration
-  is missing or at another generation (`MissingRegistration`,
-  `StaleRegistrationGeneration`), and a registration's zone reference pin does
-  not match (`InvalidReference`). When a compile would newly reject an input
-  the current publication accepted for one of these reasons, the zone re-reads
-  that contribution, registration and pin live. If the live objects agree with
-  the rejection, it publishes the withdrawal; otherwise it requeues once,
-  briefly. A withdrawal is never held longer than that.
+  API. Under constant churn a zone may stay on live reads, which is safe.
+- **New rejections are confirmed live.** Cache lag between kinds can make a
+  compile reject an input the current publication accepted: a contribution's
+  registration missing or at another generation (`StaleRegistrationGeneration`),
+  a registration's zone pin not matching (`InvalidReference`), or an SRV
+  source losing its target address (`MissingSRVTargetAddress`) because the
+  address moved between kinds. Any compile that newly rejects a previously
+  accepted input re-reads that input and everything its rejection depended on
+  live, substitutes the live objects for the cached ones, and compiles again.
+  The result publishes; nothing is held back waiting for the cache.
 - **Fences.** Registration and contribution fences in the current publication
   are compared with cached generations before compiling; a cache behind its
   fences waits. A fenced object missing from the cache is confirmed gone with
@@ -99,13 +99,19 @@ change rewrites and resends every chunk.
 - The plan's record sets, owners and fences are split into groups by a hash of
   the owner name (fences by the hash of their object UID). A group that grows
   past a size limit splits by the next bits of the same hash, so groups stay
-  small as a zone grows and existing groups keep their hashes.
+  small as a zone grows and existing groups keep their hashes. A group that
+  cannot split further, one owner name with many records, is cut into byte
+  ranges of its canonical JSON, each its own hashed chunk.
 - Each chunk is canonical JSON, named by its SHA-256, and carries its zone and
-  hash, not a manifest identity.
-- A manifest lists its chunk hashes in order and the hash of the assembled
-  plan, and still names its zone, epoch, revision and previous revision. Every
-  version is a complete snapshot. The fence lists move out of the manifest
-  object into chunks; status aggregation reads them from the assembled plan.
+  hash, not a manifest identity. This is a new chunk kind; the existing chunk
+  kind requires an epoch, revision and index and stays for the old form.
+- A manifest lists its chunk hashes in order, and still names its zone, epoch,
+  revision and previous revision. The plan hash is the SHA-256 of the canonical
+  JSON of the assembled plan, not of concatenated chunk bytes; every reader
+  that verifies a plan (manifest verification, the writer's previous-plan load,
+  acknowledgement handling, bootstrap) uses it. Every version is a complete
+  snapshot. The fence lists move out of the manifest object into chunks;
+  status aggregation reads them from the assembled plan.
 - No-op detection compares the ordered chunk hash list plus the serving targets
   and expected regions. Removing or reverting a group adds no chunk but changes
   the list, so it still publishes.
@@ -113,24 +119,24 @@ change rewrites and resends every chunk.
 ### Delivery
 
 - **Export ledger.** Each zone, region and shard has a ledger of chunk hashes
-  the broker has acknowledged and the region's snapshot store still holds. It
-  lives in the publication store and is protected from collection.
+  the broker has acknowledged for it. It lives in the publication store and is
+  protected from collection.
 - **Dedupe on the ledger only.** A writer skips sending a chunk only when its
   hash is in that ledger. A crash or lost commit can leave a staged chunk that
   was never exported; it is not in the ledger, so it is sent.
-- **Activation waits for every referenced chunk.** A manifest's activation
-  depends on ledger entries for every chunk it lists, reused ones included, not
-  on outbox objects that collection may remove.
+- **Activation stages what is missing.** Before activating a manifest, the
+  writer checks that every chunk it lists has a ledger entry and is present in
+  the region's snapshot store. For any that is missing, it drops the ledger
+  entry and stages an export for the chunk, and activation depends on that
+  export. This also heals a snapshot store that lost data.
 - **Members fetch what they lack.** A member that receives a manifest
   referencing a chunk it does not hold reads it by hash from its region's
-  snapshot store (direct get of `chunk.<zone>.<hash>`). That covers a long
-  outage beyond the stream's retention, a recreated durable, a lease takeover,
-  and the switch to regional writers. A newly added shard has an empty ledger,
-  so it is sent every chunk.
-- **Snapshot store keys.** Chunk keys become `chunk.<zone>.<hash>`, created if
-  absent and compared by payload hash; manifest heads keep their epoch and
-  revision ordering. Bootstrap reads each head and fetches only the chunks it
-  lists.
+  snapshot store, at `<region>.<shard>.chunk.<zone>.<hash>`. That covers a long
+  outage beyond the stream's retention, a recreated durable and a lease
+  takeover. A newly added shard has an empty ledger, so it is sent every chunk.
+- **Snapshot store keys.** Hash-keyed chunk keys are created if absent and
+  compared by payload hash; manifest heads keep their epoch and revision
+  ordering. Bootstrap reads each head and fetches only the chunks it lists.
 - **Members.** A member does not store applied chunks. It re-derives an
   applied version's chunk hashes from the applied plan with the same
   deterministic split, and keeps only chunks of pending versions.
@@ -143,13 +149,14 @@ including pending ones:
 
 - the publication store, over manifests kept for retention or with pending
   dependencies;
-- the regional snapshot store, over current heads and every pending manifest
-  the ledger names, and never before a chunk's export has aged past a grace
-  period;
+- the regional snapshot store, over current heads and every pending manifest;
 - a member, over its pending versions.
 
-A chunk is removed when its count reaches zero, and leaves the ledger at the
-same time, so it is re-exported if a later version needs it again.
+A chunk becomes collectable when its count reaches zero and a grace period has
+passed since the last manifest that referenced it, so a member bootstrapping
+from a head that just moved can still finish. The ledger entry is removed
+first, then the chunk; a writer that loses the race finds the entry missing at
+activation and re-exports the chunk.
 
 ### Fences
 
@@ -158,14 +165,16 @@ both writer and members. Phase 2 bounds them. A retired fence gains a
 retirement time, and is dropped only after its contribution is confirmed
 absent live (not just terminating) and the retired fence has been in a head
 every member acknowledged for longer than the replay window. Members drop it
-when it leaves the plan.
+when it leaves the plan, so member fences gain the zone they belong to.
 
 ### Regions
 
-Each region's writer applies the same input events to its own zone inputs and
-keeps its own (epoch, revision) chain. Ledgers and reference counts are per
-zone, region and shard. A new epoch needs nothing special: the manifest lists
-every chunk hash, and a member fetches any it lacks from its region's store.
+Main has one writer per zone, publishing to several serving targets. Ledgers
+and reference counts are per zone, region and shard, so the design works with
+one writer today and with a writer per region once regional control planes
+land; each regional writer then keeps its own (epoch, revision) chain. A new
+epoch needs nothing special: the manifest lists every chunk hash, and a member
+fetches any it lacks from its region's store.
 
 ## Rollout
 
@@ -177,12 +186,17 @@ every chunk hash, and a member fetches any it lacks from its region's store.
     and add only optional fields, so a previous release can still load their
     checkpoint and a re-upgraded member tolerates the fields being gone.
   - Members report the chunk forms they accept in their acknowledgements.
-    Writers switch, behind an option, only for a shard whose members all
-    report the new form.
-  - Rolling back means writers first, then members. A member on the old
-    release cannot read hash-keyed chunks.
+    Writers use the new form, behind an option, only for a shard whose members
+    all report it. The check is continuous: if a member that reports only the
+    old form joins, the writer publishes that shard in the old form again.
+  - Rolling back: turn the writer option off on the new release, which
+    republishes every zone in the old form; confirm every active manifest and
+    snapshot head is old form; only then roll back writer and member binaries.
+    An old writer cannot load a new-form previous publication, and an old
+    member cannot read new-form chunks.
   - The old form is removed after members have run the new code through one
-    restart.
+    restart. Hash-keyed snapshot keys left by a rollback are removed by a
+    one-off cleanup, since the old collector does not recognise them.
 - Each phase is measured with the internal DNS publish test, API request rate
   and bytes sent per publication.
 
@@ -195,8 +209,8 @@ every chunk hash, and a member fetches any it lacks from its region's store.
   reuses a chunk it lacks. It keeps serving its current version and reports
   the version as unapplied.
 - **Reference counting bugs** could collect a chunk a head still needs. The
-  writer verifies every head's chunks are present before activating it, and
-  members verify the assembled plan hash.
+  writer verifies every head's chunks are present before activating it and
+  re-exports any that are missing, and members verify the assembled plan hash.
 - **Member checkpoints** are still rewritten whole on every save, so a
   member's checkpoint cost stays proportional to all its zones until the
   checkpoint is split.

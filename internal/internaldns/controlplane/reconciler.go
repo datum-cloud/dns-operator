@@ -43,6 +43,10 @@ type ReconcilerOptions struct {
 	// and bounds how many project passes run at once, so a restart does not
 	// start a full pass of every project against the API server together.
 	PassSlots chan struct{}
+
+	// Stopping, when set and true, stops the reconciler taking or renewing
+	// zone leases so the process can release them before it exits.
+	Stopping func() bool
 }
 
 type ServingRegion struct {

@@ -5,7 +5,7 @@ customer workload uses it. A k6 instance queries its VPC resolver (`fd53::53`)
 and measures latency, throughput, and wrong or failed answers for:
 
 - **private**: automatic names of instances in the same VPC
-  (`<instance>.datum.internal`), which must resolve.
+  (`<instance>.instances.datum.internal`), which must resolve.
 - **nxdomain**: names that exist only in another project, which must return
   NXDOMAIN.
 - **public**: internet names through the recursor. AAAA answers for IPv4-only
@@ -182,7 +182,7 @@ annotations; the other series are `idns_perf_publish_*` and `idns_perf_query_*`.
 
 `run.sh` reads `PROJECT`, `LOCATION` (`us-central-1`), `NETWORK` (`default`),
 `TARGETS`, `GENERATORS`, `IMAGE`, `ZONE_DOMAIN`
-(`perf.internal`), `INTERVAL`, `DURATION`, and `ALLOW_ANY_ENV`. `run` exits
+(`perf.internal`), `INSTANCE_DOMAIN` (`instances.datum.internal`), `INTERVAL`, `DURATION`, and `ALLOW_ANY_ENV`. `run` exits
 non-zero when any generator fails a threshold, fails to start, or returns no
 summary.
 

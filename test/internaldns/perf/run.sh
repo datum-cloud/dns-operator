@@ -26,6 +26,7 @@ TARGETS=${TARGETS:-3}
 GENERATORS=${GENERATORS:-1}
 IMAGE=${IMAGE:-ghcr.io/datum-cloud/internal-dns-perf:v0.0.0-main}
 ZONE_DOMAIN=${ZONE_DOMAIN:-perf.internal}
+INSTANCE_DOMAIN=${INSTANCE_DOMAIN:-instances.datum.internal}
 ZONE_CLASS=${ZONE_CLASS:-private-coredns}
 INTERVAL=${INTERVAL:-10}
 DURATION=${DURATION:-2m}
@@ -78,13 +79,13 @@ up() {
   render "$here/manifests/loadgen.yaml" | dctl apply -f -
   wait_ready idns-perf-target "$TARGETS"
   wait_ready idns-perf-k6 "$GENERATORS"
-  echo "Private names: $(instances idns-perf-target "$TARGETS" | sed 's/$/.datum.internal/' | paste -sd, -)"
+  echo "Private names: $(instances idns-perf-target "$TARGETS" | sed "s/\$/.$INSTANCE_DOMAIN/" | paste -sd, -)"
 }
 
 run() {
   local names pod i failed=0
   local -a pods=() pids=()
-  names=$(instances idns-perf-target "$TARGETS" | sed 's/$/.datum.internal/' | paste -sd, -)
+  names=$(instances idns-perf-target "$TARGETS" | sed "s/\$/.$INSTANCE_DOMAIN/" | paste -sd, -)
   while IFS= read -r pod; do pods+=("$pod"); done < <(instances idns-perf-k6 "$GENERATORS")
   mkdir -p "$RESULTS"
   for pod in "${pods[@]}"; do

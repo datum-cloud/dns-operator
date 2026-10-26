@@ -38,3 +38,9 @@ harness writes, each labelled with `run`, `scenario` and `commit`, and
 `idns_perf_run`, which is 1 every 10 seconds while a run lasts. Control-plane
 series carry no run label; the comparison dashboard cuts them to a run's
 window with the `during()` helper in `lib.libsonnet`.
+
+Query reporters can publish `idns_perf_query_offered_qps{run,scenario,commit,kind}`
+once per second alongside the actual sent rate.
+`idns_perf_query_dropped_iterations{run,scenario,commit}` is one sample containing
+the total generator iterations dropped, emitted at the end of the run. Missing
+series remain blank for older reports; they must not be interpreted as zero.

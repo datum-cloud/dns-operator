@@ -99,6 +99,7 @@ local runsTable =
     qTable('sum by (%s) (avg_over_time(idns_perf_query_qps{%s}[$__range]))' % [byRun, runSel], 'J'),
     qTable('max by (%s) (max_over_time(idns_perf_query_p99_ms{%s}[$__range]))' % [byRun, runSel], 'K'),
     qTable('sum by (%s) (sum_over_time(idns_perf_query_failed{%s}[$__range]))' % [byRun, runSel], 'L'),
+    qTable('sum by (%s) (sum_over_time(idns_perf_query_dropped_iterations{%s}[$__range]))' % [byRun, runSel], 'M'),
   ])
   + table.queryOptions.withTransformations([
     { id: 'merge', options: {} },
@@ -112,7 +113,7 @@ local runsTable =
         indexByName: {
           run: 0, scenario: 1, commit: 2, 'Value #A': 3, 'Value #B': 4,
           'Value #C': 5, 'Value #D': 6, 'Value #E': 7, 'Value #F': 8, 'Value #G': 9, 'Value #H': 10,
-          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #FROM': 15, 'Value #TO': 16, 'Value #CMP': 17,
+          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #M': 15, 'Value #FROM': 16, 'Value #TO': 17, 'Value #CMP': 18,
         },
         renameByName: {
           'Value #A': 'started', 'Value #B': 'duration',
@@ -120,7 +121,7 @@ local runsTable =
           'Value #E': 'update p50', 'Value #F': 'update p99',
           'Value #G': 'delete p50', 'Value #H': 'delete p99',
           'Value #I': 'never answered', 'Value #J': 'query rate',
-          'Value #K': 'query worst p99', 'Value #L': 'failed queries',
+          'Value #K': 'query worst p99', 'Value #L': 'failed queries', 'Value #M': 'dropped iterations',
           'Value #FROM': 'from', 'Value #TO': 'to', 'Value #CMP': 'compare_from',
         },
       },
@@ -144,7 +145,7 @@ local runsTable =
     + table.fieldOverride.byName.withProperty('custom.width', 200),
     table.fieldOverride.byName.new('duration')
     + table.fieldOverride.byName.withProperty('unit', 's'),
-    table.fieldOverride.byRegexp.new('never answered|failed queries')
+    table.fieldOverride.byRegexp.new('never answered|failed queries|dropped iterations')
     + table.fieldOverride.byRegexp.withProperty('unit', 'short')
     + table.fieldOverride.byRegexp.withProperty('custom.cellOptions', { type: 'color-text' })
     + table.fieldOverride.byRegexp.withProperty('thresholds', { mode: 'absolute', steps: [lib.green, { color: 'red', value: 1 }] }),
@@ -263,9 +264,12 @@ local queryLatency = ts(
 );
 
 local queryRate = ts(
-  'Load test queries sent',
-  'Queries per second across all generators, by run and query kind.',
-  [qRange('sum by (run, kind) (avg_over_time(idns_perf_query_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}}')],
+  'Load test queries offered and sent',
+  'Configured query rate versus queries actually sent across all generators, by run and query kind. A gap can indicate generator saturation; inspect dropped iterations in the runs table. Older reports may not include offered rates.',
+  [
+    qRange('sum by (run, kind) (avg_over_time(idns_perf_query_offered_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}} offered'),
+    qRange('sum by (run, kind) (avg_over_time(idns_perf_query_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}} sent'),
+  ],
   'reqps',
   grid(8, 8, 8, 35),
   interval='1s',

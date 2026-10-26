@@ -117,7 +117,7 @@
                {
                   "matcher": {
                      "id": "byRegexp",
-                     "options": "never answered|failed queries"
+                     "options": "never answered|failed queries|dropped iterations"
                   },
                   "properties": [
                      {
@@ -355,6 +355,17 @@
                "format": "table",
                "instant": true,
                "refId": "L"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (run, scenario, commit) (sum_over_time(idns_perf_query_dropped_iterations{run=~\"$run\"}[$__range]))",
+               "format": "table",
+               "instant": true,
+               "refId": "M"
             }
          ],
          "title": "Runs",
@@ -389,18 +400,19 @@
                      "Value #A": 3,
                      "Value #B": 4,
                      "Value #C": 5,
-                     "Value #CMP": 17,
+                     "Value #CMP": 18,
                      "Value #D": 6,
                      "Value #E": 7,
                      "Value #F": 8,
-                     "Value #FROM": 15,
+                     "Value #FROM": 16,
                      "Value #G": 9,
                      "Value #H": 10,
                      "Value #I": 11,
                      "Value #J": 12,
                      "Value #K": 13,
                      "Value #L": 14,
-                     "Value #TO": 16,
+                     "Value #M": 15,
+                     "Value #TO": 17,
                      "commit": 2,
                      "run": 0,
                      "scenario": 1
@@ -420,6 +432,7 @@
                      "Value #J": "query rate",
                      "Value #K": "query worst p99",
                      "Value #L": "failed queries",
+                     "Value #M": "dropped iterations",
                      "Value #TO": "to"
                   }
                }
@@ -1002,7 +1015,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Queries per second across all generators, by run and query kind.",
+         "description": "Configured query rate versus queries actually sent across all generators, by run and query kind. A gap can indicate generator saturation; inspect dropped iterations in the runs table. Older reports may not include offered rates.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1052,11 +1065,20 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
+               "expr": "sum by (run, kind) (avg_over_time(idns_perf_query_offered_qps{run=~\"$run\"}[$__interval]))",
+               "legendFormat": "{{run}} {{kind}} offered"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
                "expr": "sum by (run, kind) (avg_over_time(idns_perf_query_qps{run=~\"$run\"}[$__interval]))",
-               "legendFormat": "{{run}} {{kind}}"
+               "legendFormat": "{{run}} {{kind}} sent"
             }
          ],
-         "title": "Load test queries sent",
+         "title": "Load test queries offered and sent",
          "type": "timeseries"
       },
       {

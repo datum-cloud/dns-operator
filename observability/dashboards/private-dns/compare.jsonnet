@@ -82,6 +82,7 @@ local measures = [
   { name: 'query rate (per second)', expr: function(run) 'sum(avg_over_time(idns_perf_query_qps{run="%s"}[$__range]))' % run },
   { name: 'query worst p99 (ms)', expr: function(run) 'max(max_over_time(idns_perf_query_p99_ms{run="%s"}[$__range]))' % run },
   { name: 'queries failed', expr: function(run) 'sum(sum_over_time(idns_perf_query_failed{run="%s"}[$__range]))' % run },
+  { name: 'generator iterations dropped', expr: function(run) 'sum(sum_over_time(idns_perf_query_dropped_iterations{run="%s"}[$__range]))' % run },
   { name: 'project pass p50 (s)', expr: passQuantile('0.5') },
   { name: 'project pass p90 (s)', expr: passQuantile('0.9') },
   { name: 'project pass p99 (s)', expr: passQuantile('0.99') },

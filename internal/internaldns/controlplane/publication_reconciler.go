@@ -115,6 +115,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	var zoneErrors []error
 	ctx = withZoneLoopReads(withPinnedAssociationReferences(ctx))
 	held := map[types.UID]heldOwnership{}
+	var bindingsFingerprint string
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || (z.DeletionTimestamp.IsZero() && !controllerutil.ContainsFinalizer(z, privateZoneFinalizer)) {
@@ -154,12 +155,15 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		if r.Options.PerZoneReconcile {
-			bindings, err := r.zoneLoopBindings(ctx)
-			if err != nil {
-				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
-				continue
+			if bindingsFingerprint == "" {
+				bindings, err := r.zoneLoopBindings(ctx)
+				if err != nil {
+					zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
+					break
+				}
+				bindingsFingerprint = bindingInputs(bindings.Items)
 			}
-			r.queueZoneIfChanged(ctx, z, zoneProjectInputs(z, lease.own, assocs.Items, bindings.Items), now)
+			r.queueZoneIfChanged(ctx, z, zoneProjectInputs(z, lease.own, assocs.Items, bindingsFingerprint), now)
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)

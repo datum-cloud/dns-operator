@@ -79,7 +79,7 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 	store := pubstore.NewRegional(api, byURL[homeURL], buckets, byRegion)
 	if len(cfg.Regions) > 0 {
 		store.OnlyRegions(cfg.Regions)
-		if err := store.ClaimRegions(ctx, cfg.Regions, cfg.SwitchPublicationStore); err != nil {
+		if err := store.ClaimRegions(ctx, cfg.Regions); err != nil {
 			closeAll()
 			return nil, nil, err
 		}

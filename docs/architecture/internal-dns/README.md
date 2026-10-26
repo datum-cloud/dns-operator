@@ -329,15 +329,24 @@ wait for all of them: zones, registrations and contributions report each
 region's publication in `status.regions`, and `Published` names the regions
 still pending instead of one region's outage hiding the others' progress.
 Access bindings, resolver bindings and destination claims are handled by the
-control plane of the binding's region. Each region holds its own finalizer on a
-private zone until it has withdrawn the zone there.
+control plane of the binding's region; access in a region no control plane
+serves is rejected by all of them. Before a region first publishes a zone, it
+adds a finalizer for every region the zone is served in, so a zone is not
+removed while any region still serves it, even one whose control plane is
+down. Each region removes its own finalizer once it has withdrawn the zone. A
+region taken out of service leaves its finalizers on zones it served, and they
+must be removed by hand.
 
 The project API stays shared: every region reads its inputs from it and writes
 status to it. Moving to regional control planes uses the stopped rollout above,
 with `data.store` set to `jetstream-regional`; serving members keep answering
 from their checkpoints during the switch, and each region's first writer epoch
 is above the shared writer's. Serving outboxes for other regions left in a
-region's bucket by the shared writer are collected.
+region's bucket by the shared writer are collected. Until each region first
+compiles a zone, its project status may briefly read not published, and a
+zone deleted in that window is withdrawn from a region that has not compiled it
+yet only when its resolver bindings drop the zone. Switching back to a control
+plane for every region is not supported.
 
 Contexts, access bindings, and publications share one stable shard assignment
 per region. Capacity limits admit established contexts before new allocations.

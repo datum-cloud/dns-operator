@@ -163,6 +163,36 @@ func TestEachRegionPublishesItsOwnTargets(t *testing.T) {
 	if c == nil || c.Status != metav1.ConditionFalse || c.Message != "publication awaits required replica verification in east, west" {
 		t.Fatalf("Published = %#v", c)
 	}
+
+	// East's serving members verify its publication; west's do not.
+	var eastManifests dnsv1alpha1.DNSPublicationManifestList
+	if err := stores["east"].List(ctx, &eastManifests); err != nil {
+		t.Fatal(err)
+	}
+	m := eastManifests.Items[0]
+	apimeta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{Type: "Published", Status: metav1.ConditionTrue, Reason: "ReplicaVerification", LastTransitionTime: metav1.NewTime(now)})
+	if err := stores["east"].Status().Update(ctx, &m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconcilers["east"].Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := shared.Get(ctx, client.ObjectKeyFromObject(reg), &registration); err != nil {
+		t.Fatal(err)
+	}
+	c = apimeta.FindStatusCondition(registration.Status.Conditions, "Published")
+	if c == nil || c.Status != metav1.ConditionFalse || c.Message != "publication awaits required replica verification in west" {
+		t.Fatalf("with only east verified, Published = %#v", c)
+	}
+	var contribution dnsv1alpha1.DNSRecordContribution
+	if err := shared.Get(ctx, client.ObjectKeyFromObject(contrib), &contribution); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range contribution.Status.Regions {
+		if e.Published != (e.Region == "east") {
+			t.Fatalf("contribution regions = %#v, want only east published", contribution.Status.Regions)
+		}
+	}
 }
 
 func TestLastRegionReleasesTheSharedFinalizer(t *testing.T) {

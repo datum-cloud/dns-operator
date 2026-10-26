@@ -53,7 +53,11 @@ func claimPublicationStore(ctx context.Context, api client.Client, namespace, st
 	if err != nil {
 		return fmt.Errorf("read publication store marker: %w", err)
 	}
-	if active := marker.Data["store"]; active != store && switching {
+	if active := marker.Data["store"]; active == publicationStoreRegional && store != publicationStoreRegional {
+		// The shared writer would not release regional zone finalizers, and it
+		// would read regional buckets' zone records as its own.
+		return fmt.Errorf("publication stores are regional in ConfigMap %s/%s; returning to %q is not supported", namespace, publicationStoreMarker, store)
+	} else if active != store && switching {
 		base := marker.DeepCopy()
 		if marker.Data == nil {
 			marker.Data = map[string]string{}

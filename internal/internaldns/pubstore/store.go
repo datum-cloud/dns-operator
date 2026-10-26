@@ -171,18 +171,18 @@ func (s *PublicationStore) OnlyRegions(regions []string) {
 // ClaimRegions records regions as the owners of the home bucket, and refuses
 // a bucket another region's control plane owns: two regions sharing a bucket
 // would compete for the same zone leases with different serving targets.
-// takeover replaces another claim, for a stopped rollout that moves a bucket.
-func (s *PublicationStore) ClaimRegions(ctx context.Context, regions []string, takeover bool) error {
+// Moving a bucket to other regions means deleting its regions key first.
+func (s *PublicationStore) ClaimRegions(ctx context.Context, regions []string) error {
 	sorted := append([]string(nil), regions...)
 	sort.Strings(sorted)
 	want := []byte(strings.Join(sorted, ","))
 	kv := s.buckets[s.home]
-	current, revision, err := kv.Get(ctx, regionsKey)
+	current, _, err := kv.Get(ctx, regionsKey)
 	if errors.Is(err, transport.ErrKVNotFound) {
 		if _, err := kv.Create(ctx, regionsKey, want); err == nil || !errors.Is(err, transport.ErrKVExists) {
 			return err
 		}
-		current, revision, err = kv.Get(ctx, regionsKey)
+		current, _, err = kv.Get(ctx, regionsKey)
 	}
 	if err != nil {
 		return fmt.Errorf("read the bucket's region claim: %w", err)
@@ -190,11 +190,7 @@ func (s *PublicationStore) ClaimRegions(ctx context.Context, regions []string, t
 	if bytes.Equal(current, want) {
 		return nil
 	}
-	if !takeover {
-		return fmt.Errorf("publication bucket belongs to the control plane for regions %q, not %q; give each region its own bucket, or stop every control plane and start with switchPublicationStore to move it", current, want)
-	}
-	_, err = kv.Update(ctx, regionsKey, want, revision)
-	return err
+	return fmt.Errorf("publication bucket belongs to the control plane for regions %q, not %q; give each region its own bucket", current, want)
 }
 
 // View is the store as one region's loops use it: a record not yet in the

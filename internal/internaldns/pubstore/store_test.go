@@ -425,20 +425,14 @@ func TestStoreKeepsInt64FieldsExact(t *testing.T) {
 func TestRegionsCannotShareABucket(t *testing.T) {
 	ctx := t.Context()
 	store, _, _ := newStore(t)
-	if err := store.ClaimRegions(ctx, []string{"west", "east"}, false); err != nil {
+	if err := store.ClaimRegions(ctx, []string{"west", "east"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ClaimRegions(ctx, []string{"east", "west"}, false); err != nil {
+	if err := store.ClaimRegions(ctx, []string{"east", "west"}); err != nil {
 		t.Fatalf("the same regions in another order must keep the claim: %v", err)
 	}
-	if err := store.ClaimRegions(ctx, []string{"north"}, false); err == nil {
+	if err := store.ClaimRegions(ctx, []string{"north"}); err == nil {
 		t.Fatal("another region's control plane claimed a bucket that is already owned")
-	}
-	if err := store.ClaimRegions(ctx, []string{"north"}, true); err != nil {
-		t.Fatalf("a stopped rollout must be able to move the bucket: %v", err)
-	}
-	if err := store.ClaimRegions(ctx, []string{"east", "west"}, false); err == nil {
-		t.Fatal("the bucket's previous owner reclaimed it without a takeover")
 	}
 }
 

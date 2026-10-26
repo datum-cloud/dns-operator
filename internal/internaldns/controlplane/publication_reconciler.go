@@ -27,40 +27,44 @@ import (
 
 const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publication"
 
-// zoneFinalizers are the finalizers this control plane holds on a private
-// zone until it has withdrawn the zone: the shared one when it publishes every
-// region, or one for each region it publishes, so a zone is not removed while
-// any region still serves it.
-func (r *Reconciler) zoneFinalizers() []string {
-	if !r.Options.regional() {
-		return []string{privateZoneFinalizer}
-	}
-	finalizers := make([]string, 0, len(r.Options.Regions))
-	for _, region := range r.Options.Regions {
-		finalizers = append(finalizers, privateZoneFinalizer+"."+model.SafeToken(region))
-	}
-	return finalizers
+// regionFinalizer holds a private zone until region's control plane has
+// withdrawn it, when each region runs its own.
+func regionFinalizer(region string) string {
+	return privateZoneFinalizer + "." + model.SafeToken(region)
 }
 
+// holdsZone reports whether this control plane may publish z. A control plane
+// that publishes every region holds the shared finalizer first. Regional
+// control planes add a finalizer for every region a zone is served in before
+// they publish it (holdRegions), so they need none to start.
 func (r *Reconciler) holdsZone(z *dnsv1alpha1.DNSZone) bool {
-	for _, f := range r.zoneFinalizers() {
-		if !controllerutil.ContainsFinalizer(z, f) {
-			return false
-		}
+	return r.Options.regional() || controllerutil.ContainsFinalizer(z, privateZoneFinalizer)
+}
+
+// holdRegions adds a finalizer for each region z is served in, including
+// regions another control plane publishes, so that a zone is not removed while
+// any region still serves it, even when that region's control plane is down.
+func (r *Reconciler) holdRegions(ctx context.Context, z *dnsv1alpha1.DNSZone, regions []string) error {
+	base := z.DeepCopy()
+	for _, region := range regions {
+		controllerutil.AddFinalizer(z, regionFinalizer(region))
 	}
-	return true
+	if len(base.Finalizers) == len(z.Finalizers) {
+		return nil
+	}
+	return r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 // releaseZone removes this control plane's finalizers from a withdrawn zone.
 // The shared finalizer from before regions had their own control planes goes
 // with the last region's.
 func (r *Reconciler) releaseZone(z *dnsv1alpha1.DNSZone) {
-	mine := r.zoneFinalizers()
-	for _, f := range mine {
-		controllerutil.RemoveFinalizer(z, f)
-	}
 	if !r.Options.regional() {
+		controllerutil.RemoveFinalizer(z, privateZoneFinalizer)
 		return
+	}
+	for _, region := range r.Options.Regions {
+		controllerutil.RemoveFinalizer(z, regionFinalizer(region))
 	}
 	for _, f := range z.Finalizers {
 		if strings.HasPrefix(f, privateZoneFinalizer+".") {
@@ -151,10 +155,8 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		}
 		if z.DeletionTimestamp.IsZero() && !r.holdsZone(z) {
 			base := z.DeepCopy()
-			for _, f := range r.zoneFinalizers() {
-				controllerutil.AddFinalizer(z, f)
-			}
-			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
+			controllerutil.AddFinalizer(z, privateZoneFinalizer)
+			if err := r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 			continue
@@ -186,7 +188,9 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		if !z.DeletionTimestamp.IsZero() && result {
 			base := z.DeepCopy()
 			r.releaseZone(z)
-			if err := r.Patch(ctx, z, client.MergeFrom(base)); err != nil {
+			// Other regions edit the same list, so a stale copy must not drop
+			// their finalizers.
+			if err := r.Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			}
 		}
@@ -312,17 +316,18 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		base := c.DeepCopy()
 		status := metav1.ConditionFalse
 		reason, msg := "PendingReplicaVerification", "publication awaits required replica verification"
+		everywhere := published
 		if r.Options.regional() {
 			c.Status.PublishedRevision = 0
 			r.setRegions(&c.Status.Regions, &manifest, c.Generation, func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
 			if pending := projectstatus.PendingRegions(c.Status.Regions, manifest.Spec.ExpectedRegions, c.Generation); len(manifest.Spec.ExpectedRegions) > 0 {
-				published = len(pending) == 0
-				if !published {
+				everywhere = len(pending) == 0
+				if !everywhere {
 					msg += " in " + strings.Join(pending, ", ")
 				}
 			}
 		}
-		if published {
+		if everywhere {
 			if !r.Options.regional() {
 				c.Status.PublishedRevision = manifest.Spec.Revision
 			}
@@ -410,12 +415,30 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 				local = append(local, target)
 			}
 		}
+		if tombstone && own.Spec.ActiveManifestName != "" {
+			// A withdrawal has no contexts left; it stays expected wherever the
+			// zone was, so no region reports it withdrawn for the others.
+			var previous dnsv1alpha1.DNSPublicationManifest
+			if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: own.Spec.ActiveManifestName}, &previous); err != nil {
+				return false, err
+			}
+			for _, region := range previous.Spec.ExpectedRegions {
+				if !slices.Contains(expectedRegions, region) {
+					expectedRegions = append(expectedRegions, region)
+				}
+			}
+		}
 		sort.Strings(expectedRegions)
 		servingTargets = local
 		if len(servingTargets) == 0 && own.Spec.ActiveManifestName == "" {
 			// Nothing in this region has served the zone, so there is nothing to
 			// publish or withdraw here.
 			return tombstone, nil
+		}
+		if !tombstone {
+			if err := r.holdRegions(ctx, z, expectedRegions); err != nil {
+				return false, err
+			}
 		}
 	}
 	stateHash := hash

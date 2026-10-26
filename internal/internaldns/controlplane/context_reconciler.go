@@ -317,8 +317,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 	}
 	// Another region's control plane claims, binds and reports on access in
-	// its region.
-	accesses.Items = slices.DeleteFunc(accesses.Items, func(a dnsv1alpha1.DNSResolverAccessBinding) bool { return !r.Options.local(a.Spec.Region) })
+	// its region. Every control plane rejects a region none of them serves,
+	// with the same status.
+	accesses.Items = slices.DeleteFunc(accesses.Items, r.otherRegionsAccess)
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
 	held := map[string]bool{}
@@ -357,7 +358,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else {
 			destination = parsed.Unmap().String()
 		}
-		if _, ok := r.targetForRegion(spec.Region); !ok {
+		if !r.servesRegion(spec.Region) {
 			valid = false
 		}
 		key := spec.Region + "\x00" + spec.DestinationAddress
@@ -568,13 +569,19 @@ func (r *Reconciler) shardForContextRegion(contextUID types.UID, region string, 
 	return ""
 }
 
-func (r *Reconciler) targetForRegion(region string) (ServingRegion, bool) {
+func (r *Reconciler) servesRegion(region string) bool {
 	for _, s := range r.Options.servingRegions() {
 		if s.Region == region {
-			return s, true
+			return true
 		}
 	}
-	return ServingRegion{}, false
+	return false
+}
+
+// otherRegionsAccess reports whether a belongs to another region's control
+// plane. Access in a region nobody serves is rejected by every control plane.
+func (r *Reconciler) otherRegionsAccess(a dnsv1alpha1.DNSResolverAccessBinding) bool {
+	return r.servesRegion(a.Spec.Region) && !r.Options.local(a.Spec.Region)
 }
 
 func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) bool {

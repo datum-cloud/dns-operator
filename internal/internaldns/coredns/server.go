@@ -95,6 +95,14 @@ func (pr Process) Run(ctx context.Context, path string) error {
 			return fmt.Errorf("CoreDNS UDP listener: %w", err)
 		}
 		defer func() { _ = packet.Close() }()
+		if metricsAddress != "" {
+			cleanup, err := observeUDPSocket(packet)
+			if err != nil {
+				log.Printf("CoreDNS serves without UDP socket metrics: %v", err)
+			} else {
+				defer cleanup()
+			}
+		}
 		udp = keyedUDPServer(packet, peers, server)
 	}
 	stop := func() error {

@@ -173,6 +173,16 @@ the new setting. A transport change requires replacement; a rules reload cannot
 change existing backend connections. Restore `"tcp"` and replace the dnsdist
 member to roll back. Keyed CoreDNS readiness checks both transports.
 
+For a multi-tier fleet, enable keyed UDP on the regional CoreDNS members and
+regional dnsdist before enabling it on node members. The node CoreDNS forwarder
+uses the incoming query's transport upstream, so node UDP also makes the traffic
+arriving at regional dnsdist UDP. Leaving that regional front in TCP-only mode
+moves UDP-to-TCP conversion to the regional tier. In staging load tests this
+mixed configuration saturated regional dnsdist and exhausted its memory even
+though the node listener had spare CPU. Mount the shared regional identity key
+in both the dnsdist sidecar and its agent, and in each regional CoreDNS member.
+Roll back node members before returning the regional tier to TCP-only mode.
+
 Compare query outcome/latency metrics with
 `internal_dns_transport_datagrams_total{outcome="accepted"}` and
 `internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters

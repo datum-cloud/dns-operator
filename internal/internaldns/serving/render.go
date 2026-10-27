@@ -151,10 +151,11 @@ func validateRenderConfig(c RenderConfig) error {
 		if d.IdentityKeyFile != "" && !filepath.IsAbs(d.IdentityKeyFile) {
 			return fmt.Errorf("%s identity key file must be an absolute path", label)
 		}
-		if d.BackendTransport != "" && d.BackendTransport != model.TransportTCP && d.BackendTransport != model.TransportUDP {
+		transport := model.Transport(strings.ToUpper(string(d.BackendTransport)))
+		if transport != "" && transport != model.TransportTCP && transport != model.TransportUDP {
 			return fmt.Errorf("%s backend transport must be tcp or udp", label)
 		}
-		if d.BackendTransport == model.TransportUDP && d.IdentityKeyFile == "" {
+		if transport == model.TransportUDP && d.IdentityKeyFile == "" {
 			return fmt.Errorf("%s UDP backend requires an identity key", label)
 		}
 		if err := validateDNSDistMetrics(d); err != nil {
@@ -330,7 +331,7 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then internalDNSIdentityKey = string.rep(\"A\",43)..\"=\" else\n  local handle = assert(io.open(%q,\"r\"))\n  internalDNSIdentityKey = assert(handle:read(\"*l\")):match(\"^%%s*(.-)%%s*$\"); handle:close()\nend\n", c.IdentityKeyFile)
 	}
 	for _, backend := range backends {
-		tcpOnly := c.BackendTransport != model.TransportUDP
+		tcpOnly := !strings.EqualFold(string(c.BackendTransport), string(model.TransportUDP))
 		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=%t,checkTCP=%t,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy, tcpOnly, tcpOnly)
 	}
 	renderDNSDistMetricsStart(&out, c)
@@ -483,7 +484,7 @@ func withoutDNSDistReadinessCanary(rules []byte) []byte {
 
 func dnsdistTransport(c DNSDistRenderConfig) string {
 	if c.IdentityKeyFile != "" {
-		if c.BackendTransport == model.TransportUDP {
+		if strings.EqualFold(string(c.BackendTransport), string(model.TransportUDP)) {
 			return "identity-option-udp"
 		}
 		return "identity-option-tcp"

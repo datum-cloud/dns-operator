@@ -222,6 +222,15 @@ func TestDNSDistUDPBackendRequiresKeyAndReplacement(t *testing.T) {
 	if strings.Contains(conf, "useProxyProtocol") {
 		t.Fatal("UDP still uses connection identity")
 	}
+	// The documented JSON spelling must work as well as model.TransportUDP,
+	// whose value is uppercase because it is also used by Kubernetes APIs.
+	if err := json.Unmarshal([]byte(`{"backendTransport":"udp"}`), &c.NodeDNSDist); err != nil {
+		t.Fatal(err)
+	}
+	lower, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil || string(lower.Files[c.NodeDNSDist.Path]) != conf {
+		t.Fatalf("documented lowercase UDP changes rendering: %v", err)
+	}
 	c.NodeDNSDist.BackendTransport = model.TransportTCP
 	tcp, err := Render(c, s, nil)
 	if err != nil {

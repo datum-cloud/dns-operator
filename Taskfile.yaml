@@ -86,6 +86,36 @@ tasks:
     cmds:
       - test/internaldns/qualify-package.sh
 
+  vuln-scan:
+    desc: Scan dependencies for known vulnerabilities, the same way CI does
+    vars:
+      ACTIONS_REPO: https://github.com/datum-cloud/actions.git
+      # Must match the workflow's uses: ref, which Renovate updates.
+      ACTIONS_REF:
+        sh: sed -n 's|.*datum-cloud/actions/\.github/workflows/vuln-scan\.yaml@\([^ ]*\).*|\1|p' .github/workflows/vuln-scan.yaml
+      COMMIT:
+        sh: git ls-remote "{{.ACTIONS_REPO}}" "refs/tags/{{.ACTIONS_REF}}" "refs/tags/{{.ACTIONS_REF}}^{}" | tail -n 1 | cut -f 1
+      SCRIPTS:
+        sh: echo "${XDG_CACHE_HOME:-$HOME/.cache}/datum-vuln-scan/scripts/{{.COMMIT}}"
+    cmds:
+      - test -n "{{.ACTIONS_REF}}" || (echo "no vuln-scan.yaml@<ref> in .github/workflows/vuln-scan.yaml" >&2; exit 1)
+      - test -n "{{.COMMIT}}" || (echo "{{.ACTIONS_REPO}} has no tag {{.ACTIONS_REF}}" >&2; exit 1)
+      - task: vuln-scan:fetch
+        vars: { ACTIONS_REPO: "{{.ACTIONS_REPO}}", ACTIONS_REF: "{{.ACTIONS_REF}}", COMMIT: "{{.COMMIT}}", SCRIPTS: "{{.SCRIPTS}}" }
+      - bash "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+
+  vuln-scan:fetch:
+    internal: true
+    status:
+      - test -f "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+    cmds:
+      - rm -rf "{{.SCRIPTS}}.tmp"
+      - git clone --quiet --depth 1 --branch "{{.ACTIONS_REF}}" --no-checkout "{{.ACTIONS_REPO}}" "{{.SCRIPTS}}.tmp"
+      - test "$(git -C "{{.SCRIPTS}}.tmp" rev-parse HEAD)" = "{{.COMMIT}}"
+      - git -C "{{.SCRIPTS}}.tmp" sparse-checkout set --no-cone '/scripts/vuln-scan/*.sh' '/scripts/vuln-scan/*.py'
+      - git -C "{{.SCRIPTS}}.tmp" checkout --quiet
+      - mv "{{.SCRIPTS}}.tmp" "{{.SCRIPTS}}"
+
   default:
     desc: "Show available commands"
     silent: true
@@ -98,6 +128,7 @@ tasks:
       - echo "  task env:internal-dns:up       Deploy private DNS on the shared clusters"
       - echo "  task env:internal-dns:qualify  Validate private DNS publication and isolation"
       - echo "  task env:dns-check   Query control + edge PowerDNS for the sample record"
+      - echo "  task vuln-scan       Scan dependencies for known vulnerabilities, as CI does"
       - echo ""
       - echo "Individual pieces:"
       - echo "  task env:control-up  Control cluster only (dns-operator + PowerDNS + RustFS)"

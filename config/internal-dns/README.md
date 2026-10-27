@@ -5,7 +5,8 @@ Replace the example images, addresses, certificates, storage classes, admission
 CA injection, and site command wrappers before deployment.
 
 CI publishes `ghcr.io/datum-cloud/internal-dns` for the control plane and
-`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents and CoreDNS. dnsdist runs directly from its upstream image.
+`ghcr.io/datum-cloud/internal-dns-serving` for fleet agents and CoreDNS. dnsdist
+runs directly from its upstream image.
 The serving image includes the validation, activation, and gating
 commands in `config/internal-dns/commands`. The Kubernetes qualification
 environment uses the same commands.
@@ -19,12 +20,16 @@ feature-branch tags and uses these immutable image references.
 The fixed fleet has three roles:
 
 - A `node` resolver agent configures the shared node dnsdist/CoreDNS pair.
-- A `regional-dnsdist` resolver agent configures the shared regional frontend and its
+- A `regional-dnsdist` resolver agent configures the shared regional frontend
+and its
   pool of regional CoreDNS members.
-- Two or more `regional-coredns` combined agents independently compile the complete
+- Two or more `regional-coredns` combined agents independently compile the
+complete
   DNS context snapshot for their member, validate it with
   `coredns -validate`, load it atomically into the context plugin, prove the
-  exact version over UDP and TCP, and publish a leased ACK.
+  exact publication version over TCP, and publish a leased acknowledgment.
+  Resolver-path probes separately check the consumer-facing path over UDP and
+  TCP.
 
 Contexts, access bindings, and zones add destinations and record data to
 these processes. They never create workloads per VPC or zone. Use `node`,
@@ -42,7 +47,8 @@ The agent validates complete routing snapshots and replaces the rule chain over
 the authenticated loopback console. Failed validation retains active rules.
 Backend eligibility uses immutable pools shared by identical member sets;
 context identity remains the original trusted destination. Listener or backend
-topology changes require a replacement member with independent storage. Agent and broker outages retain applied
+topology changes require a replacement member with independent storage. Agent
+and broker outages retain applied
 routing. The control key is generated locally and is never a DNS API field.
 
 `routers.example.yaml` supplies the node and regional frontend workloads.
@@ -60,7 +66,6 @@ container receives `SYS_PTRACE`.
 
 ## Control-plane and API boundaries
 
-
 Control-plane replicas discover ready Milo projects through the core API and
 watch every namespace in each project control plane. New projects are included
 without restarting the service. `projectDiscovery.kubeconfig` authenticates
@@ -69,7 +74,7 @@ DNS service project. Generated kubeconfig Secrets use the `value` key.
 Unavailable discovery retains active sources and applied DNS configuration.
 Compilation requires the live source project identity to match its worker.
 Admission resolves the authenticated project parent against its live identity,
-and acknowledgement projection follows the discovered source clients.
+and acknowledgment projection follows the discovered source clients.
 
 Control-plane replicas can concurrently watch the platform API and source
 projects. Publication and shard ownership use resource-version checks and
@@ -80,14 +85,16 @@ projection or publication for healthy sources.
 DNS always consumes `DNSResolverContext` and `DNSResolverAccessBinding` from
 the project API. It does not watch a networking API. A trusted integration
 principal bound to `internal-dns-vpc-integration` creates a context and writes
-regional access intent. RBAC separates network integration, product publication, and DNS controller
+regional access intent. RBAC separates network integration, product publication,
+and DNS controller
 permissions. Product publishers cannot modify resolver access.
 DNS pins the context and access lifetimes in the internal `DNSResolverBinding`
 and generates mapping versions. Access persists until an explicit withdrawal.
 
 The context directly owns its requested managed zone and association.
 Compute discovers the context status and publishes through
-`DNSRegistration` and `DNSRecordContribution`. It does not choose a zone for the managed-name path and receives no NATS credentials.
+`DNSRegistration` and `DNSRecordContribution`. It does not choose a zone for the
+managed-name path and receives no NATS credentials.
 Publishers write addresses and eligibility together in contribution spec using
 optimistic concurrency. DNS owns status and uses API-assigned generations to
 reject stale desired state across takeover and replay.
@@ -108,9 +115,14 @@ choose pools clear of the destinations integrations use.
 
 Consumer and regional listener prefixes must be local routes in their dnsdist
 network namespaces. Galactic authorizes and translates the consumer path to a
-service-side destination. dnsdist preserves that destination in a trusted
-PROXYv2 header. Node CoreDNS selects a context and forwards to its regional
-destination. Regional dnsdist selects the same context and load-balances the
+service-side destination. dnsdist preserves that destination in either a
+PROXYv2 header or a keyed private EDNS option. Configure the same identity mode
+at both ends of each hop: setting `identityKeyFile` selects the EDNS mode;
+omitting it selects PROXYv2. The staging node tier uses the EDNS mode, and its
+regional tier uses PROXYv2. CoreDNS accepts TCP connections only from configured
+peers and validates the key in the EDNS mode. Node CoreDNS selects a context and
+forwards to its regional destination. Regional dnsdist selects the same context
+and load-balances the
 healthy CoreDNS members. Every regional CoreDNS member hosts the context's
 private zones. Public queries forward to a shared PowerDNS Recursor service.
 
@@ -123,7 +135,8 @@ retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
 static RRset must use the same TTL.
 
 A context without private zones proves recursion with the root SOA over UDP and
-TCP. `verifier.publicName` can override this probe. CoreDNS members need a writable
+TCP. `verifier.publicName` can override this probe. CoreDNS members need a
+writable
 `/tmp` runtime volume even when the image root filesystem is read-only.
 
 Private packet caching stays disabled in dnsdist and CoreDNS. The context plugin
@@ -133,8 +146,10 @@ separate public cache. PowerDNS Recursor validates DNSSEC for public queries.
 Unknown destinations are rejected before cache lookup.
 
 Regional publication proof connects directly to that member's CoreDNS listener,
-supplies the exact context destination in a protected PROXYv2 header over both
-UDP and TCP, and verifies the installed SOA serial and fingerprint. Restrict
+supplies the exact context destination in a protected PROXYv2 header over TCP,
+and verifies the installed SOA serial and fingerprint. CoreDNS has no UDP
+listener. Separate resolver-path probes check UDP and TCP through dnsdist.
+Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
 network. Local health probes also require the CoreDNS listener address in
 `proxyPeers` and loopback in dnsdist ACLs. These peers must remain inside the
@@ -147,7 +162,8 @@ SERVFAIL while published zones continue serving. Its names cannot fall through
 to public recursion or cached answers. If the private apex is unknown, the
 context stays gated until its configuration is complete. Completing publication
 restores service with the same access mapping. Resolver access readiness
-reports the applied path independently of each zone's publication status. Explicit access withdrawal
+reports the applied path independently of each zone's publication status.
+Explicit access withdrawal
 requires a newer access version to reactivate.
 
 The agent stages a complete JSON snapshot containing context destinations,
@@ -155,9 +171,10 @@ private zone data, and upstream destinations. The CoreDNS validator parses every
 zone before installation. Atomic rename exposes one complete snapshot; the
 plugin builds its replacement state before swapping the lookup table. Invalid
 updates retain the accepted state. A record update does not restart CoreDNS.
-The agent proves the installed publication over UDP and TCP before acknowledging it.
+The agent proves the installed publication directly over TCP before
+acknowledging it. Resolver-path probes check both UDP and TCP separately.
 
-Publication acknowledgements report verified configuration versions. The fleet
+Publication acknowledgments report verified configuration versions. The fleet
 retains accepted proofs during control plane or broker outages and continues
 using local DNS probes and backend health checks. Status can report degraded
 update delivery without withdrawing an applied resolver binding.
@@ -188,7 +205,8 @@ refuse every context until the agent installs the approved configuration. An
 installation that a live agent owns stays ready while its daemons answer, for
 up to one minute from its start. An abandoned activation is not ready, and a
 gate is not ready once it has stopped or gated the daemons. Healthy daemons
-continue through normal agent stops and restarts. Staging and validation can continue while approved
+continue through normal agent stops and restarts. Staging and validation can
+continue while approved
 configuration serves. A rejected expansion retains that configuration; a
 withdrawal that cannot be applied gates serving. The serving supervisor accepts
 approved configuration independently of the agent. Incomplete installation
@@ -209,8 +227,10 @@ separate state PVC.
 
 ## Capacity and transport
 
-Set `maxBindings` from measured CoreDNS context memory, snapshot activation time,
-dnsdist rule cost, NATS payload size, and activation recovery time. The example caps a
+Set `maxBindings` from measured CoreDNS context memory, snapshot activation
+time,
+dnsdist rule cost, NATS payload size, and activation recovery time. The example
+caps a
 shard at 200 contexts. Add another fixed shard before
 raising those bounds.
 
@@ -244,7 +264,8 @@ resolved ownership identities in reference ConfigMaps in the service project.
 The collector checks source resources before removing those records.
 
 The supported envelope version is `v1alpha6` and checkpoint format is 7. Keep
-reference records, transport state, and persistent checkpoints across compatible upgrades. Deploy
+reference records, transport state, and persistent checkpoints across compatible
+upgrades. Deploy
 serving agents before controllers that emit per-zone pending state. Enable the
 controller change after every serving member supports that contract; a matching
 wire version alone does not establish feature compatibility.
@@ -298,7 +319,7 @@ The metrics endpoint includes controller-runtime reconciliation metrics and:
   reads are counted but not timed, because they wait for messages.
 
 Loops are `project discovery`, `planner`, `ack refresh`, `outbox`, and the
-acknowledgement steps `ack read`, `ack apply`, and `ack commit`. A successful
+acknowledgment steps `ack read`, `ack apply`, and `ack commit`. A successful
 loop can be idle; it does not prove that an endpoint is serving. Combine these
 metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 

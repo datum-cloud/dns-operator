@@ -9,10 +9,10 @@ latest-milestone: "TBD"
 - [Summary](#summary)
 - [Motivation](#motivation)
   - [Goals](#goals)
-  - [Non-Goals](#non-goals)
+  - [Non-goals](#non-goals)
 - [Proposal](#proposal)
   - [Risks and mitigations](#risks-and-mitigations)
-- [Design Details](#design-details)
+- [Design details](#design-details)
   - [Control-plane boundaries](#control-plane-boundaries)
   - [Contexts and regional access](#contexts-and-regional-access)
   - [Query path and network identity](#query-path-and-network-identity)
@@ -20,11 +20,12 @@ latest-milestone: "TBD"
   - [Publication and service discovery](#publication-and-service-discovery)
   - [API design](#api-design)
   - [Integration boundaries](#integration-boundaries)
-- [Production Readiness Review Questionnaire](#production-readiness-review-questionnaire)
-- [Implementation History](#implementation-history)
+- [Production readiness review
+questionnaire](#production-readiness-review-questionnaire)
+- [Implementation history](#implementation-history)
 - [Drawbacks](#drawbacks)
 - [Alternatives](#alternatives)
-- [Infrastructure Needed](#infrastructure-needed)
+- [Infrastructure needed](#infrastructure-needed)
 
 ## Summary
 
@@ -35,7 +36,8 @@ isolated DNS contexts.
 
 The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
 defines the consumer experience. The
-[Galactic design](https://github.com/datum-cloud/galactic/blob/main/docs/enhancements/networking/private-service-connect/README.md)
+[Galactic
+design](https://github.com/datum-cloud/galactic/blob/main/docs/enhancements/networking/private-service-connect/README.md)
 defines private connectivity. This enhancement defines the DNS architecture and
 [API design](#api-design).
 
@@ -55,7 +57,7 @@ withdraw endpoints that are no longer eligible.
 - Keep serving applied DNS configuration during control plane outages.
 - Scale shared serving capacity across regions without deployments per VPC.
 
-### Non-Goals
+### Non-goals
 
 - Designing Galactic's private connectivity APIs or packet handling.
 - Having DNS controllers inspect networking or product resources.
@@ -64,13 +66,15 @@ withdraw endpoints that are no longer eligible.
 
 ## Proposal
 
-Network services selects the default VPC domain, `datum.internal`, and provisions
+Network services selects the default VPC domain, `datum.internal`, and
+provisions
 a DNS context and regional resolver access. DNS allocates the requested managed
 namespace, accepts explicit custom zone associations,
 and compiles product publications into private serving state. Consumers use a
 stable resolver address in their VPC while the platform selects shared capacity.
 
-DNS APIs reference resolver contexts and zones. Network services owns the mapping
+DNS APIs reference resolver contexts and zones. Network services owns the
+mapping
 from a network to its DNS context and the consumer-facing resolver address. DNS
 reserves service-side listener addresses and accepts registrations from any
 authorized publisher; naming rules match registration labels.
@@ -86,24 +90,42 @@ authorized publisher; naming rules match registration labels.
 - Shared fleet failure: qualify configuration activation, readiness, capacity,
   and regional failure handling before release.
 
-## Design Details
+## Design details
 
 ### Control-plane boundaries
 
 The DNS service separates project intent from shared regional serving state.
 The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
-covers platform placement; Galactic owns private connectivity and network identity.
+covers platform placement; Galactic owns private connectivity and network
+identity.
+
+The following diagram separates project resources, publication storage, and
+regional delivery. The controller processes run the compiler, exporter, and
+acknowledgment handler.
 
 ```mermaid
-flowchart LR
-  P["Consumer project API<br/>Contexts, zones, access, and publications"]
-  C[DNS controllers]
-  D["DNS service project API<br/>References, snapshots, and fleet plans"]
+flowchart TB
+  accTitle: Private DNS control-plane boundaries
+  accDescr: Controllers read consumer project resources and maintain service API resources. They commit snapshots to a publication store. An exporter sends committed updates through regional NATS to serving agents. Agents return acknowledgments through NATS; controllers record them and update project status.
+  P["Consumer project API<br/>Contexts, zones, access, and contributions"]
+  C["DNS controllers<br/>Project and zone reconciliation"]
+  D["DNS service project API<br/>References, resolver bindings, and address claims"]
+  S["Publication store<br/>Kubernetes API or JetStream KV"]
+  X[Regional exporter]
   N[Regional NATS]
   E[Shared serving fleet]
-  P --> C --> D --> N --> E
-  E -.->|Applied acknowledgments| D
-  C -.->|Serving status| P
+  A["Acknowledgment handler<br/>and status refresh"]
+  P -->|Project inputs| C
+  C -->|Maintain resources| D
+  C -->|Commit snapshots and outboxes| S
+  S -->|Committed updates| X
+  X --> N
+  N -->|Updates| E
+  E -->|Member acknowledgments| N
+  N -->|Acknowledgments| A
+  A -->|Publication observations| S
+  A -->|Binding observations| D
+  A -->|Serving status| P
 ```
 
 Trusted network integration writes context and access intent. Product services
@@ -125,8 +147,13 @@ zone names and overlapping IP addresses. Sharing a zone requires an explicit
 association within the project. Network peering does not automatically share
 zones or extend DNS access; cross-project sharing is outside this proposal.
 
+The following diagram shows one context with separate access bindings and
+serving fleets in two regions.
+
 ```mermaid
 flowchart LR
+  accTitle: One DNS context with access in two regions
+  accDescr: A DNSResolverContext has a central access binding and an east access binding. Each binding selects its own regional shared fleet.
   C[DNSResolverContext] --> AC[Central access binding]
   C --> AE[East access binding]
   AC --> FC[Central shared fleet]
@@ -134,22 +161,32 @@ flowchart LR
 ```
 
 Bindings live in the consumer project API; `region` selects serving capacity.
-Each has independent identity, access mapping, and readiness. Publication is
-asynchronous, and a failed region must not block healthy regions. Regional access
-does not imply that discovery returns only region-local endpoints. The VPC
+Each binding has its own identity, access mapping, and readiness. Publication is
+asynchronous. Separate regional fleets do not provide independent publication:
+zone updates still depend on the shared publication store described in
+[Publication storage and regional
+dependencies](#publication-storage-and-regional-dependencies).
+Regional access does not limit discovery results to endpoints in that region.
+The VPC
 resolver handles both private and public queries, so loss of every eligible
 member in its region interrupts both. This design does not provide automatic
 cross-region resolver failover.
 
 ### Query path and network identity
 
-Both VPCs can expose the same DNS address and contain the same client IP. Galactic
+Both VPCs can expose the same DNS address and contain the same client IP.
+Galactic
 authorizes the private path and translates its destination into a distinct
 service-side identity. DNS maps that identity to a context before consulting a
 cache or selecting private zones.
 
+The following diagram shows how two VPCs with overlapping addresses select
+different DNS contexts in the same fleet.
+
 ```mermaid
 flowchart TB
+  accTitle: Destination-based DNS context isolation
+  accDescr: Clients in VPC A and VPC B use the same client and resolver addresses. Galactic translates each authorized path to a different service destination. The shared DNS fleet maps those destinations to separate contexts, which return different answers for the same private name.
   subgraph A[VPC A]
     ClientA[Client 10.0.0.5] --> FrontA[DNS endpoint fd53::53]
   end
@@ -161,13 +198,30 @@ flowchart TB
   PathA --> DestA[Service destination fd70:100::10]
   PathB --> DestB[Service destination fd70:100::11]
   subgraph Shared[Shared DNS service fleet]
-    DestA --> Dist[dnsdist: trusted destination to context]
-    DestB --> Dist
-    Dist --> ViewA[CoreDNS context A]
-    Dist --> ViewB[CoreDNS context B]
-    ViewA --> ZoneA[Private zone in context A: api.prod.internal = 10.20.0.10]
-    ViewB --> ZoneB[Private zone in context B: api.prod.internal = 10.20.0.20]
+    DestA --> ContextA[DNS context A]
+    DestB --> ContextB[DNS context B]
+    ContextA --> ZoneA["api.prod.internal = 10.20.0.10"]
+    ContextB --> ZoneB["api.prod.internal = 10.20.0.20"]
   end
+```
+
+Each context uses the following query path. Both regional CoreDNS members hold
+the context's private records and a separate public cache. The diagram shows the
+lookup branches for one member; the other member has the same branches.
+
+```mermaid
+flowchart TB
+  accTitle: Private DNS query path through node and regional tiers
+  accDescr: Galactic sends an authorized query to node dnsdist, which forwards over TCP to node CoreDNS. Node CoreDNS forwards to the context's regional destination. Regional dnsdist selects an eligible CoreDNS member. That member answers private names from its applied snapshot and sends public names through a per-context cache to PowerDNS Recursor.
+  V[VPC client] --> G[Galactic authorized path]
+  G -->|UDP or TCP| ND[Node dnsdist]
+  ND -->|TCP with trusted context identity| NC[Node CoreDNS]
+  NC -->|Context-specific regional destination| RD[Regional dnsdist]
+  RD -->|TCP with trusted context identity| R0[Regional CoreDNS member 0]
+  RD -->|TCP with trusted context identity| R1[Regional CoreDNS member 1]
+  R0 -->|Private name| Z[Applied private-zone snapshot]
+  R0 -->|Public name| C[Per-context public cache]
+  C --> P[PowerDNS Recursor]
 ```
 
 Galactic verifies the source VPC lifetime and route authorization before
@@ -185,11 +239,22 @@ Shared node and regional tiers use:
 3. **PowerDNS Recursor** to resolve public names. CoreDNS keeps public caches
    separate by context and bypasses caching for private names.
 
-[dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
-preserves the destination. The CoreDNS transport adapter accepts PROXYv2 only
-from configured service peers over TCP. dnsdist forwards both consumer UDP and
-TCP queries over this protected TCP backend; CoreDNS has no UDP listener.
-Unknown contexts are rejected before record or cache lookup.
+dnsdist forwards both consumer UDP and TCP queries to CoreDNS over TCP.
+CoreDNS accepts connections only from configured service peers and has no UDP
+listener. Each dnsdist-to-CoreDNS hop uses one of two identity modes:
+
+- Without `identityKeyFile`, dnsdist preserves the destination in a
+  [PROXYv2
+  header](https://www.dnsdist.org/advanced/passing-source-address.html).
+- With `identityKeyFile`, dnsdist adds the configured key and destination to a
+  private EDNS option instead of sending a PROXYv2 header. CoreDNS validates the
+  key and removes the option before forwarding the query.
+
+Configure both ends of a hop for the same mode. The staging node tier uses the
+keyed EDNS mode; its regional tier uses PROXYv2. Both modes preserve the
+service-side destination that selects the context. Neither mode lets a consumer
+choose a context through an unauthenticated header or EDNS option. CoreDNS
+rejects unknown contexts before looking up records or cached answers.
 
 The publication agent validates and persists a complete snapshot. The context
 plugin builds a replacement lookup table, then atomically activates it without
@@ -222,9 +287,10 @@ binding it should not, DNS fails closed:
   namespace with the same `consumerID` reports `DuplicateConsumerID`.
 - Replaced objects: access bindings pin the context UID. A binding whose context
   was deleted and recreated with the same name is rejected.
-- Forged network identity: DNS ignores client addresses, ECS, and
-  client-supplied PROXY headers. CoreDNS accepts PROXYv2 only from configured
-  peers over TCP.
+- Forged network identity: DNS does not trust client addresses, ECS, or
+  client-supplied PROXY headers to select a context. CoreDNS accepts TCP
+  connections only from configured peers and validates the key when the hop
+  uses the private EDNS identity option.
 
 Galactic decides which service-side destination each VPC can reach. A
 destination claim in DNS does not route another VPC's traffic to it.
@@ -250,30 +316,67 @@ publishes nothing. DNS does not rename it or add a suffix; the publisher picks
 another name. When the winning claim is deleted, the next oldest registration
 is accepted on the next compilation.
 
+The following sequence shows a committed publication and its acknowledgment.
+The publication store uses either the Kubernetes API or JetStream KV.
+
 ```mermaid
 sequenceDiagram
+  accTitle: Private DNS publication and serving acknowledgment
+  accDescr: A product updates project records. The compiler validates inputs and commits a snapshot under its writer lease. The exporter sends the snapshot through regional NATS. A serving agent validates, activates, and proves the snapshot, then returns an acknowledgment through NATS. Controllers record the observation and update project status.
   participant Product as Product publisher
   participant Project as Consumer project API
   participant DNS as DNS compiler
-  participant Store as DNS service project API
+  participant Store as Publication store
+  participant Export as Regional exporter
   participant Transport as Regional NATS
   participant Agent as Serving agent
+  participant Status as Status handler
   Product->>Project: Atomically update records and eligibility
-  DNS->>Project: Validate references and resource generation
+  DNS->>Project: Validate references and resource generations
   DNS->>Store: Stage immutable chunks and manifest
-  DNS->>Store: Commit active snapshot under writer lease
-  Store->>Transport: Export committed update through durable outbox
+  DNS->>Store: Commit active pointer under writer lease
+  Export->>Store: Read committed state and ensure durable outbox
+  Export->>Transport: Export committed update
   Transport->>Agent: Deliver committed update
-  Agent->>Agent: Verify and apply local configuration
-  Agent->>Store: Acknowledge applied snapshot
-  DNS->>Project: Report serving status
+  Agent->>Agent: Validate, activate, and prove snapshot
+  Agent->>Transport: Publish member acknowledgment
+  Transport->>Status: Deliver acknowledgment
+  Status->>Store: Record publication observation
+  Status->>Project: Report serving status
   Product->>Project: Update contribution with eligible=false
   DNS->>Store: Commit snapshot that withdraws the endpoint
 ```
 
-Each zone has one compiler owner, fenced by a compare-and-swap lease. Takeover
-advances the writer epoch; revisions increase within it. Agents reject older
-versions. The compiler stages immutable chunks and a manifest, then commits its
+#### Zone reconciliation and cached inputs
+
+With `perZoneReconcile` enabled, record sets, registrations, and contributions
+queue their zone for compilation after a 75 ms delay. The delay combines bursts
+of changes. Project reconciliation still manages contexts, associations,
+bindings, and lease renewal. It queues a zone when its project-wide inputs
+change or when the five-minute resync is due.
+
+With `cachedZoneInputs` also enabled, the compiler reads record sets,
+registrations, and contributions from its watch cache. It still compiles the
+complete zone and checks access through live API reads. Every writer epoch
+starts with a successful live compilation. The cache must catch up with that
+baseline before the compiler uses it. A cached result that loses an accepted
+input triggers a full live compilation before publication. The compiler also
+compares cached and live plans every five minutes.
+
+Both options are off by default. See
+[Cached Private DNS zone inputs](cached-zone-inputs.md) for the consistency
+checks and rollback procedure. Cached inputs do not change the publication
+format or enable incremental chunk delivery.
+
+#### Publication storage and regional dependencies
+
+Each zone has one compiler owner. A compare-and-swap lease prevents another
+writer from committing under that owner's version. Takeover advances the writer
+epoch; revisions increase within it. Agents reject older versions. On shutdown,
+a controller releases its zone and shard leases. A replacement owner republishes
+unchanged content under its new epoch so that takeover does not strand an
+unexported update. The compiler stages immutable chunks and a manifest, then
+commits its
 active pointer. This state and a durable outbox live in platform Kubernetes API
 storage by default; exporters repair missing outboxes after crashes.
 
@@ -288,16 +391,27 @@ newer one of its zone was exported, unless a pending outbox depends on it.
 Tenant objects, resolver bindings, address claims and tenant status stay in the
 API server.
 
-The bucket exists on every region's broker. Shard leases and serving snapshots
-live on the broker of the region they serve, and each region's planner, outbox
-and acknowledgement loops look records up only in that region's bucket and the
-home bucket, so another region's broker never holds them up. Zone leases,
-manifests, chunks and their outboxes live together on the broker of
-`publicationStore.region`, so committing a zone needs only that broker, and
-delivering it to any region also needs that broker, until zone publication has
-one writer per zone and region. Regions that share a
-broker must name it with the same URL. Cleanup waits until every region's
-bucket has loaded.
+In JetStream mode, each region has a publication bucket. Shard leases, region
+leases, and serving snapshots live on that region's broker. Zone leases,
+manifests, chunks, and their outboxes live on the home broker selected by
+`publicationStore.region`. Each region's planner, exporter, and acknowledgment
+handler read from its own bucket and the home bucket.
+
+A region can continue those loops while an unrelated regional broker is down.
+However, committing a zone or delivering its update to any region still requires
+the home broker. Separate regional serving pools and brokers do not remove this
+dependency. Independent writers for each zone and region remain a separate
+[regional control-plane
+proposal](https://github.com/datum-cloud/dns-operator/pull/342).
+Regions that share a broker must use the same broker URL. Cleanup waits for
+every
+region's bucket to load.
+
+A separate region lease elects one controller process to run each region's
+exporter and acknowledgment refresh. Other processes take over when the holder
+releases its lease or the lease expires. Acknowledgment consumers run on every
+replica. Region leadership does not own zone compilation or shard planning;
+those operations keep their own leases.
 
 Leases live in the store, so every control-plane replica must use the same one.
 A ConfigMap named `internal-dns-publication-store` records the active store, and
@@ -306,7 +420,8 @@ replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
 start the replicas with the new setting. Alternatively, set
 `switchPublicationStore` in a rollout that stops every replica before starting
 new ones, such as a Deployment with the `Recreate` strategy; the first new
-replica then records its store as the active one. A first start on JetStream with no
+replica then records its store as the active one. A first start on JetStream
+with no
 ConfigMap refuses to run while publication records exist in the API server.
 Once writer epochs follow the clock, downgrading to a release that counts
 epochs from one is not supported.
@@ -318,16 +433,21 @@ retain established access, the planner rejects the update and retains the
 applied configuration. Destination ownership follows the context
 lifetime, so recreating its access binding can retain the same destination.
 
-Regional agents render committed snapshots as zone files, validate and activate
-them in the associated CoreDNS contexts, then acknowledge serving.
+Regional agents render private zones into a complete JSON context snapshot.
+CoreDNS validates the zone data and replaces its lookup table atomically. Each
+agent then proves the installed publication directly against its own CoreDNS
+member over TCP. Separate resolver-path probes check UDP and TCP through the
+consumer-facing listeners before the agent reports serving readiness.
 
-Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery is
+Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery
+is
 at least once. Every serving replica receives its complete assignment and
 acknowledges applied state separately from broker receipt. Queries use local
 state without contacting project APIs or the broker.
 
 Products define eligibility for instance identity, application discovery, or
-stable service addresses. Records and resolver bindings persist until an explicit
+stable service addresses. Records and resolver bindings persist until an
+explicit
 update or withdrawal. Control plane and messaging outages delay changes but do
 not expire applied DNS configuration. Agents can restore verified configuration
 from local checkpoints without contacting the control plane. A restarted agent
@@ -347,14 +467,17 @@ installation held by a live agent's transaction lock stays ready while the
 daemons answer, for up to one minute.
 The serving supervisor retains approved configuration independently of the
 agent. A transaction lock owns candidate verification; incomplete or orphaned
-activation stays gated until recovery verifies the saved configuration. DNS query probes and backend health checks isolate
+activation stays gated until recovery verifies the saved configuration. DNS
+query probes and backend health checks isolate
 serving failures from update delivery. Retained tombstones and writer fences
 prevent replay from restoring withdrawn records or access. A new serving node
 requires a complete configuration before accepting queries.
 
-A reserved name without eligible addresses returns NODATA. A pending private zone returns SERVFAIL only beneath its own apex; other zones
-and public recursion continue. Missing required
-private state returns SERVFAIL; unknown or withdrawn access returns REFUSED.
+A reserved name without eligible addresses returns NODATA. A pending private
+zone returns SERVFAIL only beneath its own apex; other zones and public
+recursion
+continue. Missing required private state returns SERVFAIL. Unknown or withdrawn
+access returns REFUSED.
 Private names never fall back to public resolution. Disable stale private
 answers and bound dynamic TTLs; withdrawal budgets include client caching.
 
@@ -372,7 +495,8 @@ resolves these references and stores ownership identities in internal reference
 records in the DNS service project. Project status exposes names and conditions.
 Internal publication and access contracts pin UIDs and policy generations.
 The project API server authenticates callers and uses RBAC to authorize resource
-and status operations. Separate roles govern product publication, network integration, and DNS
+and status operations. Separate roles govern product publication, network
+integration, and DNS
 controllers. Product services are trusted within their project permissions.
 Admission validates live references; DNS checks name conflicts and record scope.
 
@@ -428,10 +552,13 @@ and DNS neither allocates nor rewrites it. DNS reserves the address when it
 accepts the binding and reports the result in status conditions.
 
 Access reports `Accepted` after validation and `Ready` after required members
-apply the current access mapping and configuration. Zone publication readiness is
-reported separately; a pending zone does not block resolver access. Context, region,
+apply the current access mapping and configuration. Zone publication readiness
+is
+reported separately; a pending zone does not block resolver access. Context,
+region,
 and destination are immutable per access lifetime. dnsdist serves consumers over
-UDP and TCP on port 53, and DNS generates internal mapping versions. DNS reserves
+UDP and TCP on port 53, and DNS generates internal mapping versions. DNS
+reserves
 each destination per region across all projects and rejects conflicting
 ownership. Serving rejects ambiguous mappings before lookup. Galactic enforces
 network access to each destination. The [threat model](#threat-model) describes
@@ -496,7 +623,8 @@ independent zones with the same apex. Static records have no health lease.
 #### Automatic naming and additional names
 
 The context directly owns its managed zone and association. DNS allocates the
-requested zone and exposes its reference and suffix in context status. Product publishers use these outputs. A naming policy
+requested zone and exposes its reference and suffix in context status. Product
+publishers use these outputs. A naming policy
 adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml
@@ -596,8 +724,10 @@ status:
   publishedRevision: 12
 ```
 
-Publishers update records and eligibility atomically with optimistic concurrency.
-An explicit update with `eligible: false` withdraws the endpoint; recovery sets it
+Publishers update records and eligibility atomically with optimistic
+concurrency.
+An explicit update with `eligible: false` withdraws the endpoint; recovery sets
+it
 to true. Kubernetes assigns a new generation to each desired-state change. DNS
 retains UID and generation fences across controller takeover and replay. Status
 belongs to DNS. Publisher unavailability leaves the last desired state in place.
@@ -607,7 +737,8 @@ The compiler rejects stale generations and records outside the registration.
 
 These resources are internal to the DNS service project. Consumers and product
 publishers cannot write them. Examples show selected fields that explain
-coordination; they are not complete generated serving plans or transport payloads.
+coordination; they are not complete generated serving plans or transport
+payloads.
 
 The proposed `DNSResolverBinding` groups four concerns: source identity,
 regional placement, generated serving configuration, and access versions.
@@ -667,7 +798,8 @@ namespace. Source identity is immutable. The region and node listener match the
 access binding; DNS allocates the regional listener.
 
 Configuration generation fences plan replacement; revision orders its updates.
-DNS generates private access versions and advances them for withdrawal and recovery. Serving
+DNS generates private access versions and advances them for withdrawal and
+recovery. Serving
 acknowledgments identify the binding UID and both version sets; readiness
 requires current proof from available capacity in each serving tier.
 `FullyReplicated` reports whether every assigned member has applied the plan;
@@ -697,20 +829,22 @@ release tooling from
 Add private admission, compilation, export, and serving agents. Public
 LightningStream replication does not provide private snapshot activation.
 
-## Production Readiness Review Questionnaire
+## Production readiness review questionnaire
 
 Production readiness review remains open. Resolve the following requirements
 before release.
 
-### Feature Enablement and Rollback
+### Feature enablement and rollback
 
 Define separate alpha controls for publication and serving. Public visibility
 remains the default. Revoke access before draining private capacity; dependent
-workloads lose resolution. Reenabling requires current access intent and verified serving state.
+workloads lose resolution. Reenabling requires current access intent and
+verified serving state.
 
-### Rollout, Upgrade and Rollback Planning
+### Rollout, upgrade, and rollback planning
 
-Qualify tenant isolation, outage continuity, failover, replay, and upgrade/rollback over
+Qualify tenant isolation, outage continuity, failover, replay, and
+upgrade/rollback over
 Galactic UDP and TCP paths, including guest resolver configuration. Expand by
 context and region after setting withdrawal budgets and tombstone retention.
 Compatible upgrades retain transport state and checkpoints. Roll out serving
@@ -718,9 +852,10 @@ capabilities before enabling new controller output. Unsupported formats preserve
 state and reject activation; conversion must retain authority and withdrawal
 fences.
 
-### Monitoring Requirements
+### Monitoring requirements
 
-Measure query latency/errors, publication lag, outbox backlog, withdrawal delay, and
+Measure query latency/errors, publication lag, outbox backlog, withdrawal delay,
+and
 activation failures. Use bounded metric labels and per-context API status.
 Availability, latency, and withdrawal SLOs remain to be defined.
 
@@ -735,24 +870,29 @@ after delivery resumes.
 ### Scalability
 
 Measure context capacity, update rates, snapshot size, transport fanout,
-cache memory, snapshot activation time, and query throughput. Bound chunks and retained
-history; establish supported limits and regional failover capacity before release.
+cache memory, snapshot activation time, and query throughput. Bound chunks and
+retained
+history; establish supported limits and regional failover capacity before
+release.
 
 ### Troubleshooting
 
 Trace project/context/access UIDs through access mappings, committed snapshots,
-and serving acknowledgments. Inspect network identity for REFUSED, private state for
+and serving acknowledgments. Inspect network identity for REFUSED, private state
+for
 SERVFAIL, and product eligibility for NODATA.
 
-## Implementation History
+## Implementation history
 
 2026-10-08: Architecture proposal
-[#229](https://github.com/datum-cloud/dns-operator/pull/229) and initial private-zone
+[#229](https://github.com/datum-cloud/dns-operator/pull/229) and initial
+private-zone
 boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
 
 ## Drawbacks
 
-The context plugin adds code that needs isolation, capacity, and protocol testing. Snapshots and
+The context plugin adds code that needs isolation, capacity, and protocol
+testing. Snapshots and
 writer coordination add state and API traffic. During control plane outages,
 DNS retains endpoints whose health may have changed.
 
@@ -761,7 +901,7 @@ DNS retains endpoints whose health may have changed.
 BIND views provide another shared serving option. The selected engine must meet
 the same tenant isolation and capacity requirements.
 
-## Infrastructure Needed
+## Infrastructure needed
 
 A DNS service VPC, Galactic private connectivity, shared serving capacity,
 protected listener-address allocation, durable project storage, and

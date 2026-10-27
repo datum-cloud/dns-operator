@@ -183,6 +183,14 @@ though the node listener had spare CPU. Mount the shared regional identity key
 in both the dnsdist sidecar and its agent, and in each regional CoreDNS member.
 Roll back node members before returning the regional tier to TCP-only mode.
 
+Transport rollback should retain the identity keys and keyed TCP configuration.
+Changing between legacy PROXYv2 and keyed identity is a separate fleet migration:
+keyed CoreDNS rejects unkeyed readiness canaries even though it can still serve
+trusted PROXYv2 TCP queries. Do not wait for an unkeyed frontend to become ready
+against an entirely keyed backend fleet. Use a separately ready regional fleet
+for the identity-mode cutover; the transport rollout order above assumes the
+regional identity configuration is already compatible.
+
 Compare query outcome/latency metrics with
 `internal_dns_transport_datagrams_total{outcome="accepted"}` and
 `internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters

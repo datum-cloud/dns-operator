@@ -8,3 +8,5 @@ import "net"
 
 // Per-socket kernel drop statistics are currently supported only on Linux.
 func observeUDPSocket(net.PacketConn) (func(), error) { return func() {}, nil }
+
+func udpReadBufferSize(*net.UDPConn) (int, error) { return 0, nil }

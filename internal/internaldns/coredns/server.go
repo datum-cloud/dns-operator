@@ -90,11 +90,16 @@ func (pr Process) Run(ctx context.Context, path string) error {
 	defer func() { _ = listener.Close() }()
 	var udp *dns.Server
 	if p.identityKey != nil {
-		packet, err := net.ListenPacket("udp", cfg.ListenAddress)
+		packet, err := listenUDP(cfg.ListenAddress, cfg.UDPReadBufferBytes)
 		if err != nil {
 			return fmt.Errorf("CoreDNS UDP listener: %w", err)
 		}
 		defer func() { _ = packet.Close() }()
+		if size, err := udpReadBufferSize(packet); err != nil {
+			log.Printf("CoreDNS UDP receive buffer inspection: %v", err)
+		} else if size > 0 {
+			log.Printf("CoreDNS UDP receive buffer requested=%d effective=%d bytes", cfg.UDPReadBufferBytes, size)
+		}
 		if metricsAddress != "" {
 			cleanup, err := observeUDPSocket(packet)
 			if err != nil {
@@ -142,9 +147,9 @@ func (pr Process) Run(ctx context.Context, path string) error {
 			if err == nil && pr.IdentityKeyFile != nil {
 				next.IdentityKeyFile = *pr.IdentityKeyFile
 			}
-			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
+			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile || next.UDPReadBufferBytes != cfg.UDPReadBufferBytes) {
 				_ = stop()
-				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, or identity key")
+				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, identity key, or UDP read buffer")
 			}
 			if err == nil {
 				err = p.Replace(next)

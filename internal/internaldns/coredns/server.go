@@ -31,10 +31,14 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 
 type Process struct {
 	MetricsAddress  string
+	ProfileAddress  string
 	IdentityKeyFile *string
 }
 
 func (pr Process) Run(ctx context.Context, path string) error {
+	if err := ValidateProfileAddress(pr.ProfileAddress); err != nil {
+		return err
+	}
 	metricsAddress := pr.MetricsAddress
 	previous, err := os.ReadFile(path)
 	if err != nil {
@@ -57,6 +61,12 @@ func (pr Process) Run(ctx context.Context, path string) error {
 		return err
 	}
 	defer p.Close()
+	profileCtx, stopProfiling := context.WithCancel(ctx)
+	defer stopProfiling()
+	profileDone, err := serveProfiling(profileCtx, pr.ProfileAddress)
+	if err != nil {
+		log.Printf("CoreDNS serves without profiling: %v", err)
+	}
 	host, port, _ := net.SplitHostPort(cfg.ListenAddress)
 	chain := []plugin.Plugin{func(plugin.Handler) plugin.Handler { return p }}
 	var metricsDone <-chan error
@@ -133,6 +143,11 @@ func (pr Process) Run(ctx context.Context, path string) error {
 		case err := <-done:
 			_ = stop()
 			return fmt.Errorf("CoreDNS listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
+		case err := <-profileDone:
+			profileDone = nil
+			if ctx.Err() == nil {
+				log.Printf("CoreDNS serves without profiling: %v", errors.Join(err, errors.New("profiling listener stopped")))
+			}
 		case err := <-metricsDone:
 			metricsDone = nil
 			if ctx.Err() == nil {

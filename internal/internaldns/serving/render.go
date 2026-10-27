@@ -40,6 +40,7 @@ type CoreDNSRenderConfig struct {
 	UDPReadBufferBytes int      `json:"udpReadBufferBytes,omitempty"`
 	PublicUpstreams    []string `json:"publicUpstreams,omitempty"`
 	MetricsAddress     string   `json:"metricsAddress,omitempty"`
+	ProfileAddress     string   `json:"profileAddress,omitempty"`
 }
 
 type RenderRole string
@@ -185,6 +186,9 @@ func validateRenderConfig(c RenderConfig) error {
 			if _, err := metricsListenAddress(b.MetricsAddress); err != nil {
 				return fmt.Errorf("%s metrics address: %w", label, err)
 			}
+		}
+		if err := contextdns.ValidateProfileAddress(b.ProfileAddress); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
 		}
 		if err := coreDNSConfig(b).Validate(); err != nil {
 			return fmt.Errorf("%s: %w", label, err)

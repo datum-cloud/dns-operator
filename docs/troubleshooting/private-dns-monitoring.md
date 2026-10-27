@@ -464,3 +464,58 @@ These are gaps in what the software and its reference deployment expose.
 | 13 | No anti-affinity or placement signal for serving members | Members can all land on one node, a single point of failure for the region | Spread constraints in the reference fleet; a placement check |
 | 14 | No counter for acks dropped from unknown members | The head-of-line fix can't show it is working | Control plane |
 | 15 | Legacy `internal_dns_operations_total` still emitted | Two families for one thing | Remove once dashboards use `internal_dns_loop_*` |
+
+
+## Opt-in CoreDNS profiling
+
+CoreDNS can serve CPU and sampled memory profiles on a separate loopback-only
+listener. It is disabled by default and does not change Go's normal memory
+sampling rate or enable background CPU, mutex, block, or trace profiling.
+Set `agent.render.nodeCoreDNS.profileAddress` or
+`agent.render.clusterCoreDNS.profileAddress` in the member runtime configuration
+to `127.0.0.1:6060`. The serving helper passes it to CoreDNS as
+`-profile-address`; a standalone process accepts the same flag. Apply through
+the normal reviewed member rollout and restart the daemon supervisor to pick
+up this process argument. It is not a hot-reloaded context snapshot setting.
+
+Only literal loopback addresses and nonzero ports are accepted. The listener
+is separate from the metrics address, has no Service or public bind, and is
+reachable by containers sharing the pod network namespace. Leave it disabled
+outside a coordinated diagnostic window. A bind failure is logged and DNS
+continues without profiling; an invalid configured address is rejected.
+
+Use an HTTP client in an existing pod container against `127.0.0.1:6060`, or a
+pod-scoped tunnel from your workstation:
+
+```sh
+kubectl --context "$context" -n "$namespace" port-forward "pod/$pod" 16060:6060
+```
+
+In another terminal, collect profiles during a stable load hold:
+
+```sh
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/allocs -o allocs-before.pb.gz
+curl --fail --max-time 35 'http://127.0.0.1:16060/debug/pprof/profile?seconds=10' -o cpu.pb.gz
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/allocs -o allocs-after.pb.gz
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/heap -o heap.pb.gz
+go tool pprof -top cpu.pb.gz
+go tool pprof -top -sample_index=alloc_space -base=allocs-before.pb.gz allocs-after.pb.gz
+go tool pprof -top -sample_index=alloc_objects -base=allocs-before.pb.gz allocs-after.pb.gz
+```
+
+CPU captures default to 10 seconds and accept only an integer `seconds` from
+1 through 30. Disconnecting cancels the capture and releases the CPU profiler.
+Heap and allocation captures are instantaneous sampled profiles, with no
+parameters; forced GC and text/debug dumps are rejected. Heap statistics can
+lag recent allocations until a GC cycle. Compare allocation snapshots from the
+same process, and record process start time, image, offered load, CPU quota,
+GOMAXPROCS, socket drops, and effective receive buffer. Profiling itself adds
+work: use a separate profiled replicate and compare an unprofiled hold before
+using results to explain capacity.
+
+Only these three GET routes are exposed. Concurrent captures return 429,
+invalid parameters return 400, and unsupported paths return 404. HTTP reads are
+limited to five seconds and writes to 35 seconds; CPU sampling stops at its
+requested duration even if the client stops reading. No goroutine, command
+line, mutex, block, or trace endpoint is mounted. Close the tunnel and remove
+the opt-in setting through the normal rollout when collection is complete.

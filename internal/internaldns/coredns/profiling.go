@@ -15,7 +15,10 @@ import (
 	"time"
 )
 
-const maxProfileSeconds = 30
+const (
+	maxProfileSeconds = 30
+	cpuProfileName    = "cpu"
+)
 
 func ValidateProfileAddress(address string) error {
 	if address == "" {
@@ -82,7 +85,7 @@ func (h *profileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var name string
 	switch r.URL.Path {
 	case "/debug/pprof/profile":
-		name = "cpu"
+		name = cpuProfileName
 	case "/debug/pprof/heap":
 		name = "heap"
 	case "/debug/pprof/allocs":
@@ -98,7 +101,7 @@ func (h *profileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for key, values := range query {
-		if name != "cpu" || key != "seconds" || len(values) != 1 {
+		if name != cpuProfileName || key != "seconds" || len(values) != 1 {
 			http.Error(w, "only CPU profiles accept a single seconds parameter", http.StatusBadRequest)
 			return
 		}
@@ -116,7 +119,7 @@ func (h *profileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	if name != "cpu" {
+	if name != cpuProfileName {
 		_ = pprof.Lookup(name).WriteTo(w, 0)
 		return
 	}

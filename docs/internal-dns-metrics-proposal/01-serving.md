@@ -60,6 +60,11 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 | `internal_dns_context_snapshot_contexts` | gauge | `state` ∈ `ready`, `pending` |
 | `internal_dns_context_snapshot_reloads_total` | counter | `result` ∈ `applied`, `rejected` |
 | `internal_dns_context_snapshot_applied_timestamp_seconds` | gauge | — |
+| `internal_dns_transport_connections_total` | counter | `outcome` ∈ `accepted`, `untrusted_peer`, `handshake_limit`, `handshake_error`, `shutdown` |
+| `internal_dns_transport_pending_handshakes` | gauge | — |
+| `internal_dns_transport_handshake_limit` | gauge | — |
+
+Transport admission metrics count sockets before DNS processing. `handshake_limit` records immediate rejection when all 64 handshake slots are occupied; `handshake_error` includes malformed or incomplete initial headers and read timeouts. Pending handshakes include sockets waiting for CoreDNS to accept a validated connection. These metrics add seven series per process with no peer, address, or tenant labels. They expose admission loss separately from `internal_dns_context_queries_total`, which only observes queries that reached the plugin.
 
 **Agent metrics (G-3, revised).** Drop the strategy's `role` label because target labels carry it.
 

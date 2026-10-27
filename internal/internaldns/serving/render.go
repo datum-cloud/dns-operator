@@ -24,8 +24,11 @@ type DNSDistRenderConfig struct {
 	PoolName        string          `json:"poolName"`
 	Backends        []model.Backend `json:"backends,omitempty"`
 	IdentityKeyFile string          `json:"identityKeyFile,omitempty"`
-	MetricsAddress  string          `json:"metricsAddress,omitempty"`
-	MetricsACLs     []string        `json:"metricsACLs,omitempty"`
+	// BackendTransport defaults to TCP. UDP uses UDP for incoming UDP queries
+	// while retaining TCP for TCP clients, and requires per-query keyed identity.
+	BackendTransport model.Transport `json:"backendTransport,omitempty"`
+	MetricsAddress   string          `json:"metricsAddress,omitempty"`
+	MetricsACLs      []string        `json:"metricsACLs,omitempty"`
 }
 
 type CoreDNSRenderConfig struct {
@@ -147,6 +150,12 @@ func validateRenderConfig(c RenderConfig) error {
 		}
 		if d.IdentityKeyFile != "" && !filepath.IsAbs(d.IdentityKeyFile) {
 			return fmt.Errorf("%s identity key file must be an absolute path", label)
+		}
+		if d.BackendTransport != "" && d.BackendTransport != model.TransportTCP && d.BackendTransport != model.TransportUDP {
+			return fmt.Errorf("%s backend transport must be tcp or udp", label)
+		}
+		if d.BackendTransport == model.TransportUDP && d.IdentityKeyFile == "" {
+			return fmt.Errorf("%s UDP backend requires an identity key", label)
 		}
 		if err := validateDNSDistMetrics(d); err != nil {
 			return fmt.Errorf("%s %w", label, err)
@@ -321,7 +330,8 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then internalDNSIdentityKey = string.rep(\"A\",43)..\"=\" else\n  local handle = assert(io.open(%q,\"r\"))\n  internalDNSIdentityKey = assert(handle:read(\"*l\")):match(\"^%%s*(.-)%%s*$\"); handle:close()\nend\n", c.IdentityKeyFile)
 	}
 	for _, backend := range backends {
-		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy)
+		tcpOnly := c.BackendTransport != model.TransportUDP
+		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=%t,checkTCP=%t,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy, tcpOnly, tcpOnly)
 	}
 	renderDNSDistMetricsStart(&out, c)
 	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
@@ -473,6 +483,9 @@ func withoutDNSDistReadinessCanary(rules []byte) []byte {
 
 func dnsdistTransport(c DNSDistRenderConfig) string {
 	if c.IdentityKeyFile != "" {
+		if c.BackendTransport == model.TransportUDP {
+			return "identity-option-udp"
+		}
 		return "identity-option-tcp"
 	}
 	return "proxy-v2-tcp"

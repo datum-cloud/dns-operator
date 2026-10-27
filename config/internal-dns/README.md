@@ -157,6 +157,29 @@ plugin builds its replacement state before swapping the lookup table. Invalid
 updates retain the accepted state. A record update does not restart CoreDNS.
 The agent proves the installed publication over UDP and TCP before acknowledging it.
 
+With `identityKeyFile` configured, CoreDNS listens on both UDP and TCP at its
+management address. Both transports accept only `proxyPeers`; each UDP query
+must additionally carry a valid keyed destination option. Members without an
+identity key retain the TCP-only PROXYv2 listener. The key is a shared secret,
+not encryption: keep this hop on the trusted serving network.
+
+To try UDP between dnsdist and CoreDNS, set `backendTransport: "udp"` in
+`render.nodeDNSDist` or `render.clusterDNSDist`. The default is `"tcp"` (including
+when omitted). UDP mode sends UDP client queries over UDP and keeps TCP for TCP
+clients, including retries of truncated answers. It requires `identityKeyFile`.
+Deploy the UDP-capable CoreDNS image first, permit UDP on the backend port (5300
+in the example) from the configured peers, then replace the dnsdist member with
+the new setting. A transport change requires replacement; a rules reload cannot
+change existing backend connections. Restore `"tcp"` and replace the dnsdist
+member to roll back. Keyed CoreDNS readiness checks both transports.
+
+Compare query outcome/latency metrics with
+`internal_dns_transport_datagrams_total{outcome="accepted"}` and
+`internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters
+count datagrams before DNS parsing and identity validation; accepted datagrams
+are not necessarily successful queries. TCP admission counters remain available
+for TCP client traffic and fallback.
+
 Publication acknowledgements report verified configuration versions. The fleet
 retains accepted proofs during control plane or broker outages and continues
 using local DNS probes and backend health checks. Status can report degraded

@@ -146,7 +146,11 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
 	}
 	if p.identityKey != nil {
-		if asserted, present := identityDestination(r, p.identityKey); present {
+		asserted, present := identityDestination(r, p.identityKey)
+		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp && !present {
+			return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
+		}
+		if present {
 			if !asserted.IsValid() {
 				return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
 			}

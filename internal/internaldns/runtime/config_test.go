@@ -39,6 +39,27 @@ func TestAgentUsesRootRegionAndDoesNotNeedKubernetes(t *testing.T) {
 	}
 }
 
+func TestAgentDeliveryConnectionTracksDisconnectAndReconnect(t *testing.T) {
+	states := make(chan bool, 3)
+	states <- true
+	states <- false
+	states <- true
+	close(states)
+	var observed []bool
+	observeAgentDeliveryConnection(context.Background(), states, func(connected bool) {
+		observed = append(observed, connected)
+	})
+	want := []bool{true, false, true}
+	if len(observed) != len(want) {
+		t.Fatalf("observed connection states = %v, want %v", observed, want)
+	}
+	for i := range want {
+		if observed[i] != want[i] {
+			t.Fatalf("observed connection states = %v, want %v", observed, want)
+		}
+	}
+}
+
 func TestKubeAPIRateLimitDefaultsOverridesAndValidation(t *testing.T) {
 	base := Config{
 		Region: "central", Shard: "one",
@@ -188,7 +209,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- runAgent(ctx, cfg, Options{MetricsBindAddress: metricsAddress}) }()
+	go func() { done <- runAgent(ctx, cfg, Options{AgentMetricsBindAddress: metricsAddress}) }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if _, err := os.Stat(cfg.Agent.Render.NodeDNSDist.Path); err == nil {

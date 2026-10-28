@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="940" viewBox="0 0 960 940" role="img" aria-labelledby="title description">
+  <title id="title">Overlapping addresses, separate DNS contexts</title>
+  <desc id="description">Two VPCs use client 10.0.0.5 and resolver fd53::53. Galactic authorizes each private path and translates it to a distinct service destination. The shared DNS fleet maps the destinations to separate contexts before lookup. The same private name returns different addresses.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="940" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Overlapping addresses, separate DNS contexts</text>
+  <rect x="32" y="115" width="416" height="225" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="50" y="144" class="heading" text-anchor="start">Consumer VPC A</text>
+  <rect x="57" y="160" width="366" height="65" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="186.5" class="heading" text-anchor="middle">Client</text>
+  <text x="240.0" y="210.5" class="mono" text-anchor="middle">10.0.0.5</text>
+  <rect x="57" y="260" width="366" height="60" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="284.0" class="heading" text-anchor="middle">DNS endpoint</text>
+  <text x="240.0" y="308.0" class="mono" text-anchor="middle">fd53::53</text>
+  <path d="M 240 225 V 260" class="edge"/>
+  <rect x="57" y="395" width="366" height="80" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="429.0" class="heading" text-anchor="middle">Galactic private path A</text>
+  <text x="240.0" y="453.0" class="detail" text-anchor="middle">Authorize and translate destination</text>
+  <path d="M 240 320 V 395" class="edge"/>
+  <rect x="512" y="115" width="416" height="225" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="530" y="144" class="heading" text-anchor="start">Consumer VPC B</text>
+  <rect x="537" y="160" width="366" height="65" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="186.5" class="heading" text-anchor="middle">Client</text>
+  <text x="720.0" y="210.5" class="mono" text-anchor="middle">10.0.0.5</text>
+  <rect x="537" y="260" width="366" height="60" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="284.0" class="heading" text-anchor="middle">DNS endpoint</text>
+  <text x="720.0" y="308.0" class="mono" text-anchor="middle">fd53::53</text>
+  <path d="M 720 225 V 260" class="edge"/>
+  <rect x="537" y="395" width="366" height="80" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="429.0" class="heading" text-anchor="middle">Galactic private path B</text>
+  <text x="720.0" y="453.0" class="detail" text-anchor="middle">Authorize and translate destination</text>
+  <path d="M 720 320 V 395" class="edge"/>
+  <rect x="32" y="525" width="896" height="320" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480.0" y="554" class="heading" text-anchor="middle">Shared DNS service fleet</text>
+  <rect x="57" y="575" width="366" height="65" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="601.5" class="heading" text-anchor="middle">Service destination</text>
+  <text x="240.0" y="625.5" class="mono" text-anchor="middle">fd70:100::10</text>
+  <path d="M 240 475 V 575" class="edge"/>
+  <rect x="57" y="680" width="366" height="55" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="713.5" class="heading" text-anchor="middle">DNS context A</text>
+  <path d="M 240 640 V 680" class="edge"/>
+  <rect x="57" y="770" width="366" height="55" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="791.5" class="heading" text-anchor="middle">api.prod.internal</text>
+  <text x="240.0" y="815.5" class="mono" text-anchor="middle">10.20.0.10</text>
+  <path d="M 240 735 V 770" class="edge"/>
+  <rect x="537" y="575" width="366" height="65" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="601.5" class="heading" text-anchor="middle">Service destination</text>
+  <text x="720.0" y="625.5" class="mono" text-anchor="middle">fd70:100::11</text>
+  <path d="M 720 475 V 575" class="edge"/>
+  <rect x="537" y="680" width="366" height="55" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="713.5" class="heading" text-anchor="middle">DNS context B</text>
+  <path d="M 720 640 V 680" class="edge"/>
+  <rect x="537" y="770" width="366" height="55" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="791.5" class="heading" text-anchor="middle">api.prod.internal</text>
+  <text x="720.0" y="815.5" class="mono" text-anchor="middle">10.20.0.20</text>
+  <path d="M 720 735 V 770" class="edge"/>
+  <rect x="32" y="875" width="896" height="50" rx="6" fill="#F3F8DD" stroke="none" stroke-width="1.2"/>
+  <text x="48" y="901" class="detail" text-anchor="start">DNS selects the authorized context before looking up records or cached answers.</text>
+</svg>

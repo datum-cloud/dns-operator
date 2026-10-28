@@ -103,30 +103,7 @@ The following diagram separates project resources, publication storage, and
 regional delivery. The controller processes run the compiler, exporter, and
 acknowledgment handler.
 
-```mermaid
-flowchart TB
-  accTitle: Private DNS control-plane boundaries
-  accDescr: Controllers read consumer project resources and maintain service API resources. They commit snapshots to a publication store. An exporter sends committed updates through regional NATS to serving agents. Agents return acknowledgments through NATS; controllers record them and update project status.
-  P["Consumer project API<br/>Contexts, zones, access, and contributions"]
-  C["DNS controllers<br/>Project and zone reconciliation"]
-  D["DNS service project API<br/>References, resolver bindings, and address claims"]
-  S["Publication store<br/>Kubernetes API or JetStream KV"]
-  X[Regional exporter]
-  N[Regional NATS]
-  E[Shared serving fleet]
-  A["Acknowledgment handler<br/>and status refresh"]
-  P -->|Project inputs| C
-  C -->|Maintain resources| D
-  C -->|Commit snapshots and outboxes| S
-  S -->|Committed updates| X
-  X --> N
-  N -->|Updates| E
-  E -->|Member acknowledgments| N
-  N -->|Acknowledgments| A
-  A -->|Publication observations| S
-  A -->|Binding observations| D
-  A -->|Serving status| P
-```
+![Control-plane boundaries](diagrams/control-plane.svg)
 
 Trusted network integration writes context and access intent. Product services
 write registrations and contributions. DNS controllers compile that intent and
@@ -150,15 +127,7 @@ zones or extend DNS access; cross-project sharing is outside this proposal.
 The following diagram shows one context with separate access bindings and
 serving fleets in two regions.
 
-```mermaid
-flowchart LR
-  accTitle: One DNS context with access in two regions
-  accDescr: A DNSResolverContext has a central access binding and an east access binding. Each binding selects its own regional shared fleet.
-  C[DNSResolverContext] --> AC[Central access binding]
-  C --> AE[East access binding]
-  AC --> FC[Central shared fleet]
-  AE --> FE[East shared fleet]
-```
+![One context with two regional access bindings](diagrams/regional-access.svg)
 
 Bindings live in the consumer project API; `region` selects serving capacity.
 Each binding has its own identity, access mapping, and readiness. Publication is
@@ -183,46 +152,13 @@ cache or selecting private zones.
 The following diagram shows how two VPCs with overlapping addresses select
 different DNS contexts in the same fleet.
 
-```mermaid
-flowchart TB
-  accTitle: Destination-based DNS context isolation
-  accDescr: Clients in VPC A and VPC B use the same client and resolver addresses. Galactic translates each authorized path to a different service destination. The shared DNS fleet maps those destinations to separate contexts, which return different answers for the same private name.
-  subgraph A[VPC A]
-    ClientA[Client 10.0.0.5] --> FrontA[DNS endpoint fd53::53]
-  end
-  subgraph B[VPC B]
-    ClientB[Client 10.0.0.5] --> FrontB[DNS endpoint fd53::53]
-  end
-  FrontA --> PathA[Galactic private path A]
-  FrontB --> PathB[Galactic private path B]
-  PathA --> DestA[Service destination fd70:100::10]
-  PathB --> DestB[Service destination fd70:100::11]
-  subgraph Shared[Shared DNS service fleet]
-    DestA --> ContextA[DNS context A]
-    DestB --> ContextB[DNS context B]
-    ContextA --> ZoneA["api.prod.internal = 10.20.0.10"]
-    ContextB --> ZoneB["api.prod.internal = 10.20.0.20"]
-  end
-```
+![Separate DNS contexts for overlapping VPC addresses](diagrams/context-isolation.svg)
 
 Each context uses the following query path. Both regional CoreDNS members hold
 the context's private records and a separate public cache. The diagram shows the
 lookup branches for one member; the other member has the same branches.
 
-```mermaid
-flowchart TB
-  accTitle: Private DNS query path through node and regional tiers
-  accDescr: Galactic sends an authorized query to node dnsdist, which uses TCP or optional keyed UDP to forward to node CoreDNS. Node CoreDNS forwards to the context's regional destination. Regional dnsdist selects an eligible CoreDNS member. That member answers private names from its applied snapshot and sends public names through a per-context cache to PowerDNS Recursor.
-  V[VPC client] --> G[Galactic authorized path]
-  G -->|UDP or TCP| ND[Node dnsdist]
-  ND -->|TCP or keyed UDP| NC[Node CoreDNS]
-  NC -->|Context-specific regional destination| RD[Regional dnsdist]
-  RD -->|TCP or keyed UDP| R0[Regional CoreDNS member 0]
-  RD -->|TCP or keyed UDP| R1[Regional CoreDNS member 1]
-  R0 -->|Private name| Z[Applied private-zone snapshot]
-  R0 -->|Public name| C[Per-context public cache]
-  C --> P[Shared PowerDNS Recursor]
-```
+![Query path through node and regional tiers](diagrams/query-path.svg)
 
 Galactic verifies the source VPC lifetime and route authorization before
 translating the destination. DNS trusts that path, not client addresses, ECS, or
@@ -333,33 +269,15 @@ is accepted on the next compilation.
 The following sequence shows a committed publication and its acknowledgment.
 The publication store uses either the Kubernetes API or JetStream KV.
 
-```mermaid
-sequenceDiagram
-  accTitle: Private DNS publication and serving acknowledgment
-  accDescr: A product updates project records. The compiler validates inputs and commits a snapshot under its writer lease. The exporter sends the snapshot through regional NATS. A serving agent validates, activates, and proves the snapshot, then returns an acknowledgment through NATS. Controllers record the observation and update project status.
-  participant Product as Product publisher
-  participant Project as Consumer project API
-  participant DNS as DNS compiler
-  participant Store as Publication store
-  participant Export as Regional exporter
-  participant Transport as Regional NATS
-  participant Agent as Serving agent
-  participant Status as Status handler
-  Product->>Project: Atomically update records and eligibility
-  DNS->>Project: Validate references and resource generations
-  DNS->>Store: Stage immutable chunks and manifest
-  DNS->>Store: Commit active pointer under writer lease
-  Export->>Store: Read committed state and ensure durable outbox
-  Export->>Transport: Export committed update
-  Transport->>Agent: Deliver committed update
-  Agent->>Agent: Validate, activate, and prove snapshot
-  Agent->>Transport: Publish member acknowledgment
-  Transport->>Status: Deliver acknowledgment
-  Status->>Store: Record publication observation
-  Status->>Project: Report serving status
-  Product->>Project: Update contribution with eligible=false
-  DNS->>Store: Commit snapshot that withdraws the endpoint
-```
+![Validate and commit publication](diagrams/publication-commit.svg)
+
+![Deliver and activate the snapshot](diagrams/publication-delivery.svg)
+
+![Record observations and report status](diagrams/publication-status.svg)
+
+To withdraw an endpoint, the product updates its contribution with
+`eligible: false`. The compiler commits a snapshot that removes the endpoint;
+delivery, activation, and acknowledgment follow the same sequence.
 
 #### Zone reconciliation and cached inputs
 

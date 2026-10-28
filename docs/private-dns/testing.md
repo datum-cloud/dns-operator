@@ -46,15 +46,7 @@ broker replicas after fault injection, including a failed scenario.
 
 ## Deployed path
 
-```mermaid
-flowchart LR
-  A[Project A API / scoped publisher] --> C[Two DNS controller Deployments]
-  B[Project B API / scoped publisher] --> C
-  C --> J[Three TLS JetStream replicas / PVCs]
-  J --> N[Shared node dnsdist / CoreDNS]
-  J --> R[Shared regional dnsdist / two CoreDNS members]
-  P[Separate consumer probe] -->|Service destination fixture| N --> R
-```
+![Kubernetes qualification environment](../architecture/private-dns/diagrams/test-environment.svg)
 
 The `dns-upstream` and `dns-edge` clusters provide independent project APIs.
 The `dns-control` cluster hosts the DNS service API, admission Service, broker,

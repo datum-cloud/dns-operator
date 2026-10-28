@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="1120" viewBox="0 0 960 1120" role="img" aria-labelledby="title description">
+  <title id="title">Proposed qualification: consumer query paths</title>
+  <desc id="description">Karmada distributes configuration to Edge A and Edge B. A consumer VPC workload in each edge queries its private endpoint at the same well-known resolver address, through its Galactic ServiceRoutePolicy. Galactic reaches distinct ServiceEndpoints in the producer DNS service VPC. Each endpoint selects a shared node dnsdist/CoreDNS tier; both forward to the shared regional dnsdist and two CoreDNS members. TLS JetStream distributes serving updates to both node tiers and the regional tier.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="1120" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Proposed qualification: consumer query paths</text>
+  <text x="480" y="112" class="message" text-anchor="middle">Karmada distributes workloads and network configuration to both edges.</text>
+  <rect x="32" y="145" width="416" height="345" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="50" y="174" class="heading" text-anchor="start">Edge A</text>
+  <rect x="57" y="195" width="366" height="60" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="231.0" class="heading" text-anchor="middle">Consumer VPC A workload</text>
+  <rect x="57" y="305" width="366" height="70" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="334.0" class="heading" text-anchor="middle">Private endpoint</text>
+  <text x="240.0" y="358.0" class="detail" text-anchor="middle">Same well-known resolver address</text>
+  <rect x="57" y="420" width="366" height="50" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="451.0" class="heading" text-anchor="middle">Galactic ServiceRoutePolicy A</text>
+  <path d="M 240 255 V 305" class="edge"/>
+  <path d="M 240 375 V 420" class="edge"/>
+  <rect x="512" y="145" width="416" height="345" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="530" y="174" class="heading" text-anchor="start">Edge B</text>
+  <rect x="537" y="195" width="366" height="60" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="231.0" class="heading" text-anchor="middle">Consumer VPC B workload</text>
+  <rect x="537" y="305" width="366" height="70" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="334.0" class="heading" text-anchor="middle">Private endpoint</text>
+  <text x="720.0" y="358.0" class="detail" text-anchor="middle">Same well-known resolver address</text>
+  <rect x="537" y="420" width="366" height="50" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="451.0" class="heading" text-anchor="middle">Galactic ServiceRoutePolicy B</text>
+  <path d="M 720 255 V 305" class="edge"/>
+  <path d="M 720 375 V 420" class="edge"/>
+  <rect x="32" y="550" width="896" height="420" rx="10" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480.0" y="579" class="heading" text-anchor="middle">Producer DNS service VPC</text>
+  <rect x="57" y="600" width="366" height="70" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="629.0" class="heading" text-anchor="middle">ServiceEndpoint</text>
+  <text x="240.0" y="653.0" class="detail" text-anchor="middle">Node listener A</text>
+  <path d="M 240 470 V 600" class="edge"/>
+  <rect x="57" y="720" width="366" height="80" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="754.0" class="heading" text-anchor="middle">Edge A shared node tier</text>
+  <text x="240.0" y="778.0" class="detail" text-anchor="middle">dnsdist / CoreDNS</text>
+  <path d="M 240 670 V 720" class="edge"/>
+  <path d="M 240 800 V 840 H 480 V 880" class="edge"/>
+  <rect x="537" y="600" width="366" height="70" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="629.0" class="heading" text-anchor="middle">ServiceEndpoint</text>
+  <text x="720.0" y="653.0" class="detail" text-anchor="middle">Node listener B</text>
+  <path d="M 720 470 V 600" class="edge"/>
+  <rect x="537" y="720" width="366" height="80" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="754.0" class="heading" text-anchor="middle">Edge B shared node tier</text>
+  <text x="720.0" y="778.0" class="detail" text-anchor="middle">dnsdist / CoreDNS</text>
+  <path d="M 720 670 V 720" class="edge"/>
+  <path d="M 720 800 V 840 H 480 V 880" class="edge"/>
+  <rect x="300" y="880" width="360" height="70" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="909.0" class="heading" text-anchor="middle">Shared regional tier</text>
+  <text x="480.0" y="933.0" class="detail" text-anchor="middle">dnsdist / two CoreDNS members</text>
+  <rect x="32" y="1000" width="896" height="74" rx="6" fill="#F3F8DD" stroke="none" stroke-width="1.2"/>
+  <text x="48" y="1026" class="detail" text-anchor="start">TLS JetStream delivers serving updates to both node tiers and the regional tier.</text>
+  <text x="48" y="1050" class="detail" text-anchor="start">These paths are qualification targets; the current test environment uses routing fixtures.</text>
+</svg>

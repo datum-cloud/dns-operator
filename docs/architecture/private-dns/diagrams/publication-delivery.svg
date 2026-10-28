@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="740" viewBox="0 0 960 740" role="img" aria-labelledby="title description">
+  <title id="title">2. Deliver and activate the snapshot</title>
+  <desc id="description">The regional exporter reads committed state from the publication store and ensures a durable outbox. It exports the update through regional NATS to the serving agent. The agent validates, activates, and proves the snapshot, then publishes a member acknowledgment to NATS.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="740" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">2. Deliver and activate the snapshot</text>
+  <rect x="20" y="120" width="200" height="66" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="120.0" y="147.0" class="heading" text-anchor="middle">Regional</text>
+  <text x="120.0" y="171.0" class="heading" text-anchor="middle">exporter</text>
+  <path d="M 120 186 V 705" class="lifeline"/>
+  <rect x="260" y="120" width="200" height="66" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="360.0" y="147.0" class="heading" text-anchor="middle">Publication</text>
+  <text x="360.0" y="171.0" class="heading" text-anchor="middle">store</text>
+  <path d="M 360 186 V 705" class="lifeline"/>
+  <rect x="500" y="120" width="200" height="66" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="600.0" y="147.0" class="heading" text-anchor="middle">Regional</text>
+  <text x="600.0" y="171.0" class="heading" text-anchor="middle">NATS</text>
+  <path d="M 600 186 V 705" class="lifeline"/>
+  <rect x="740" y="120" width="200" height="66" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="840.0" y="147.0" class="heading" text-anchor="middle">Serving</text>
+  <text x="840.0" y="171.0" class="heading" text-anchor="middle">agent</text>
+  <path d="M 840 186 V 705" class="lifeline"/>
+  <text x="240.0" y="231" class="message" text-anchor="middle">Read committed state;</text>
+  <text x="240.0" y="255" class="message" text-anchor="middle">ensure durable outbox</text>
+  <path d="M 120 270 H 360" class="edge"/>
+  <text x="360.0" y="360" class="message" text-anchor="middle">Export committed update</text>
+  <path d="M 120 375 H 600" class="edge"/>
+  <text x="720.0" y="465" class="message" text-anchor="middle">Deliver committed update</text>
+  <path d="M 600 480 H 840" class="edge"/>
+  <path d="M 840 555 H 905 V 600 H 840" class="edge"/>
+  <text x="825" y="572" class="message" text-anchor="end">Validate, activate,</text>
+  <text x="825" y="596" class="message" text-anchor="end">and prove snapshot</text>
+  <text x="720.0" y="670" class="message" text-anchor="middle">Member acknowledgment</text>
+  <path d="M 840 685 H 600" class="edge return"/>
+</svg>

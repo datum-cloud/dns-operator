@@ -314,6 +314,11 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	if listeners == 0 {
 		listeners = 1
 	}
+	// Preserve the existing five-field fingerprint for single-listener members.
+	topologyListeners := 0
+	if listeners > 1 {
+		topologyListeners = listeners
+	}
 	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
@@ -322,8 +327,8 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		Backends  []model.Backend
 		Pool      string
 		Transport string
-		Listeners int
-	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), listeners})
+		Listeners int `json:",omitempty"`
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), topologyListeners})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
 	if listeners == 1 {

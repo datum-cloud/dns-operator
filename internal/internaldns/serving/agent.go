@@ -352,7 +352,8 @@ func (a *Agent) loadBootstrap(ctx context.Context, loader BootstrapSource) error
 	if err != nil {
 		return fmt.Errorf("load bootstrap snapshot: %w", err)
 	}
-	if err := verifyBootstrap(envs, a.cfg.Region, a.cfg.Shard); err != nil {
+	envs, err = verifyBootstrap(envs, a.cfg.Region, a.cfg.Shard)
+	if err != nil {
 		return fmt.Errorf("validate bootstrap snapshot: %w", err)
 	}
 	a.mu.Lock()

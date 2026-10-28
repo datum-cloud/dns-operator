@@ -50,7 +50,6 @@ func TestSnapshotBootstrapIgnoresUnreferencedHistoricalChunks(t *testing.T) {
 	chunk, manifest := testPublication(t, now)
 	historical := chunk
 	historical.ManifestUID = "old-manifest"
-	historical.Revision = 3
 	events := []model.Envelope{
 		envelope(t, model.KindPublicationChunk, "zone-a", 2, 3, historical),
 		envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk),

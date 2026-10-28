@@ -80,11 +80,7 @@ func (a *Agent) observePublicationLag() {
 		}
 	}
 	for uid, zone := range desired {
-		var publication publicationState
-		ok := false
-		if a.state.Active != nil {
-			publication, ok = a.state.Active.Publications[uid]
-		}
+		publication, ok := a.state.Publications[uid]
 		if zone.Pending || !ok || !publication.Verified || publication.Manifest.Tombstone || model.Compare(publication.Fence.Epoch, publication.Fence.Revision, zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision) < 0 {
 			lagging++
 			if ok && publication.Fence.Epoch == zone.RequiredPublicationEpoch && publication.Fence.Revision < zone.RequiredPublicationRevision {

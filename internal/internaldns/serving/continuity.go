@@ -111,7 +111,7 @@ const localDaemonStartGrace = 10 * time.Second
 const restoredCheckpointLimit = 15 * time.Minute
 
 func (a *Agent) restoredCheckpointExpired() bool {
-	return !a.restoredAt.IsZero() && !a.bootstrapComplete && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
+	return !a.restoredAt.IsZero() && !a.stateReceived && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
 }
 
 func (a *Agent) withdrawRestoredCheckpoint(ctx context.Context) error {

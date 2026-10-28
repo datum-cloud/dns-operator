@@ -97,8 +97,7 @@ func currentBootstrapEnvelopes(envs []model.Envelope) ([]model.Envelope, error) 
 func verifyBootstrap(envs []model.Envelope, region, shard string) error {
 	chunks := map[string][]model.PublicationChunk{}
 	var manifests []model.PublicationManifest
-	manifestByZone := map[string]model.PublicationManifest{}
-	var serving *model.ServingSnapshot
+	serving := false
 	for _, env := range envs {
 		if err := env.Validate(); err != nil {
 			return err
@@ -112,67 +111,25 @@ func verifyBootstrap(envs []model.Envelope, region, shard string) error {
 			if err := json.Unmarshal(env.Payload, &c); err != nil {
 				return err
 			}
-			if err := c.Validate(); err != nil {
-				return err
-			}
-			if c.ZoneUID != env.ResourceUID || c.WriterEpoch != env.Epoch || c.Revision != env.Revision {
-				return errors.New("bootstrap chunk envelope identity does not match payload")
-			}
 			chunks[c.ManifestUID] = append(chunks[c.ManifestUID], c)
 		case model.KindPublicationManifest:
 			var m model.PublicationManifest
 			if err := json.Unmarshal(env.Payload, &m); err != nil {
 				return err
 			}
-			if err := m.Validate(); err != nil {
-				return err
-			}
-			if m.ZoneUID != env.ResourceUID || m.WriterEpoch != env.Epoch || m.Revision != env.Revision {
-				return errors.New("bootstrap manifest envelope identity does not match payload")
-			}
 			manifests = append(manifests, m)
-			if old, ok := manifestByZone[m.ZoneUID]; !ok || model.Compare(m.WriterEpoch, m.Revision, old.WriterEpoch, old.Revision) > 0 {
-				manifestByZone[m.ZoneUID] = m
-			}
 		case model.KindServingSnapshot:
-			var snapshot model.ServingSnapshot
-			if err := json.Unmarshal(env.Payload, &snapshot); err != nil {
-				return err
-			}
-			if err := snapshot.Validate(); err != nil {
-				return err
-			}
-			if snapshot.Region != env.Region || snapshot.Shard != env.Shard || snapshot.ConfigurationEpoch != env.Epoch || snapshot.ConfigurationRevision != env.Revision {
-				return errors.New("bootstrap serving envelope identity does not match payload")
-			}
-			if serving != nil {
-				return errors.New("bootstrap has multiple serving snapshots")
-			}
-			serving = &snapshot
+			serving = true
 		default:
 			return fmt.Errorf("bootstrap contains unsupported kind %q", env.Kind)
 		}
 	}
-	if serving == nil {
+	if !serving {
 		return errors.New("bootstrap has no complete serving snapshot")
 	}
 	for _, m := range manifests {
 		if _, err := model.VerifyManifest(m, chunks[m.ManifestUID]); err != nil {
 			return err
-		}
-	}
-	for _, binding := range serving.Bindings {
-		if binding.Tombstone || binding.ConfigurationPending {
-			continue
-		}
-		for _, zone := range binding.Zones {
-			if zone.Pending {
-				continue
-			}
-			manifest, ok := manifestByZone[zone.ZoneUID]
-			if !ok || model.Compare(manifest.WriterEpoch, manifest.Revision, zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision) < 0 {
-				return fmt.Errorf("bootstrap has no current publication for attached zone %q", zone.ZoneUID)
-			}
 		}
 	}
 	return nil

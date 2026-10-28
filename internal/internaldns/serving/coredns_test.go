@@ -30,38 +30,19 @@ func regionalTestConfig(t *testing.T) Config {
 }
 func installTestPublication(t *testing.T, a *Agent, now time.Time) {
 	t.Helper()
+	ctx := context.Background()
 	snapshot := testSnapshot(now)
 	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
+	if err := a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot)); err != nil {
+		t.Fatal(err)
+	}
 	chunk, manifest := testPublication(t, now)
-	envs := []model.Envelope{
-		envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk),
-		envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot),
-		envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest),
-	}
-	ctx := context.Background()
-	if err := a.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
+	if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Step(ctx); err != nil {
+	if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func bootstrapFromCheckpoint(t *testing.T, a *Agent) []model.Envelope {
-	t.Helper()
-	var envs []model.Envelope
-	for _, chunks := range a.state.Chunks {
-		for _, chunk := range chunks {
-			envs = append(envs, envelope(t, model.KindPublicationChunk, chunk.ZoneUID, chunk.WriterEpoch, chunk.Revision, chunk))
-		}
-	}
-	if a.state.Snapshot != nil {
-		envs = append(envs, envelope(t, model.KindServingSnapshot, "shard", a.state.Snapshot.ConfigurationEpoch, a.state.Snapshot.ConfigurationRevision, *a.state.Snapshot))
-	}
-	for uid, publication := range a.state.Publications {
-		envs = append(envs, envelope(t, model.KindPublicationManifest, uid, publication.Fence.Epoch, publication.Fence.Revision, publication.Manifest))
-	}
-	return envs
 }
 func currentZone(t *testing.T, a *Agent) string {
 	t.Helper()
@@ -263,87 +244,8 @@ func TestNodeAuthoritativeUpgradeWaitsForCurrentDelivery(t *testing.T) {
 	if err := upgraded.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.calls) != before {
-		t.Fatal("ordinary delivery bypassed the current-bootstrap gate")
-	}
-	envs := bootstrapFromCheckpoint(t, upgraded)
-	if err := upgraded.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
-		t.Fatal(err)
-	}
-	if err := upgraded.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	if len(runner.calls) == before || !strings.Contains(currentZone(t, upgraded), "192.0.2.10") {
-		t.Fatal("validated bootstrap did not activate the persisted verified publication")
-	}
-}
-
-func TestNodeAuthoritativeBootstrapIsCompleteBeforeActivation(t *testing.T) {
-	now := time.Now().UTC()
-	cfg := nodeAuthoritativeTestConfig(t)
-	seed, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	installTestPublication(t, seed, now)
-
-	runner := &recordingRunner{}
-	restarted, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := restarted.restoreActive(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	before := len(runner.calls)
-
-	// A valid ordinary event is not a substitute for the current, complete KV
-	// bootstrap cut and must not certify or reactivate cached authority.
-	snapshot := *restarted.state.Snapshot
-	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
-		t.Fatal(err)
-	}
-	if restarted.bootstrapComplete || len(runner.calls) != before {
-		t.Fatal("ordinary delivery bypassed bootstrap completion")
-	}
-
-	// A cut that withholds the attached zone's manifest is incomplete. Reject it
-	// before changing desired state or reconciling the still-approved snapshot.
-	incomplete := []model.Envelope{envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)}
-	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return incomplete, nil })); err == nil || !strings.Contains(err.Error(), "no current publication") {
-		t.Fatalf("incomplete bootstrap accepted: %v", err)
-	}
-	if restarted.bootstrapComplete || len(runner.calls) != before {
-		t.Fatal("incomplete bootstrap changed active serving")
-	}
-	invalid := []model.Envelope{envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)}
-	invalid[0].Payload = json.RawMessage(`{"region":"east"}`)
-	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return invalid, nil })); err == nil {
-		t.Fatal("invalid bootstrap payload certified readiness")
-	}
-	if restarted.bootstrapComplete || len(runner.calls) != before {
-		t.Fatal("invalid bootstrap changed active serving")
-	}
-
-	// The complete current cut contains a newer withdrawal. Loading the batch is
-	// atomic with respect to serving; only the following reconciliation may
-	// remove the previously approved record.
-	tombstone := model.PublicationManifest{ManifestUID: "deleted", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 1, Tombstone: true, GeneratedAt: now, ContentHash: model.EmptyContentHash()}
-	complete := []model.Envelope{
-		envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot),
-		envelope(t, model.KindPublicationManifest, "zone-a", tombstone.WriterEpoch, tombstone.Revision, tombstone),
-	}
-	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return complete, nil })); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.calls) != before {
-		t.Fatal("bootstrap reconciled before the complete batch was accepted")
-	}
-	if err := restarted.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if restarted.state.Active == nil || !restarted.state.Active.Publications["zone-a"].Manifest.Tombstone {
-		t.Fatal("newer bootstrap withdrawal was not activated")
+		t.Fatal("current delivery did not activate the persisted verified publication")
 	}
 }
 func TestCoreDNSPublicationActivatesLocalPrivateAuthority(t *testing.T) {

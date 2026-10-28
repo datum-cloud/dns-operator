@@ -545,7 +545,7 @@ func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	done := make(chan error, 1)
 	go func() { done <- agent.Start(workerCtx) }()
 	var metricsDone <-chan error
-	if address := opts.AgentMetricsBindAddress; address != "" && address != "0" {
+	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
 		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, nil, nil)
 		if err != nil {
 			return fmt.Errorf("create agent metrics server: %w", err)
@@ -620,32 +620,9 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	}
 	publisher.set(route.bus)
 	defer publisher.set(nil)
-	statusCtx, stopStatus := context.WithCancel(ctx)
-	statusDone := make(chan struct{})
-	go func() {
-		defer close(statusDone)
-		observeAgentDeliveryConnection(statusCtx, route.bus.ConnectionStates(statusCtx), agent.SetDeliveryConnected)
-	}()
-	defer func() {
-		stopStatus()
-		<-statusDone
-		agent.SetDeliveryConnected(false)
-	}()
+	agent.SetDeliveryConnected(true)
+	defer agent.SetDeliveryConnected(false)
 	return agent.RunTransport(ctx, serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard}, sources...)
-}
-
-func observeAgentDeliveryConnection(ctx context.Context, states <-chan bool, observe func(bool)) {
-	for {
-		select {
-		case connected, ok := <-states:
-			if !ok {
-				return
-			}
-			observe(connected)
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func newScheme() (*runtime.Scheme, error) {

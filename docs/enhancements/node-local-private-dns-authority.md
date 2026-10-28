@@ -60,9 +60,8 @@ record's existing DNS TTL after the node applies the withdrawal.
 
 ## Monitoring
 
-Enable the agent endpoint explicitly with `--agent-metrics-bind-address`; it is
-off by default so a capable image does not claim a port in existing pods. The
-endpoint exports only region, shard, mode, and fixed-stage labels:
+The agent metrics endpoint exports only region, shard, mode, and fixed-stage
+labels:
 
 - `internal_dns_agent_delivery_connected`
 - `internal_dns_agent_publication_lagging_zones`

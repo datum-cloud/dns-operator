@@ -281,11 +281,13 @@ publication targets, and context status use the same stable shard assignment.
 
 ### Control-plane and agent monitoring
 
-The control-plane and agent processes serve `/metrics` on
-`--metrics-bind-address` (default `:8080`). The control plane also serves
-`/healthz` and `/readyz` on `--health-probe-bind-address` (default `:8081`). Set
-either flag to `0` to disable it. The deprecated `metricsBindAddress`
-configuration key still overrides the metrics flag. Restrict access to the
+The control plane serves `/metrics` on `--metrics-bind-address` (default
+`:8080`) and `/healthz` plus `/readyz` on `--health-probe-bind-address`
+(default `:8081`). The deprecated `metricsBindAddress` configuration key still
+overrides the control-plane metrics flag. Agent metrics are deliberately off by
+default for compatibility with pods that already own port 8080; enable their
+`/metrics` endpoint explicitly with `--agent-metrics-bind-address`. Set any
+listener flag to `0` to disable it and restrict enabled endpoints to the
 monitoring network.
 
 `/healthz` fails when a periodic loop has not completed a run in three times

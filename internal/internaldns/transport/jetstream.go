@@ -175,6 +175,42 @@ func (j *JetStream) Close() error {
 	return nil
 }
 
+// ConnectionStates reports the initial broker connection state and every
+// subsequent disconnect/reconnect transition until ctx is canceled. The
+// returned stream is intentionally process-scoped rather than per-message so
+// serving metrics can distinguish a healthy idle consumer from a partitioned
+// one without adding query-path work.
+func (j *JetStream) ConnectionStates(ctx context.Context) <-chan bool {
+	states := make(chan bool, 1)
+	if j == nil || j.nc == nil {
+		close(states)
+		return states
+	}
+	changes := j.nc.StatusChanged(nats.CONNECTED, nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
+	go func() {
+		defer close(states)
+		defer j.nc.RemoveStatusListener(changes)
+		connected := j.nc.IsConnected()
+		for {
+			select {
+			case states <- connected:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case status, ok := <-changes:
+				if !ok {
+					return
+				}
+				connected = status == nats.CONNECTED
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return states
+}
+
 type PublishAck struct {
 	Stream    string
 	Sequence  uint64

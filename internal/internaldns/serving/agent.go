@@ -198,9 +198,9 @@ type Agent struct {
 	verifiedPaths         map[string]string
 	verifiedRestarts      uint64
 	restoredAt            time.Time
-	stateReceived         bool
+	bootstrapComplete     bool
+	bootstrapInProgress   bool
 	checkpointWithdrawn   bool
-	requiresBootstrap     bool
 	// render is renderPublications unless a test injects a failure.
 	render func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error)
 }
@@ -259,8 +259,7 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 		gateErr := (FileTransaction{Config: c.Transaction, Runner: d.Runner}).FailClosed(context.Background())
 		return nil, errors.Join(err, gateErr)
 	}
-	requiresBootstrap := c.NodeAuthoritative && (state.Active == nil || !state.Active.NodeAuthoritative)
-	agent := &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner, MarkerPath: activationMarkerPath(c.StateDir)}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}, requiresBootstrap: requiresBootstrap}
+	agent := &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner, MarkerPath: activationMarkerPath(c.StateDir)}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}}
 	agent.SetDeliveryConnected(false)
 	agent.observePublicationLag()
 	return agent, nil
@@ -353,9 +352,17 @@ func (a *Agent) loadBootstrap(ctx context.Context, loader BootstrapSource) error
 	if err != nil {
 		return fmt.Errorf("load bootstrap snapshot: %w", err)
 	}
+	if err := verifyBootstrap(envs, a.cfg.Region, a.cfg.Shard); err != nil {
+		return fmt.Errorf("validate bootstrap snapshot: %w", err)
+	}
 	a.mu.Lock()
-	a.stateReceived = true
+	a.bootstrapInProgress = true
 	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.bootstrapInProgress = false
+		a.mu.Unlock()
+	}()
 	order := func(k model.Kind) int {
 		switch k {
 		case model.KindPublicationChunk:
@@ -372,6 +379,12 @@ func (a *Agent) loadBootstrap(ctx context.Context, loader BootstrapSource) error
 			return fmt.Errorf("apply bootstrap %s: %w", env.Kind, err)
 		}
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.Snapshot == nil {
+		return errors.New("bootstrap has no validated serving snapshot")
+	}
+	a.bootstrapComplete = true
 	return nil
 }
 
@@ -467,9 +480,6 @@ func (a *Agent) Handle(ctx context.Context, env model.Envelope) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	defer a.observePublicationLag()
-	if env.Kind == model.KindServingSnapshot || env.Kind == model.KindPublicationChunk || env.Kind == model.KindPublicationManifest {
-		a.stateReceived = true
-	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -542,6 +552,12 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 			return err
 		}
 	}
+	if a.cfg.NodeAuthoritative && !a.bootstrapComplete && !a.bootstrapInProgress {
+		return nil
+	}
+	if a.bootstrapInProgress {
+		return nil
+	}
 	if err := a.reconcile(ctx); err != nil {
 		return err
 	}
@@ -594,6 +610,9 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 		return errors.New("conflicting publication manifest at the same epoch and revision")
 	}
 	if cmp == 0 && old.Verified {
+		if a.bootstrapInProgress {
+			return nil
+		}
 		if a.cfg.Mode == ModeResolver {
 			return a.recordResolverPublication(m.ZoneUID, old)
 		}
@@ -679,6 +698,9 @@ func (a *Agent) activatePublication(ctx context.Context, uid string, next public
 	a.state.Publications[uid] = next
 	if err := a.store.Save(a.state); err != nil {
 		return err
+	}
+	if a.bootstrapInProgress || (a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
+		return nil
 	}
 	if err := a.reconcile(ctx); err != nil {
 		return err
@@ -799,7 +821,7 @@ func (a *Agent) Step(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	defer a.observePublicationLag()
-	if a.requiresBootstrap && !a.stateReceived {
+	if a.cfg.NodeAuthoritative && !a.bootstrapComplete {
 		return errors.New("node-authoritative serving is waiting for a current bootstrap snapshot")
 	}
 	if a.state.Snapshot == nil {
@@ -836,6 +858,9 @@ func (a *Agent) Step(ctx context.Context) error {
 
 // finishEvent verifies regional materialization before acknowledging an update.
 func (a *Agent) finishEvent(ctx context.Context) error {
+	if a.bootstrapInProgress || (a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
+		return nil
+	}
 	if a.cfg.Mode == ModeCombined {
 		if err := a.heartbeatPublications(ctx); err != nil {
 			return err

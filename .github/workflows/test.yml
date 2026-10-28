@@ -22,6 +22,25 @@ jobs:
           go mod tidy
           make test
 
+  dnsdist-udp:
+    name: DNSdist UDP backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test generated rules with the serving DNSdist image
+        run: |
+          CGO_ENABLED=0 go test -c -o /tmp/serving.test ./internal/internaldns/serving
+          image=$(sed -n 's/^FROM \(powerdns\/dnsdist[^ ]*\) AS serving$/\1/p' config/internal-dns/Dockerfile)
+          test -n "$image"
+          docker run --rm --network none \
+            --mount type=bind,src=/tmp/serving.test,dst=/serving.test,readonly \
+            --entrypoint /serving.test \
+            -e INTERNAL_DNS_TEST_DNSDIST=/usr/local/bin/dnsdist \
+            "$image" -test.run '^TestDNSDistUDPIntegration$' -test.v -test.timeout 30s
+
   alert-rules:
     name: Validate DNS alert rules
     runs-on: ubuntu-latest

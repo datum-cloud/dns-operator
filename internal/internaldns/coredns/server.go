@@ -17,6 +17,7 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metrics"
+	"github.com/miekg/dns"
 )
 
 // CoreDNS refuses every non-IN query before the plugin chain unless a listed
@@ -87,16 +88,37 @@ func (pr Process) Run(ctx context.Context, path string) error {
 	defer func() { _ = tcp.Close() }()
 	listener := &proxyListener{Listener: tcp, peers: peers, plain: p.identityKey != nil}
 	defer func() { _ = listener.Close() }()
-	done := make(chan error, 1)
+	var udp *dns.Server
+	if p.identityKey != nil {
+		packet, err := net.ListenPacket("udp", cfg.ListenAddress)
+		if err != nil {
+			return fmt.Errorf("CoreDNS UDP listener: %w", err)
+		}
+		defer func() { _ = packet.Close() }()
+		udp = keyedUDPServer(packet, peers, server)
+	}
+	stop := func() error {
+		if udp != nil {
+			shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = udp.ShutdownContext(shutdown)
+		}
+		return server.Stop()
+	}
+	defer func() { _ = stop() }()
+	done := make(chan error, 2)
 	go func() { done <- server.Serve(listener) }()
+	if udp != nil {
+		go func() { done <- udp.ActivateAndServe() }()
+	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return server.Stop()
+			return stop()
 		case err := <-done:
-			_ = server.Stop()
+			_ = stop()
 			return fmt.Errorf("CoreDNS listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
 		case err := <-metricsDone:
 			metricsDone = nil
@@ -113,7 +135,7 @@ func (pr Process) Run(ctx context.Context, path string) error {
 				next.IdentityKeyFile = *pr.IdentityKeyFile
 			}
 			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
-				_ = server.Stop()
+				_ = stop()
 				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, or identity key")
 			}
 			if err == nil {

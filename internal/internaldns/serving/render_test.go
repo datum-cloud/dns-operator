@@ -199,6 +199,52 @@ func TestDNSDistIdentityOptionReplacesPerQueryProxyHeader(t *testing.T) {
 	}
 }
 
+func TestDNSDistUDPBackendRequiresKeyAndReplacement(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderNode
+	c.NodeDNSDist.BackendTransport = model.TransportUDP
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("UDP enabled without per-query identity")
+	}
+	c.NodeDNSDist.IdentityKeyFile = "/run/internal-dns/identity.key"
+	c.NodeCoreDNS.IdentityKeyFile = c.NodeDNSDist.IdentityKeyFile
+	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(r.Files[c.NodeDNSDist.Path])
+	for _, required := range []string{"tcpOnly=false", "checkTCP=false", "SetEDNSOptionAction(65431"} {
+		if !strings.Contains(conf, required) {
+			t.Fatalf("UDP configuration missing %q", required)
+		}
+	}
+	if strings.Contains(conf, "useProxyProtocol") {
+		t.Fatal("UDP still uses connection identity")
+	}
+	// The documented JSON spelling must work as well as model.TransportUDP,
+	// whose value is uppercase because it is also used by Kubernetes APIs.
+	if err := json.Unmarshal([]byte(`{"backendTransport":"udp"}`), &c.NodeDNSDist); err != nil {
+		t.Fatal(err)
+	}
+	lower, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil || string(lower.Files[c.NodeDNSDist.Path]) != conf {
+		t.Fatalf("documented lowercase UDP changes rendering: %v", err)
+	}
+	c.NodeDNSDist.BackendTransport = model.TransportTCP
+	tcp, err := Render(c, s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsdistTopology(tcp.Files[c.NodeDNSDist.Path]) == dnsdistTopology(r.Files[c.NodeDNSDist.Path]) {
+		t.Fatal("transport changed without requiring a replacement member")
+	}
+	c.NodeDNSDist.BackendTransport = "quic"
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("unsupported transport accepted")
+	}
+}
+
 func TestNodeIdentityKeyMustMatchAcrossDaemons(t *testing.T) {
 	t.Parallel()
 	c, s := renderFixture(t)

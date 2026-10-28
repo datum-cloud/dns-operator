@@ -186,10 +186,13 @@ Shared node and regional tiers use:
    separate by context and bypasses caching for private names.
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
-preserves the destination. The CoreDNS transport adapter accepts PROXYv2 only
-from configured service peers over TCP. dnsdist forwards both consumer UDP and
-TCP queries over this protected TCP backend; CoreDNS has no UDP listener.
-Unknown contexts are rejected before record or cache lookup.
+preserves the destination on legacy TCP backends. Keyed members also accept a
+shared-secret EDNS destination option on each query and bind both UDP and TCP,
+restricted to configured service peers. The default dnsdist backend transport
+remains TCP. Opting into UDP keeps UDP client queries on UDP, with TCP retained
+for TCP clients and retries of truncated answers. Unknown contexts are rejected
+before record or cache lookup. See the [serving configuration guide](../../../config/internal-dns/README.md)
+for key distribution and the required regional-before-node UDP rollout order.
 
 The publication agent validates and persists a complete snapshot. The context
 plugin builds a replacement lookup table, then atomically activates it without
@@ -341,7 +344,8 @@ Agents retain desired version fences and an activated configuration separately.
 A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
-consumer listeners over UDP and TCP and CoreDNS over TCP, without contacting
+consumer listeners over UDP and TCP and CoreDNS over TCP (also UDP for keyed
+members), without contacting
 the broker or project APIs. A SERVFAIL answer is not ready. A routine
 installation held by a live agent's transaction lock stays ready while the
 daemons answer, for up to one minute.

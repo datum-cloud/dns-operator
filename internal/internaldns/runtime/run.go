@@ -44,10 +44,9 @@ import (
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
 type Options struct {
-	Kubeconfig              string
-	MetricsBindAddress      string
-	AgentMetricsBindAddress string
-	HealthProbeBindAddress  string
+	Kubeconfig             string
+	MetricsBindAddress     string
+	HealthProbeBindAddress string
 }
 
 // Run starts one of the deliberately separate production roles. Agent and
@@ -61,7 +60,7 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 		return runControlPlane(ctx, cfg, opts)
 	case roleAgent:
 		startLocalProfiler()
-		return runAgent(ctx, cfg, opts)
+		return runAgent(ctx, cfg)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)
 	case rolePrepare:
@@ -533,7 +532,7 @@ func waitForRetry(ctx context.Context) bool {
 	}
 }
 
-func runAgent(ctx context.Context, cfg Config, opts Options) error {
+func runAgent(ctx context.Context, cfg Config) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-agent")
 	publisher := &agentPublisher{}
 	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{AckPublisher: publisher, OnError: func(err error) { log.Error(err, "serving agent operation failed; retrying") }})
@@ -544,16 +543,6 @@ func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- agent.Start(workerCtx) }()
-	var metricsDone <-chan error
-	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
-		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, nil, nil)
-		if err != nil {
-			return fmt.Errorf("create agent metrics server: %w", err)
-		}
-		result := make(chan error, 1)
-		metricsDone = result
-		go func() { result <- server.Start(workerCtx) }()
-	}
 	go func() {
 		for workerCtx.Err() == nil {
 			err := runAgentTransport(workerCtx, cfg, agent, publisher)
@@ -572,8 +561,6 @@ func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	case <-ctx.Done():
 		return <-done
 	case err := <-done:
-		return err
-	case err := <-metricsDone:
 		return err
 	}
 }
@@ -620,8 +607,6 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	}
 	publisher.set(route.bus)
 	defer publisher.set(nil)
-	agent.SetDeliveryConnected(true)
-	defer agent.SetDeliveryConnected(false)
 	return agent.RunTransport(ctx, serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard}, sources...)
 }
 

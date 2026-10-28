@@ -53,14 +53,13 @@ const (
 )
 
 type RenderConfig struct {
-	ReadyZoneMembers  map[string]map[string]map[string]bool `json:"-"`
-	ReadyMembers      map[string]map[string]bool            `json:"-"`
-	Role              RenderRole                            `json:"role"`
-	NodeDNSDist       DNSDistRenderConfig                   `json:"nodeDNSDist,omitempty"`
-	ClusterDNSDist    DNSDistRenderConfig                   `json:"clusterDNSDist,omitempty"`
-	NodeCoreDNS       CoreDNSRenderConfig                   `json:"nodeCoreDNS,omitempty"`
-	ClusterCoreDNS    CoreDNSRenderConfig                   `json:"clusterCoreDNS,omitempty"`
-	NodeAuthoritative bool                                  `json:"-"`
+	ReadyZoneMembers map[string]map[string]map[string]bool `json:"-"`
+	ReadyMembers     map[string]map[string]bool            `json:"-"`
+	Role             RenderRole                            `json:"role"`
+	NodeDNSDist      DNSDistRenderConfig                   `json:"nodeDNSDist,omitempty"`
+	ClusterDNSDist   DNSDistRenderConfig                   `json:"clusterDNSDist,omitempty"`
+	NodeCoreDNS      CoreDNSRenderConfig                   `json:"nodeCoreDNS,omitempty"`
+	ClusterCoreDNS   CoreDNSRenderConfig                   `json:"clusterCoreDNS,omitempty"`
 }
 
 type Rendered struct{ Files map[string][]byte }
@@ -99,11 +98,7 @@ func renderPublications(c RenderConfig, snapshot model.ServingSnapshot, active m
 	}
 	if role == RenderNode || role == RenderBoth {
 		files[c.NodeDNSDist.Path] = renderDNSDist(c.NodeDNSDist, nodeBackends, bindings, active, false, nil, c.ReadyZoneMembers)
-		node, err := renderNodeCoreDNS(c.NodeCoreDNS, bindings, publications, c.NodeAuthoritative)
-		if err != nil {
-			return Rendered{}, err
-		}
-		files[c.NodeCoreDNS.Path] = node
+		files[c.NodeCoreDNS.Path] = renderNodeCoreDNS(c.NodeCoreDNS, bindings)
 	}
 	if role == RenderCluster || role == RenderBoth || role == RenderRegionalDNSDist {
 		files[c.ClusterDNSDist.Path] = renderDNSDist(c.ClusterDNSDist, clusterBackends, bindings, active, true, c.ReadyMembers, c.ReadyZoneMembers)
@@ -525,33 +520,17 @@ func eligiblePool(backends []model.Backend, allowed map[string]bool) string {
 	return "ready_" + model.OpaqueToken(strings.Join(members, "\x00"))
 }
 
-func renderNodeCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publications map[string]publicationState, authoritative bool) ([]byte, error) {
+func renderNodeCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding) []byte {
 	cfg := coreDNSConfig(c)
 	for _, b := range bindings {
-		context := contextdns.Context{ID: b.ViewName(), Destination: b.ConsumerAddress, Pending: b.ConfigurationPending}
-		if !authoritative {
-			context.Upstreams = []string{net.JoinHostPort(b.ClusterAddress, strconv.Itoa(int(b.Port)))}
-		}
-		for _, z := range b.Zones {
-			zone := contextdns.Zone{Apex: model.AbsoluteName(z.Apex)}
-			p, ok := publications[z.ZoneUID]
-			if !authoritative {
-				zone.Pending = z.Pending
-			} else if z.Pending || !ok || p.Manifest.Tombstone || model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) < 0 {
-				zone.Pending = true
-			} else {
-				data, err := renderZone(p)
-				if err != nil {
-					return nil, err
-				}
-				zone.Data = string(data)
-			}
-			context.Zones = append(context.Zones, zone)
+		context := contextdns.Context{ID: b.ViewName(), Destination: b.ConsumerAddress, Pending: b.ConfigurationPending, Upstreams: []string{net.JoinHostPort(b.ClusterAddress, strconv.Itoa(int(b.Port)))}}
+		for _, zone := range b.Zones {
+			context.Zones = append(context.Zones, contextdns.Zone{Apex: model.AbsoluteName(zone.Apex), Pending: zone.Pending})
 		}
 		cfg.Contexts = append(cfg.Contexts, context)
 	}
 	data, _ := json.MarshalIndent(cfg, "", "  ")
-	return data, nil
+	return data
 }
 
 func renderClusterCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publications map[string]publicationState, _ map[string][]byte) ([]byte, error) {

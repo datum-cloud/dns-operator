@@ -155,8 +155,9 @@ different DNS contexts in the same fleet.
 ![Separate DNS contexts for overlapping VPC addresses](diagrams/context-isolation.svg)
 
 Each context uses the following query path. Both regional CoreDNS members hold
-the context's private records and a separate public cache. The diagram shows the
-lookup branches for one member; the other member has the same branches.
+the context's private records and a separate public cache. Queries flow from left
+to right across the tiers, then branch into private or public lookups. Each
+regional member follows the same lookup branches.
 
 ![Query path through node and regional tiers](diagrams/query-path.svg)
 

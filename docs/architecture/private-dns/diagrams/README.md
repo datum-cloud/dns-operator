@@ -25,6 +25,19 @@ Each SVG has a 960-unit viewBox, an explicit background, a title, and a text
 description. Body labels use at least 17 units. Sequence diagrams use at most
 four participants. Repeated components across views retain their names.
 
+## Layout
+
+- Arrange the main flow from left to right or top to bottom. Place lookup
+  branches after the routing steps that select them.
+- Align matching stages across tenants and regions so readers can compare
+  their paths. Group components by ownership or serving tier.
+- Size boxes to fit their labels with consistent padding. Use space between
+  components for connectors and short labels, rather than enlarging boxes.
+- Keep connectors clear of text and boundary headings. Separate query traffic,
+  configuration updates, and acknowledgments when combining them hides the flow.
+- Keep sequence participants aligned and use consistent spacing between steps.
+  Reduce empty space before reducing text size.
+
 ## Editing and review
 
 Keep resource ownership, arrow directions, trust boundaries, transport labels,

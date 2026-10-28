@@ -137,6 +137,63 @@ func TestDNSDistUsesPersistentIdentityAndBackendHealthCheck(t *testing.T) {
 	}
 }
 
+func TestDNSDistListenerCountUsesReusePort(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderRegionalDNSDist
+	c.ClusterDNSDist.ListenerCount = 2
+	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(r.Files[c.ClusterDNSDist.Path])
+	for _, required := range []string{
+		`setLocal("0.0.0.0:53",{reusePort=true})`,
+		`addLocal("0.0.0.0:53",{reusePort=true})`,
+	} {
+		if strings.Count(conf, required) != 1 {
+			t.Fatalf("dnsdist config has %d copies of %q:\n%s", strings.Count(conf, required), required, conf)
+		}
+	}
+	if strings.Contains(conf, `setLocal("0.0.0.0:53")`) {
+		t.Fatal("multiple listeners left the first socket without SO_REUSEPORT")
+	}
+	defaultConfig := c
+	defaultConfig.ClusterDNSDist.ListenerCount = 0
+	defaultRendered, err := Render(defaultConfig, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(defaultRendered.Files[c.ClusterDNSDist.Path]), `setLocal("0.0.0.0:53")`) ||
+		strings.Contains(string(defaultRendered.Files[c.ClusterDNSDist.Path]), "reusePort") {
+		t.Fatal("default listener rendering changed")
+	}
+	if dnsdistTopology(r.Files[c.ClusterDNSDist.Path]) == dnsdistTopology(defaultRendered.Files[c.ClusterDNSDist.Path]) {
+		t.Fatal("listener count change does not require a replacement member")
+	}
+	oneConfig := defaultConfig
+	oneConfig.ClusterDNSDist.ListenerCount = 1
+	oneRendered, err := Render(oneConfig, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsdistTopology(oneRendered.Files[c.ClusterDNSDist.Path]) != dnsdistTopology(defaultRendered.Files[c.ClusterDNSDist.Path]) {
+		t.Fatal("explicit one listener differs from the default topology")
+	}
+}
+
+func TestDNSDistRejectsInvalidListenerCount(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{-1, 65} {
+		c, s := renderFixture(t)
+		c.Role = RenderRegionalDNSDist
+		c.ClusterDNSDist.ListenerCount = count
+		if _, err := Render(c, s, nil); err == nil {
+			t.Fatalf("listener count %d accepted", count)
+		}
+	}
+}
+
 func bindingReadyInConfig(config, address string) bool {
 	tagged := `appendRule(destination("` + address + `"), SetTagAction("dns-context"`
 	unready := `appendRule(destination("` + address + `"), SetTagAction("context-unready"`

@@ -20,6 +20,7 @@ import (
 type DNSDistRenderConfig struct {
 	Path            string          `json:"path"`
 	ListenAddress   string          `json:"listenAddress"`
+	ListenerCount   int             `json:"listenerCount,omitempty"`
 	ACLs            []string        `json:"acls"`
 	PoolName        string          `json:"poolName"`
 	Backends        []model.Backend `json:"backends,omitempty"`
@@ -139,6 +140,9 @@ func validateRenderConfig(c RenderConfig) error {
 		}
 		if _, _, err := net.SplitHostPort(d.ListenAddress); err != nil {
 			return fmt.Errorf("%s invalid listen address: %w", label, err)
+		}
+		if d.ListenerCount < 0 || d.ListenerCount > 64 {
+			return fmt.Errorf("%s listener count must be between 0 and 64", label)
 		}
 		for _, acl := range d.ACLs {
 			if _, err := netip.ParsePrefix(acl); err != nil {
@@ -306,6 +310,10 @@ const dnsdistRulesBoundary = "local rules = {}\n"
 func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
 	endpoint := dnsdistConsole(c.Path)
+	listeners := c.ListenerCount
+	if listeners == 0 {
+		listeners = 1
+	}
 	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
@@ -314,10 +322,19 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		Backends  []model.Backend
 		Pool      string
 		Transport string
-	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c)})
+		Listeners int
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), listeners})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
-	fmt.Fprintf(&out, "setLocal(%q)\nsetACL({", c.ListenAddress)
+	if listeners == 1 {
+		fmt.Fprintf(&out, "setLocal(%q)\n", c.ListenAddress)
+	} else {
+		fmt.Fprintf(&out, "setLocal(%q,{reusePort=true})\n", c.ListenAddress)
+		for range listeners - 1 {
+			fmt.Fprintf(&out, "addLocal(%q,{reusePort=true})\n", c.ListenAddress)
+		}
+	}
+	fmt.Fprint(&out, "setACL({")
 	for i, acl := range c.ACLs {
 		if i > 0 {
 			fmt.Fprint(&out, ",")

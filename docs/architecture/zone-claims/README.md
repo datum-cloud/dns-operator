@@ -10,7 +10,7 @@
 - [Grants](#grants)
 - [Reservations](#reservations)
 - [Support release](#support-release)
-- [Upgrading from ConfigMap accounting](#upgrading-from-configmap-accounting)
+- [Turning on claim sets](#turning-on-claim-sets)
 - [Contract with network-services-operator](#contract-with-network-services-operator)
 - [Configuration](#configuration)
 - [Turning off the verification gate](#turning-off-the-verification-gate)
@@ -40,6 +40,10 @@ The rules claim sets enforce:
 - Support can release a claim with an audited action.
 - The DNS operator never waits on a `Domain` verdict, so the two operators
   can't deadlock.
+
+Each behavior is off until an environment turns on its setting, so a release
+that contains it changes nothing on its own. See
+[Configuration](#configuration).
 
 ## Container view
 
@@ -124,16 +128,16 @@ Entry fields:
 | `state` | `Active`, `Reserved`, or `Contested`. Derived by [evaluation](#evaluating-a-claim-set). |
 | `reason`, `blockedBy` | Why a `Contested` entry is blocked, and the name of the entry blocking it. |
 | `reservedUntil` | When a `Reserved` entry expires. |
-| `preexistingOverlap` | Set on entries imported from ConfigMaps that already overlapped another project's entry. Kept for as long as the entry exists, including while it's `Reserved`. See [Upgrading](#upgrading-from-configmap-accounting). |
+| `preexistingOverlap` | Set on entries imported from ConfigMaps that already overlapped another project's entry. Kept for as long as the entry exists, including while it's `Reserved`. See [Turning on claim sets](#turning-on-claim-sets). |
 | `operatorSeeded` | An entry no zone can bind, used to keep a name out of reach. |
 | `release` | A request from support to release the entry. Consumed by [normalization](#evaluating-a-claim-set). |
 | `lastRelease` | Who released the entry, why, and when. Kept for audit. |
 | `handedOverTo` | Set on a grantor's entry once its handover is applied. See [Grants](#grants). |
 | `since` | When the entry arrived, or last changed state. |
 
-A set holds at most `maxClaimSetEntries` entries. A zone that would exceed the
-cap isn't recorded; it reports `Accepted=False` with reason `ClaimSetFull` and
-retries on a timer.
+A set holds at most `zoneClaims.maxEntries` entries. A zone that would exceed
+the cap isn't recorded; it reports `Accepted=False` with reason `ClaimSetFull`
+and retries on a timer.
 
 ### Why one object per registered domain
 
@@ -202,12 +206,13 @@ Consequences:
   <img src="./zone-admission.png" alt="Dynamic view: admitting a zone" />
 </p>
 
-The replicator's `DNSZone` reconcile admits a zone in `ensureZoneClaim`:
+With `zoneClaims.enabled` on, the replicator's `DNSZone` reconcile admits a zone
+in `ensureZoneClaim`:
 
 1. Compute the registered domain. If there's none, refuse with `InvalidDomain`.
 2. Get the claim set with the uncached reader. If it doesn't exist, build it
    from any accounting ConfigMaps for that registered domain (see
-   [Upgrading](#upgrading-from-configmap-accounting)) and create it.
+   [Turning on claim sets](#turning-on-claim-sets)) and create it.
 3. Find the zone's entry by zone UID. If there isn't one, bind the zone to this
    project's `Reserved` entry for the same name, if there is one. Otherwise,
    append a new entry.
@@ -265,6 +270,10 @@ its shadow, so turning the gate back on stops the zones that were served while
 it was off. A shadow without the annotation is left alone, which keeps zones
 that were served before the gate existed serving.
 
+The operator refuses to start with `requireDomainVerification: false` while
+`zoneClaims.enabled` is `false`. Serving before verification is safe only while
+claim sets refuse zones that overlap another project's.
+
 The replicator creates the `Domain` and publishes `status.domainRef` in both
 modes, so network-services-operator can find the zone.
 
@@ -299,15 +308,15 @@ Other `Accepted=False` reasons from admission:
 | Reason | Meaning |
 |--------|---------|
 | `InvalidDomain` | The zone's name is a public suffix and has no registered domain. |
-| `ClaimSetFull` | The registered domain's claim set is at `maxClaimSetEntries`. |
+| `ClaimSetFull` | The registered domain's claim set is at `zoneClaims.maxEntries`. |
 | `PendingPreviousZoneRemoval` | The zone's entry is `Active`, and the previous zone's shadow for the name is still being removed. |
 | `PendingDomainVerification` | The gate is on and no covering `Domain` is `Verified`. |
 
 ## Grants
 
-A grant lets the project with a claim give part of its subtree to another
-project. It's a field on the granting zone, so it uses the zone's RBAC and
-lifecycle:
+With `grants.enabled` on, a grant lets the project with a claim give part of its
+subtree to another project. It's a field on the granting zone, so it uses the
+zone's RBAC and lifecycle:
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -342,15 +351,20 @@ spec:
   parent zone doesn't take away a child grant.
 - A grant only takes effect while the granting entry is `Active` or `Reserved`.
   A CEL rule on `DNSZone` rejects a `domainName` outside the zone's subtree.
+- With `grants.enabled` off, the replicator ignores grants and handovers, and a
+  zone that has grants reports in its status that they're turned off.
 
 ## Reservations
 
-When the zone bound to an `Active` entry is deleted, the entry keeps its
-position, loses its `zone`, and becomes `Reserved` with
-`reservedUntil = now + reservationPeriod`. A zone from the same project for the
-same name, under any object name or namespace, binds the entry and is `Active`
-again. A zone from another project is `Contested` until the reservation
-expires.
+When `zoneClaims.reservationPeriod` is positive and the zone bound to an
+`Active` entry is deleted, the entry keeps its position, loses its `zone`, and
+becomes `Reserved` with `reservedUntil = now + reservationPeriod`. A zone from
+the same project for the same name, under any object name or namespace, binds
+the entry and is `Active` again. A zone from another project is `Contested`
+until the reservation expires.
+
+With `reservationPeriod` at `0`, a deleted zone's entry is removed, as a
+`Contested` entry is.
 
 ## Support release
 
@@ -371,13 +385,16 @@ still bound in the set. The authoritative cluster's audit log records who made
 the change. A runbook in [`docs/troubleshooting`](../../troubleshooting) covers
 how to find the set and which entry to release.
 
-## Upgrading from ConfigMap accounting
+## Turning on claim sets
 
-Earlier releases record exclusivity in one ConfigMap per exact zone name in the
-accounting namespace, with `owner: <cluster>/<namespace>/<zone>`. The replicator
-imports them lazily. When `ensureZoneClaim` finds no claim set for a registered
-domain, it lists the accounting ConfigMaps whose names are that domain or under
-it and builds the set from them:
+With `zoneClaims.enabled` off, the replicator admits zones by exact name:
+`ensureZoneAccounting` records each admitted zone in one ConfigMap per exact zone
+name in the accounting namespace, with `owner: <cluster>/<namespace>/<zone>`.
+
+With the setting on, the replicator builds claim sets from those ConfigMaps
+lazily. When `ensureZoneClaim` finds no claim set for a registered domain, it
+lists the accounting ConfigMaps whose names are that domain or under it and
+builds the set from them:
 
 - Entries are ordered by ConfigMap `creationTimestamp`, then by name.
 - An `owner` that parses as `<cluster>/<namespace>/<zone>` becomes an entry for
@@ -386,15 +403,17 @@ it and builds the set from them:
 - An `owner` that doesn't parse is an operator-seeded claim and becomes an
   `operatorSeeded` entry.
 - Imported entries from different projects that overlap are all marked
-  `preexistingOverlap`, so a parent and a child that both serve before the
-  upgrade keep serving. A metric counts these entries for review. An entry
-  keeps `preexistingOverlap` for as long as it exists, including while it's
-  `Reserved`, so deleting one of the zones never stops the other.
+  `preexistingOverlap`, so a parent and a child that both serve before claim
+  sets are turned on keep serving. A metric counts these entries for review. An
+  entry keeps `preexistingOverlap` for as long as it exists, including while
+  it's `Reserved`, so deleting one of the zones never stops the other.
 
-The replicator never creates an accounting ConfigMap. It deletes a zone's
-ConfigMap when the zone is deleted and leaves the rest in place, so a rollback
-to an earlier release still finds a ConfigMap for every zone that existed
-before the upgrade.
+While the setting is on, the replicator keeps writing the exact-name ConfigMap
+for each admitted zone and deletes it with the zone. Turning the setting off
+returns to exact-name admission, with a ConfigMap for every zone admitted in the
+meantime. A zone that claim sets refused because it's under or over another
+project's zone is admitted by exact name again, and with the verification gate
+on it serves only once its domain is verified.
 
 ## Contract with network-services-operator
 
@@ -421,25 +440,39 @@ condition, so neither operator waits on the other.
 
 ## Configuration
 
-Fields on the `DNSOperator` server config:
+Fields on the `DNSOperator` server config. Every default keeps the behavior from
+before claim sets, so each behavior stays off until an environment turns on its
+setting.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `controllers.dnsZoneReplicator.requireDomainVerification` | `true` | Wait for a verified `Domain` before serving an `Active` zone. |
-| `controllers.dnsZoneReplicator.reservationPeriod` | `168h` | How long a deleted zone's name stays reserved for its project. |
-| `controllers.dnsZoneReplicator.maxClaimSetEntries` | `256` | The most entries one claim set holds. |
+| `controllers.dnsZoneReplicator.zoneClaims.enabled` | `false` | Admit zones through claim sets. Off: admit by exact name with accounting ConfigMaps. |
+| `controllers.dnsZoneReplicator.zoneClaims.reservationPeriod` | `0` | How long a deleted zone's name stays reserved for its project. `0` turns reservations off. |
+| `controllers.dnsZoneReplicator.zoneClaims.maxEntries` | `256` | The most entries one claim set holds. |
+| `controllers.dnsZoneReplicator.grants.enabled` | `false` | Honor grants and handovers in `spec.grants`. |
+| `controllers.dnsZoneReplicator.requireDomainVerification` | `true` | Wait for a verified `Domain` before serving an `Active` zone. The operator refuses to start with `false` while `zoneClaims.enabled` is `false`. |
+
+An environment turns the settings on in this order:
+
+1. `zoneClaims.enabled`.
+2. `zoneClaims.reservationPeriod` and `grants.enabled`.
+3. `requireDomainVerification: false`, following
+   [Turning off the verification gate](#turning-off-the-verification-gate).
 
 ## Turning off the verification gate
 
-1. List every zone with reason `PendingDomainVerification`. Each one serves,
+1. Check that `zoneClaims.enabled` is on, that no zone reports `ClaimSetFull`,
+   and review the entries marked `preexistingOverlap`.
+2. List every zone with reason `PendingDomainVerification`. Each one serves,
    and its entry is already `Active`, when the gate goes off.
-2. Review first the zones whose domain is already delegated to the platform.
+3. Review first the zones whose domain is already delegated to the platform.
    They answer for that domain as soon as the gate goes off, and whoever owns
    the zone is verified by delegation.
-3. Set `requireDomainVerification: false`.
+4. Set `requireDomainVerification: false`.
 
 To roll back, set it to `true`. Zones served while the gate was off and still
-unverified stop serving. Claim sets are valid in both modes.
+unverified stop serving. Claim sets are valid in both modes. To turn claim sets
+off as well, turn the gate back on first.
 
 ## Testing
 
@@ -454,12 +487,15 @@ admit a parent and a child at the same moment and asserts exactly one is
 The end-to-end suite runs in the `milo` discovery topology
 ([`config/dependencies/milo`](../../../config/dependencies/milo)) so it has two
 project control planes, with network-services-operator deployed
-(`NSO_DEPLOY=true`). Every case asserts what the authoritative server answers,
-not only what a condition says.
+(`NSO_DEPLOY=true`). Its server config turns on `zoneClaims.enabled`, a short
+`zoneClaims.reservationPeriod`, and `grants.enabled`. Cases set
+`requireDomainVerification` themselves. Every case asserts what the
+authoritative server answers, not only what a condition says.
 
 | Case | Must observe |
 |------|--------------|
 | Gate on refuses | With `requireDomainVerification: true`, an unverified zone isn't answered. |
+| Gate needs claims | The operator refuses to start with `requireDomainVerification: false` and `zoneClaims.enabled: false`. |
 | Gate back on | A zone served with the gate off, still unverified, stops answering when the gate is turned back on. A zone with no annotation keeps answering. |
 | Gate off serves | With the gate off, a new zone's SOA is answered before its `Domain` is verified. |
 | Same name, second project | The second zone is `Contested`. Queries are answered from the first project's records only. |

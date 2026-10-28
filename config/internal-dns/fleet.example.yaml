@@ -6,6 +6,10 @@
 # generate their own. Turn the key on for regional CoreDNS before regional
 # dnsdist, and off in the reverse order. Both read the key only at start, so
 # rotate it by restarting every regional member of the shard together.
+# For a staged node-authority trial, change only the node agent to mode
+# "combined", add "nodeAuthoritative":true beside mode, and set
+# publicationDNSProbe.server to the node CoreDNS listener. Keep the regional
+# members and routes until the migration checks in the enhancement are complete.
 apiVersion: v1
 kind: ConfigMap
 metadata: {name: internal-dns-node-0-config, namespace: internal-dns-system}

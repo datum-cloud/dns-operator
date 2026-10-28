@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,7 +46,9 @@ func installTestPublication(t *testing.T, a *Agent, now time.Time) {
 }
 func currentZone(t *testing.T, a *Agent) string {
 	t.Helper()
-	files, err := renderPublications(a.cfg.Render, *a.state.Snapshot, map[string]bool{}, a.state.Publications)
+	render := a.cfg.Render
+	render.NodeAuthoritative = a.cfg.NodeAuthoritative
+	files, err := renderPublications(render, *a.state.Snapshot, map[string]bool{}, a.state.Publications)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +70,183 @@ func currentZone(t *testing.T, a *Agent) string {
 
 	t.Fatal("no zone")
 	return ""
+}
+
+func nodeAuthoritativeTestConfig(t *testing.T) Config {
+	t.Helper()
+	cfg := regionalTestConfig(t)
+	render, _ := renderFixture(t)
+	render.Role = RenderNode
+	runtimeDir := filepath.Join(filepath.Dir(cfg.StateDir), "node-runtime")
+	render.NodeCoreDNS.Path = filepath.Join(runtimeDir, "node-coredns.json")
+	render.NodeDNSDist.Path = filepath.Join(runtimeDir, "node-dnsdist.conf")
+	render.NodeCoreDNS.PublicUpstreams = []string{"1.1.1.1:53"}
+	cfg.Render = render
+	cfg.MemberID, cfg.ReplicaID = "node-0", "node-0"
+	cfg.NodeAuthoritative = true
+	return cfg
+}
+
+func TestNodeAuthoritativeRequiresExplicitCombinedNodeMode(t *testing.T) {
+	cfg := nodeAuthoritativeTestConfig(t)
+	cfg.PublicationDNSProbe.Server = net.JoinHostPort(cfg.Render.NodeCoreDNS.ListenAddress, fmt.Sprint(cfg.Render.NodeCoreDNS.Port))
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid node-authoritative probe rejected: %v", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.Mode = ModeResolver },
+		func(c *Config) { c.Render.Role = RenderRegionalCoreDNS },
+	} {
+		candidate := cfg
+		mutate(&candidate)
+		if err := candidate.Validate(); err == nil {
+			t.Fatal("invalid node-authoritative configuration was accepted")
+		}
+	}
+	cfg.NodeAuthoritative = false
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("combined node mode was accepted without the capability opt-in")
+	}
+}
+
+func TestNodeAuthoritativeVerifierUsesConsumerPath(t *testing.T) {
+	cfg := nodeAuthoritativeTestConfig(t)
+	cfg.UnsafeAllowNoDNSVerify = false
+	cfg.PublicationDNSProbe.Server = net.JoinHostPort(cfg.Render.NodeCoreDNS.ListenAddress, fmt.Sprint(cfg.Render.NodeCoreDNS.Port))
+	agent, err := NewAgent(cfg, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, ok := agent.deps.Verifier.(DNSVerifier)
+	if !ok || verifier.Config.UseClusterAddress {
+		t.Fatalf("node authority verifier does not target the consumer path: %#v", agent.deps.Verifier)
+	}
+	publication, ok := agent.publicationVerifier.(PublicationDNSVerifier)
+	if !ok || publication.Config.Server != cfg.PublicationDNSProbe.Server {
+		t.Fatalf("node publication verifier does not target local CoreDNS: %#v", agent.publicationVerifier)
+	}
+}
+
+func TestNodeAuthoritativePublicationActivatesWithoutRegionalAck(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	pub := &fakePublisher{}
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	config, err := os.ReadFile(cfg.Render.NodeCoreDNS.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodedCoreDNS(t, config)
+	if got := decoded.Contexts[0].Upstreams; len(got) != 0 {
+		t.Fatalf("node authority retained regional upstreams: %v", got)
+	}
+	if !slices.Equal(decoded.PublicUpstreams, cfg.Render.NodeCoreDNS.PublicUpstreams) {
+		t.Fatalf("node authority changed public recursion: %v", decoded.PublicUpstreams)
+	}
+	if data := decoded.Contexts[0].Zones[0].Data; !strings.Contains(data, "192.0.2.10") {
+		t.Fatalf("node authority did not materialize the publication: %s", data)
+	}
+	views := agent.publicationViews(agent.state.Publications["zone-a"])
+	if len(views) != 1 || views[0].DestinationAddress != agent.state.Snapshot.Bindings[0].ConsumerAddress {
+		t.Fatalf("publication verification targeted the wrong node destination: %#v", views)
+	}
+	for _, env := range pub.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Kind == model.KindPublicationManifest {
+			t.Fatal("node authority emitted a regional publication acknowledgement")
+		}
+	}
+}
+
+func TestNodeAuthoritativeTombstoneFencesReplay(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	_, old := testPublication(t, now)
+	tombstone := model.PublicationManifest{ManifestUID: "deleted", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 1, Tombstone: true, GeneratedAt: now, ContentHash: model.EmptyContentHash()}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 3, 1, tombstone)); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(cfg.Render.NodeCoreDNS.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zone := decodedCoreDNS(t, config).Contexts[0].Zones[0]
+	if !zone.Pending || zone.Data != "" {
+		t.Fatalf("withdrawn zone remains authoritative: %#v", zone)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, old)); err != nil {
+		t.Fatal(err)
+	}
+	if !agent.state.Publications["zone-a"].Manifest.Tombstone {
+		t.Fatal("replayed publication defeated the node tombstone")
+	}
+}
+
+func TestNodeAuthoritativeCheckpointIsNotRestoredAsForwarder(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+
+	rollback := cfg
+	rollback.Mode = ModeResolver
+	rollback.NodeAuthoritative = false
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(rollback, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) == 0 || runner.calls[len(runner.calls)-1].Path != "gate" {
+		t.Fatalf("rollback restored node-authoritative files as a forwarder: %#v", runner.calls)
+	}
+}
+
+func TestNodeAuthoritativeUpgradeWaitsForCurrentDelivery(t *testing.T) {
+	now := time.Now().UTC()
+	authoritative := nodeAuthoritativeTestConfig(t)
+	resolver := authoritative
+	resolver.Mode = ModeResolver
+	resolver.NodeAuthoritative = false
+	seed, err := NewAgent(resolver, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, seed, now)
+
+	runner := &recordingRunner{}
+	upgraded, err := NewAgent(authoritative, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upgraded.Step(context.Background()); err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("node authority activated before current delivery: %v", err)
+	}
+	before := len(runner.calls)
+	snapshot := *upgraded.state.Snapshot
+	if err := upgraded.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) == before || !strings.Contains(currentZone(t, upgraded), "192.0.2.10") {
+		t.Fatal("current delivery did not activate the persisted verified publication")
+	}
 }
 func TestCoreDNSPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 	t.Parallel()

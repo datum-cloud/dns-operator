@@ -14,8 +14,10 @@ const (
 )
 
 type transportMetrics struct {
-	connections *prometheus.CounterVec
-	pending     prometheus.Gauge
+	connections        *prometheus.CounterVec
+	pending            prometheus.Gauge
+	datagramsAccepted  prometheus.Counter
+	datagramsUntrusted prometheus.Counter
 }
 
 func newTransportMetrics(reg prometheus.Registerer) *transportMetrics {
@@ -29,6 +31,13 @@ func newTransportMetrics(reg prometheus.Registerer) *transportMetrics {
 			Help: "TCP sockets reading their initial header or waiting for the DNS server to accept them.",
 		}),
 	}
+	datagrams := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "internal_dns_transport_datagrams_total",
+		Help: "UDP datagrams by peer admission outcome, before DNS parsing and identity validation.",
+	}, []string{"outcome"})
+	m.datagramsAccepted = datagrams.WithLabelValues(transportAccepted)
+	m.datagramsUntrusted = datagrams.WithLabelValues(transportUntrusted)
+	reg.MustRegister(datagrams)
 	for _, outcome := range []string{transportAccepted, transportUntrusted, transportSaturated, transportHandshakeError, transportShutdown} {
 		m.connections.WithLabelValues(outcome)
 	}

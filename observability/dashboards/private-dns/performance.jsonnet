@@ -458,17 +458,9 @@ local answersByRcode = ts(
   grid(8, 8, 16, 78),
 );
 
-local resolverLatency = ts(
-  'Resolver answer time',
-  'p50 and p99 answer time measured by dnsdist, by tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket.',
-  [
-    qRange('histogram_quantile(0.5, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p50' % tier),
-    qRange('histogram_quantile(0.99, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p99' % tier),
-  ],
-  'ms',
-  grid(8, 8, 0, 86),
-);
-
+local resolverLatency = lib.udpLatencyEstimate(dnsdist, grid(8, 8, 0, 86));
+local udpAnswerShares = lib.udpLatencyShares(dnsdist, grid(7, 12, 0, 94));
+local udpAnswerCounts = lib.udpLatencyCounts(dnsdist, grid(7, 12, 12, 94));
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion).',
@@ -543,4 +535,6 @@ lib.dashboard(
   resolverLatency,
   fleetCpu,
   fleetMemory,
+  udpAnswerShares,
+  udpAnswerCounts,
 ])

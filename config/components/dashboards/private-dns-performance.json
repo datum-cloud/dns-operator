@@ -7,7 +7,7 @@
                "uid": "${datasource}"
             },
             "enable": true,
-            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "expr": "max by (run, scenario, commit) (idns_perf_run == 1)",
             "iconColor": "purple",
             "name": "Load tests",
             "step": "10s",
@@ -2195,7 +2195,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "p50 and p99 answer time measured by dnsdist, by tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket.",
+         "description": "Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; compare the UDP band shares and counts below.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -2244,8 +2244,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
-               "legendFormat": "{{internal_dns_datum_net_tier}} p50"
+               "expr": "histogram_quantile(0.5, sum by (cluster, internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} estimated p50"
             },
             {
                "datasource": {
@@ -2253,11 +2253,11 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
-               "legendFormat": "{{internal_dns_datum_net_tier}} p99"
+               "expr": "histogram_quantile(0.99, sum by (cluster, internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} estimated p99"
             }
          ],
-         "title": "Resolver answer time",
+         "title": "UDP answer time (estimated p50 and p99)",
          "type": "timeseries"
       },
       {
@@ -2380,6 +2380,179 @@
             }
          ],
          "title": "Serving memory by container",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Shares from measured histogram bucket counts, without quantile interpolation: under 1 ms, over 100 ms and over 1 s. Thresholds overlap: over 1 s is a subset of over 100 ms; the lines do not sum to 100%. The denominator is the same UDP histogram population, including error and background answers, not all-protocol queries. Empty when no UDP answers were observed; missing telemetry stays empty.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "max": 1,
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 94
+         },
+         "id": 33,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",le=\"1\"}[$__rate_interval]))) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} under 1 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",le=\"100\"}[$__rate_interval]))), 0)) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 100 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",le=\"1000\"}[$__rate_interval]))), 0)) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 1 s"
+            }
+         ],
+         "title": "UDP answers by latency threshold, share",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Rolling counts over the same Grafana rate interval as the percentile chart: all UDP histogram answers on the right axis, over 100 ms and over 1 s on the left. Slow counts subtract finite buckets from that same population. A large p99 alongside only one or two slow answers is different from sustained high-volume latency. Counts may be fractional because increase() can extrapolate between scrapes; they are not packet-level event logs. Zero means a sampled counter did not increase, while missing telemetry stays empty. Includes error responses; see Answers by response code for their separate breakdown.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".* all UDP answers$"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 94
+         },
+         "id": 34,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} all UDP answers"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",le=\"100\"}[$__rate_interval]))), 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 100 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",namespace=~\"ns-.*\",cluster=~\"$cluster\",pod=~\"internal-dns-.*\",pod=~\"(${member:regex})-[a-z0-9]+-[a-z0-9]+\",le=\"1000\"}[$__rate_interval]))), 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 1 s"
+            }
+         ],
+         "title": "UDP answer counts in the lookback window",
          "type": "timeseries"
       }
    ],

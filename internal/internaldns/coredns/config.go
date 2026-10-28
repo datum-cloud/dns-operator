@@ -19,11 +19,12 @@ import (
 )
 
 type Config struct {
-	ListenAddress   string    `json:"listenAddress"`
-	ProxyPeers      []string  `json:"proxyPeers"`
-	IdentityKeyFile string    `json:"identityKeyFile,omitempty"`
-	PublicUpstreams []string  `json:"publicUpstreams,omitempty"`
-	Contexts        []Context `json:"contexts"`
+	ListenAddress      string    `json:"listenAddress"`
+	ProxyPeers         []string  `json:"proxyPeers"`
+	IdentityKeyFile    string    `json:"identityKeyFile,omitempty"`
+	UDPReadBufferBytes int       `json:"udpReadBufferBytes,omitempty"`
+	PublicUpstreams    []string  `json:"publicUpstreams,omitempty"`
+	Contexts           []Context `json:"contexts"`
 }
 
 type Context struct {
@@ -57,6 +58,12 @@ func Decode(data []byte) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.UDPReadBufferBytes < 0 {
+		return errors.New("CoreDNS UDP read buffer must not be negative")
+	}
+	if c.UDPReadBufferBytes > 0 && c.IdentityKeyFile == "" {
+		return errors.New("CoreDNS UDP read buffer requires a keyed UDP listener")
+	}
 	if err := endpoint(c.ListenAddress); err != nil {
 		return fmt.Errorf("CoreDNS listener: %w", err)
 	}

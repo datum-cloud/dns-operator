@@ -20,22 +20,28 @@ import (
 type DNSDistRenderConfig struct {
 	Path            string          `json:"path"`
 	ListenAddress   string          `json:"listenAddress"`
+	ListenerCount   int             `json:"listenerCount,omitempty"`
 	ACLs            []string        `json:"acls"`
 	PoolName        string          `json:"poolName"`
 	Backends        []model.Backend `json:"backends,omitempty"`
 	IdentityKeyFile string          `json:"identityKeyFile,omitempty"`
-	MetricsAddress  string          `json:"metricsAddress,omitempty"`
-	MetricsACLs     []string        `json:"metricsACLs,omitempty"`
+	// BackendTransport defaults to TCP. UDP uses UDP for incoming UDP queries
+	// while retaining TCP for TCP clients, and requires per-query keyed identity.
+	BackendTransport model.Transport `json:"backendTransport,omitempty"`
+	MetricsAddress   string          `json:"metricsAddress,omitempty"`
+	MetricsACLs      []string        `json:"metricsACLs,omitempty"`
 }
 
 type CoreDNSRenderConfig struct {
-	Path            string   `json:"path"`
-	ListenAddress   string   `json:"listenAddress"`
-	Port            uint16   `json:"port"`
-	ProxyPeers      []string `json:"proxyPeers"`
-	IdentityKeyFile string   `json:"identityKeyFile,omitempty"`
-	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
-	MetricsAddress  string   `json:"metricsAddress,omitempty"`
+	Path               string   `json:"path"`
+	ListenAddress      string   `json:"listenAddress"`
+	Port               uint16   `json:"port"`
+	ProxyPeers         []string `json:"proxyPeers"`
+	IdentityKeyFile    string   `json:"identityKeyFile,omitempty"`
+	UDPReadBufferBytes int      `json:"udpReadBufferBytes,omitempty"`
+	PublicUpstreams    []string `json:"publicUpstreams,omitempty"`
+	MetricsAddress     string   `json:"metricsAddress,omitempty"`
+	ProfileAddress     string   `json:"profileAddress,omitempty"`
 }
 
 type RenderRole string
@@ -137,6 +143,9 @@ func validateRenderConfig(c RenderConfig) error {
 		if _, _, err := net.SplitHostPort(d.ListenAddress); err != nil {
 			return fmt.Errorf("%s invalid listen address: %w", label, err)
 		}
+		if d.ListenerCount < 0 || d.ListenerCount > 64 {
+			return fmt.Errorf("%s listener count must be between 0 and 64", label)
+		}
 		for _, acl := range d.ACLs {
 			if _, err := netip.ParsePrefix(acl); err != nil {
 				return fmt.Errorf("%s invalid ACL %q", label, acl)
@@ -147,6 +156,13 @@ func validateRenderConfig(c RenderConfig) error {
 		}
 		if d.IdentityKeyFile != "" && !filepath.IsAbs(d.IdentityKeyFile) {
 			return fmt.Errorf("%s identity key file must be an absolute path", label)
+		}
+		transport := model.Transport(strings.ToUpper(string(d.BackendTransport)))
+		if transport != "" && transport != model.TransportTCP && transport != model.TransportUDP {
+			return fmt.Errorf("%s backend transport must be tcp or udp", label)
+		}
+		if transport == model.TransportUDP && d.IdentityKeyFile == "" {
+			return fmt.Errorf("%s UDP backend requires an identity key", label)
 		}
 		if err := validateDNSDistMetrics(d); err != nil {
 			return fmt.Errorf("%s %w", label, err)
@@ -174,6 +190,9 @@ func validateRenderConfig(c RenderConfig) error {
 			if _, err := metricsListenAddress(b.MetricsAddress); err != nil {
 				return fmt.Errorf("%s metrics address: %w", label, err)
 			}
+		}
+		if err := contextdns.ValidateProfileAddress(b.ProfileAddress); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
 		}
 		if err := coreDNSConfig(b).Validate(); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
@@ -296,6 +315,15 @@ const dnsdistRulesBoundary = "local rules = {}\n"
 func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []model.Binding, active map[string]bool, cluster bool, eligible map[string]map[string]bool, zones map[string]map[string]map[string]bool) []byte {
 	var out bytes.Buffer
 	endpoint := dnsdistConsole(c.Path)
+	listeners := c.ListenerCount
+	if listeners == 0 {
+		listeners = 1
+	}
+	// Preserve the existing five-field fingerprint for single-listener members.
+	topologyListeners := 0
+	if listeners > 1 {
+		topologyListeners = listeners
+	}
 	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
@@ -304,10 +332,19 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		Backends  []model.Backend
 		Pool      string
 		Transport string
-	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c)})
+		Listeners int `json:",omitempty"`
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), topologyListeners})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
-	fmt.Fprintf(&out, "setLocal(%q)\nsetACL({", c.ListenAddress)
+	if listeners == 1 {
+		fmt.Fprintf(&out, "setLocal(%q)\n", c.ListenAddress)
+	} else {
+		fmt.Fprintf(&out, "setLocal(%q,{reusePort=true})\n", c.ListenAddress)
+		for range listeners - 1 {
+			fmt.Fprintf(&out, "addLocal(%q,{reusePort=true})\n", c.ListenAddress)
+		}
+	}
+	fmt.Fprint(&out, "setACL({")
 	for i, acl := range c.ACLs {
 		if i > 0 {
 			fmt.Fprint(&out, ",")
@@ -321,7 +358,8 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		fmt.Fprintf(&out, "if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then internalDNSIdentityKey = string.rep(\"A\",43)..\"=\" else\n  local handle = assert(io.open(%q,\"r\"))\n  internalDNSIdentityKey = assert(handle:read(\"*l\")):match(\"^%%s*(.-)%%s*$\"); handle:close()\nend\n", c.IdentityKeyFile)
 	}
 	for _, backend := range backends {
-		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=true,checkTCP=true,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy)
+		tcpOnly := !strings.EqualFold(string(c.BackendTransport), string(model.TransportUDP))
+		fmt.Fprintf(&out, "internalDNSServers[%q] = newServer({address=%q,name=%q,pool=%q,%stcpOnly=%t,checkTCP=%t,checkName=\".\",checkType=\"SOA\",mustResolve=false,maxCheckFailures=3,rise=2})\n", backend.MemberID, net.JoinHostPort(backend.Address, strconv.Itoa(int(backend.Port))), "b_"+model.OpaqueToken(backend.MemberID), c.PoolName, proxy, tcpOnly, tcpOnly)
 	}
 	renderDNSDistMetricsStart(&out, c)
 	fmt.Fprintf(&out, "internalDNSTopology = %q\ninternalDNSInitialized = true\nend\nassert(internalDNSTopology == %q,\"dnsdist topology requires a replacement member\")\n", fingerprint, fingerprint)
@@ -473,6 +511,9 @@ func withoutDNSDistReadinessCanary(rules []byte) []byte {
 
 func dnsdistTransport(c DNSDistRenderConfig) string {
 	if c.IdentityKeyFile != "" {
+		if strings.EqualFold(string(c.BackendTransport), string(model.TransportUDP)) {
+			return "identity-option-udp"
+		}
 		return "identity-option-tcp"
 	}
 	return "proxy-v2-tcp"
@@ -526,5 +567,5 @@ func renderClusterCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publi
 }
 
 func coreDNSConfig(c CoreDNSRenderConfig) contextdns.Config {
-	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, IdentityKeyFile: c.IdentityKeyFile, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
+	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, IdentityKeyFile: c.IdentityKeyFile, UDPReadBufferBytes: c.UDPReadBufferBytes, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
 }

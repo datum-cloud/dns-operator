@@ -57,6 +57,18 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(float(overlap['p50_ms']), 4)
             self.assertEqual(float(overlap['p99_ms']), 6)
 
+    def test_run_markers_stop_at_last_send_without_timeout_or_tick_extension(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            self.fixture(folder, 'a', START + 123, [1, 5000, 2])
+            self.fixture(folder, 'b', START + 1000, [3, 5000, 4, 5])
+            self.analyze(folder)
+            payload, _ = report.export(folder, 'run', 'query', 'unknown')
+            markers = [(int(line.rsplit(' ', 1)[1]), int(line.rsplit(' ', 2)[1]))
+                       for line in payload.splitlines() if line.startswith('idns_perf_run{')]
+            self.assertEqual(markers, [(START + 123, 1), (START + 2500, 1), (START + 2501, 0)])
+            self.assertEqual(len({timestamp for timestamp, _ in markers}), len(markers))
+
     def test_old_metadata_does_not_publish_partial_offered_load(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)

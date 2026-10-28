@@ -212,16 +212,16 @@ lookup branches for one member; the other member has the same branches.
 ```mermaid
 flowchart TB
   accTitle: Private DNS query path through node and regional tiers
-  accDescr: Galactic sends an authorized query to node dnsdist, which forwards over TCP to node CoreDNS. Node CoreDNS forwards to the context's regional destination. Regional dnsdist selects an eligible CoreDNS member. That member answers private names from its applied snapshot and sends public names through a per-context cache to PowerDNS Recursor.
+  accDescr: Galactic sends an authorized query to node dnsdist, which uses TCP or optional keyed UDP to forward to node CoreDNS. Node CoreDNS forwards to the context's regional destination. Regional dnsdist selects an eligible CoreDNS member. That member answers private names from its applied snapshot and sends public names through a per-context cache to PowerDNS Recursor.
   V[VPC client] --> G[Galactic authorized path]
   G -->|UDP or TCP| ND[Node dnsdist]
-  ND -->|TCP with trusted context identity| NC[Node CoreDNS]
+  ND -->|TCP or keyed UDP| NC[Node CoreDNS]
   NC -->|Context-specific regional destination| RD[Regional dnsdist]
-  RD -->|TCP with trusted context identity| R0[Regional CoreDNS member 0]
-  RD -->|TCP with trusted context identity| R1[Regional CoreDNS member 1]
+  RD -->|TCP or keyed UDP| R0[Regional CoreDNS member 0]
+  RD -->|TCP or keyed UDP| R1[Regional CoreDNS member 1]
   R0 -->|Private name| Z[Applied private-zone snapshot]
   R0 -->|Public name| C[Per-context public cache]
-  C --> P[PowerDNS Recursor]
+  C --> P[Shared PowerDNS Recursor]
 ```
 
 Galactic verifies the source VPC lifetime and route authorization before
@@ -237,24 +237,36 @@ Shared node and regional tiers use:
    destination. Node members forward to the context's regional destination;
    regional members answer private queries from accepted publication snapshots.
 3. **PowerDNS Recursor** to resolve public names. CoreDNS keeps public caches
-   separate by context and bypasses caching for private names.
+   separate by context and bypasses caching for private names. All contexts
+   share the upstream PowerDNS Recursor; its public cache is not isolated by
+   context.
 
-dnsdist forwards both consumer UDP and TCP queries to CoreDNS over TCP.
-CoreDNS accepts connections only from configured service peers and has no UDP
-listener. Each dnsdist-to-CoreDNS hop uses one of two identity modes:
+Each dnsdist-to-CoreDNS hop uses one of two identity modes:
 
 - Without `identityKeyFile`, dnsdist preserves the destination in a
-  [PROXYv2
-  header](https://www.dnsdist.org/advanced/passing-source-address.html).
+  [PROXYv2 header](https://www.dnsdist.org/advanced/passing-source-address.html).
+  CoreDNS accepts this mode over TCP only.
 - With `identityKeyFile`, dnsdist adds the configured key and destination to a
   private EDNS option instead of sending a PROXYv2 header. CoreDNS validates the
-  key and removes the option before forwarding the query.
+  key and removes the option before forwarding the query. Keyed members listen
+  on both UDP and TCP. Each UDP query must carry a valid keyed destination.
 
-Configure both ends of a hop for the same mode. The staging node tier uses the
-keyed EDNS mode; its regional tier uses PROXYv2. Both modes preserve the
-service-side destination that selects the context. Neither mode lets a consumer
-choose a context through an unauthenticated header or EDNS option. CoreDNS
-rejects unknown contexts before looking up records or cached answers.
+CoreDNS accepts traffic only from configured service peers. PROXYv2 trusts those
+peers to provide the destination; it does not authenticate the header with a
+secret. Keyed EDNS uses a shared secret for the hop. Any trusted peer with that
+key can assert any context destination. The key does not encrypt traffic. Both
+modes require a protected serving network and restricted peer access.
+
+The default dnsdist backend transport is TCP. With `backendTransport: "udp"`,
+dnsdist forwards UDP client queries over UDP and retains TCP for TCP clients,
+including retries of truncated answers. UDP mode requires `identityKeyFile`.
+CoreDNS rejects unknown contexts before looking up records or cached answers.
+
+Configure compatible identities at both ends of each hop. Enable keyed UDP on
+the regional tier before the node tier. Transport rollback retains the keys;
+changing identity modes requires a separate fleet migration. See the
+[serving configuration guide](../../../config/internal-dns/README.md) for key
+distribution, rollout order, and rollback steps.
 
 The publication agent validates and persists a complete snapshot. The context
 plugin builds a replacement lookup table, then atomically activates it without
@@ -287,10 +299,12 @@ binding it should not, DNS fails closed:
   namespace with the same `consumerID` reports `DuplicateConsumerID`.
 - Replaced objects: access bindings pin the context UID. A binding whose context
   was deleted and recreated with the same name is rejected.
-- Forged network identity: DNS does not trust client addresses, ECS, or
-  client-supplied PROXY headers to select a context. CoreDNS accepts TCP
-  connections only from configured peers and validates the key when the hop
-  uses the private EDNS identity option.
+- Forged network identity: DNS does not trust client addresses or ECS to select
+  a context. PROXYv2 isolation depends on `proxyPeers` and network placement:
+  CoreDNS trusts destination headers from allowed peers. Keyed EDNS also checks
+  a secret shared by the trusted members of that hop. An allowed peer with the
+  key can assert any context, so the key does not isolate those members from
+  one another.
 
 Galactic decides which service-side destination each VPC can reach. A
 destination claim in DNS does not route another VPC's traffic to it.
@@ -461,8 +475,9 @@ Agents retain desired version fences and an activated configuration separately.
 A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
-consumer listeners over UDP and TCP and CoreDNS over TCP, without contacting
-the broker or project APIs. A SERVFAIL answer is not ready. A routine
+consumer listeners over UDP and TCP. It also checks CoreDNS over TCP and, for
+keyed members, UDP. These checks do not contact the broker or project APIs.
+A SERVFAIL answer is not ready. A routine
 installation held by a live agent's transaction lock stays ready while the
 daemons answer, for up to one minute.
 The serving supervisor retains approved configuration independently of the
@@ -476,8 +491,9 @@ requires a complete configuration before accepting queries.
 A reserved name without eligible addresses returns NODATA. A pending private
 zone returns SERVFAIL only beneath its own apex; other zones and public
 recursion
-continue. Missing required private state returns SERVFAIL. Unknown or withdrawn
-access returns REFUSED.
+continue. Missing required private state returns SERVFAIL. Unknown access
+returns REFUSED. Withdrawn access returns REFUSED after the serving member
+applies the withdrawal; it can still answer before that update arrives.
 Private names never fall back to public resolution. Disable stale private
 answers and bound dynamic TTLs; withdrawal budgets include client caching.
 

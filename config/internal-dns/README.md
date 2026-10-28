@@ -118,13 +118,13 @@ network namespaces. Galactic authorizes and translates the consumer path to a
 service-side destination. dnsdist preserves that destination in either a
 PROXYv2 header or a keyed private EDNS option. Configure the same identity mode
 at both ends of each hop: setting `identityKeyFile` selects the EDNS mode;
-omitting it selects PROXYv2. The staging node tier uses the EDNS mode, and its
-regional tier uses PROXYv2. CoreDNS accepts TCP connections only from configured
-peers and validates the key in the EDNS mode. Node CoreDNS selects a context and
+omitting it selects PROXYv2. CoreDNS accepts traffic only from configured peers
+and validates the key in the EDNS mode. Keyed members listen on UDP and TCP;
+members without a key listen on TCP only. Node CoreDNS selects a context and
 forwards to its regional destination. Regional dnsdist selects the same context
-and load-balances the
-healthy CoreDNS members. Every regional CoreDNS member hosts the context's
-private zones. Public queries forward to a shared PowerDNS Recursor service.
+and load-balances the healthy CoreDNS members. Every regional CoreDNS member
+hosts the context's private zones. Public queries forward to a shared PowerDNS
+Recursor service.
 
 An owned name without eligible answers carries service-only `TYPE65280`
 metadata at that exact name. This private-use record preserves NODATA without
@@ -147,9 +147,9 @@ Unknown destinations are rejected before cache lookup.
 
 Regional publication proof connects directly to that member's CoreDNS listener,
 supplies the exact context destination in a protected PROXYv2 header over TCP,
-and verifies the installed SOA serial and fingerprint. CoreDNS has no UDP
-listener. Separate resolver-path probes check UDP and TCP through dnsdist.
-Restrict
+and verifies the installed SOA serial and fingerprint. This publication check
+uses TCP even when the member also supports UDP. Separate resolver-path probes
+check UDP and TCP through dnsdist. Restrict
 `proxyPeers` to regional dnsdist and the member's local publication agent
 network. Local health probes also require the CoreDNS listener address in
 `proxyPeers` and loopback in dnsdist ACLs. These peers must remain inside the
@@ -173,6 +173,57 @@ plugin builds its replacement state before swapping the lookup table. Invalid
 updates retain the accepted state. A record update does not restart CoreDNS.
 The agent proves the installed publication directly over TCP before
 acknowledging it. Resolver-path probes check both UDP and TCP separately.
+
+With `identityKeyFile` configured, CoreDNS listens on both UDP and TCP at its
+management address. Both transports accept only `proxyPeers`; each UDP query
+must additionally carry a valid keyed destination option. Members without an
+identity key retain the TCP-only PROXYv2 listener. The key is a shared secret,
+not encryption: keep this hop on the trusted serving network.
+
+To try UDP between dnsdist and CoreDNS, set `backendTransport: "udp"` in
+`render.nodeDNSDist` or `render.clusterDNSDist`. The default is `"tcp"` (including
+when omitted). UDP mode sends UDP client queries over UDP and keeps TCP for TCP
+clients, including retries of truncated answers. It requires `identityKeyFile`.
+Deploy the UDP-capable CoreDNS image first, permit UDP on the backend port (5300
+in the example) from the configured peers, then replace the dnsdist member with
+the new setting. A transport change requires replacement; a rules reload cannot
+change existing backend connections. Restore `"tcp"` and replace the dnsdist
+member to roll back. Keyed CoreDNS readiness checks both transports.
+
+For a multi-tier fleet, enable keyed UDP on the regional CoreDNS members and
+regional dnsdist before enabling it on node members. The node CoreDNS forwarder
+uses the incoming query's transport upstream, so node UDP also makes the traffic
+arriving at regional dnsdist UDP. Leaving that regional front in TCP-only mode
+moves UDP-to-TCP conversion to the regional tier. In staging load tests this
+mixed configuration saturated regional dnsdist and exhausted its memory even
+though the node listener had spare CPU. Mount the shared regional identity key
+in both the dnsdist sidecar and its agent, and in each regional CoreDNS member.
+Roll back node members before returning the regional tier to TCP-only mode.
+
+Transport rollback should retain the identity keys and keyed TCP configuration.
+Changing between legacy PROXYv2 and keyed identity is a separate fleet migration:
+keyed CoreDNS rejects unkeyed readiness canaries even though it can still serve
+trusted PROXYv2 TCP queries. Do not wait for an unkeyed frontend to become ready
+against an entirely keyed backend fleet. Use a separately ready regional fleet
+for the identity-mode cutover; the transport rollout order above assumes the
+regional identity configuration is already compatible.
+
+For keyed UDP listeners, `render.nodeCoreDNS.udpReadBufferBytes` and
+`render.clusterCoreDNS.udpReadBufferBytes` request a socket receive buffer in
+bytes. Omitted or zero preserves the operating system default; negative values
+are rejected. Changing this setting requires a CoreDNS restart. This controls
+queued datagrams, not the maximum DNS response payload. Linux may clamp the
+request to `net.core.rmem_max` and reports twice the requested size for socket
+accounting. Startup logs report the requested and effective sizes. Compare
+socket drops, successful-answer tail latency, CPU per successful query, and
+memory when testing larger buffers: buffering can replace drops with queueing.
+
+Compare query outcome/latency metrics with
+`internal_dns_transport_datagrams_total{outcome="accepted"}` and
+`internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters
+count datagrams before DNS parsing and identity validation; accepted datagrams
+are not necessarily successful queries. TCP admission counters remain available
+for TCP client traffic and fallback.
 
 Publication acknowledgments report verified configuration versions. The fleet
 retains accepted proofs during control plane or broker outages and continues

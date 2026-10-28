@@ -35,7 +35,10 @@ metrics. The queries use MetricsQL functions such as `label_set` and
 
 The performance dashboards read the `idns_perf_*` series that the load test
 harness writes, each labelled with `run`, `scenario` and `commit`, and
-`idns_perf_run`, which is 1 every 10 seconds while a run lasts. Control-plane
+`idns_perf_run`, which is 1 every 10 seconds between the first and last observed
+query sends, including both endpoints. The query reporter writes 0 one millisecond
+after the final send to stop query lookback from extending the annotation.
+Annotations and comparison windows explicitly select value 1. Control-plane
 series carry no run label; the comparison dashboard cuts them to a run's
 window with the `during()` helper in `lib.libsonnet`.
 

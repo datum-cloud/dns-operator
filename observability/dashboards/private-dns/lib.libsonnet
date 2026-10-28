@@ -73,7 +73,7 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
     ],
 
   during(expr, run, step)::
-    '(%s) and on () max(idns_perf_run{run="%s"} offset %s)' % [expr, run, step],
+    '(%s) and on () max(idns_perf_run{run="%s"} offset %s == 1)' % [expr, run, step],
 
   // -------------------------------------------------------------------------
   // Layout and panels
@@ -212,7 +212,7 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
     datasource: { type: 'prometheus', uid: ds },
     enable: true,
     iconColor: 'purple',
-    expr: 'max by (run, scenario, commit) (idns_perf_run)',
+    expr: 'max by (run, scenario, commit) (idns_perf_run == 1)',
     step: '10s',
     titleFormat: 'Load test {{scenario}}',
     textFormat: 'run {{run}}, commit {{commit}}',

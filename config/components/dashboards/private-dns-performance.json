@@ -7,7 +7,7 @@
                "uid": "${datasource}"
             },
             "enable": true,
-            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "expr": "max by (run, scenario, commit) (idns_perf_run == 1)",
             "iconColor": "purple",
             "name": "Load tests",
             "step": "10s",

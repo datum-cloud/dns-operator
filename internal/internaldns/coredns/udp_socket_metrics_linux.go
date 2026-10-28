@@ -68,3 +68,17 @@ func udpSocketStatsReader(conn *net.UDPConn) (func() (uint64, error), error) {
 		return readUDPSocketDrops(file, stat.Ino)
 	}, nil
 }
+
+func udpReadBufferSize(conn *net.UDPConn) (int, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var size int
+	var socketErr error
+	err = raw.Control(func(fd uintptr) { size, socketErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF) })
+	if err != nil {
+		return 0, err
+	}
+	return size, socketErr
+}

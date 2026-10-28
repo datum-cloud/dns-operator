@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 )
 
 type daemonProcess struct {
@@ -163,14 +165,20 @@ func RunDaemons(ctx context.Context, config Config) error {
 
 func coreDNSArgs(bind CoreDNSRenderConfig) ([]string, error) {
 	args := []string{"-config", bind.Path, "-identity-key-file=" + bind.IdentityKeyFile}
-	if bind.MetricsAddress == "" {
-		return args, nil
+	if bind.MetricsAddress != "" {
+		address, err := metricsListenAddress(os.ExpandEnv(bind.MetricsAddress))
+		if err != nil {
+			return nil, fmt.Errorf("CoreDNS metrics address %q: %w", bind.MetricsAddress, err)
+		}
+		args = append(args, "-metrics-address", address)
 	}
-	address, err := metricsListenAddress(os.ExpandEnv(bind.MetricsAddress))
-	if err != nil {
-		return nil, fmt.Errorf("CoreDNS metrics address %q: %w", bind.MetricsAddress, err)
+	if err := contextdns.ValidateProfileAddress(bind.ProfileAddress); err != nil {
+		return nil, err
 	}
-	return append(args, "-metrics-address", address), nil
+	if bind.ProfileAddress != "" {
+		args = append(args, "-profile-address", bind.ProfileAddress)
+	}
+	return args, nil
 }
 
 // metricsListenAddress accepts an IP literal and port, with or without

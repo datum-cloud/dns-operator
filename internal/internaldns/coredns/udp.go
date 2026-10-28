@@ -4,12 +4,33 @@ package coredns
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/miekg/dns"
 )
+
+// A zero size preserves the OS default. Kernels may clamp an explicit request;
+// callers should inspect the effective socket size when comparing deployments.
+func listenUDP(address string, readBufferBytes int) (*net.UDPConn, error) {
+	addr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if readBufferBytes > 0 {
+		if err := conn.SetReadBuffer(readBufferBytes); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("set UDP read buffer: %w", err)
+		}
+	}
+	return conn, nil
+}
 
 // UDP has no connection-level PROXY identity. Admit only configured peers;
 // the plugin must additionally validate the keyed destination on every query.

@@ -191,6 +191,16 @@ against an entirely keyed backend fleet. Use a separately ready regional fleet
 for the identity-mode cutover; the transport rollout order above assumes the
 regional identity configuration is already compatible.
 
+For keyed UDP listeners, `render.nodeCoreDNS.udpReadBufferBytes` and
+`render.clusterCoreDNS.udpReadBufferBytes` request a socket receive buffer in
+bytes. Omitted or zero preserves the operating system default; negative values
+are rejected. Changing this setting requires a CoreDNS restart. This controls
+queued datagrams, not the maximum DNS response payload. Linux may clamp the
+request to `net.core.rmem_max` and reports twice the requested size for socket
+accounting. Startup logs report the requested and effective sizes. Compare
+socket drops, successful-answer tail latency, CPU per successful query, and
+memory when testing larger buffers: buffering can replace drops with queueing.
+
 Compare query outcome/latency metrics with
 `internal_dns_transport_datagrams_total{outcome="accepted"}` and
 `internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters

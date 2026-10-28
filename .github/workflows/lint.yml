@@ -16,8 +16,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
 
       - name: Run linter
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.9.0
+        run: make lint

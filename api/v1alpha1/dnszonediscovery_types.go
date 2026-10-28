@@ -77,5 +77,5 @@ type DNSZoneDiscoveryList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSZoneDiscovery{}, &DNSZoneDiscoveryList{})
+	register(&DNSZoneDiscovery{}, &DNSZoneDiscoveryList{})
 }

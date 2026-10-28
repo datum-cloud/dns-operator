@@ -2,6 +2,7 @@ package serving
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +183,52 @@ func TestDNSDistListenerCountUsesReusePort(t *testing.T) {
 	}
 }
 
+func TestDNSDistDefaultListenerPreservesExistingTopology(t *testing.T) {
+	t.Parallel()
+	// Golden fingerprints from the five-field topology before listener counts.
+	for _, tc := range []struct {
+		name      string
+		keyed     bool
+		transport model.Transport
+		node      string
+		cluster   string
+	}{
+		{"proxy-tcp", false, model.TransportTCP, "ba41b13eaa9e1933e4eb0e80", "858e9d456ddb5ecdd9a6351c"},
+		{"keyed-tcp", true, model.TransportTCP, "e5ee10ae649a91fb9f9dc5ff", "7670be8c2671ee502583ee5f"},
+		{"keyed-udp", true, model.TransportUDP, "600669ab28d94a569708b223", "dfcbd4369bfbef342891111c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, count := range []int{0, 1, 2, 3} {
+				c, s := renderFixture(t)
+				if tc.keyed {
+					c.NodeCoreDNS.IdentityKeyFile = "/run/identity.key"
+					c.ClusterCoreDNS.IdentityKeyFile = "/run/identity.key"
+				}
+				for _, config := range []*DNSDistRenderConfig{&c.NodeDNSDist, &c.ClusterDNSDist} {
+					config.ListenerCount = count
+					config.BackendTransport = tc.transport
+					if tc.keyed {
+						config.IdentityKeyFile = "/run/identity.key"
+					}
+				}
+				r, err := Render(c, s, map[string]bool{"bind-a": true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, want := range map[string]string{c.NodeDNSDist.Path: tc.node, c.ClusterDNSDist.Path: tc.cluster} {
+					got := dnsdistTopology(r.Files[path])
+					if count <= 1 && got != strconv.Quote(want) {
+						t.Errorf("%s count %d changed existing topology: got %s, want %q", path, count, got, want)
+					}
+					if count > 1 && got == strconv.Quote(want) {
+						t.Errorf("%s count %d retained single-listener topology", path, count)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDNSDistRejectsInvalidListenerCount(t *testing.T) {
 	t.Parallel()
 	for _, count := range []int{-1, 65} {
@@ -273,7 +320,7 @@ func TestDNSDistUDPBackendRequiresKeyAndReplacement(t *testing.T) {
 	conf := string(r.Files[c.NodeDNSDist.Path])
 	for _, required := range []string{"tcpOnly=false", "checkTCP=false", "SetEDNSOptionAction(65431"} {
 		if !strings.Contains(conf, required) {
-			t.Fatalf("dnsdist config missing %q:\n%s", required, conf)
+			t.Fatalf("UDP configuration missing %q", required)
 		}
 	}
 	if strings.Contains(conf, "useProxyProtocol") {

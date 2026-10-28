@@ -48,6 +48,7 @@ vars:
   # kubectl/kind/make invocation below explicitly sets KUBECONFIG to this
   # fixed path so behavior doesn't depend on call order or that leak.
   ENV_KUBECONFIG: 'dev/kubeconfig'
+  ACTIONS_REPO: https://github.com/datum-cloud/actions.git
 
 includes:
   test-infra:
@@ -86,6 +87,49 @@ tasks:
     cmds:
       - test/internaldns/qualify-package.sh
 
+  vuln-scan:
+    desc: Scan dependencies for known vulnerabilities, the same way CI does
+    # Needs bash, git, curl, and jq, plus go for Go modules, and python3 3.11
+    # or later (for tomllib) when the repository has an osv-scanner.toml.
+    vars:
+      # The ref, a tag or a commit SHA, on the uses: line that calls
+      # vuln-scan.yaml in .github/workflows. When Renovate bumps that line,
+      # the local scan moves with it.
+      ACTIONS_REF:
+        sh: |
+          grep -rhoE "datum-cloud/actions/\.github/workflows/vuln-scan\.yaml@[^[:space:]\"'#]+" \
+            "{{.ROOT_DIR}}/.github/workflows" 2> /dev/null | sed 's/.*@//' | sort -u | paste -sd ' ' -
+      # Scripts are cached per commit, so a tag that is moved to another
+      # commit is fetched again.
+      COMMIT:
+        sh: |
+          case "{{.ACTIONS_REF}}" in
+            "" | *" "*) ;;
+            *[!0-9a-f]*) git ls-remote "{{.ACTIONS_REPO}}" "refs/tags/{{.ACTIONS_REF}}" "refs/tags/{{.ACTIONS_REF}}^{}" | tail -n 1 | cut -f 1 ;;
+            *) echo "{{.ACTIONS_REF}}" ;;
+          esac
+      SCRIPTS:
+        sh: echo "${XDG_CACHE_HOME:-$HOME/.cache}/datum-vuln-scan/scripts/{{.COMMIT}}"
+    cmds:
+      - test -n "{{.ACTIONS_REF}}" || (echo "no workflow in .github/workflows calls datum-cloud/actions/.github/workflows/vuln-scan.yaml" >&2; exit 1)
+      - case "{{.ACTIONS_REF}}" in *" "*) echo "workflows call vuln-scan.yaml at different refs ({{.ACTIONS_REF}}); use one" >&2; exit 1 ;; esac
+      - test -n "{{.COMMIT}}" || (echo "{{.ACTIONS_REPO}} has no tag {{.ACTIONS_REF}}" >&2; exit 1)
+      - task: vuln-scan:fetch
+        vars: { COMMIT: "{{.COMMIT}}", SCRIPTS: "{{.SCRIPTS}}" }
+      - bash "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+
+  vuln-scan:fetch:
+    internal: true
+    status:
+      - test -f "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+    cmds:
+      - rm -rf "{{.SCRIPTS}}.tmp"
+      - git -c init.defaultBranch=main init --quiet "{{.SCRIPTS}}.tmp"
+      - git -C "{{.SCRIPTS}}.tmp" sparse-checkout set --no-cone '/scripts/vuln-scan/*.sh' '/scripts/vuln-scan/*.py'
+      - git -C "{{.SCRIPTS}}.tmp" fetch --quiet --depth 1 "{{.ACTIONS_REPO}}" "{{.COMMIT}}"
+      - git -C "{{.SCRIPTS}}.tmp" checkout --quiet FETCH_HEAD
+      - mv "{{.SCRIPTS}}.tmp" "{{.SCRIPTS}}"
+
   default:
     desc: "Show available commands"
     silent: true
@@ -98,6 +142,7 @@ tasks:
       - echo "  task env:internal-dns:up       Deploy private DNS on the shared clusters"
       - echo "  task env:internal-dns:qualify  Validate private DNS publication and isolation"
       - echo "  task env:dns-check   Query control + edge PowerDNS for the sample record"
+      - echo "  task vuln-scan       Scan dependencies for known vulnerabilities, as CI does"
       - echo ""
       - echo "Individual pieces:"
       - echo "  task env:control-up  Control cluster only (dns-operator + PowerDNS + RustFS)"

@@ -140,10 +140,12 @@ func TestReadinessCanaryQueryCarriesTheIdentityKey(t *testing.T) {
 		{"wrong key", []byte("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="), "returned SERVFAIL"},
 		{"no key", nil, "returned SERVFAIL"},
 	} {
-		answer, _, err := (&dns.Client{Net: networkTCP, Timeout: time.Second}).Exchange(readinessCanaryQuery(tc.key), server)
-		err = readinessCanaryAnswer(answer, err)
-		if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
-			t.Fatalf("%s: keyed CoreDNS canary = %v, want %q", tc.name, err, tc.want)
+		for _, network := range []string{networkTCP, networkUDP} {
+			answer, _, err := (&dns.Client{Net: network, Timeout: time.Second}).Exchange(readinessCanaryQuery(tc.key), server)
+			err = readinessCanaryAnswer(answer, err)
+			if tc.want == "" && err != nil || tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("%s over %s: keyed CoreDNS canary = %v, want %q", tc.name, network, err, tc.want)
+			}
 		}
 	}
 }

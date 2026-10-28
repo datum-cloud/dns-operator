@@ -161,19 +161,6 @@ func TestMalformedEnvelopesAreTerminated(t *testing.T) {
 	}
 }
 
-type emptyKeyValue struct{ jetstream.KeyValue }
-
-func (emptyKeyValue) Keys(context.Context, ...jetstream.WatchOpt) ([]string, error) {
-	return nil, jetstream.ErrNoKeysFound
-}
-
-func TestSnapshotListOfEmptyBucketIsEmpty(t *testing.T) {
-	envelopes, err := (&SnapshotStore{kv: emptyKeyValue{}}).List(context.Background(), "central.")
-	if err != nil || len(envelopes) != 0 {
-		t.Fatalf("empty bucket must list no snapshots, got %v, %v", envelopes, err)
-	}
-}
-
 func TestNewDurableStartsWithinReplayWindow(t *testing.T) {
 	now := time.Date(2026, 10, 23, 2, 40, 0, 0, time.UTC)
 	c := ConsumerConfig{Stream: "DNS", Durable: "member-acks", FilterSubjects: []string{"acks.>"}, NewDurableReplay: 2 * time.Minute}

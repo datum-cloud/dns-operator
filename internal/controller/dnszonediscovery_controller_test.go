@@ -66,7 +66,8 @@ func TestDNSZoneDiscoveryReplicator_Watch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new manager: %v", err)
 	}
-	if err := (&DNSZoneDiscoveryReplicator{}).SetupWithManager(mgr); err != nil {
+	noRecords := func(context.Context, string) ([]dnsv1alpha1.DiscoveredRecordSet, error) { return nil, nil }
+	if err := (&DNSZoneDiscoveryReplicator{discoverRecords: noRecords}).SetupWithManager(mgr); err != nil {
 		t.Fatalf("setup controller: %v", err)
 	}
 	go func() { _ = cl.Start(ctx) }()
@@ -164,6 +165,23 @@ func TestDNSZoneDiscoveryReplicator_Watch(t *testing.T) {
 			t.Fatalf("discovery is not controlled by its zone: %v", dzd.OwnerReferences)
 		}
 	})
+
+	t.Run("zone created after its discovery reconciles the discovery", func(t *testing.T) {
+		dzd := newDiscovery(t, "zone-later", "late-zone")
+		waitForAccepted(t, c, dzd, metav1.ConditionFalse, `"late-zone" not found`)
+
+		zone := &dnsv1alpha1.DNSZone{
+			ObjectMeta: metav1.ObjectMeta{Name: "late-zone", Namespace: "default"},
+			Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "late.discovery.invalid", DNSZoneClassName: "pdns"},
+		}
+		if err := c.Create(ctx, zone); err != nil {
+			t.Fatalf("create zone: %v", err)
+		}
+		waitForAccepted(t, c, dzd, metav1.ConditionTrue, "")
+		if !metav1.IsControlledBy(dzd, zone) {
+			t.Fatalf("discovery is not controlled by its zone: %v", dzd.OwnerReferences)
+		}
+	})
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -179,13 +197,20 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func waitForAccepted(t *testing.T, c client.Client, dzd *dnsv1alpha1.DNSZoneDiscovery, status metav1.ConditionStatus, message string) {
 	t.Helper()
-	waitFor(t, "Accepted="+string(status)+" "+message, func() bool {
-		if err := c.Get(context.Background(), client.ObjectKeyFromObject(dzd), dzd); err != nil {
-			return false
+	var last *metav1.Condition
+	deadline := time.Now().Add(discoveryWaitTimeout)
+	for {
+		if err := c.Get(context.Background(), client.ObjectKeyFromObject(dzd), dzd); err == nil {
+			last = apimeta.FindStatusCondition(dzd.Status.Conditions, CondAccepted)
+			if last != nil && last.Status == status && strings.Contains(last.Message, message) {
+				return
+			}
 		}
-		cond := apimeta.FindStatusCondition(dzd.Status.Conditions, CondAccepted)
-		return cond != nil && cond.Status == status && strings.Contains(cond.Message, message)
-	})
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for Accepted=%s %s; last Accepted: %+v", status, message, last)
+		}
+		time.Sleep(discoveryPollInterval)
+	}
 }
 
 func waitForQuietReconciles(t *testing.T) float64 {

@@ -242,9 +242,6 @@ func (r *Reconciler) reconcileZone(ctx context.Context, ns, name string) (ctrl.R
 	if err := r.List(ctx, &assocs, client.InNamespace(ns)); err != nil {
 		return ctrl.Result{}, err
 	}
-	if !r.Options.CachedZoneInputs {
-		ctx = withZoneLoopReads(withPinnedAssociationReferences(ctx))
-	}
 	own, retryAt, err := r.holdOwnership(ctx, &z)
 	if err != nil {
 		return ctrl.Result{}, err

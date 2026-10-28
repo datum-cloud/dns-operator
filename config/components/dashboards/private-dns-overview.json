@@ -7,7 +7,7 @@
                "uid": "${datasource}"
             },
             "enable": true,
-            "expr": "max by (run, scenario, commit) (idns_perf_run)",
+            "expr": "max by (run, scenario, commit) (idns_perf_run == 1)",
             "iconColor": "purple",
             "name": "Load tests",
             "step": "10s",
@@ -586,7 +586,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Time from query to answer at each tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket: anything under 1 ms is under 1 ms, not exactly that, and 1000 ms means 1 s or more.",
+         "description": "Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; compare the UDP band shares and counts below.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -635,8 +635,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.5, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
-               "legendFormat": "{{internal_dns_datum_net_tier}} p50"
+               "expr": "histogram_quantile(0.5, sum by (cluster, internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} estimated p50"
             },
             {
                "datasource": {
@@ -644,11 +644,11 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "histogram_quantile(0.99, sum by (internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
-               "legendFormat": "{{internal_dns_datum_net_tier}} p99"
+               "expr": "histogram_quantile(0.99, sum by (cluster, internal_dns_datum_net_tier, le) (rate(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} estimated p99"
             }
          ],
-         "title": "Answer time, p50 and p99",
+         "title": "UDP answer time (estimated p50 and p99)",
          "type": "timeseries"
       },
       {
@@ -677,7 +677,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 13
+            "y": 20
          },
          "id": 11,
          "options": {
@@ -756,7 +756,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 13
+            "y": 20
          },
          "id": 12,
          "options": {
@@ -817,7 +817,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 13
+            "y": 20
          },
          "id": 13,
          "options": {
@@ -845,8 +845,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (cluster, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
-               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving CPU by container, cores",
@@ -858,7 +858,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 21
+            "y": 28
          },
          "id": 14,
          "title": "Public recursor",
@@ -890,7 +890,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 22
+            "y": 29
          },
          "id": 15,
          "options": {
@@ -954,7 +954,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 22
+            "y": 29
          },
          "id": 16,
          "options": {
@@ -1051,7 +1051,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 22
+            "y": 29
          },
          "id": 17,
          "options": {
@@ -1112,7 +1112,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 30
+            "y": 37
          },
          "id": 18,
          "options": {
@@ -1191,7 +1191,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 30
+            "y": 37
          },
          "id": 19,
          "options": {
@@ -1252,7 +1252,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 30
+            "y": 37
          },
          "id": 20,
          "options": {
@@ -1349,7 +1349,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 38
+            "y": 45
          },
          "id": 21,
          "options": {
@@ -1424,7 +1424,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 38
+            "y": 45
          },
          "id": 22,
          "options": {
@@ -1512,7 +1512,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 38
+            "y": 45
          },
          "id": 23,
          "options": {
@@ -1540,8 +1540,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (cluster, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"}[$__rate_interval]))",
-               "legendFormat": "{{pod}} CPU"
+               "expr": "max by (cluster, namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} CPU"
             },
             {
                "datasource": {
@@ -1549,8 +1549,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (cluster, pod) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"})",
-               "legendFormat": "{{pod}} memory"
+               "expr": "max by (cluster, namespace, pod) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-public-recursor-.*\",container=\"recursor\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} memory"
             }
          ],
          "title": "Recursor CPU and memory",
@@ -1562,7 +1562,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 46
+            "y": 53
          },
          "id": 24,
          "title": "Serving fleet",
@@ -1594,7 +1594,7 @@
             "h": 8,
             "w": 6,
             "x": 0,
-            "y": 47
+            "y": 54
          },
          "id": 25,
          "options": {
@@ -1655,7 +1655,7 @@
             "h": 8,
             "w": 6,
             "x": 6,
-            "y": 47
+            "y": 54
          },
          "id": 26,
          "options": {
@@ -1716,7 +1716,7 @@
             "h": 8,
             "w": 6,
             "x": 12,
-            "y": 47
+            "y": 54
          },
          "id": 27,
          "options": {
@@ -1777,7 +1777,7 @@
             "h": 8,
             "w": 6,
             "x": 18,
-            "y": 47
+            "y": 54
          },
          "id": 28,
          "options": {
@@ -1805,8 +1805,8 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (cluster, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"})",
-               "legendFormat": "{{cluster}} {{pod}} {{container}}"
+               "expr": "max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{namespace=~\"ns-.*\",pod=~\"internal-dns-.*\",container!=\"\",container!=\"POD\"})",
+               "legendFormat": "{{cluster}} {{namespace}} {{pod}} {{container}}"
             }
          ],
          "title": "Serving memory by container",
@@ -1818,7 +1818,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 55
+            "y": 62
          },
          "id": 29,
          "title": "Control plane",
@@ -1850,7 +1850,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 56
+            "y": 63
          },
          "id": 30,
          "options": {
@@ -1911,7 +1911,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 56
+            "y": 63
          },
          "id": 31,
          "options": {
@@ -1972,7 +1972,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 56
+            "y": 63
          },
          "id": 32,
          "options": {
@@ -2036,7 +2036,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 64
+            "y": 71
          },
          "id": 33,
          "options": {
@@ -2097,7 +2097,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 64
+            "y": 71
          },
          "id": 34,
          "options": {
@@ -2167,7 +2167,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 64
+            "y": 71
          },
          "id": 35,
          "options": {
@@ -2208,7 +2208,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 72
+            "y": 79
          },
          "id": 36,
          "title": "Private zones and records",
@@ -2242,7 +2242,7 @@
             "h": 4,
             "w": 6,
             "x": 0,
-            "y": 73
+            "y": 80
          },
          "id": 37,
          "options": {
@@ -2300,7 +2300,7 @@
             "h": 4,
             "w": 6,
             "x": 6,
-            "y": 73
+            "y": 80
          },
          "id": 38,
          "options": {
@@ -2362,7 +2362,7 @@
             "h": 4,
             "w": 6,
             "x": 12,
-            "y": 73
+            "y": 80
          },
          "id": 39,
          "options": {
@@ -2424,7 +2424,7 @@
             "h": 4,
             "w": 6,
             "x": 18,
-            "y": 73
+            "y": 80
          },
          "id": 40,
          "options": {
@@ -2464,7 +2464,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 77
+            "y": 84
          },
          "id": 41,
          "options": {
@@ -2534,7 +2534,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 77
+            "y": 84
          },
          "id": 42,
          "options": {
@@ -2597,7 +2597,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 85
+            "y": 92
          },
          "id": 43,
          "title": "Configuration delivery",
@@ -2629,7 +2629,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 86
+            "y": 93
          },
          "id": 44,
          "options": {
@@ -2690,7 +2690,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 86
+            "y": 93
          },
          "id": 45,
          "options": {
@@ -2751,7 +2751,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 86
+            "y": 93
          },
          "id": 46,
          "options": {
@@ -2792,7 +2792,7 @@
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 94
+            "y": 101
          },
          "id": 47,
          "title": "Load tests",
@@ -2854,7 +2854,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 95
+            "y": 102
          },
          "id": 48,
          "interval": "1s",
@@ -2925,7 +2925,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 95
+            "y": 102
          },
          "id": 49,
          "interval": "1s",
@@ -2987,7 +2987,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 95
+            "y": 102
          },
          "id": 50,
          "interval": "1s",
@@ -3030,6 +3030,179 @@
             }
          ],
          "title": "Load test queries and failures",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Shares from measured histogram bucket counts, without quantile interpolation: under 1 ms, over 100 ms and over 1 s. Thresholds overlap: over 1 s is a subset of over 100 ms; the lines do not sum to 100%. The denominator is the same UDP histogram population, including error and background answers, not all-protocol queries. Empty when no UDP answers were observed; missing telemetry stays empty.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "max": 1,
+               "min": 0,
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 13
+         },
+         "id": 51,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\",le=\"1\"}[$__rate_interval]))) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} under 1 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\",le=\"100\"}[$__rate_interval]))), 0)) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 100 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "(clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\",le=\"1000\"}[$__rate_interval]))), 0)) / (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval])) > 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 1 s"
+            }
+         ],
+         "title": "UDP answers by latency threshold, share",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+         },
+         "description": "Rolling counts over the same Grafana rate interval as the percentile chart: all UDP histogram answers on the right axis, over 100 ms and over 1 s on the left. Slow counts subtract finite buckets from that same population. A large p99 alongside only one or two slow answers is different from sustained high-volume latency. Counts may be fractional because increase() can extrapolate between scrapes; they are not packet-level event logs. Zero means a sampled counter did not increase, while missing telemetry stays empty. Includes error responses; see Answers by response code for their separate breakdown.",
+         "fieldConfig": {
+            "defaults": {
+               "color": {
+                  "mode": "palette-classic"
+               },
+               "custom": {
+                  "drawStyle": "line",
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "spanNulls": false
+               },
+               "min": 0,
+               "unit": "short"
+            },
+            "overrides": [
+               {
+                  "matcher": {
+                     "id": "byRegexp",
+                     "options": ".* all UDP answers$"
+                  },
+                  "properties": [
+                     {
+                        "id": "custom.axisPlacement",
+                        "value": "right"
+                     }
+                  ]
+               }
+            ]
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 13
+         },
+         "id": 52,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "max",
+                  "lastNotNull"
+               ],
+               "displayMode": "table",
+               "placement": "bottom",
+               "showLegend": true,
+               "sortBy": "Max",
+               "sortDesc": true
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} all UDP answers"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\",le=\"100\"}[$__rate_interval]))), 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 100 ms"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "${datasource}"
+               },
+               "editorMode": "code",
+               "expr": "clamp_min((sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_count{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\"}[$__rate_interval]))) - (sum by (cluster, internal_dns_datum_net_tier) (increase(dnsdist_latency_bucket{container=\"dnsdist\",internal_dns_datum_net_tier=~\"node|node-b|regional-dnsdist\",le=\"1000\"}[$__rate_interval]))), 0)",
+               "legendFormat": "{{cluster}} {{internal_dns_datum_net_tier}} over 1 s"
+            }
+         ],
+         "title": "UDP answer counts in the lookback window",
          "type": "timeseries"
       }
    ],

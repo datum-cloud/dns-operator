@@ -151,16 +151,9 @@ local answersByRcode = ts(
   grid(8, 8, 8, 5),
 );
 
-local answerTime = ts(
-  'Answer time, p50 and p99',
-  'Time from query to answer at each tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket: anything under 1 ms is under 1 ms, not exactly that, and 1000 ms means 1 s or more.',
-  [
-    qRange('histogram_quantile(0.5, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p50' % tier),
-    qRange('histogram_quantile(0.99, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p99' % tier),
-  ],
-  'ms',
-  grid(8, 8, 16, 5),
-);
+local answerTime = lib.udpLatencyEstimate(dnsdist, grid(8, 8, 16, 5));
+local udpAnswerShares = lib.udpLatencyShares(dnsdist, grid(7, 12, 0, 13));
+local udpAnswerCounts = lib.udpLatencyCounts(dnsdist, grid(7, 12, 12, 13));
 
 local failedQueries = ts(
   'Unanswered and dropped queries',
@@ -171,7 +164,7 @@ local failedQueries = ts(
     qRange('sum by (%(tier)s) (rate(dnsdist_acl_drops{%(sel)s}[$__rate_interval]) + rate(dnsdist_rule_drop{%(sel)s}[$__rate_interval]) + rate(dnsdist_no_policy{%(sel)s}[$__rate_interval]))' % { tier: tier, sel: dnsdist }, '{{%s}} dropped' % tier),
   ],
   'reqps',
-  grid(8, 8, 0, 13),
+  grid(8, 8, 0, 20),
 );
 
 local backendReuse = ts(
@@ -179,18 +172,18 @@ local backendReuse = ts(
   'Share of queries each dnsdist front sent to CoreDNS over an already open TCP connection. Near 100% means connections are reused; a drop means each query is paying for a new connection.',
   [qRange('sum by (cluster, %(tier)s, pod) (rate(dnsdist_server_tcpreusedconnections{%(sel)s}[$__rate_interval])) / (sum by (cluster, %(tier)s, pod) (rate(dnsdist_server_tcpreusedconnections{%(sel)s}[$__rate_interval])) + sum by (cluster, %(tier)s, pod) (rate(dnsdist_server_tcpnewconnections{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{cluster}} {{%s}} {{pod}}' % tier)],
   'percentunit',
-  grid(8, 8, 8, 13),
+  grid(8, 8, 8, 20),
 );
 
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, in cores, split by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion). The pod name carries the tier: node, node-b, regional-front, regional-coredns or public-recursor.',
-  [qRange('sum by (cluster, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % fleetPods, '{{cluster}} {{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % fleetPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
-  grid(8, 8, 16, 13),
+  grid(8, 8, 16, 20),
 );
 
-local recursorRow = section('Public recursor', 150, 21);
+local recursorRow = section('Public recursor', 150, 28);
 
 // The public recursor answers names outside every project. Its pods are
 // labelled with the public-recursor tier, and it reports PowerDNS Recursor
@@ -202,7 +195,7 @@ local recursorQueries = ts(
   'Questions each public recursor pod received per second.',
   [qRange('sum by (cluster, pod) (rate(pdns_recursor_questions{%s}[$__rate_interval]))' % recursor, '{{cluster}} {{pod}}')],
   'reqps',
-  grid(8, 8, 0, 22),
+  grid(8, 8, 0, 29),
 );
 
 local recursorAnswerShare = ts(
@@ -216,7 +209,7 @@ local recursorAnswerShare = ts(
     qRange('sum(rate(pdns_recursor_answers_slow{%(s)s}[$__rate_interval])) / sum(rate(pdns_recursor_questions{%(s)s}[$__rate_interval]))' % { s: recursor }, 'over 1 s'),
   ],
   'percentunit',
-  grid(8, 8, 8, 22),
+  grid(8, 8, 8, 29),
   stack=true,
 );
 
@@ -225,7 +218,7 @@ local recursorLatency = ts(
   'Moving average of the time each recursor pod took to answer, as the recursor reports it.',
   [qRange('max by (cluster, pod) (pdns_recursor_qa_latency{%s}) / 1000' % recursor, '{{cluster}} {{pod}}')],
   'ms',
-  grid(8, 8, 16, 22),
+  grid(8, 8, 16, 29),
 );
 
 local recursorRcodes = ts(
@@ -237,7 +230,7 @@ local recursorRcodes = ts(
     qRange('sum(rate(pdns_recursor_servfail_answers{%s}[$__rate_interval]))' % recursor, 'SERVFAIL'),
   ],
   'reqps',
-  grid(8, 8, 0, 30),
+  grid(8, 8, 0, 37),
 );
 
 local recursorServfail = ts(
@@ -245,7 +238,7 @@ local recursorServfail = ts(
   'Share of questions each recursor pod answered with SERVFAIL. A rise usually means an upstream or authoritative server is failing.',
   [qRange('sum by (cluster, pod) (rate(pdns_recursor_servfail_answers{%(s)s}[$__rate_interval])) / sum by (cluster, pod) (rate(pdns_recursor_questions{%(s)s}[$__rate_interval]))' % { s: recursor }, '{{cluster}} {{pod}}')],
   'percentunit',
-  grid(8, 8, 8, 30),
+  grid(8, 8, 8, 37),
 );
 
 local recursorUpstream = ts(
@@ -259,7 +252,7 @@ local recursorUpstream = ts(
     qRange('sum(rate(pdns_recursor_dnssec_result_bogus{%s}[$__rate_interval]))' % recursor, 'DNSSEC bogus'),
   ],
   'ops',
-  grid(8, 8, 16, 30),
+  grid(8, 8, 16, 37),
 );
 
 local recursorCacheHits = ts(
@@ -267,7 +260,7 @@ local recursorCacheHits = ts(
   'Share of lookups each recursor pod answered from its cache.',
   [qRange('sum by (cluster, pod) (rate(pdns_recursor_cache_hits{%(s)s}[$__rate_interval])) / (sum by (cluster, pod) (rate(pdns_recursor_cache_hits{%(s)s}[$__rate_interval])) + sum by (cluster, pod) (rate(pdns_recursor_cache_misses{%(s)s}[$__rate_interval])))' % { s: recursor }, '{{cluster}} {{pod}}')],
   'percentunit',
-  grid(8, 8, 0, 38),
+  grid(8, 8, 0, 45),
 );
 
 local recursorLoad = ts(
@@ -278,7 +271,7 @@ local recursorLoad = ts(
     qRange('max by (cluster, pod) (pdns_recursor_concurrent_queries{%s})' % recursor, '{{pod}} in flight'),
   ],
   'short',
-  grid(8, 8, 8, 38),
+  grid(8, 8, 8, 45),
 ) + timeSeries.standardOptions.withOverrides([
   timeSeries.fieldOverride.byRegexp.new('.* in flight')
   + timeSeries.fieldOverride.byRegexp.withProperty('custom.axisPlacement', 'right'),
@@ -288,25 +281,25 @@ local recursorResources = ts(
   'Recursor CPU and memory',
   'CPU in cores (left axis) and working set memory (right axis) of each recursor container. A pod near its CPU limit answers late.',
   [
-    qRange('sum by (cluster, pod) (rate(container_cpu_usage_seconds_total{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"}[$__rate_interval]))', '{{pod}} CPU'),
-    qRange('sum by (cluster, pod) (container_memory_working_set_bytes{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"})', '{{pod}} memory'),
+    qRange('max by (cluster, namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"}[$__rate_interval]))', '{{cluster}} {{namespace}} {{pod}} CPU'),
+    qRange('max by (cluster, namespace, pod) (container_memory_working_set_bytes{namespace=~"ns-.*",pod=~"internal-dns-public-recursor-.*",container="recursor"})', '{{cluster}} {{namespace}} {{pod}} memory'),
   ],
   'short',
-  grid(8, 8, 16, 38),
+  grid(8, 8, 16, 45),
 ) + timeSeries.standardOptions.withOverrides([
   timeSeries.fieldOverride.byRegexp.new('.* memory')
   + timeSeries.fieldOverride.byRegexp.withProperty('unit', 'bytes')
   + timeSeries.fieldOverride.byRegexp.withProperty('custom.axisPlacement', 'right'),
 ]);
 
-local fleetRow = section('Serving fleet', 200, 46);
+local fleetRow = section('Serving fleet', 200, 53);
 
 local availablePerMember = ts(
   'Available replicas per member',
   'Available replicas of each serving deployment at each location. A member that drops to zero is out of the regional pool or, for the node resolver, out of service for its node.',
   [qRange('max by (cluster, deployment) (kube_deployment_status_replicas_available{%s})' % fleet, '{{cluster}} {{deployment}}')],
   'short',
-  grid(8, 6, 0, 47),
+  grid(8, 6, 0, 54),
 );
 
 local notReadyPods = ts(
@@ -314,7 +307,7 @@ local notReadyPods = ts(
   'Serving pods failing readiness. Readiness stays local to the pod, so this reflects the member and not the consumer path through Galactic.',
   [qRange('sum by (cluster, pod) (kube_pod_status_ready{%s,condition="false"})' % fleetPods, '{{cluster}} {{pod}}')],
   'short',
-  grid(8, 6, 6, 47),
+  grid(8, 6, 6, 54),
 );
 
 local fleetRestarts = ts(
@@ -322,25 +315,25 @@ local fleetRestarts = ts(
   'Container restarts in serving pods. CoreDNS restarts during activation are expected; repeated restarts of one container are not.',
   [qRange('sum by (cluster, pod, container) (increase(kube_pod_container_status_restarts_total{%s}[$__rate_interval]))' % fleetPods, '{{pod}} {{container}}')],
   'short',
-  grid(8, 6, 12, 47),
+  grid(8, 6, 12, 54),
 );
 
 local fleetMemory = ts(
   'Serving memory by container',
   'Working set memory of each serving pod, split by container. A container that climbs toward its limit is killed and restarted.',
-  [qRange('sum by (cluster, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % fleetPods, '{{cluster}} {{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % fleetPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
-  grid(8, 6, 18, 47),
+  grid(8, 6, 18, 54),
 );
 
-local controlPlaneRow = section('Control plane', 300, 55);
+local controlPlaneRow = section('Control plane', 300, 62);
 
 local operationsByResult = ts(
   'Loop runs by result',
   'Completed runs of each control-plane loop. A successful run can be idle; it does not prove that an endpoint is serving.',
   [qRange('sum by (operation, result) (rate(internal_dns_operations_total{%s}[$__rate_interval]))' % loops, '{{operation}} {{result}}')],
   'ops',
-  grid(8, 8, 0, 56),
+  grid(8, 8, 0, 63),
 );
 
 local operationErrors = ts(
@@ -348,7 +341,7 @@ local operationErrors = ts(
   'Failed runs per loop. Planner and outbox errors stop configuration reaching the fleet; acknowledgement errors stop status reaching projects.',
   [qRange('sum by (operation) (rate(internal_dns_operations_total{%s,result="error"}[$__rate_interval]))' % loops, '{{operation}}')],
   'ops',
-  grid(8, 8, 8, 56),
+  grid(8, 8, 8, 63),
 );
 
 local sinceLastSuccess = ts(
@@ -356,7 +349,7 @@ local sinceLastSuccess = ts(
   'Age of the latest successful run of each loop, across control-plane replicas. Acknowledgement reads advance only when a member reports.',
   [qRange('min by (operation) (time() - internal_dns_operation_last_success_timestamp_seconds{%s})' % loops, '{{operation}}')],
   's',
-  grid(8, 8, 16, 56),
+  grid(8, 8, 16, 63),
 );
 
 local reconcilesByResult = ts(
@@ -364,7 +357,7 @@ local reconcilesByResult = ts(
   'Reconciles of project resources across every source project. Each project runs its own controller, so they are summed here.',
   [qRange('sum by (result) (rate(controller_runtime_reconcile_total{%s}[$__rate_interval]))' % controllers, '{{result}}')],
   'ops',
-  grid(8, 8, 0, 64),
+  grid(8, 8, 0, 71),
   stack=true,
 );
 
@@ -376,7 +369,7 @@ local reconcileLatency = ts(
     qRange(lib.passQuantile('1', function(m) 'sum by (le) (rate(%s[$__rate_interval]))' % m), 'slowest'),
   ],
   's',
-  grid(8, 8, 8, 64),
+  grid(8, 8, 8, 71),
 );
 
 local workqueueDepth = ts(
@@ -384,10 +377,10 @@ local workqueueDepth = ts(
   'Project reconciles waiting, summed across projects. A queue that keeps growing means changes are not being compiled.',
   [qRange('sum(workqueue_depth{%s,name=~"internal-dns-control-plane-.*"})' % controlPlane, 'waiting')],
   'short',
-  grid(8, 8, 16, 64),
+  grid(8, 8, 16, 71),
 );
 
-local zonesRow = section('Private zones and records', 400, 72);
+local zonesRow = section('Private zones and records', 400, 79);
 
 local statPrivateZones = statPanel(
   'Private zones',
@@ -395,7 +388,7 @@ local statPrivateZones = statPanel(
   labelled('count(dns_zone_info{visibility="Private"}) or vector(0)'),
   'short',
   blue,
-  grid(4, 6, 0, 73),
+  grid(4, 6, 0, 80),
 );
 
 local statRecordSets = statPanel(
@@ -404,7 +397,7 @@ local statRecordSets = statPanel(
   labelled('count(%s) or vector(0)' % privateRecordSetCondition('Programmed')),
   'short',
   blue,
-  grid(4, 6, 6, 73),
+  grid(4, 6, 6, 80),
 );
 
 local statRecordSetsNotProgrammed = statPanel(
@@ -413,12 +406,12 @@ local statRecordSetsNotProgrammed = statPanel(
   labelled('count(%s != 1) or vector(0)' % privateRecordSetCondition('Programmed')),
   'short',
   anyIsBad,
-  grid(4, 6, 12, 73),
+  grid(4, 6, 12, 80),
 );
 
 local zonesTable =
   table.new('Private zones not programmed')
-  + table.panelOptions.withGridPos(8, 12, 0, 77)
+  + table.panelOptions.withGridPos(8, 12, 0, 84)
   + table.panelOptions.withDescription('Every private zone whose Programmed condition is not true, with its reason.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([qInstant(privateZoneCondition('Programmed') + ' != 1') + prometheus.withFormat('table')])
@@ -451,12 +444,12 @@ local statNetworksNotReady = statPanel(
   'count(%s) or vector(0)' % networksNotDnsReady,
   'short',
   anyIsBad,
-  grid(4, 6, 18, 73),
+  grid(4, 6, 18, 80),
 );
 
 local networksTable =
   table.new('Networks not DNS-ready')
-  + table.panelOptions.withGridPos(8, 12, 12, 77)
+  + table.panelOptions.withGridPos(8, 12, 12, 84)
   + table.panelOptions.withDescription('Every network in a region whose DNSReady condition is a fault, with its reason. Networks with nothing attached, with DNS turned off, or being deleted are left out.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([qInstant(networksNotDnsReady) + prometheus.withFormat('table')])
@@ -472,14 +465,14 @@ local networksTable =
   + table.options.withShowHeader(true)
   + table.options.withSortBy([{ displayName: 'Project', desc: false }]);
 
-local deliveryRow = section('Configuration delivery', 500, 85);
+local deliveryRow = section('Configuration delivery', 500, 92);
 
 local pendingPerConsumer = ts(
   'Undelivered messages per consumer',
   'Publications and acknowledgements waiting for each broker consumer. Each serving member has its own consumers; one that climbs alone is a member that stopped reading.',
   [qRange('max by (stream_name, consumer_name) (nats_consumer_num_pending{%s})' % broker, '{{stream_name}} {{consumer_name}}')],
   'short',
-  grid(8, 8, 0, 86),
+  grid(8, 8, 0, 93),
 );
 
 local ackPendingPerConsumer = ts(
@@ -487,7 +480,7 @@ local ackPendingPerConsumer = ts(
   'Messages a consumer received and has not acknowledged. A member that cannot validate or activate a snapshot holds its messages here.',
   [qRange('max by (stream_name, consumer_name) (nats_consumer_num_ack_pending{%s})' % broker, '{{stream_name}} {{consumer_name}}')],
   'short',
-  grid(8, 8, 8, 86),
+  grid(8, 8, 8, 93),
 );
 
 local brokerConnections = ts(
@@ -495,10 +488,10 @@ local brokerConnections = ts(
   'Client connections on each broker server. The control-plane replicas and every serving member hold one each.',
   [qRange('max by (pod) (nats_varz_connections{%s})' % broker, '{{pod}}')],
   'short',
-  grid(8, 8, 16, 86),
+  grid(8, 8, 16, 93),
 );
 
-local loadTestRow = section('Load tests', 600, 94);
+local loadTestRow = section('Load tests', 600, 101);
 
 local publishLag = ts(
   'Time to answer a published change',
@@ -508,7 +501,7 @@ local publishLag = ts(
     qRange('sum by (scenario, step) (count_over_time(idns_perf_publish_missed[$__interval]))', '{{scenario}} {{step}} never answered'),
   ],
   'ms',
-  grid(8, 8, 0, 95),
+  grid(8, 8, 0, 102),
 ) + timeSeries.queryOptions.withInterval('1s')
   + timeSeries.fieldConfig.defaults.custom.withDrawStyle('points')
   + timeSeries.fieldConfig.defaults.custom.withShowPoints('always')
@@ -526,7 +519,7 @@ local queryP99 = ts(
   'Worst per-second p99 of load test queries in each interval, by scenario and query kind, taken from the generator with the slowest answers. Timeouts count as 5000 ms.',
   [qRange('max by (scenario, kind) (max_over_time(idns_perf_query_p99_ms[$__interval]))', '{{scenario}} {{kind}}')],
   'ms',
-  grid(8, 8, 8, 95),
+  grid(8, 8, 8, 102),
 ) + timeSeries.queryOptions.withInterval('1s');
 
 local queryRate = ts(
@@ -537,7 +530,7 @@ local queryRate = ts(
     qRange('sum by (scenario, kind) (avg_over_time(idns_perf_query_failed[$__interval])) > 0', '{{scenario}} {{kind}} failed'),
   ],
   'short',
-  grid(8, 8, 16, 95),
+  grid(8, 8, 16, 102),
 ) + timeSeries.queryOptions.withInterval('1s');
 
 local loadTestAnnotation = lib.loadTestAnnotation;
@@ -617,4 +610,6 @@ g.dashboard.new('Private DNS')
   publishLag,
   queryP99,
   queryRate,
+  udpAnswerShares,
+  udpAnswerCounts,
 ])

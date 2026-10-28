@@ -5,7 +5,7 @@ customer workload uses it. A k6 instance queries its VPC resolver (`fd53::53`)
 and measures latency, throughput, and wrong or failed answers for:
 
 - **private**: automatic names of instances in the same VPC
-  (`<instance>.instances.datum.internal`), which must resolve.
+  (`<instance>.datum.internal`), which must resolve.
 - **nxdomain**: names that exist only in another project, which must return
   NXDOMAIN.
 - **public**: internet names through the recursor. AAAA answers for IPv4-only
@@ -91,8 +91,18 @@ names) and `idns-perf-k6` (the load generators), then waits until both are
 ready. `run` starts `dns.js` on every generator at once, prints each summary,
 and saves the text, the k6 JSON summary, and a record of every query
 (`<generator>.csv.gz`) under `results/`. It then runs `analyze.sh` on them. Each generator queries
-the resolver on its own node, so more generators spread the load over more
-nodes rather than piling it onto one.
+the resolver on its own node. Check the actual placement before interpreting
+the load: multiple generators can land on the same node, where their rates add
+up. More generators do not guarantee more resolver nodes.
+
+Check the target's actual automatic DNS name before starting a run. The legacy
+`run.sh` default is `<instance>.datum.internal`; staging may use
+`<instance>.instances.datum.internal`. Pass the verified names explicitly when
+that suffix differs, for example:
+
+```sh
+test/internaldns/perf/run.sh run PRIVATE_NAMES=idns-perf-target-default-us-central-1-0.instances.datum.internal PRIVATE_RATE=150
+```
 
 To find where a resolver breaks down, step the private query rate up and look
 for the step where latency climbs or answers fail:
@@ -127,36 +137,6 @@ workload once you have the result. Read the summary with:
 datumctl compute logs idns-perf-k6 --project $PROJECT --since=30m
 ```
 
-### Publishing
-
-`run.sh publish` times the write path. On your machine, `publish-writer.js`
-creates `COUNT` private TXT record sets through the project API at `WRITE_RATE`
-per second, then updates each, then deletes each, with `GAP_S` seconds between
-steps. Inside the first generator, `publish.js` follows every name and records
-when each resolver in `RESOLVERS` first answers the new value, or NXDOMAIN after
-the delete. Each value carries the time its write was sent.
-
-```sh
-COUNT=30 WRITE_RATE=2 RESOLVERS='[fd53::53]:53,[fd53::54]:53' test/internaldns/perf/run.sh publish
-```
-
-`publish-analyze.sh` (run automatically) writes `publish.tsv`, one row per
-change and resolver, and `summary.tsv` with lag percentiles per step and
-resolver, API latency and failed writes. The run exits non-zero when a change
-was never answered or a write failed. It needs `k6` and `jq` locally. Lag
-includes clock skew between your machine and the instance.
-
-The prober starts watching each name when the writer is due to create it, so a
-create's lag can include a negative answer cached during propagation. Updates
-use `TTL` (default 1 second) and show the pipeline itself.
-
-### Sending results to dashboards
-
-`report.sh DIR [SCENARIO]` sends a `run` or `publish` results directory to a
-Prometheus text import endpoint (`IMPORT_URL`), labelled with the directory
-name, the scenario and `COMMIT`. `idns_perf_run` is 1 while the run lasted, for
-annotations; the other series are `idns_perf_publish_*` and `idns_perf_query_*`.
-
 ## Settings
 
 `dns.js` reads these from the environment:
@@ -182,7 +162,9 @@ annotations; the other series are `idns_perf_publish_*` and `idns_perf_query_*`.
 
 `run.sh` reads `PROJECT`, `LOCATION` (`us-central-1`), `NETWORK` (`default`),
 `TARGETS`, `GENERATORS`, `IMAGE`, `ZONE_DOMAIN`
-(`perf.internal`), `INSTANCE_DOMAIN` (`instances.datum.internal`), `INTERVAL`, `DURATION`, and `ALLOW_ANY_ENV`. `run` exits
+(`perf.internal`), `INTERVAL`, `DURATION`, and `ALLOW_ANY_ENV`.
+`RESULTS` selects a new results directory; reusing an existing directory is
+rejected to prevent stale generator records from contaminating a later run. `run` exits
 non-zero when any generator fails a threshold, fails to start, or returns no
 summary.
 
@@ -219,6 +201,60 @@ Failures spread evenly across a run point at capacity; failures that both
 generators see in the same seconds point at a node-wide outage such as a
 resolver restart. A timeout is recorded at 5000 ms, so p99 jumps to 5000 once
 more than 1% of a step's queries time out.
+
+### Exporting dashboard metrics
+
+`run.sh report DIR [SCENARIO]` re-analyzes all raw records, then writes
+`DIR/report.prom` for the Private DNS performance dashboards. It needs Python
+3.9 or newer. Without `IMPORT_URL`, this is an offline operation. To publish,
+set the VictoriaMetrics Prometheus import endpoint and an observed immutable
+serving image digest:
+
+```sh
+SERVING_IMAGE='ghcr.io/datum-cloud/internal-dns-serving@sha256:<observed-digest>' \
+IMPORT_URL='http://localhost:8480/insert/0/prometheus/api/v1/import/prometheus' \
+  test/internaldns/perf/run.sh report results/20261026T210000Z query-private
+```
+
+Use a unique directory name for each logical run; it becomes the `run` label.
+`COMMIT` defaults to `unknown`: set it only when the serving revision has been
+verified, not to the local test checkout's revision. `SERVING_IMAGE` is an
+optional provenance label and must be the digest actually observed on the
+serving pods. For a live `run`, setting `IMPORT_URL` automatically exports when
+collection finishes; `SCENARIO` selects its scenario label (default `query`).
+Import failures make the command fail, and the payload remains available for
+retry with `report`.
+
+The exporter checks each query and failure count against the raw CSV files.
+All expected generators in `generators.txt` must have a CSV and matching k6
+JSON summary. For separately collected generators, copy each pair under a
+unique basename into one new directory and list those basenames (without
+extensions) in `generators.txt`. Keep the original evidence. Percentiles are
+recomputed from combined query records; never sum or average percentiles.
+A directory containing `INVALID.txt` cannot be exported.
+
+The metrics include per-second actual QPS, failures and latency, plus
+`idns_perf_query_dropped_iterations` (the sum across generators, sampled once
+at run end). `idns_perf_query_offered_qps` integrates each configured arrival
+schedule into one-second buckets using the actual scenario start recorded in
+the CSV. Staggered starts and partial boundary seconds retain their real
+alignment. Actual QPS includes failed queries; dropped iterations are arrivals
+that the generator never executed. Propagation polling is excluded from
+arrival-rate metrics.
+
+Offered load requires a performance image built with the scenario metadata in
+this version of `dns.js`. Historical images still export query and dropped
+iteration metrics. Missing metadata, scenario start markers, or an interrupted
+schedule omits the entire offered-load series with a warning rather than
+publishing a partial aggregate. It does not imply zero offered load. A run
+with dropped iterations cannot establish resolver capacity at the target rate.
+
+Exporter regressions run without cluster access:
+
+```sh
+python3 -m unittest discover -s test/internaldns/perf -p 'test_report.py'
+node test/internaldns/perf/test-metadata.cjs
+```
 
 ### Server-side stats
 

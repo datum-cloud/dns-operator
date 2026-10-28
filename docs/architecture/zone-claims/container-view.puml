@@ -1,0 +1,45 @@
+@startuml container-view
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+!include ../datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Container View — Zone Claims
+
+Person(user, "Platform User", "Creates zones, records,\nand grants")
+Person(support, "Support Engineer", "Releases a squatted claim\nafter checking ownership")
+Person_Ext(resolver, "Recursive Resolver", "Resolves names for the internet")
+
+System_Ext(nso, "Network Services Operator", "Decides domain ownership from\nthe served zone and the\ndomain's delegation")
+
+System_Boundary(tenant, "Tenant Control Planes") {
+    Container(cp, "Project Control Plane", "Kubernetes API", "DNSZone (with grants),\nDNSRecordSet, Domain")
+}
+
+System_Boundary(platform, "Platform Control Plane") {
+    Container_Ext(projects, "Project Registry", "Kubernetes API", "Projects and their\norganizations")
+}
+
+System_Boundary(replication, "Replication Control Plane") {
+    Container(replicator, "DNS Operator (replicator)", "Go / controller-runtime", "Admits zones through claim sets,\nmirrors desired state,\nsynthesizes status")
+}
+
+System_Boundary(authoritative, "Authoritative Cluster") {
+    ContainerDb(claims, "Claim Sets", "Kubernetes API: ZoneClaimSet", "One per registered domain;\nevery claim in its subtree,\nin arrival order")
+    Container(agent, "DNS Operator (downstream agent)", "Go / controller-runtime", "Programs zones and records")
+    Container(pdns, "Authoritative Backend", "DNS server", "Serves only zones whose\nclaim is Active")
+}
+
+Rel(user, cp, "Creates zones, records, grants", "kubectl / API")
+Rel(replicator, cp, "Watches zones; writes conditions,\nnameservers, domainRef; creates Domain", "watch / patch")
+Rel(replicator, projects, "Looks up a project's organization", "watch")
+Rel(replicator, claims, "Reads, evaluates, and updates\nwith optimistic concurrency", "get / update")
+Rel(replicator, agent, "Creates a shadow zone only\nfor an Active claim")
+Rel(agent, pdns, "Programs zones / records")
+Rel(support, claims, "Sets release on an entry", "kubectl, audited")
+Rel(nso, cp, "Reads DNSZone conditions\nand nameservers", "watch")
+Rel_U(resolver, pdns, "DNS query, via the serving layer", "UDP/TCP :53")
+
+SHOW_LEGEND()
+@enduml

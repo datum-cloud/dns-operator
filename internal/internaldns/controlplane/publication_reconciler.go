@@ -14,7 +14,6 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/projectstatus"
-	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,17 +27,6 @@ const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publicati
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	now := r.Options.Now().UTC()
-	started := time.Now()
-	totals := passTotals{}
-	ctx = context.WithValue(ctx, passTotalsKey{}, totals)
-	defer func() {
-		elapsed := time.Since(started)
-		passDuration.Observe(elapsed.Seconds())
-		if elapsed > slowPass {
-			ctrl.LoggerFrom(ctx).Info("slow project pass", "projectUID", r.Options.ProjectUID, "namespace", ns, "seconds", elapsed.Seconds(), "phases", totals.seconds())
-		}
-	}()
-	timer := newPhaseTimer(ctx)
 
 	var zones dnsv1alpha1.DNSZoneList
 	var assocs dnsv1alpha1.DNSZoneAssociationList
@@ -51,8 +39,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	timer.done("list")
-
 	listed := newListedManagedObjects(zones.Items, assocs.Items)
 	if err := r.reconcileResolverContexts(withListedManagedObjects(ctx, listed), ns, now); err != nil {
 		return ctrl.Result{}, err
@@ -64,7 +50,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 		}
 	}
-	timer.done("contexts")
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
@@ -76,7 +61,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
-	timer.done("associations")
 	var sources []client.Object
 	for i := range assocs.Items {
 		sources = append(sources, &assocs.Items[i])
@@ -106,14 +90,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
 		return ctrl.Result{}, err
 	}
-	timer.done("references")
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
-	timer.done("bindings")
 	var earliest time.Time
 	var zoneErrors []error
-	ctx = withZoneLoopReads(withPinnedAssociationReferences(ctx))
 	held := map[types.UID]heldOwnership{}
 	var bindingsFingerprint string
 	for i := range zones.Items {
@@ -124,7 +105,6 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		own, retryAt, err := r.holdOwnership(ctx, z)
 		held[z.UID] = heldOwnership{own: own, retryAt: retryAt, err: err}
 	}
-	timer.done("ownership")
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -156,8 +136,8 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		}
 		if r.Options.PerZoneReconcile {
 			if bindingsFingerprint == "" {
-				bindings, err := r.zoneLoopBindings(ctx)
-				if err != nil {
+				var bindings dnsv1alpha1.DNSResolverBindingList
+				if err := r.listProjectBindings(ctx, &bindings); err != nil {
 					zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 					break
 				}
@@ -167,13 +147,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)
-		timer.done("compile")
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
 		}
 		pending, err := r.aggregatePublicationStatus(ctx, z, regs.Items, contributions.Items, now)
-		timer.done("status")
 		if err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
 			continue
@@ -332,26 +310,22 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, registrationZones map[types.UID]dnsv1alpha1.DNSObjectReference, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
-	timer := newPhaseTimer(ctx)
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err
 	}
-	timer.done("zone load")
 	if session := inputSession(ctx); session == nil || !session.cached {
 		cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 		if err != nil {
 			return false, err
 		}
 	}
-	timer.done("zone confirm")
 	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
 	if err != nil {
 		return false, err
 	}
 	input.RegistrationZoneReferences = registrationZones
-	timer.done("zone references")
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
@@ -374,18 +348,15 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		if err != nil {
 			return false, err
 		}
-		timer.done("zone compile")
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
 			return false, err
 		}
-		timer.done("zone statuses")
 	}
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
 		return false, err
 	}
-	timer.done("zone targets")
 	stateHash := hash
 	if !tombstone {
 		fenceBytes, _ := json.Marshal(ownPlan.Contributions)
@@ -443,10 +414,6 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, err
 	}
-	if r.Options.OnPublished != nil {
-		r.Options.OnPublished()
-	}
-	timer.done("zone persist")
 	if session := inputSession(ctx); session != nil {
 		session.state.accepted = accepted
 		session.state.liveCompiled = true
@@ -489,8 +456,8 @@ func (r *Reconciler) boundTargets(resolverContextUID types.UID, bindings []dnsv1
 }
 
 func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
-	bindings, err := r.zoneLoopBindings(ctx)
-	if err != nil {
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := r.listProjectBindings(ctx, &bindings); err != nil {
 		return nil, err
 	}
 	// A zone publishes to the shards where any of its contexts is bound. A zone
@@ -536,16 +503,15 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	contextUIDs = append([]types.UID{}, contextUIDs...)
 	refs := []dnsv1alpha1.DNSPublicationChunkReference{}
 	depsByRegion := map[string][]string{}
-	// Nothing is published until the ownership record names this manifest, so
-	// its pieces can be written in any order.
-	var writes []client.Object
 	wireRefs := []model.ChunkRef{}
 	parts := chunk(payload, r.Options.ChunkSize)
 	for i, p := range parts {
 		chunkName := fmt.Sprintf("%s-%03d", name, i)
 		sum := model.Hash(p)
 		obj := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: chunkName, Namespace: r.Options.PlatformNamespace}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: epoch, Revision: revision, Index: int32(i), SHA256: sum, Payload: p}}
-		writes = append(writes, obj)
+		if err := r.createImmutable(ctx, obj); err != nil {
+			return nil, err
+		}
 		refs = append(refs, dnsv1alpha1.DNSPublicationChunkReference{Name: chunkName, SHA256: sum, Size: int32(len(p))})
 		wireRefs = append(wireRefs, model.ChunkRef{Index: i, SHA256: sum, Size: len(p)})
 		wire := model.PublicationChunk{ManifestUID: name, ZoneUID: string(z.UID), WriterEpoch: uint64(epoch), Revision: uint64(revision), Index: i, SHA256: sum, Payload: p}
@@ -559,7 +525,9 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 			b, _ := json.Marshal(env)
 			outName := boundedName(chunkName + "-" + token + "-export")
 			out := r.outbox(outName, target.Region, target.Shard, model.RecordChunkSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, false, nil)
-			writes = append(writes, out)
+			if err := r.createImmutable(ctx, out); err != nil {
+				return nil, err
+			}
 			depsByRegion[token] = append(depsByRegion[token], out.Name)
 		}
 	}
@@ -576,7 +544,9 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 		apiTargets = append(apiTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
 	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
-	writes = append(writes, m)
+	if err := r.createImmutable(ctx, m); err != nil {
+		return nil, err
+	}
 	wmanifest := model.PublicationManifest{ManifestUID: name, ZoneUID: string(z.UID), Apex: z.Spec.DomainName, WriterEpoch: uint64(epoch), Revision: uint64(revision), PreviousRevision: uint64(previous), Tombstone: tombstone, Chunks: wireRefs, ContentHash: hash, GeneratedAt: now}
 	if err := wmanifest.Validate(); err != nil {
 		return nil, err
@@ -590,20 +560,12 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 		}
 		b, _ := json.Marshal(env)
 		out := r.outbox(model.PublicationActivationName(name, target.Region, target.Shard), target.Region, target.Shard, model.RecordManifestSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, true, depsByRegion[token])
-		writes = append(writes, out)
-	}
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(persistConcurrency)
-	for _, obj := range writes {
-		g.Go(func() error { return r.createImmutable(gctx, obj) })
-	}
-	if err := g.Wait(); err != nil {
-		return nil, err
+		if err := r.createImmutable(ctx, out); err != nil {
+			return nil, err
+		}
 	}
 	return m, nil
 }
-
-const persistConcurrency = 8
 
 func (r *Reconciler) outbox(name, region, shard, subject string, uid types.UID, epoch, revision int64, manifest string, payload []byte, activation bool, deps []string) *dnsv1alpha1.DNSTransportOutbox {
 	ownerName := ""
@@ -912,8 +874,8 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 			}
 		}
 	}
-	current, err := zoneLoopContributions(ctx, reader, namespace)
-	if err != nil {
+	var current dnsv1alpha1.DNSRecordContributionList
+	if err := reader.List(ctx, &current, client.InNamespace(namespace)); err != nil {
 		return nil, err
 	}
 	confirmed := make([]dnsv1alpha1.DNSRecordContribution, 0, len(names))
@@ -923,52 +885,6 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 		}
 	}
 	return confirmed, nil
-}
-
-// zoneLoopReads holds reads that give the same answer for every zone in a pass.
-// They are taken lazily inside the zone loop, after the binding phase has
-// written its bindings, so every zone sees the same post-phase state.
-type zoneLoopReads struct {
-	bindings      *dnsv1alpha1.DNSResolverBindingList
-	contributions map[string]*dnsv1alpha1.DNSRecordContributionList
-}
-
-type zoneLoopReadsKey struct{}
-
-func withZoneLoopReads(ctx context.Context) context.Context {
-	return context.WithValue(ctx, zoneLoopReadsKey{}, &zoneLoopReads{contributions: map[string]*dnsv1alpha1.DNSRecordContributionList{}})
-}
-
-func (r *Reconciler) zoneLoopBindings(ctx context.Context) (dnsv1alpha1.DNSResolverBindingList, error) {
-	reads, _ := ctx.Value(zoneLoopReadsKey{}).(*zoneLoopReads)
-	if reads != nil && reads.bindings != nil {
-		return *reads.bindings.DeepCopy(), nil
-	}
-	var bindings dnsv1alpha1.DNSResolverBindingList
-	if err := r.listProjectBindings(ctx, &bindings); err != nil {
-		return bindings, err
-	}
-	if reads != nil {
-		reads.bindings = bindings.DeepCopy()
-	}
-	return bindings, nil
-}
-
-func zoneLoopContributions(ctx context.Context, reader client.Reader, namespace string) (dnsv1alpha1.DNSRecordContributionList, error) {
-	reads, _ := ctx.Value(zoneLoopReadsKey{}).(*zoneLoopReads)
-	if reads != nil {
-		if listed, ok := reads.contributions[namespace]; ok {
-			return *listed.DeepCopy(), nil
-		}
-	}
-	var current dnsv1alpha1.DNSRecordContributionList
-	if err := reader.List(ctx, &current, client.InNamespace(namespace)); err != nil {
-		return current, err
-	}
-	if reads != nil {
-		reads.contributions[namespace] = current.DeepCopy()
-	}
-	return current, nil
 }
 
 func (r *Reconciler) stopping() bool {

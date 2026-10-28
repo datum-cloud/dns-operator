@@ -47,9 +47,6 @@ type ReconcilerOptions struct {
 	// start a full pass of every project against the API server together.
 	PassSlots chan struct{}
 
-	// OnPublished, when set, is called after a pass commits a new publication.
-	OnPublished func()
-
 	// PerZoneReconcile moves compiling and publishing zones out of the project
 	// pass into zone keys that record, registration and contribution changes
 	// queue directly, so a record change does not wait for a project pass.
@@ -156,7 +153,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.reconcileQueueKey(ctx, ns, req.Name)
 	}
 	if slots := r.Options.PassSlots; slots != nil {
-		waited := time.Now()
 		// Waiting longer than a quarter lease could let this project's zone
 		// leases lapse behind other projects' slow passes, so after that the
 		// pass runs without a slot.
@@ -170,7 +166,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, ctx.Err()
 		}
 		wait.Stop()
-		passPhaseDuration.WithLabelValues("wait for slot").Observe(time.Since(waited).Seconds())
 	}
 	return r.reconcileProject(ctx, ns)
 }

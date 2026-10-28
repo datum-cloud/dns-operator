@@ -60,6 +60,17 @@ Staging VictoriaMetrics has zero `coredns_*`, `dnsdist_*` or `internal_dns_*` se
 | `internal_dns_context_snapshot_contexts` | gauge | `state` ∈ `ready`, `pending` |
 | `internal_dns_context_snapshot_reloads_total` | counter | `result` ∈ `applied`, `rejected` |
 | `internal_dns_context_snapshot_applied_timestamp_seconds` | gauge | — |
+| `internal_dns_transport_connections_total` | counter | `outcome` ∈ `accepted`, `untrusted_peer`, `handshake_limit`, `handshake_error`, `shutdown` |
+| `internal_dns_transport_pending_handshakes` | gauge | — |
+| `internal_dns_transport_handshake_limit` | gauge | — |
+| `internal_dns_transport_udp_socket_drops_total` | counter | — |
+| `internal_dns_transport_udp_socket_stats_read_success` | gauge | — |
+
+Transport admission metrics count sockets before DNS processing. `handshake_limit` records immediate rejection when all 64 handshake slots are occupied; `handshake_error` includes malformed or incomplete initial headers and read timeouts. Pending handshakes include sockets waiting for CoreDNS to accept a validated connection. These metrics add seven series per process with no peer, address, or tenant labels. They expose admission loss separately from `internal_dns_context_queries_total`, which only observes queries that reached the plugin.
+
+On Linux, the keyed UDP listener exports its kernel socket drop count, including receive-buffer overflow before DNS parsing. The collector reads `/proc/net/udp` or `/proc/net/udp6` on each scrape and selects the live listener by inode. It does not count other sockets in the network namespace, add per-query work, or change receive-buffer sizing. The counter resets when the socket is replaced and can wrap with the kernel counter. It reports all kernel drops attributed to that socket; it cannot distinguish overflow from other kernel socket-drop causes.
+
+Use `increase(internal_dns_transport_udp_socket_drops_total[5m]) > 0` to detect listener loss and `internal_dns_transport_udp_socket_stats_read_success == 0` to detect failed collection. A failed read omits the counter rather than inventing a zero. Both series are absent when no keyed UDP listener is running, metrics are disabled, or the platform is not Linux. These add two series with no socket, address, or tenant labels. Drops after the last scrape but before socket closure cannot be recovered from the next process.
 
 **Agent metrics (G-3, revised).** Drop the strategy's `role` label because target labels carry it.
 

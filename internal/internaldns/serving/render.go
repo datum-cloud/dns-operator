@@ -33,13 +33,15 @@ type DNSDistRenderConfig struct {
 }
 
 type CoreDNSRenderConfig struct {
-	Path            string   `json:"path"`
-	ListenAddress   string   `json:"listenAddress"`
-	Port            uint16   `json:"port"`
-	ProxyPeers      []string `json:"proxyPeers"`
-	IdentityKeyFile string   `json:"identityKeyFile,omitempty"`
-	PublicUpstreams []string `json:"publicUpstreams,omitempty"`
-	MetricsAddress  string   `json:"metricsAddress,omitempty"`
+	Path               string   `json:"path"`
+	ListenAddress      string   `json:"listenAddress"`
+	Port               uint16   `json:"port"`
+	ProxyPeers         []string `json:"proxyPeers"`
+	IdentityKeyFile    string   `json:"identityKeyFile,omitempty"`
+	UDPReadBufferBytes int      `json:"udpReadBufferBytes,omitempty"`
+	PublicUpstreams    []string `json:"publicUpstreams,omitempty"`
+	MetricsAddress     string   `json:"metricsAddress,omitempty"`
+	ProfileAddress     string   `json:"profileAddress,omitempty"`
 }
 
 type RenderRole string
@@ -194,6 +196,9 @@ func validateRenderConfig(c RenderConfig) error {
 				return fmt.Errorf("%s metrics address: %w", label, err)
 			}
 		}
+		if err := contextdns.ValidateProfileAddress(b.ProfileAddress); err != nil {
+			return fmt.Errorf("%s: %w", label, err)
+		}
 		if err := coreDNSConfig(b).Validate(); err != nil {
 			return fmt.Errorf("%s: %w", label, err)
 		}
@@ -319,6 +324,11 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 	if listeners == 0 {
 		listeners = 1
 	}
+	// Preserve the existing five-field fingerprint for single-listener members.
+	topologyListeners := 0
+	if listeners > 1 {
+		topologyListeners = listeners
+	}
 	fmt.Fprint(&out, "local client = inClientStartup()\nif client or not internalDNSInitialized then\n")
 	fmt.Fprintf(&out, "  local key\n  if os.getenv(\"INTERNAL_DNS_VALIDATE\") == \"1\" then key = string.rep(\"A\",43)..\"=\" else\n    local handle = assert(io.open(%q,\"r\"))\n    key = handle:read(\"*l\"); handle:close()\n  end\n  setKey(key)\n  controlSocket(%q)\n  setConsoleACL({\"127.0.0.1/32\"})\nend\nif not client then\n", DNSDistKeyPath, endpoint)
 	topology, _ := json.Marshal(struct {
@@ -327,8 +337,8 @@ func renderDNSDist(c DNSDistRenderConfig, backends []model.Backend, bindings []m
 		Backends  []model.Backend
 		Pool      string
 		Transport string
-		Listeners int
-	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), listeners})
+		Listeners int `json:",omitempty"`
+	}{c.ListenAddress, c.ACLs, backends, c.PoolName, dnsdistTransport(c), topologyListeners})
 	fingerprint := model.OpaqueToken(string(topology))
 	fmt.Fprint(&out, "if not internalDNSInitialized then\n")
 	if listeners == 1 {
@@ -578,5 +588,5 @@ func renderClusterCoreDNS(c CoreDNSRenderConfig, bindings []model.Binding, publi
 }
 
 func coreDNSConfig(c CoreDNSRenderConfig) contextdns.Config {
-	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, IdentityKeyFile: c.IdentityKeyFile, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
+	return contextdns.Config{ListenAddress: net.JoinHostPort(c.ListenAddress, strconv.Itoa(int(c.Port))), ProxyPeers: c.ProxyPeers, IdentityKeyFile: c.IdentityKeyFile, UDPReadBufferBytes: c.UDPReadBufferBytes, PublicUpstreams: c.PublicUpstreams, Contexts: []contextdns.Context{}}
 }

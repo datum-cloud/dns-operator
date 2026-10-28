@@ -65,7 +65,12 @@ func (a *Agent) SetDeliveryConnected(connected bool) {
 func (a *Agent) observePublicationLag() {
 	lagging := 0
 	var revisionLag uint64
-	desired := map[string]model.ZoneAttachment{}
+	type desiredPublication struct {
+		fence     fence
+		pending   bool
+		tombstone bool
+	}
+	desired := map[string]desiredPublication{}
 	if a.state.Snapshot != nil {
 		for _, binding := range a.state.Snapshot.Bindings {
 			if binding.Tombstone || binding.ConfigurationPending {
@@ -73,22 +78,33 @@ func (a *Agent) observePublicationLag() {
 			}
 			for _, zone := range binding.Zones {
 				current, ok := desired[zone.ZoneUID]
-				if !ok || zone.Pending || !current.Pending && model.Compare(zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision, current.RequiredPublicationEpoch, current.RequiredPublicationRevision) > 0 {
-					desired[zone.ZoneUID] = zone
+				if !ok || zone.Pending || !current.pending && model.Compare(zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision, current.fence.Epoch, current.fence.Revision) > 0 {
+					desired[zone.ZoneUID] = desiredPublication{fence: fence{Epoch: zone.RequiredPublicationEpoch, Revision: zone.RequiredPublicationRevision}, pending: zone.Pending}
 				}
 			}
 		}
 	}
-	for uid, zone := range desired {
+	// A binding's required publication is its initial activation floor. Ordinary
+	// record updates deliberately do not rewrite that floor, so the latest
+	// accepted publication fence is the desired watermark after activation.
+	for uid, want := range desired {
+		if received, ok := a.state.Publications[uid]; ok && model.Compare(received.Fence.Epoch, received.Fence.Revision, want.fence.Epoch, want.fence.Revision) >= 0 {
+			want.fence = received.Fence
+			want.tombstone = received.Manifest.Tombstone
+			desired[uid] = want
+		}
+	}
+	for uid, want := range desired {
 		var publication publicationState
 		ok := false
 		if a.state.Active != nil {
 			publication, ok = a.state.Active.Publications[uid]
 		}
-		if zone.Pending || !ok || !publication.Verified || publication.Manifest.Tombstone || model.Compare(publication.Fence.Epoch, publication.Fence.Revision, zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision) < 0 {
+		comparison := model.Compare(publication.Fence.Epoch, publication.Fence.Revision, want.fence.Epoch, want.fence.Revision)
+		if want.pending || !ok || !publication.Verified || comparison < 0 || comparison == 0 && publication.Manifest.Tombstone != want.tombstone {
 			lagging++
-			if ok && publication.Fence.Epoch == zone.RequiredPublicationEpoch && publication.Fence.Revision < zone.RequiredPublicationRevision {
-				revisionLag = max(revisionLag, zone.RequiredPublicationRevision-publication.Fence.Revision)
+			if ok && publication.Fence.Epoch == want.fence.Epoch && publication.Fence.Revision < want.fence.Revision {
+				revisionLag = max(revisionLag, want.fence.Revision-publication.Fence.Revision)
 			}
 		}
 	}

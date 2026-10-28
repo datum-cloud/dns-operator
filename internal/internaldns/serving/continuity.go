@@ -13,9 +13,10 @@ import (
 )
 
 type activeConfiguration struct {
-	Snapshot     model.ServingSnapshot       `json:"snapshot"`
-	Publications map[string]publicationState `json:"publications"`
-	Files        map[string][]byte           `json:"files"`
+	Snapshot          model.ServingSnapshot       `json:"snapshot"`
+	Publications      map[string]publicationState `json:"publications"`
+	Files             map[string][]byte           `json:"files"`
+	NodeAuthoritative bool                        `json:"nodeAuthoritative,omitempty"`
 }
 
 func (a *Agent) gateRejectedUpdate(ctx context.Context, err error) {
@@ -30,6 +31,9 @@ func (a *Agent) gateRejectedUpdate(ctx context.Context, err error) {
 func (a *Agent) canRetainActive() bool {
 	old := a.state.Active
 	if old == nil || a.state.Snapshot == nil {
+		return false
+	}
+	if old.NodeAuthoritative != a.cfg.NodeAuthoritative {
 		return false
 	}
 	next := map[string]model.Binding{}
@@ -81,7 +85,7 @@ func (a *Agent) canRetainActive() bool {
 }
 
 func (a *Agent) approveConfiguration(files map[string][]byte) error {
-	candidate := activeConfiguration{Snapshot: *a.state.Snapshot, Publications: a.state.Publications, Files: files}
+	candidate := activeConfiguration{Snapshot: *a.state.Snapshot, Publications: a.state.Publications, Files: files, NodeAuthoritative: a.cfg.NodeAuthoritative}
 	data, err := json.Marshal(candidate)
 	if err != nil {
 		return err

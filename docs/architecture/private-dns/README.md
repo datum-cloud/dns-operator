@@ -69,6 +69,12 @@ withdraw endpoints that are no longer eligible.
 
 ## Proposal
 
+![How workloads use Private DNS](diagrams/product-overview.svg)
+
+Applications use one stable VPC resolver for private and public names. Product
+services publish private names automatically. Each VPC resolves private names
+only from its associated zones.
+
 Network services selects the default VPC domain, `datum.internal`, and
 provisions
 a DNS context and regional resolver access. DNS allocates the requested managed

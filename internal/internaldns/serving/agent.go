@@ -821,17 +821,14 @@ func (a *Agent) Step(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	defer a.observePublicationLag()
-	// A restored authoritative checkpoint is a bounded continuity measure, not
-	// permission to serve indefinitely while a current bootstrap is unavailable
-	// or invalid. Enforce its deadline before returning the bootstrap gate.
-	if a.restoredCheckpointExpired() {
-		return a.withdrawRestoredCheckpoint(ctx)
-	}
 	if a.cfg.NodeAuthoritative && !a.bootstrapComplete {
 		return errors.New("node-authoritative serving is waiting for a current bootstrap snapshot")
 	}
 	if a.state.Snapshot == nil {
 		return errors.New("no verified serving configuration is available")
+	}
+	if a.restoredCheckpointExpired() {
+		return a.withdrawRestoredCheckpoint(ctx)
 	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {

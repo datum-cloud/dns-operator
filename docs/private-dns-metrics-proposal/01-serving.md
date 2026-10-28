@@ -129,7 +129,7 @@ Use `increase(internal_dns_transport_udp_socket_drops_total[5m]) > 0` to detect 
 | S6 | dns-operator `serving/daemons.go` | `--role=serving` HTTP `/readyz` | S3 |
 | S7 | infra `edge-staging/members.yaml`, `public-recursors.yaml` | Container ports, HTTP readiness, liveness and startup probes, recursor webserver flags | S1, S2, S4–S6 images |
 | S8 | infra `edge-staging/podmonitor.yaml`, `network-policy.yaml`, `kustomization.yaml` | Scrape objects with `podTargetLabels` and relabel, a `dnsdist_pool_.*` drop; NetworkPolicy | S1, S7 |
-| S9 | dns-operator `config/internal-dns/fleet.example.yaml`, `routers.example.yaml`, `docs/architecture/internal-dns/` | Mirror S1/S7/S8 in the examples | S7 |
+| S9 | dns-operator `config/internal-dns/fleet.example.yaml`, `routers.example.yaml`, `docs/architecture/private-dns/` | Mirror S1/S7/S8 in the examples | S7 |
 | S10 | dns-operator `coredns/transport.go` | Optional: upstream proxyproto | spike |
 
 ## 5. Open questions

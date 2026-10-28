@@ -12,9 +12,9 @@ deployment configuration.
 
 Related documents:
 
-- [Architecture](../architecture/internal-dns/README.md) for how the parts fit
+- [Architecture](../architecture/private-dns/README.md) for how the parts fit
   together.
-- [Metrics proposal](../internal-dns-metrics-proposal/README.md) (phases 0 to
+- [Metrics proposal](../private-dns-metrics-proposal/README.md) (phases 0 to
   5) for the planned signals. Finding numbers such as F2 refer to its "What we
   found" table.
 

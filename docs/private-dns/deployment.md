@@ -1,6 +1,7 @@
 # Private DNS regional fleet deployment
 
-These manifests show the process boundaries for one shared regional shard.
+The [example manifests](../../config/internal-dns/) show the process boundaries
+for one shared regional shard.
 Replace the example images, addresses, certificates, storage classes, admission
 CA injection, and site command wrappers before deployment.
 
@@ -51,8 +52,10 @@ topology changes require a replacement member with independent storage. Agent
 and broker outages retain applied
 routing. The control key is generated locally and is never a DNS API field.
 
-`routers.example.yaml` supplies the node and regional frontend workloads.
-`fleet.example.yaml` supplies their configurations and the regional CoreDNS
+[Router manifests](../../config/internal-dns/routers.example.yaml) supply the
+node and regional frontend workloads.
+[Fleet manifests](../../config/internal-dns/fleet.example.yaml) supply their
+configurations and the regional CoreDNS
 workload template. Give every member independent configuration and checkpoint
 storage. CoreDNS process activation uses the serving role; dnsdist runs directly
 as its container process.

@@ -161,10 +161,15 @@ See the [API Reference](./api-reference.md) for complete field documentation.
 
 ## Learn More
 
-- [Private DNS architecture](./internal-dns/README.md) — Private DNS
+- [Private DNS architecture](private-dns/README.md) — Private DNS
   control plane, publication contracts, and shared serving architecture
-- [Private DNS API design](./internal-dns/README.md#api-design) — Annotated YAML for
+- [Private DNS API design](private-dns/README.md#api-design) — Annotated YAML for
   contexts, regional access, private zones, and product publication
+- [Private DNS deployment](../private-dns/deployment.md) — Configure the regional
+  fleet and plan rollouts and recovery
+- [Private DNS testing](../private-dns/testing.md) — Run qualification tests
+- [Private DNS performance](../private-dns/performance.md) — Measure query and
+  record update performance
 - [Record Ownership](./record-ownership.md) — Who owns a name in a zone, and
   when that changes
 - [Zone Claims](./zone-claims/README.md) — Who may serve a name and its

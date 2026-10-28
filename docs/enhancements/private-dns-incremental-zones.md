@@ -46,8 +46,8 @@ deployment first enabled per-zone reconciliation.
 
 Phase 1 is implemented. Enable both `perZoneReconcile` and `cachedZoneInputs`
 to use it. Both options are off by default. See
-[per-zone reconciliation](internal-dns-per-zone-reconcile.md) for event routing
-and [cached zone inputs](../architecture/internal-dns/cached-zone-inputs.md) for
+[per-zone reconciliation](private-dns-per-zone-reconcile.md) for event routing
+and [cached zone inputs](../architecture/private-dns/cached-zone-inputs.md) for
 the implementation contract.
 
 The watch cache supplies record sets and registrations indexed by zone, and

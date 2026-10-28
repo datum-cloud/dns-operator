@@ -265,7 +265,7 @@ CoreDNS rejects unknown contexts before looking up records or cached answers.
 Configure compatible identities at both ends of each hop. Enable keyed UDP on
 the regional tier before the node tier. Transport rollback retains the keys;
 changing identity modes requires a separate fleet migration. See the
-[serving configuration guide](../../../config/internal-dns/README.md) for key
+[serving configuration guide](../../private-dns/deployment.md) for key
 distribution, rollout order, and rollback steps.
 
 The publication agent validates and persists a complete snapshot. The context

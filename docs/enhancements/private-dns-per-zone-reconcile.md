@@ -7,7 +7,7 @@ binding, and zone in the project. The option is off by default.
 
 This document describes the implemented event routing and its limits. See
 [Cached Private DNS zone
-inputs](../architecture/internal-dns/cached-zone-inputs.md)
+inputs](../architecture/private-dns/cached-zone-inputs.md)
 for the separate `cachedZoneInputs` option.
 
 ## Reconciliation work
@@ -70,12 +70,12 @@ a live baseline, confirms potential losses of accepted input with a live
 compilation, and checks access again before committing. Status writes read the
 current object and use optimistic locks. The
 [cached-input consistency
-checks](../architecture/internal-dns/cached-zone-inputs.md#consistency-checks)
+checks](../architecture/private-dns/cached-zone-inputs.md#consistency-checks)
 define the full contract.
 
 The compiler evaluates the complete zone in either mode. It still writes and
 sends complete publication chunks. Content-addressed chunk delivery remains a
-separate [incremental-zone proposal](internal-dns-incremental-zones.md).
+separate [incremental-zone proposal](private-dns-incremental-zones.md).
 
 ## Ownership and recovery
 
@@ -124,7 +124,7 @@ publication still uses one owner and the shared publication store. With
 JetStream storage, each region needs the home publication broker to receive a
 zone update. See the
 [regional
-dependencies](../architecture/internal-dns/README.md#publication-storage-and-regional-dependencies).
+dependencies](../architecture/private-dns/README.md#publication-storage-and-regional-dependencies).
 
 The following changes remain proposals:
 

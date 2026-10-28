@@ -15,8 +15,9 @@ and measures latency, throughput, and wrong or failed answers for:
 
 k6 has no DNS support of its own, so the image is k6 built with
 [xk6-dns](https://github.com/grafana/xk6-dns). CI publishes it as
-`ghcr.io/datum-cloud/internal-dns-perf` from [Dockerfile](Dockerfile) on pushes
-to main (`v0.0.0-main`), tags, and releases.
+`ghcr.io/datum-cloud/internal-dns-perf` from the
+[Dockerfile](../../test/internaldns/perf/Dockerfile) on pushes to main
+(`v0.0.0-main`), tags, and releases.
 
 ## Limits
 
@@ -72,8 +73,9 @@ The VPC's resolver context appears once the first instance runs in it.
 
 ## Run
 
-[run.sh](run.sh) needs only `datumctl` signed in to the environment, with the
-compute plugin installed (`datumctl plugin install compute`). It starts k6
+[run.sh](../../test/internaldns/perf/run.sh) needs only `datumctl` signed in to
+the environment, with the compute plugin installed
+(`datumctl plugin install compute`). It starts k6
 with `datumctl compute exec` and reads results back the same way, so it works
 with ordinary project access. Exec sessions are not yet released promptly
 (datum-cloud/compute#532): after about a dozen execs the project refuses new
@@ -264,7 +266,7 @@ dnsdist's `dnsdist_latency_bucket`, `dnsdist_frontend_*` rcodes,
 `dnsdist_downstream_timeouts`, `dnsdist_server_tcpcurrentconnections` and CPU
 time, and CoreDNS's `coredns_dns_request_duration_seconds` and
 `internal_dns_context_queries_total`. Both are off unless the deployment sets
-`metricsAddress` (see `config/internal-dns/README.md`).
+`metricsAddress` (see `docs/private-dns/deployment.md`).
 
 A propagation result where an older value is seen again after a newer one means
 different serving replicas answered with different snapshots.

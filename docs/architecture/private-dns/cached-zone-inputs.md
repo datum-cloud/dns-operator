@@ -9,7 +9,7 @@ The compiler still evaluates the complete zone and publishes a complete
 snapshot.
 The project reconciliation pass is unchanged. Cached inputs do not implement
 [incremental chunk
-delivery](../../enhancements/internal-dns-incremental-zones.md#phase-2-content-addressed-chunks).
+delivery](../../enhancements/private-dns-incremental-zones.md#phase-2-content-addressed-chunks).
 
 ## Cached and live reads
 

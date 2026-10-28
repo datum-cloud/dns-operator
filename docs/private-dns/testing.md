@@ -116,4 +116,4 @@ capacity.
 The suite uses wire version `v1alpha6` and persistent format 7 checkpoints.
 Compatible fleet upgrades retain those checkpoints and transport state. Roll out
 serving support before enabling new controller output; see the
-[rollout contract](../../config/internal-dns/README.md#rollout-and-recovery).
+[rollout contract](deployment.md#rollout-and-recovery).

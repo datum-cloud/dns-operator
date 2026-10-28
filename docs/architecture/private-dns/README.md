@@ -99,11 +99,13 @@ The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
 covers platform placement; Galactic owns private connectivity and network
 identity.
 
-The following diagram separates project resources, publication storage, and
-regional delivery. The controller processes run the compiler, exporter, and
-acknowledgment handler.
+The diagram shows each component once. Solid arrows carry intent and updates;
+dashed arrows carry acknowledgments and status. DNS controller processes run the
+compiler, regional exporter, and acknowledgment handler. The
+[publication sequence](#publication-and-service-discovery) shows their individual
+steps.
 
-![Control-plane boundaries](diagrams/control-plane.svg)
+![Consumer project, DNS control plane, and regional serving boundaries](diagrams/control-plane.svg)
 
 Trusted network integration writes context and access intent. Product services
 write registrations and contributions. DNS controllers compile that intent and

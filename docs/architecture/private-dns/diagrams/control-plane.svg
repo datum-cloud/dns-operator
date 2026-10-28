@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="960" height="840" viewBox="0 0 960 840" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="910" viewBox="0 0 960 910" role="img" aria-labelledby="title description">
   <title id="title">Control-plane boundaries</title>
-  <desc id="description">Two views of the same components. Controllers read consumer project intent, maintain service project resources, and commit snapshots and outboxes. Exporters deliver updates through regional NATS to the serving fleet. Member acknowledgments return through NATS to the status handler, which writes publication observations, binding observations, and consumer serving status.</desc>
+  <desc id="description">Each component appears once. The consumer project API holds intent and serving status. DNS controller processes run the compiler, regional exporter, and acknowledgment handler. They read and write committed snapshots, outboxes, and publication observations in the publication store, and maintain references, bindings, address claims, and status in the DNS service project API. The exporter sends committed updates through regional NATS to the shared serving fleet. Dashed arrows carry member acknowledgments back through NATS to the controllers, which record observations and report status to the consumer project.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
   </defs>
@@ -17,58 +17,57 @@
     .return { stroke-dasharray: 6 5; }
     .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
   </style>
-  <rect width="960" height="840" fill="#F9F9F8"/>
+
+  <rect width="960" height="910" fill="#F9F9F8"/>
   <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
   <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
   <text x="32" y="75" class="title" text-anchor="start">Control-plane boundaries</text>
-  <text x="48" y="120" class="eyebrow" text-anchor="start">COMPILE AND DELIVER</text>
-  <text x="520" y="120" class="eyebrow" text-anchor="start">ACKNOWLEDGE AND REPORT</text>
-  <rect x="48" y="145" width="250" height="50" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="176.0" class="label" text-anchor="middle">Consumer project API</text>
-  <rect x="48" y="245" width="250" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="276.0" class="label" text-anchor="middle">DNS controllers</text>
-  <rect x="48" y="345" width="250" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="376.0" class="label" text-anchor="middle">Publication store</text>
-  <rect x="48" y="445" width="250" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="476.0" class="label" text-anchor="middle">Regional exporter</text>
-  <rect x="48" y="545" width="250" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="576.0" class="label" text-anchor="middle">Regional NATS</text>
-  <rect x="48" y="645" width="250" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="173.0" y="676.0" class="label" text-anchor="middle">Shared serving fleet</text>
-  <path d="M 173 195 V 245" class="edge"/>
-  <text x="195" y="225" class="message" text-anchor="start">Project inputs</text>
-  <path d="M 173 295 V 345" class="edge"/>
-  <text x="195" y="325" class="message" text-anchor="start">Commit snapshots and outboxes</text>
-  <path d="M 173 395 V 445" class="edge"/>
-  <text x="195" y="425" class="message" text-anchor="start">Committed updates</text>
-  <path d="M 173 495 V 545" class="edge"/>
-  <text x="195" y="525" class="message" text-anchor="start">Export</text>
-  <path d="M 173 595 V 645" class="edge"/>
-  <text x="195" y="625" class="message" text-anchor="start">Updates</text>
-  <rect x="520" y="145" width="270" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="655.0" y="176.0" class="label" text-anchor="middle">Shared serving fleet</text>
-  <rect x="520" y="245" width="270" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="655.0" y="276.0" class="label" text-anchor="middle">Regional NATS</text>
-  <rect x="520" y="345" width="270" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
-  <text x="655.0" y="376.0" class="label" text-anchor="middle">Acknowledgment handler</text>
-  <text x="655.0" y="400.0" class="label" text-anchor="middle">and status refresh</text>
-  <path d="M 655 195 V 245" class="edge"/>
-  <text x="680" y="214" class="message" text-anchor="start">Member</text>
-  <text x="680" y="238" class="message" text-anchor="start">acknowledgments</text>
-  <path d="M 655 295 V 345" class="edge"/>
-  <text x="680" y="325" class="message" text-anchor="start">Acknowledgments</text>
-  <rect x="590" y="480" width="290" height="50" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
-  <text x="735.0" y="511.0" class="label" text-anchor="middle">Publication store</text>
-  <path d="M 550 419 V 505 H 590" class="edge"/>
-  <text x="610" y="470" class="message" text-anchor="start">Publication observations</text>
-  <rect x="590" y="580" width="290" height="50" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
-  <text x="735.0" y="611.0" class="label" text-anchor="middle">DNS service project API</text>
-  <path d="M 550 419 V 605 H 590" class="edge"/>
-  <text x="610" y="570" class="message" text-anchor="start">Binding observations</text>
-  <rect x="590" y="680" width="290" height="50" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
-  <text x="735.0" y="711.0" class="label" text-anchor="middle">Consumer project API</text>
-  <path d="M 550 419 V 705 H 590" class="edge"/>
-  <text x="610" y="670" class="message" text-anchor="start">Serving status</text>
-  <text x="32" y="770" class="detail" text-anchor="start">Controllers maintain references, resolver bindings, and address claims in the service API.</text>
-  <text x="32" y="794" class="detail" text-anchor="start">The store uses the Kubernetes API or JetStream KV. Repeated boxes refer to the same components.</text>
+  <rect x="32" y="110" width="394" height="150" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="50" y="139" class="heading" text-anchor="start">Consumer project</text>
+  <rect x="64" y="155" width="330" height="85" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="186" class="heading" text-anchor="middle">Consumer project API</text>
+  <text x="229" y="212" class="detail" text-anchor="middle">Contexts, zones, access, contributions</text>
+  <path d="M 530 166 H 595" class="edge"/>
+  <text x="614" y="172" class="detail" text-anchor="start">Intent and updates</text>
+  <path d="M 530 211 H 595" class="edge return"/>
+  <text x="614" y="217" class="detail" text-anchor="start">Acknowledgments and status</text>
+  <rect x="32" y="345" width="896" height="300" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="374" class="heading" text-anchor="middle">DNS control plane</text>
+  <rect x="64" y="405" width="330" height="170" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="438" class="heading" text-anchor="middle">DNS controller processes</text>
+  <text x="229" y="474" class="detail" text-anchor="middle">Compiler</text>
+  <text x="229" y="498" class="detail" text-anchor="middle">Regional exporter</text>
+  <text x="229" y="522" class="detail" text-anchor="middle">Acknowledgment handler</text>
+  <rect x="600" y="385" width="300" height="100" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="416" class="heading" text-anchor="middle">Publication store</text>
+  <text x="750" y="442" class="detail" text-anchor="middle">Snapshots, outboxes,</text>
+  <text x="750" y="466" class="detail" text-anchor="middle">publication observations</text>
+  <rect x="600" y="515" width="300" height="110" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="546" class="heading" text-anchor="middle">DNS service project API</text>
+  <text x="750" y="573" class="detail" text-anchor="middle">References, resolver bindings,</text>
+  <text x="750" y="597" class="detail" text-anchor="middle">address claims and status</text>
+  <path d="M 130 240 V 405" class="edge"/>
+  <text x="148" y="310" class="message" text-anchor="start">Read intent</text>
+  <path d="M 320 405 V 240" class="edge return"/>
+  <text x="338" y="315" class="message" text-anchor="start">Report status</text>
+  <path d="M 394 435 H 600" class="edge" marker-start="url(#arrow)"/>
+  <text x="497" y="419" class="message" text-anchor="middle">Read / write</text>
+  <path d="M 394 560 H 600" class="edge"/>
+  <text x="497" y="544" class="message" text-anchor="middle">Maintain</text>
+  <rect x="32" y="715" width="896" height="155" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="744" class="heading" text-anchor="middle">Regional delivery and serving</text>
+  <rect x="64" y="765" width="330" height="75" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="809" class="heading" text-anchor="middle">Regional NATS</text>
+  <rect x="600" y="765" width="300" height="75" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="809" class="heading" text-anchor="middle">Shared serving fleet</text>
+  <path d="M 130 575 V 765" class="edge"/>
+  <text x="148" y="681" class="message" text-anchor="start">Export committed</text>
+  <text x="148" y="705" class="message" text-anchor="start">updates</text>
+  <path d="M 320 765 V 575" class="edge return"/>
+  <text x="338" y="681" class="message" text-anchor="start">Record</text>
+  <text x="338" y="705" class="message" text-anchor="start">observations</text>
+  <path d="M 394 790 H 600" class="edge"/>
+  <text x="497" y="777" class="message" text-anchor="middle">Updates</text>
+  <path d="M 600 820 H 394" class="edge return"/>
+  <text x="497" y="849" class="message" text-anchor="middle">Member acknowledgments</text>
 </svg>

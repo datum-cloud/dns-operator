@@ -1,4 +1,4 @@
-# Production-oriented internal DNS qualification
+# Production-oriented Private DNS qualification
 
 ## Proposal
 
@@ -17,7 +17,7 @@ address does not qualify the consumer network path.
 This assessment uses tracked infrastructure declarations at
 [`datum-cloud/infra@5cc5caba5`](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac).
 Declarations establish the intended configuration; they do not establish live
-cluster health or that the proposed private DNS fleet is deployed.
+cluster health or that the proposed Private DNS fleet is deployed.
 
 - [DNS control-plane configuration](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/control-plane/base)
   discovers Milo projects and uses project credentials, certificate trust, and
@@ -44,7 +44,7 @@ cluster health or that the proposed private DNS fleet is deployed.
 
 The existing [Task environment](../../Taskfile.yaml) already deploys public DNS
 across upstream, control, and edge clusters with shared test-infra tooling.
-The [CI workflow](../../.github/workflows/e2e.yml) exercises both private DNS
+The [CI workflow](../../.github/workflows/e2e.yml) exercises both Private DNS
 qualification and that public chain. The shared Task include is pinned to
 `datum-cloud/test-infra@7622c925d5bcf2fa5bc01823775973cf6daf51ca`.
 

@@ -1,4 +1,4 @@
-# Internal DNS regional fleet deployment
+# Private DNS regional fleet deployment
 
 These manifests show the process boundaries for one shared regional shard.
 Replace the example images, addresses, certificates, storage classes, admission

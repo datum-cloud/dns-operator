@@ -1,4 +1,4 @@
-# Internal DNS per-zone reconciliation
+# Private DNS per-zone reconciliation
 
 With `perZoneReconcile` enabled, a private record change queues its zone for
 compilation. It no longer waits for the control plane to reconcile every

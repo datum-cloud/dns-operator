@@ -24,7 +24,7 @@ Live check: `kubectl get dnsresolverbindings -A` on the infra cluster returns "N
 | `datum_cloud_compute_instance_status_condition` (1301 series) | Compute `config/components/resource-metrics/compute-metrics.yaml:423` | Uses `forEach: object.status.conditions`. `status.dns[]` is not exported. |
 | `datum_cloud_network_context_status_condition` | NSO `config/resource-metrics-policies/networking-metrics.yaml:235` (`forEach` over all conditions, so it would include `DNSReady`) | **Defined but not deployed.** Staging has 0 `datum_cloud_network*` series, and infra references no NSO policy. The strategy doc says "NSO has no policy", which is wrong, and it uses the wrong name (`datum_cloud_networking_network_context_…`). |
 
-### API conventions in the internal DNS CRDs
+### API conventions in the Private DNS CRDs
 
 | Kind | Conditions set | `status.observedGeneration` | Ready rollup |
 |---|---|---|---|
@@ -71,7 +71,7 @@ All families are `ResourceMetricsPolicy` generators. Labels `milo.project.name` 
 
 | Kind(s) | Families | Labels | Owner repo |
 |---|---|---|---|
-| Each internal DNS kind `<k>` ∈ {`resolver_context`, `access_binding`, `zone_association`, `naming_policy`, `registration`, `contribution`, `resolver_binding`, `publication_manifest`}. Phase 3 ships `resolver_binding`, `registration` and `resolver_context` first; the rest wait for a project selector. | `datum_dns_internal_<k>_info`, `_owner`, `_status_condition` (forEach), `_status_condition_last_transition_time` (forEach), `_condition_generation_lag` (forEach, value `metadata.generation - item.observedGeneration`) | `name, namespace, condition, status, reason`. Info adds `region` (binding/access) and `owner_kind`. No `zone` label. **Per-object series exist only while the object is not Ready, or its `observedGeneration` is behind** (see below). | dns-operator, new `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` |
+| Each Private DNS kind `<k>` ∈ {`resolver_context`, `access_binding`, `zone_association`, `naming_policy`, `registration`, `contribution`, `resolver_binding`, `publication_manifest`}. Phase 3 ships `resolver_binding`, `registration` and `resolver_context` first; the rest wait for a project selector. | `datum_dns_internal_<k>_info`, `_owner`, `_status_condition` (forEach), `_status_condition_last_transition_time` (forEach), `_condition_generation_lag` (forEach, value `metadata.generation - item.observedGeneration`) | `name, namespace, condition, status, reason`. Info adds `region` (binding/access) and `owner_kind`. No `zone` label. **Per-object series exist only while the object is not Ready, or its `observedGeneration` is behind** (see below). | dns-operator, new `config/milo/resource-metrics/policies/internal-dns-metrics.yaml` |
 | ResolverBinding ACKs | Not exported per member (README decision 4). ACK freshness comes from the control plane's `internal_dns_resolver_binding_ack_lag_seconds`, a per-binding max (appendix 02), and an unhealthy binding shows up in its `_status_condition` series. | — | dns-operator |
 | ResolverBinding revision | `datum_dns_internal_resolver_binding_configuration_revision` (spec) and `_observed_configuration_revision`, emitted only while the two differ | `name, region, shard` | dns-operator |
 | TransportOutbox | `datum_dns_internal_transport_outbox_state` (value 1) | `state` only, aggregated: no `name` label | dns-operator |

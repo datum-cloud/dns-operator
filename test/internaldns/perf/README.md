@@ -1,6 +1,6 @@
-# Internal DNS performance tests
+# Private DNS performance tests
 
-Load test the private DNS query path from inside a compute instance, the way a
+Load test the Private DNS query path from inside a compute instance, the way a
 customer workload uses it. A k6 instance queries its VPC resolver (`fd53::53`)
 and measures latency, throughput, and wrong or failed answers for:
 

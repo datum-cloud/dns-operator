@@ -4,7 +4,7 @@ stage: alpha
 latest-milestone: "TBD"
 ---
 
-# Internal DNS architecture
+# Private DNS architecture
 
 - [Summary](#summary)
 - [Motivation](#motivation)
@@ -29,7 +29,7 @@ questionnaire](#production-readiness-review-questionnaire)
 
 ## Summary
 
-Internal DNS lets resources resolve private names within a VPC. Each network has
+Private DNS lets resources resolve private names within a VPC. Each network has
 a managed namespace and can use additional private zones. Product services
 publish names automatically, and shared regional fleets serve many VPCs with
 isolated DNS contexts.

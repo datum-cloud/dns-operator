@@ -1,6 +1,6 @@
-# Internal DNS end-to-end qualification
+# Private DNS end-to-end qualification
 
-Run private DNS on the repository's shared Kubernetes test environment. Task
+Run Private DNS on the repository's shared Kubernetes test environment. Task
 reuses the pinned `datum-cloud/test-infra` bootstrap, cluster names, add-ons, and
 cleanup. The environment also supports the existing public DNS regression chain.
 The qualification uses Go clients and Kubernetes workloads.
@@ -18,16 +18,16 @@ task --yes env:internal-dns:up
 task --yes env:internal-dns:qualify
 ```
 
-`env:internal-dns:up` resets only the owned private DNS fixtures, then rebuilds
+`env:internal-dns:up` resets only the owned Private DNS fixtures, then rebuilds
 and deploys them on the existing clusters. Run it again before repeating the
 qualification. It retains the shared bootstrap and public DNS workloads.
 
-Start private DNS first on fresh clusters to select the shared dual-stack Kind
+Start Private DNS first on fresh clusters to select the shared dual-stack Kind
 configuration. If an existing public-only environment uses IPv4, the preflight
 stops before resetting private fixtures. When ready to replace that environment,
 run `env:down`, then start `env:internal-dns:up` before `env:stack-up`.
 
-To validate public DNS alongside private DNS, use the same lifecycle as CI:
+To validate public DNS alongside Private DNS, use the same lifecycle as CI:
 
 ```sh
 task --yes env:internal-dns:up

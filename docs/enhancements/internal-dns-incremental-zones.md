@@ -1,4 +1,4 @@
-# Internal DNS incremental zones
+# Private DNS incremental zones
 
 This design reduces the work required to publish a record change. Phase 1,
 cached zone inputs, is implemented behind configuration options. Phase 2,
@@ -199,7 +199,7 @@ any missing chunks from its region's store.
   - The old form is removed after members have run the new code through one
     restart. Hash-keyed snapshot keys left by a rollback are removed by a
     one-time cleanup, since the old collector does not recognize them.
-- Measure each phase with the internal DNS publish test, API request rate,
+- Measure each phase with the Private DNS publish test, API request rate,
   and bytes sent per publication.
 
 ## Risks

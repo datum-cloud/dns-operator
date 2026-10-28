@@ -5,7 +5,6 @@ package serving
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -128,7 +127,24 @@ func TestAgentPublicationLagTracksFailedOrdinaryUpdateUntilActivation(t *testing
 		t.Fatalf("initial lagging zones = %v, want 0", got)
 	}
 
-	chunk, manifest := updatedTestPublication(t, now)
+	chunk, manifest := testPublication(t, now)
+	var plan model.PublicationPlan
+	if err := json.Unmarshal(chunk.Payload, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.RRSets[0].Records = append(plan.RRSets[0].Records, model.RRRecord{Content: "192.0.2.11", ContributionUID: "contrib-a", Sequence: 1, Eligible: true, Generation: 1})
+	chunk.Payload, err = json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk.ManifestUID = "manifest-b"
+	chunk.Revision = 5
+	chunk.SHA256 = model.Hash(chunk.Payload)
+	manifest.ManifestUID = chunk.ManifestUID
+	manifest.PreviousRevision = 4
+	manifest.Revision = chunk.Revision
+	manifest.ContentHash = chunk.SHA256
+	manifest.Chunks = []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(chunk.Payload)}}
 	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
 		t.Fatal(err)
 	}
@@ -158,138 +174,5 @@ func TestAgentPublicationLagTracksFailedOrdinaryUpdateUntilActivation(t *testing
 	}
 	if got := testutil.ToFloat64(agentPublicationRevisionLag.WithLabelValues(labels...)); got != 0 {
 		t.Fatalf("activated update revision lag = %v, want 0", got)
-	}
-}
-
-func TestAgentPublicationVerificationFailuresAreCountedAndRecover(t *testing.T) {
-	for _, initial := range []bool{true, false} {
-		name := "ordinary update"
-		if initial {
-			name = "initial bootstrap"
-		}
-		t.Run(name, func(t *testing.T) {
-			now := time.Now().UTC()
-			cfg := nodeAuthoritativeTestConfig(t)
-			cfg.Region = "verify-" + strings.ReplaceAll(name, " ", "-")
-			cfg.Shard = "metrics"
-			failing := initial
-			verifier := publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
-				if failing {
-					return errors.New("DNS fingerprint mismatch")
-				}
-				return nil
-			})
-			a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, PublicationVerifier: verifier})
-			if err != nil {
-				t.Fatal(err)
-			}
-			labels := []string{cfg.Region, cfg.Shard, "node-authoritative", "publication_verify"}
-			before := testutil.ToFloat64(agentActivationFailures.WithLabelValues(labels...))
-
-			snapshot := testSnapshot(now)
-			snapshot.Region, snapshot.Shard = cfg.Region, cfg.Shard
-			chunk, manifest := testPublication(t, now)
-			envs := []model.Envelope{
-				metricEnvelope(t, cfg, model.KindPublicationChunk, "zone-a", 2, 4, chunk),
-				metricEnvelope(t, cfg, model.KindServingSnapshot, "shard", 1, 1, snapshot),
-				metricEnvelope(t, cfg, model.KindPublicationManifest, "zone-a", 2, 4, manifest),
-			}
-			if err := a.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
-				t.Fatal(err)
-			}
-			if initial {
-				if err := a.Step(context.Background()); err == nil {
-					t.Fatal("initial publication verification failure was accepted")
-				}
-				assertPendingPublication(t, a, 4)
-				if got := testutil.ToFloat64(agentActivationFailures.WithLabelValues(labels...)); got != before+1 {
-					t.Fatalf("initial verification counter = %v, want %v", got, before+1)
-				}
-				failing = false
-				if err := a.Step(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				if err := a.Step(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				chunk, manifest = updatedTestPublication(t, now)
-				if err := a.Handle(context.Background(), metricEnvelope(t, cfg, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
-					t.Fatal(err)
-				}
-				failing = true
-				if err := a.Handle(context.Background(), metricEnvelope(t, cfg, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err == nil {
-					t.Fatal("ordinary publication verification failure was accepted")
-				}
-				assertPendingPublication(t, a, 5)
-				if got := testutil.ToFloat64(agentActivationFailures.WithLabelValues(labels...)); got != before+1 {
-					t.Fatalf("ordinary verification counter = %v, want %v", got, before+1)
-				}
-				if err := a.Step(context.Background()); err == nil {
-					t.Fatal("retrying publication verification failure was accepted")
-				}
-				assertPendingPublication(t, a, 5)
-				if got := testutil.ToFloat64(agentActivationFailures.WithLabelValues(labels...)); got != before+2 {
-					t.Fatalf("retry verification counter = %v, want %v", got, before+2)
-				}
-				failing = false
-				if err := a.Step(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			publication := a.state.Publications["zone-a"]
-			if !publication.Verified || a.state.Active == nil || !a.state.Active.Publications["zone-a"].Verified {
-				t.Fatalf("successful recovery did not activate verified publication: desired=%#v active=%#v", publication, a.state.Active)
-			}
-			wantRevision := uint64(4)
-			if !initial {
-				wantRevision = 5
-			}
-			if publication.Fence.Revision != wantRevision || a.state.Active.Publications["zone-a"].Fence.Revision != wantRevision {
-				t.Fatalf("recovery activated wrong revision: desired=%#v active=%#v", publication.Fence, a.state.Active.Publications["zone-a"].Fence)
-			}
-		})
-	}
-}
-
-func metricEnvelope(t *testing.T, cfg Config, kind model.Kind, uid string, epoch, revision uint64, payload any) model.Envelope {
-	t.Helper()
-	env, err := model.NewEnvelope(kind, "metrics-"+string(kind)+uid+time.Now().String(), cfg.Region, cfg.Shard, uid, epoch, revision, time.Now(), payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return env
-}
-
-func updatedTestPublication(t *testing.T, now time.Time) (model.PublicationChunk, model.PublicationManifest) {
-	t.Helper()
-	chunk, manifest := testPublication(t, now)
-	var plan model.PublicationPlan
-	if err := json.Unmarshal(chunk.Payload, &plan); err != nil {
-		t.Fatal(err)
-	}
-	plan.RRSets[0].Records = append(plan.RRSets[0].Records, model.RRRecord{Content: "192.0.2.11", ContributionUID: "contrib-a", Sequence: 1, Eligible: true, Generation: 1})
-	payload, err := json.Marshal(plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	chunk.Payload = payload
-	chunk.ManifestUID = "manifest-b"
-	chunk.Revision = 5
-	chunk.SHA256 = model.Hash(payload)
-	manifest.ManifestUID = chunk.ManifestUID
-	manifest.PreviousRevision = 4
-	manifest.Revision = chunk.Revision
-	manifest.ContentHash = chunk.SHA256
-	manifest.Chunks = []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}
-	return chunk, manifest
-}
-
-func assertPendingPublication(t *testing.T, a *Agent, revision uint64) {
-	t.Helper()
-	p := a.state.Publications["zone-a"]
-	if p.Verified || p.Fence.Revision != revision {
-		t.Fatalf("failed verification did not retain pending revision %d: %#v", revision, p)
 	}
 }

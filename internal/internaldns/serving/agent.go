@@ -966,6 +966,7 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 		for _, p := range a.state.Publications {
 			if p.Verified && !p.Manifest.Tombstone && len(a.publicationViews(p)) > 0 {
 				if err := a.verifyPublication(ctx, p); err != nil {
+					a.recordActivationFailure("publication_verify")
 					_ = a.failClosed(ctx)
 					a.needsActivation = true
 					return err
@@ -1221,12 +1222,7 @@ func (a *Agent) readyZones(b model.Binding) []model.ZoneAttachment {
 	return ready
 }
 
-func (a *Agent) verifyPublication(ctx context.Context, p publicationState) (err error) {
-	defer func() {
-		if err != nil {
-			a.recordActivationFailure("publication_verify")
-		}
-	}()
+func (a *Agent) verifyPublication(ctx context.Context, p publicationState) error {
 	if p.Manifest.Tombstone {
 		return nil
 	}

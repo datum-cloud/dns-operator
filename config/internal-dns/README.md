@@ -114,6 +114,13 @@ destination. Regional dnsdist selects the same context and load-balances the
 healthy CoreDNS members. Every regional CoreDNS member hosts the context's
 private zones. Public queries forward to a shared PowerDNS Recursor service.
 
+As an opt-in migration, a node agent may use `mode: "combined"` with
+`nodeAuthoritative: true` and `render.role: "node"`. Node CoreDNS then embeds
+the same validated publications instead of forwarding private zones to the
+regional destination. Regional control planes still compile and publish the
+records, and regional serving stays in place until the node fleet is validated.
+See [Node-local Private DNS authority](../../docs/enhancements/node-local-private-dns-authority.md).
+
 An owned name without eligible answers carries service-only `TYPE65280`
 metadata at that exact name. This private-use record preserves NODATA without
 adding a child name or conflicting with a recovered CNAME. Tenant declarations
@@ -272,13 +279,14 @@ contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
 
-### Control-plane monitoring
+### Control-plane and agent monitoring
 
-The control-plane process serves `/metrics` on `--metrics-bind-address`
-(default `:8080`) and `/healthz` and `/readyz` on
-`--health-probe-bind-address` (default `:8081`). Set either flag to `0` to
-disable it. The deprecated `metricsBindAddress` configuration key still
-overrides the metrics flag. Restrict access to the monitoring network.
+The control-plane and agent processes serve `/metrics` on
+`--metrics-bind-address` (default `:8080`). The control plane also serves
+`/healthz` and `/readyz` on `--health-probe-bind-address` (default `:8081`). Set
+either flag to `0` to disable it. The deprecated `metricsBindAddress`
+configuration key still overrides the metrics flag. Restrict access to the
+monitoring network.
 
 `/healthz` fails when a periodic loop has not completed a run in three times
 its interval, or ten minutes, whichever is longer. It checks that loops are
@@ -306,6 +314,12 @@ metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 `internal_dns_operation_last_success_timestamp_seconds{operation}` are
 deprecated and will be removed once dashboards move to the loop metrics. They
 fold region and shard into `operation` and count conflicts as errors.
+
+Agent processes also expose delivery connection state, aggregate publication
+lag, activation failures, and the last successful activation. The series use
+only `region`, `shard`, `mode`, and a fixed activation `stage`; they never label
+tenant or zone identity. The node-authority enhancement documents their names,
+interpretation, and required deployment alerts.
 
 ### Serving monitoring
 

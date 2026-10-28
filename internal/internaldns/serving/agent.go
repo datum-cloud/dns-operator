@@ -32,6 +32,7 @@ type Config struct {
 	ReplicaID                 string                       `json:"replicaID,omitempty"`
 	StateDir                  string                       `json:"stateDir"`
 	Mode                      Mode                         `json:"mode"`
+	NodeAuthoritative         bool                         `json:"nodeAuthoritative,omitempty"`
 	Render                    RenderConfig                 `json:"render"`
 	Transaction               TransactionConfig            `json:"transaction"`
 	ReconcileInterval         time.Duration                `json:"reconcileInterval,omitempty"`
@@ -53,6 +54,9 @@ func (c Config) Validate() error {
 	}
 	if c.Mode != ModeResolver && c.Mode != ModeCombined {
 		return fmt.Errorf("unsupported serving mode %q", c.Mode)
+	}
+	if c.NodeAuthoritative && (c.Mode != ModeCombined || c.Render.Role != RenderNode) {
+		return errors.New("node-authoritative serving requires combined mode and the node render role")
 	}
 	if c.Mode == ModeResolver || c.Mode == ModeCombined {
 		if err := validateRenderConfig(c.Render); err != nil {
@@ -84,10 +88,17 @@ func (c Config) Validate() error {
 		return errors.New("failClosed command is required; use unsafeAllowNoFailClosed only in tests")
 	}
 	if c.Mode == ModeCombined {
-		if c.Render.Role != RenderCluster && c.Render.Role != RenderBoth && c.Render.Role != RenderRegionalCoreDNS && c.Render.Role != "" {
+		if c.Render.Role == RenderNode && !c.NodeAuthoritative {
+			return errors.New("combined node serving requires nodeAuthoritative")
+		}
+		if c.Render.Role != RenderCluster && c.Render.Role != RenderBoth && c.Render.Role != RenderRegionalCoreDNS && c.Render.Role != "" && c.Render.Role != RenderNode {
 			return errors.New("combined publication serving requires an owned regional CoreDNS process")
 		}
-		if c.PublicationDNSProbe.Server != "" && c.PublicationDNSProbe.Server != net.JoinHostPort(c.Render.ClusterCoreDNS.ListenAddress, strconv.Itoa(int(c.Render.ClusterCoreDNS.Port))) {
+		coreDNS := c.Render.ClusterCoreDNS
+		if c.NodeAuthoritative {
+			coreDNS = c.Render.NodeCoreDNS
+		}
+		if c.PublicationDNSProbe.Server != "" && c.PublicationDNSProbe.Server != net.JoinHostPort(coreDNS.ListenAddress, strconv.Itoa(int(coreDNS.Port))) {
 			return errors.New("publication probe must target this member's protected CoreDNS listener")
 		}
 	}
@@ -189,6 +200,7 @@ type Agent struct {
 	restoredAt            time.Time
 	stateReceived         bool
 	checkpointWithdrawn   bool
+	requiresBootstrap     bool
 	// render is renderPublications unless a test injects a failure.
 	render func(RenderConfig, model.ServingSnapshot, map[string]bool, map[string]publicationState) (Rendered, error)
 }
@@ -247,7 +259,11 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 		gateErr := (FileTransaction{Config: c.Transaction, Runner: d.Runner}).FailClosed(context.Background())
 		return nil, errors.Join(err, gateErr)
 	}
-	return &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner, MarkerPath: activationMarkerPath(c.StateDir)}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}}, nil
+	requiresBootstrap := c.NodeAuthoritative && (state.Active == nil || !state.Active.NodeAuthoritative)
+	agent := &Agent{cfg: c, deps: d, store: store, tx: FileTransaction{Config: c.Transaction, Runner: d.Runner, MarkerPath: activationMarkerPath(c.StateDir)}, publicationVerifier: publicationVerifier, state: state, lastServingAck: map[string]servingAckState{}, lastPublicationAck: map[string]time.Time{}, installedPublications: map[string]installedPublication{}, requiresBootstrap: requiresBootstrap}
+	agent.SetDeliveryConnected(false)
+	agent.observePublicationLag()
+	return agent, nil
 }
 
 func (a *Agent) Start(ctx context.Context) error {
@@ -450,6 +466,10 @@ func (a *Agent) Handle(ctx context.Context, env model.Envelope) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	defer a.observePublicationLag()
+	if env.Kind == model.KindServingSnapshot || env.Kind == model.KindPublicationChunk || env.Kind == model.KindPublicationManifest {
+		a.stateReceived = true
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -778,6 +798,10 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 func (a *Agent) Step(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	defer a.observePublicationLag()
+	if a.requiresBootstrap && !a.stateReceived {
+		return errors.New("node-authoritative serving is waiting for a current bootstrap snapshot")
+	}
 	if a.state.Snapshot == nil {
 		return errors.New("no verified serving configuration is available")
 	}
@@ -839,6 +863,7 @@ func (a *Agent) reconcile(ctx context.Context) error {
 }
 
 func (a *Agent) renderDesired(c RenderConfig, snapshot model.ServingSnapshot, active map[string]bool) (Rendered, error) {
+	c.NodeAuthoritative = a.cfg.NodeAuthoritative
 	if a.render != nil {
 		return a.render(c, snapshot, active, a.state.Publications)
 	}
@@ -846,7 +871,7 @@ func (a *Agent) renderDesired(c RenderConfig, snapshot model.ServingSnapshot, ac
 }
 
 func (a *Agent) reconcileDesired(ctx context.Context) error {
-
+	activated := false
 	active := map[string]bool{}
 	filtered := *a.state.Snapshot
 	filtered.Bindings = nil
@@ -875,6 +900,7 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 	}
 	rendered, err := a.renderDesired(renderConfig, filtered, active)
 	if err != nil {
+		a.recordActivationFailure("render")
 		return err
 	}
 	hash := hashFiles(rendered.Files)
@@ -892,9 +918,11 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 			err = a.tx.Apply(ctx, rendered.Files)
 		}
 		if err != nil {
+			a.recordActivationFailure("install")
 			a.gateRejectedUpdate(ctx, err)
 			return err
 		}
+		activated = true
 		a.state.RenderedHash = hash
 		if err := a.store.Save(a.state); err != nil {
 			return err
@@ -910,6 +938,7 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 		for _, p := range a.state.Publications {
 			if p.Verified && !p.Manifest.Tombstone && len(a.publicationViews(p)) > 0 {
 				if err := a.verifyPublication(ctx, p); err != nil {
+					a.recordActivationFailure("publication_verify")
 					_ = a.failClosed(ctx)
 					a.needsActivation = true
 					return err
@@ -923,14 +952,17 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 	if probeFailed {
 		gated, err := a.renderDesired(renderConfig, filtered, active)
 		if err != nil {
+			a.recordActivationFailure("render")
 			return err
 		}
 		gatedHash := hashFiles(gated.Files)
 		if gatedHash != a.state.RenderedHash {
 			if err := a.tx.Apply(ctx, gated.Files); err != nil {
+				a.recordActivationFailure("install")
 				_ = a.failClosed(ctx)
 				return err
 			}
+			activated = true
 			a.state.RenderedHash = gatedHash
 			rendered = gated
 			if err := a.store.Save(a.state); err != nil {
@@ -949,6 +981,9 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 	}
 	if err := a.approveConfiguration(rendered.Files); err != nil {
 		return err
+	}
+	if activated {
+		a.recordActivationSuccess(a.deps.Clock())
 	}
 	// Applied configuration remains independent of broker acknowledgements.
 	if a.cfg.Mode == ModeResolver {
@@ -1055,6 +1090,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 			}
 			delete(pending, result.bindingUID)
 			if result.err != nil {
+				a.recordActivationFailure("resolver_verify")
 				a.report(fmt.Errorf("verify resolver binding %s after %s: %w", result.bindingUID, result.duration.Round(time.Millisecond), result.err))
 				delete(active, result.bindingUID)
 				probeFailed = true
@@ -1063,6 +1099,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 			}
 		case <-probeCtx.Done():
 			for bindingUID := range pending {
+				a.recordActivationFailure("resolver_verify")
 				a.report(fmt.Errorf("verify resolver binding %s within shared %s batch deadline: %w", bindingUID, timeout, probeCtx.Err()))
 				delete(active, bindingUID)
 			}
@@ -1189,7 +1226,11 @@ func (a *Agent) publicationViewsAt(p publicationState) []PublicationView {
 		}
 		for _, z := range b.Zones {
 			if !z.Pending && z.ZoneUID == p.Plan.ZoneUID && model.Compare(p.Fence.Epoch, p.Fence.Revision, z.RequiredPublicationEpoch, z.RequiredPublicationRevision) >= 0 {
-				out = append(out, PublicationView{View: b.ViewName(), DestinationAddress: b.ClusterAddress, DestinationPort: b.Port, Serial: publicationSerial(p), FingerprintMailbox: publicationMailbox(p)})
+				destination := b.ClusterAddress
+				if a.cfg.NodeAuthoritative {
+					destination = b.ConsumerAddress
+				}
+				out = append(out, PublicationView{View: b.ViewName(), DestinationAddress: destination, DestinationPort: b.Port, Serial: publicationSerial(p), FingerprintMailbox: publicationMailbox(p)})
 			}
 		}
 	}
@@ -1257,6 +1298,9 @@ func (a *Agent) emitVerifiedPublicationAck(ctx context.Context, uid string, epoc
 	if err := a.verifyAppliedConfiguration(ctx); err != nil {
 		return err
 	}
+	if a.cfg.NodeAuthoritative {
+		return nil
+	}
 	if err := a.emitAck(ctx, model.KindPublicationManifest, uid, epoch, revision, model.AckVerified, ""); err != nil {
 		a.report(fmt.Errorf("publish verified publication ACK %s: %w", uid, err))
 		return nil
@@ -1286,6 +1330,9 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 }
 
 func (a *Agent) heartbeatPublications(ctx context.Context) error {
+	if a.cfg.NodeAuthoritative {
+		return nil
+	}
 	now := a.deps.Clock()
 	interval := a.cfg.AckInterval
 	if interval <= 0 {

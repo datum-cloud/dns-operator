@@ -3,8 +3,6 @@ name: Publish Docker Image
 on:
   # Trigger on push
   push:
-  # Trigger on all pull requests
-  pull_request:
   # Trigger when a release is published
   release:
     types: ['published']

@@ -113,7 +113,7 @@ local statStalestLoop = statPanel(
 
 local statZonesNotProgrammed = statPanel(
   'Private zones pending',
-  'Private zones whose Programmed condition is not true in their project. A pending zone answers SERVFAIL beneath its apex while the context keeps serving its other zones. A zone whose network has no serving members in its region stays pending; the table under Private zones and records lists each one with its reason.',
+  'Private zones whose project Programmed condition is not true. PendingReplicaApplication means no applied or verified acknowledgement is recorded for the current publication epoch and revision. This reports publication progress, not DNS availability: previously applied data may continue serving while an update is pending. See the zone table for reasons and query metrics or probes for serving impact.',
   labelled('count(%s != 1) or vector(0)' % privateZoneCondition('Programmed')),
   'short',
   anyIsBad,
@@ -122,7 +122,7 @@ local statZonesNotProgrammed = statPanel(
 
 local statBacklog = statPanel(
   'Config backlog',
-  'Fewest messages over the last 5 minutes that the most backed-up configuration consumer had not yet received: member publication and record consumers, and the control plane acknowledgement reader. Members keep serving their applied configuration while this is above zero, but changes are not reaching them. Member acknowledgement readers are left out: every member reads every heartbeat, and a new member replays the last day of history. They are under Configuration delivery.',
+  'The largest five-minute minimum unread backlog among member publication and record consumers and control-plane acknowledgement readers. This is the worst consumer backlog sustained over the window, not a sum across consumers or the age of queued messages. Previously applied configuration may continue serving; use query metrics or probes to assess serving impact. Member acknowledgement readers are excluded because each reads every heartbeat and new members replay the last day of history; see Configuration delivery.',
   'max(min_over_time(nats_consumer_num_pending{%s,%s}[5m]))' % [broker, configConsumers],
   'short',
   [green, { color: 'orange', value: 100 }, { color: 'red', value: 1000 }],

@@ -340,127 +340,31 @@ format or enable incremental chunk delivery.
 
 #### Publication storage and regional dependencies
 
-Each zone has one compiler owner. A compare-and-swap lease prevents another
-writer from committing under that owner's version. Takeover advances the writer
-epoch; revisions increase within it. Agents reject older versions. On shutdown,
-a controller releases its zone and shard leases. A replacement owner republishes
-unchanged content under its new epoch so that takeover does not strand an
-unexported update. The compiler stages immutable chunks and a manifest, then
-commits its
-active pointer. This state and a durable outbox live in platform Kubernetes API
-storage by default; exporters repair missing outboxes after crashes.
+Each zone has one compiler owner. It commits versioned publications to the
+Kubernetes API by default, or to JetStream KV when `publicationStore` is enabled.
+Tenant resources, resolver bindings, address claims, and tenant status remain
+in the API server in both modes.
 
-The `publicationStore` option keeps the same records (ownership leases,
-manifests, chunks, outboxes and shard ownership) in a JetStream key-value bucket
-instead, so publishing does not wait on the platform API server. Resource
-versions are bucket revisions, so every lease, commit and status write keeps its
-compare-and-swap fence. A writer that creates or takes over a lease takes an
-epoch of at least the current Unix time, so a new or lost store never leaves
-agents fencing out the new writer. A publication is deleted ten minutes after a
-newer one of its zone was exported, unless a pending outbox depends on it.
-Tenant objects, resolver bindings, address claims and tenant status stay in the
-API server.
+In JetStream mode, zone publications live on one home broker, selected by
+`publicationStore.region`. Each region also keeps its serving state on its own
+broker. The diagram shows which stores the shared controllers use for each
+region; it does not represent separate regional control planes.
 
-In JetStream mode, each region has a publication bucket. Shard leases, region
-leases, and serving snapshots live on that region's broker. Zone leases,
-manifests, chunks, and their outboxes live on the home broker selected by
-`publicationStore.region`. Each region's planner, exporter, and acknowledgment
-handler read from its own bucket and the home bucket.
+![Regional controller work depends on both its local broker and the shared home broker](diagrams/publication-dependencies.svg)
 
-A region can continue those loops while an unrelated regional broker is down.
-However, committing a zone or delivering its update to any region still requires
-the home broker. Separate regional serving pools and brokers do not remove this
-dependency. Independent writers for each zone and region remain a separate
-[regional control-plane
-proposal](https://github.com/datum-cloud/dns-operator/pull/342).
-Regions that share a broker must use the same broker URL. Cleanup waits for
-every
-region's bucket to load.
+**The home broker remains a shared dependency.** A region's planner, exporter,
+and acknowledgment handler can continue when an unrelated regional broker is
+down. Committing or delivering zone updates still requires the home broker.
+Independent publication by region remains a
+[separate proposal](https://github.com/datum-cloud/dns-operator/pull/342).
 
-A separate region lease elects one controller process to run each region's
-exporter and acknowledgment refresh. Other processes take over when the holder
-releases its lease or the lease expires. Acknowledgment consumers run on every
-replica. Region leadership does not own zone compilation or shard planning;
-those operations keep their own leases.
+Queries use applied serving state without contacting these stores. Delivery
+outages delay updates and withdrawals; DNS TTLs limit client caching, not how
+long a running member retains records. After restart, a saved checkpoint can
+serve for up to 15 minutes without a validated bootstrap.
 
-Leases live in the store, so every control-plane replica must use the same one.
-A ConfigMap named `internal-dns-publication-store` records the active store, and
-a replica configured for another store refuses to start. To switch, stop every
-replica, set the ConfigMap's `data.store` to `jetstream` or `kubernetes`, then
-start the replicas with the new setting. Alternatively, set
-`switchPublicationStore` in a rollout that stops every replica before starting
-new ones, such as a Deployment with the `Recreate` strategy; the first new
-replica then records its store as the active one. A first start on JetStream
-with no
-ConfigMap refuses to run while publication records exist in the API server.
-Once writer epochs follow the clock, downgrading to a release that counts
-epochs from one is not supported.
-
-Contexts, access bindings, and publications share one stable shard assignment
-per region. Capacity limits admit established contexts before new allocations.
-New allocations that exceed capacity report a condition. If an update cannot
-retain established access, the planner rejects the update and retains the
-applied configuration. Destination ownership follows the context
-lifetime, so recreating its access binding can retain the same destination.
-
-Regional agents and authoritative node agents render private zones into a
-complete JSON context snapshot.
-CoreDNS validates the zone data and replaces its lookup table atomically. Each
-agent then proves the installed publication directly against its own CoreDNS
-member over TCP. Separate resolver-path probes check UDP and TCP through the
-consumer-facing listeners before the agent reports serving readiness.
-
-Regional [NATS JetStream](https://docs.nats.io/nats-concepts/jetstream) delivery
-is
-at least once. Every serving replica receives its complete assignment and
-acknowledges applied state separately from broker receipt. Queries use local
-state without contacting project APIs or the broker.
-
-Products define eligibility for instance identity, application discovery, or
-stable service addresses. Records and resolver bindings persist until an
-explicit
-update or withdrawal. Control plane and messaging outages delay changes but do
-not expire applied DNS configuration. Agents can restore verified configuration
-from local checkpoints without contacting the control plane. A restarted agent
-serves its restored checkpoint for at most 15 minutes without completing a
-validated bootstrap, then gates serving until bootstrap succeeds. Receiving a
-partial or invalid update does not extend this window. An endpoint can
-remain published indefinitely if its publisher cannot report a health change.
-This availability tradeoff is intentional; record TTLs bound client caching,
-not the lifetime of authoritative records.
-
-Agents retain desired version fences and an activated configuration separately.
-A rejected expansion retains that configuration; a rejected withdrawal gates
-serving. Healthy DNS continues through normal agent stops and restarts.
-Readiness verifies durable activation state, the active checkpoint, and local
-consumer listeners over UDP and TCP. It also checks CoreDNS over TCP and, for
-keyed members, UDP. These checks do not contact the broker or project APIs.
-A SERVFAIL answer is not ready. A routine
-installation held by a live agent's transaction lock stays ready while the
-daemons answer, for up to one minute.
-The serving supervisor retains approved configuration independently of the
-agent. A transaction lock owns candidate verification; incomplete or orphaned
-activation stays gated until recovery verifies the saved configuration. DNS
-query probes and backend health checks isolate
-serving failures from update delivery. Retained tombstones and writer fences
-prevent replay from restoring withdrawn records or access. A new serving node
-requires a complete configuration before accepting queries.
-
-Bootstrap selects the serving snapshot with the highest configuration epoch,
-then revision. It does not merge retained snapshots from previous owners into
-the current assignment. Conflicting snapshots at the winning version are
-rejected. Required publications must meet each binding's minimum version and
-have complete, verified chunks. An authoritative node waits for this validated
-bootstrap before activating new state or reporting access ready.
-
-A reserved name without eligible addresses returns NODATA. A pending private
-zone returns SERVFAIL only beneath its own apex; other zones and public
-recursion
-continue. Missing required private state returns SERVFAIL. Unknown access
-returns REFUSED. Withdrawn access returns REFUSED after the serving member
-applies the withdrawal; it can still answer before that update arrives.
-Private names never fall back to public resolution. Disable stale private
-answers and bound dynamic TTLs; withdrawal budgets include client caching.
+See the deployment guide for [store configuration and ownership](../../private-dns/deployment.md#publication-storage)
+and [activation and outage recovery](../../private-dns/deployment.md#transactions-health-and-outage-recovery).
 
 ### API design
 

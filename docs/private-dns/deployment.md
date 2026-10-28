@@ -183,7 +183,8 @@ context stays gated until its configuration is complete. Completing publication
 restores service with the same access mapping. Resolver access readiness
 reports the applied path independently of each zone's publication status.
 Explicit access withdrawal
-requires a newer access version to reactivate.
+requires a newer access version to reactivate. Unknown access returns REFUSED;
+withdrawn access returns REFUSED after the member applies the withdrawal.
 
 The agent stages a complete JSON snapshot containing context destinations,
 private zone data, and upstream destinations. The CoreDNS validator parses every
@@ -253,8 +254,9 @@ Records and access bindings have no expiry deadline. Product services withdraw
 endpoints through explicit health updates or deletion. When delivery stops, DNS
 retains the last reported endpoint state. Agents restore applied configuration
 from persistent checkpoints before waiting for messaging connectivity, and
-gate serving if no DNS state arrives within 15 minutes of the restart. New
-nodes require a complete configuration before accepting queries. Replay cannot
+gate serving if a validated bootstrap does not complete within 15 minutes of
+the restart. Partial or invalid state does not extend that limit. New nodes
+require a complete configuration before accepting queries. Replay cannot
 regress writer or configuration versions or restore a withdrawn lifetime.
 
 Readiness verifies the approved checkpoint and installed files, then asks each
@@ -304,11 +306,17 @@ caps a
 shard at 200 contexts. Add another fixed shard before
 raising those bounds.
 
+Contexts, access bindings, and publications share a stable shard assignment in
+each region. Destination ownership follows the context lifetime, so recreating
+an access binding can retain the same destination.
+
 NATS uses TLS with a verified server name, client certificate, and one scoped
 identity per process. Control-plane credentials publish serving/publication
-subjects and consume ACKs. Each serving member can consume its assigned durable
-subjects and publish only its own hashed ACK subject. Broker partitions delay
-updates while the fleet continues serving its applied configuration.
+subjects and consume ACKs. Delivery is at least once; broker receipt does not
+prove that a member has applied the update. Each serving member can consume its
+assigned durable subjects and publish only its own hashed ACK subject. Broker
+partitions delay updates while the fleet continues serving its applied
+configuration.
 
 `fleet.example.yaml` provides node, regional frontend, and regional CoreDNS JSON
 configurations plus one Deployment template. Instantiate the template for each
@@ -326,6 +334,54 @@ The webhook validates live resource relationships. Project RBAC controls who
 can publish; the compiler validates registration ownership, record types, and
 observation versions. Publishers preserve DNS-owned publication status during
 optimistically locked observation updates.
+
+## Publication storage
+
+The default publication store uses the Kubernetes API. Set `publicationStore`
+to use JetStream KV. All control-plane replicas must use the same store. See
+[publication storage and regional dependencies](../architecture/private-dns/README.md#publication-storage-and-regional-dependencies)
+for the placement of zone and regional state.
+
+Regions that share a broker must use the same broker URL. Publication cleanup
+waits for every region's bucket to load, even when other regional work can
+continue.
+
+### Ownership and retention
+
+Each zone has one compiler owner, protected by a compare-and-swap lease. A
+replacement owner advances the writer epoch and republishes unchanged content
+so that an unexported update is not stranded. Revisions increase within an
+epoch, and serving agents reject older versions. Controllers release zone and
+shard leases on shutdown.
+
+JetStream bucket revisions preserve the same compare-and-swap checks as API
+resource versions. A new or replacement writer uses an epoch at least as high
+as the current Unix time, so replacing a store does not leave the writer below
+the agents' retained version limits. Older publications are deleted ten minutes
+after a newer publication for that zone is exported, unless a pending outbox
+still needs them. Exporters repair missing outboxes after a crash.
+
+A separate region lease selects one controller to run each region's exporter
+and acknowledgment refresh. Another controller takes over when that lease is
+released or expires. Acknowledgment consumers run on every replica. Zone
+compilation and shard planning retain their own leases.
+
+### Switching stores
+
+The `internal-dns-publication-store` ConfigMap records the active store. A
+replica configured for a different store refuses to start.
+
+1. Stop every control-plane replica.
+2. Set the ConfigMap's `data.store` to `jetstream` or `kubernetes`.
+3. Start all replicas with the matching configuration.
+
+Alternatively, set `switchPublicationStore` during a rollout that stops all
+replicas before starting replacements, such as a Deployment with the `Recreate`
+strategy. The first new replica records the active store.
+
+A first JetStream start without this ConfigMap refuses to run while publication
+records remain in the API server. Once writer epochs use clock time, downgrading
+to a release that counts epochs from one is unsupported.
 
 ## Rollout and recovery
 

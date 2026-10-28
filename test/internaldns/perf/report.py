@@ -65,6 +65,7 @@ def export(folder, run, scenario, commit, serving_image=''):
     if manifest.exists() and set(manifest.read_text().splitlines()) != names:
         raise ValueError('generator records do not match generators.txt; refusing a partial or stale run')
     actual = collections.Counter()
+    first_send_ms, last_send_ms = None, None
     offered = collections.defaultdict(float)
     dropped = 0
     warnings = []
@@ -85,6 +86,9 @@ def export(folder, run, scenario, commit, serving_image=''):
                 if row['metric_name'] == 'idns_query_ms':
                     if float(row['timestamp']) < 1e12:
                         raise ValueError('CSV timestamps must use K6_CSV_TIME_FORMAT=unix_milli')
+                    sent_ms = round(float(row['timestamp']) - float(row['metric_value']))
+                    first_send_ms = sent_ms if first_send_ms is None else min(first_send_ms, sent_ms)
+                    last_send_ms = sent_ms if last_send_ms is None else max(last_send_ms, sent_ms)
                     kind = tags['kind'][0]
                     actual[kind, 'queries'] += 1
                     actual[kind, 'failed'] += tags['outcome'][0] != 'ok'
@@ -131,8 +135,14 @@ def export(folder, run, scenario, commit, serving_image=''):
     output.append(sample('idns_perf_query_dropped_iterations', dropped, last * 1000))
     for (kind, second), value in sorted(offered.items()):
         output.append(sample('idns_perf_query_offered_qps', f'{value:.6f}', second * 1000, kind))
-    for second in range(first, last + 11, 10):
-        output.append(sample('idns_perf_run', 1, second * 1000))
+    # Bound the annotation to observed query sends, not timeout completion or
+    # the next ten-second tick. A zero terminates range-query lookback; place
+    # it one millisecond after the last positive sample to avoid a duplicate
+    # timestamp with conflicting values.
+    marker_times = sorted(set(range(first_send_ms, last_send_ms + 1, 10000)) | {last_send_ms})
+    for timestamp in marker_times:
+        output.append(sample('idns_perf_run', 1, timestamp))
+    output.append(sample('idns_perf_run', 0, last_send_ms + 1))
     return '\n'.join(output) + '\n', warnings
 
 

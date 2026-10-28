@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="910" viewBox="0 0 960 910" role="img" aria-labelledby="title description">
   <title id="title">Control-plane boundaries</title>
-  <desc id="description">Each component appears once. The consumer project API holds intent and serving status. DNS controller processes run the compiler, regional exporter, and acknowledgment handler. They read and write committed snapshots, outboxes, and publication observations in the publication store, and maintain references, bindings, address claims, and status in the DNS service project API. The exporter sends committed updates through regional NATS to the shared serving fleet. Dashed arrows carry member acknowledgments back through NATS to the controllers, which record observations and report status to the consumer project.</desc>
+  <desc id="description">Each component appears once. The consumer project API holds intent and serving status. DNS controller processes run the compiler, regional exporter, and acknowledgment handler. They read and write committed snapshots, outboxes, and publication observations in the publication store, and maintain references, bindings, address claims, and status in the DNS service project API. The exporter sends committed updates through regional NATS to the shared serving fleet. Dashed arrows carry regional publication acknowledgments and node access acknowledgments back through NATS to the controllers, which record observations and report status to the consumer project.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
   </defs>
@@ -59,7 +59,7 @@
   <rect x="64" y="765" width="330" height="75" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
   <text x="229" y="809" class="heading" text-anchor="middle">Regional NATS</text>
   <rect x="600" y="765" width="300" height="75" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
-  <text x="750" y="809" class="heading" text-anchor="middle">Shared serving fleet</text>
+  <text x="750" y="809" class="heading" text-anchor="middle">Node and regional members</text>
   <path d="M 130 575 V 765" class="edge"/>
   <text x="148" y="681" class="message" text-anchor="start">Export committed</text>
   <text x="148" y="705" class="message" text-anchor="start">updates</text>

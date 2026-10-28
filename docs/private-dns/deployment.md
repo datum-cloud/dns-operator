@@ -123,11 +123,27 @@ PROXYv2 header or a keyed private EDNS option. Configure the same identity mode
 at both ends of each hop: setting `identityKeyFile` selects the EDNS mode;
 omitting it selects PROXYv2. CoreDNS accepts traffic only from configured peers
 and validates the key in the EDNS mode. Keyed members listen on UDP and TCP;
-members without a key listen on TCP only. Node CoreDNS selects a context and
-forwards to its regional destination. Regional dnsdist selects the same context
+members without a key listen on TCP only. In the default forwarding mode, node
+CoreDNS selects a context and forwards to its regional destination. Regional
+dnsdist selects the same context
 and load-balances the healthy CoreDNS members. Every regional CoreDNS member
 hosts the context's private zones. Public queries forward to a shared PowerDNS
 Recursor service.
+
+As an opt-in migration, a node agent may use `mode: "combined"` with
+`nodeAuthoritative: true` and `render.role: "node"`. Node CoreDNS then embeds
+the same validated publications instead of forwarding private zones to the
+regional destination. Regional control planes still compile and publish the
+records, and regional serving stays in place until the node fleet is validated.
+Set `publicationDNSProbe.server` to that node's protected CoreDNS listener and
+configure `render.nodeCoreDNS.publicUpstreams` for public recursion. Verify both
+before enabling the option. Node publication proof uses the consumer context
+destination; regional proof uses the regional destination.
+
+Node publication acknowledgments do not contribute to regional publication
+readiness. Use node metrics and consumer queries to verify local progress.
+See [Node-local Private DNS authority](../enhancements/node-local-private-dns-authority.md)
+for bootstrap validation, migration, and rollback.
 
 An owned name without eligible answers carries service-only `TYPE65280`
 metadata at that exact name. This private-use record preserves NODATA without
@@ -193,7 +209,7 @@ the new setting. A transport change requires replacement; a rules reload cannot
 change existing backend connections. Restore `"tcp"` and replace the dnsdist
 member to roll back. Keyed CoreDNS readiness checks both transports.
 
-For a multi-tier fleet, enable keyed UDP on the regional CoreDNS members and
+For a fleet with forwarding nodes, enable keyed UDP on regional CoreDNS and
 regional dnsdist before enabling it on node members. The node CoreDNS forwarder
 uses the incoming query's transport upstream, so node UDP also makes the traffic
 arriving at regional dnsdist UDP. Leaving that regional front in TCP-only mode
@@ -335,7 +351,11 @@ one pod and upgrade together, so node readiness requires NOERROR.
 
 The checkpoint retains desired version fences and the activated configuration
 separately. Restart can restore the activated configuration during a rejected
-expansion or broker outage. Explicit withdrawal invalidates that fallback before
+expansion or broker outage. A restored checkpoint can serve for at most 15
+minutes without a validated bootstrap. Partial or invalid state does not extend
+that limit. Bootstrap selects the newest configuration epoch and revision,
+rejects conflicting snapshots at that version, and checks the required
+publications before activation. Explicit withdrawal invalidates fallback before
 installation. Unknown checkpoint or wire formats preserve files and reject
 activation. Format conversion requires a tested migration that retains lifetime,
 withdrawal, configuration, and publisher fences; never reset those fences to
@@ -347,13 +367,16 @@ contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
 
-### Control-plane monitoring
+### Control-plane and agent monitoring
 
-The control-plane process serves `/metrics` on `--metrics-bind-address`
-(default `:8080`) and `/healthz` and `/readyz` on
-`--health-probe-bind-address` (default `:8081`). Set either flag to `0` to
-disable it. The deprecated `metricsBindAddress` configuration key still
-overrides the metrics flag. Restrict access to the monitoring network.
+The control plane serves `/metrics` on `--metrics-bind-address` (default
+`:8080`) and `/healthz` plus `/readyz` on `--health-probe-bind-address`
+(default `:8081`). The deprecated `metricsBindAddress` configuration key still
+overrides the control-plane metrics flag. Agent metrics are deliberately off by
+default for compatibility with pods that already own port 8080; enable their
+`/metrics` endpoint explicitly with `--agent-metrics-bind-address`. Set any
+listener flag to `0` to disable it and restrict enabled endpoints to the
+monitoring network.
 
 `/healthz` fails when a periodic loop has not completed a run in three times
 its interval, or ten minutes, whichever is longer. It checks that loops are
@@ -381,6 +404,13 @@ metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 `internal_dns_operation_last_success_timestamp_seconds{operation}` are
 deprecated and will be removed once dashboards move to the loop metrics. They
 fold region and shard into `operation` and count conflicts as errors.
+
+Agent processes also expose delivery connection state, aggregate publication
+lag, activation failures, and the last successful activation. The series use
+only `region`, `shard`, `mode`, and a fixed activation `stage`; they never label
+tenant or zone identity. See
+[agent monitoring](../enhancements/node-local-private-dns-authority.md#monitoring)
+for metric names, interpretation, and required deployment alerts.
 
 ### Serving monitoring
 

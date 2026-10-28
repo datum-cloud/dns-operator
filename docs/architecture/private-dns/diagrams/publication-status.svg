@@ -37,7 +37,7 @@
   <text x="840.0" y="147" class="heading" text-anchor="middle">Consumer</text>
   <text x="840.0" y="171" class="heading" text-anchor="middle">project API</text>
   <path d="M 840 186 V 428.4" class="lifeline"/>
-  <text x="240.0" y="238.4" class="message" text-anchor="middle">Deliver acknowledgment</text>
+  <text x="240.0" y="238.4" class="message" text-anchor="middle">Regional acknowledgment</text>
   <path d="M 120 249.8 H 360" class="edge return"/>
   <text x="480.0" y="300" class="message" text-anchor="middle">Record publication</text>
   <text x="480.0" y="318.2" class="message" text-anchor="middle">observation</text>

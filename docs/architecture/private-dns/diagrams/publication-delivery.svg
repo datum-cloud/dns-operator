@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="607" viewBox="0 0 960 607" role="img" aria-labelledby="title description">
   <title id="title">2. Deliver and activate the snapshot</title>
-  <desc id="description">The regional exporter reads committed state from the publication store and ensures a durable outbox. It exports the update through regional NATS to the serving agent. The agent validates, activates, and proves the snapshot, then publishes a member acknowledgment to NATS.</desc>
+  <desc id="description">The regional exporter reads committed state from the publication store and ensures a durable outbox. It exports the update through regional NATS to a regional serving agent. The agent validates, activates, and proves the snapshot, then publishes a member acknowledgment to NATS.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
   </defs>
@@ -34,7 +34,7 @@
   <text x="600.0" y="171" class="heading" text-anchor="middle">NATS</text>
   <path d="M 600 186 V 580.4" class="lifeline"/>
   <rect x="740" y="120" width="200" height="66" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
-  <text x="840.0" y="147" class="heading" text-anchor="middle">Serving</text>
+  <text x="840.0" y="147" class="heading" text-anchor="middle">Regional serving</text>
   <text x="840.0" y="171" class="heading" text-anchor="middle">agent</text>
   <path d="M 840 186 V 580.4" class="lifeline"/>
   <text x="240.0" y="220.2" class="message" text-anchor="middle">Read committed state;</text>

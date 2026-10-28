@@ -31,8 +31,11 @@ questionnaire](#production-readiness-review-questionnaire)
 
 Private DNS lets resources resolve private names within a VPC. Each network has
 a managed namespace and can use additional private zones. Product services
-publish names automatically, and shared regional fleets serve many VPCs with
-isolated DNS contexts.
+publish names automatically, and shared serving fleets isolate each VPC's DNS
+context. By default, nodes forward queries to regional serving members. Nodes
+can also opt in to answering private names from locally validated publications.
+This removes the regional query hop while keeping publication in the control
+plane.
 
 The [product enhancement](https://github.com/datum-cloud/enhancements/pull/922)
 defines the consumer experience. The
@@ -138,10 +141,10 @@ zone updates still depend on the shared publication store described in
 [Publication storage and regional
 dependencies](#publication-storage-and-regional-dependencies).
 Regional access does not limit discovery results to endpoints in that region.
-The VPC
-resolver handles both private and public queries, so loss of every eligible
-member in its region interrupts both. This design does not provide automatic
-cross-region resolver failover.
+In forwarding mode, losing every eligible regional member interrupts private
+and public queries. An authoritative node can keep answering applied private
+records without those members; public queries still need its configured public
+upstream. Neither mode provides automatic cross-region resolver failover.
 
 ### Query path and network identity
 
@@ -156,12 +159,34 @@ different DNS contexts in the same fleet.
 
 ![Separate DNS contexts for overlapping VPC addresses](diagrams/context-isolation.svg)
 
-Each context uses the following query path. Both regional CoreDNS members hold
-the context's private records and a separate public cache. Queries flow from left
-to right across the tiers, then branch into private or public lookups. Each
-regional member follows the same lookup branches.
+The default forwarding mode uses the following query path. Both regional
+CoreDNS members hold the context's private records and a separate public cache.
+Queries flow from left to right across the tiers, then branch into private or
+public lookups. Each regional member follows the same lookup branches.
 
 ![Query path through node and regional tiers](diagrams/query-path.svg)
+
+With node authority enabled, node CoreDNS answers private names from its own
+validated snapshot. Public queries use its per-context cache and configured
+public upstreams. Neither lookup passes through regional dnsdist or CoreDNS.
+Regional compilation and update delivery still apply.
+If a private zone is pending, the node returns SERVFAIL for that zone instead
+of falling back to regional serving or public recursion.
+
+![Node-local private answers and a separate public query path](diagrams/node-authority-query-path.svg)
+
+| Behavior | Forwarding node (default) | Authoritative node (opt-in) |
+| --- | --- | --- |
+| Private answers | Regional CoreDNS | Node CoreDNS |
+| Public recursion | Through regional CoreDNS | Node's configured public upstreams |
+| Publication status | Regional member acknowledgments | Still based on regional members, not every node |
+| Node access readiness | Verified consumer path | Local publication proof and verified consumer path |
+
+Set `mode: "combined"`, `nodeAuthoritative: true`, and `render.role: "node"`
+together to enable node authority. The option is off by default. Keep regional
+query serving during migration and rollback. See
+[Node-local Private DNS authority](../../enhancements/node-local-private-dns-authority.md)
+for the activation contract and rollout steps.
 
 Galactic verifies the source VPC lifetime and route authorization before
 translating the destination. DNS trusts that path, not client addresses, ECS, or
@@ -173,8 +198,9 @@ Shared node and regional tiers use:
 1. **dnsdist** to select the context before lookup, with private packet caching
    disabled.
 2. **CoreDNS with a context plugin** to select private zones from the trusted
-   destination. Node members forward to the context's regional destination;
-   regional members answer private queries from accepted publication snapshots.
+   destination. Forwarding nodes use the context's regional destination.
+   Authoritative nodes and regional members answer private queries from accepted
+   publication snapshots.
 3. **PowerDNS Recursor** to resolve public names. CoreDNS keeps public caches
    separate by context and bypasses caching for private names. All contexts
    share the upstream PowerDNS Recursor; its public cache is not isolated by
@@ -201,9 +227,10 @@ dnsdist forwards UDP client queries over UDP and retains TCP for TCP clients,
 including retries of truncated answers. UDP mode requires `identityKeyFile`.
 CoreDNS rejects unknown contexts before looking up records or cached answers.
 
-Configure compatible identities at both ends of each hop. Enable keyed UDP on
-the regional tier before the node tier. Transport rollback retains the keys;
-changing identity modes requires a separate fleet migration. See the
+Configure compatible identities at both ends of each hop. For forwarding nodes,
+enable keyed UDP on the regional tier before the node tier. Transport rollback
+retains the keys; changing identity modes requires a separate fleet migration.
+See the
 [serving configuration guide](../../private-dns/deployment.md) for key
 distribution, rollout order, and rollback steps.
 
@@ -269,14 +296,22 @@ publishes nothing. DNS does not rename it or add a suffix; the publisher picks
 another name. When the winning claim is deleted, the next oldest registration
 is accepted on the next compilation.
 
-The following sequence shows a committed publication and its acknowledgment.
-The publication store uses either the Kubernetes API or JetStream KV.
+The following sequence shows a committed publication and a regional member's
+acknowledgment. The publication store uses either the Kubernetes API or
+JetStream KV.
 
 ![Validate and commit publication](diagrams/publication-commit.svg)
 
 ![Deliver and activate the snapshot](diagrams/publication-delivery.svg)
 
 ![Record observations and report status](diagrams/publication-status.svg)
+
+Authoritative nodes receive the same shard publications and activate them
+locally. They do not send publication acknowledgments to the regional readiness
+aggregator. Record updates therefore do not wait for every node, and regional
+publication status does not prove that every node has applied an update. Nodes
+still report their applied access paths through serving acknowledgments. Use
+node agent metrics and consumer queries to check local publication progress.
 
 To withdraw an endpoint, the product updates its contribution with
 `eligible: false`. The compiler commits a snapshot that removes the endpoint;
@@ -368,7 +403,8 @@ retain established access, the planner rejects the update and retains the
 applied configuration. Destination ownership follows the context
 lifetime, so recreating its access binding can retain the same destination.
 
-Regional agents render private zones into a complete JSON context snapshot.
+Regional agents and authoritative node agents render private zones into a
+complete JSON context snapshot.
 CoreDNS validates the zone data and replaces its lookup table atomically. Each
 agent then proves the installed publication directly against its own CoreDNS
 member over TCP. Separate resolver-path probes check UDP and TCP through the
@@ -386,8 +422,9 @@ explicit
 update or withdrawal. Control plane and messaging outages delay changes but do
 not expire applied DNS configuration. Agents can restore verified configuration
 from local checkpoints without contacting the control plane. A restarted agent
-serves its restored checkpoint for at most 15 minutes without receiving DNS
-state, then gates serving until state arrives. An endpoint can
+serves its restored checkpoint for at most 15 minutes without completing a
+validated bootstrap, then gates serving until bootstrap succeeds. Receiving a
+partial or invalid update does not extend this window. An endpoint can
 remain published indefinitely if its publisher cannot report a health change.
 This availability tradeoff is intentional; record TTLs bound client caching,
 not the lifetime of authoritative records.
@@ -408,6 +445,13 @@ query probes and backend health checks isolate
 serving failures from update delivery. Retained tombstones and writer fences
 prevent replay from restoring withdrawn records or access. A new serving node
 requires a complete configuration before accepting queries.
+
+Bootstrap selects the serving snapshot with the highest configuration epoch,
+then revision. It does not merge retained snapshots from previous owners into
+the current assignment. Conflicting snapshots at the winning version are
+rejected. Required publications must meet each binding's minimum version and
+have complete, verified chunks. An authoritative node waits for this validated
+bootstrap before activating new state or reporting access ready.
 
 A reserved name without eligible addresses returns NODATA. A pending private
 zone returns SERVFAIL only beneath its own apex; other zones and public
@@ -712,7 +756,7 @@ spec:
     query:
       # Galactic maps the consumer resolver address to this context destination.
       nodeAddress: fd70:100::10
-      # Node resolvers forward to this regional context destination.
+      # Forwarding nodes use this regional context destination.
       regionalAddress: fd70:200::10
     # Reserve private apices even while their publication is pending.
     zoneApices:

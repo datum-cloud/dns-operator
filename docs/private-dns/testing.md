@@ -62,9 +62,11 @@ managed names from `DNSResolverContext.status.managedNamespace`.
 Contribution writes publish records and eligibility atomically. Qualification
 checks health withdrawal, stale-write conflicts, and DNS-owned status permissions.
 
-The fleet contains one node member, one regional frontend, and two regional
+The fleet contains one forwarding node, one regional frontend, and two regional
 CoreDNS members, each with independent persistent state. Agents validate and
-activate configuration and prove UDP/TCP publication. Local readiness verifies\napproved files and live daemons while healthy DNS survives agent restarts.
+activate configuration. Regional agents prove publication directly over TCP;
+consumer-path probes check UDP and TCP. Local readiness verifies approved files
+and live daemons while healthy DNS survives agent restarts.
 The broker uses three persistent replicas, client and route TLS, and scoped
 subject permissions. cert-manager issues broker, client, and admission
 certificates. ACK timing matches the shipped 30-second interval and 90-second
@@ -72,6 +74,11 @@ lease; the fixture shortens the ownership lease to 10 seconds and pod
 termination grace to 2 seconds for fault tests.
 
 ## Qualification scenarios
+
+This environment does not enable node authority. Before rolling out that mode,
+also run the
+[node authority migration checks](../enhancements/node-local-private-dns-authority.md#migration-and-rollback).
+The forwarding qualification results do not establish node authority readiness.
 
 The Go qualifier covers overlapping tenant names over UDP and TCP, A/AAAA and
 negative-cache isolation, multiple zones, managed name discovery, scoped

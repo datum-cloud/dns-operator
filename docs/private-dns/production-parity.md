@@ -61,6 +61,12 @@ control-plane fixture, rather than the final deployment topology.
 
 ![Proposed qualification query paths](../architecture/private-dns/diagrams/qualification-query-path.svg)
 
+These views cover the default forwarding mode. Qualify the optional
+[node authority path](../architecture/private-dns/README.md#query-path-and-network-identity)
+separately: private answers come from node CoreDNS, and public queries use its
+configured upstreams. Keep the regional fleet available while testing migration
+and rollback. Regional publication success alone does not prove node activation.
+
 The two edge clusters model separate edge control planes on one host in one region.
 The DNS service runs in its own producer VPC. Both node and regional resolver
 tiers belong to that service VPC; node members run on shared edge capacity,

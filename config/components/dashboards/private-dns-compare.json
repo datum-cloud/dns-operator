@@ -306,7 +306,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Average time one project pass spent in each phase while each run was going.",
+         "description": "Average elapsed time of each reached project-pass phase during each run, including failed attempts. The legacy compile phase queues independent zone keys in per-zone mode, or compiles and updates publication status in whole-project mode.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -389,7 +389,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Average time of each step of compiling one changed zone while each run was going.",
+         "description": "Average elapsed time of each reached zone-compile step during each run, including failed attempts and unchanged inputs, in either scheduling mode. Unreached steps are not counted.",
          "fieldConfig": {
             "defaults": {
                "color": {

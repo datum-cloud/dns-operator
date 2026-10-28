@@ -298,7 +298,7 @@ local phaseTotal(selector) =
 
 local passPhases = ts(
   'Pass phases, average',
-  'Average time one project pass spends in each phase, across every project. A record change waits for at most two passes before it is published.',
+  'Average elapsed time of each reached project-pass phase, including failed attempts and API calls. The legacy compile phase measures the zone loop: it queues independent zone keys in per-zone mode, or compiles and updates publication status in whole-project mode.',
   [qRange(phaseAvg('%s,phase!~"zone .*"' % controlPlane), '{{phase}}')],
   's',
   grid(8, 8, 0, 44),
@@ -307,7 +307,7 @@ local passPhases = ts(
 
 local zoneSteps = ts(
   'Zone compile steps, average',
-  'Average time of each step of compiling one changed zone.',
+  'Average elapsed time of each reached zone-compile step, including failed attempts and unchanged inputs, in either scheduling mode. Unreached steps are not counted; zone persist is observed only when publication is attempted.',
   [qRange(phaseAvg('%s,phase=~"zone .*"' % controlPlane), '{{phase}}')],
   's',
   grid(8, 8, 8, 44),
@@ -316,7 +316,7 @@ local zoneSteps = ts(
 
 local phaseShare = ts(
   'Where pass time goes',
-  'Seconds of pass time spent in each phase per second, summed over every project and both replicas. This weighs a phase by how often it runs, so it shows which phase is worth making faster. Zone steps are part of compile and are left out.',
+  'Elapsed project-pass seconds per second, summed over the selected control-plane replicas. This includes API waits, not just CPU time. Zone steps are excluded: they are nested within compile in whole-project mode, and run independently in per-zone mode.',
   [qRange(phaseTotal('%s,phase!~"zone .*"' % controlPlane), '{{phase}}')],
   's',
   grid(8, 8, 16, 44),
@@ -326,7 +326,7 @@ local phaseShare = ts(
 
 local phaseP90 = ts(
   'Pass phases and zone steps, p90',
-  'Slowest 10% of each phase and zone step.',
+  'Estimated 90th percentile elapsed time of each reached phase and zone step, including failed attempts.',
   [qRange('histogram_quantile(0.9, sum by (phase, le) (rate(internal_dns_project_pass_phase_seconds_bucket{%s}[$__rate_interval])))' % controlPlane, '{{phase}}')],
   's',
   grid(8, 8, 0, 52),

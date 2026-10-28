@@ -1160,7 +1160,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Average time one project pass spends in each phase, across every project. A record change waits for at most two passes before it is published.",
+         "description": "Average elapsed time of each reached project-pass phase, including failed attempts and API calls. The legacy compile phase measures the zone loop: it queues independent zone keys in per-zone mode, or compiles and updates publication status in whole-project mode.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1221,7 +1221,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Average time of each step of compiling one changed zone.",
+         "description": "Average elapsed time of each reached zone-compile step, including failed attempts and unchanged inputs, in either scheduling mode. Unreached steps are not counted; zone persist is observed only when publication is attempted.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1282,7 +1282,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Seconds of pass time spent in each phase per second, summed over every project and both replicas. This weighs a phase by how often it runs, so it shows which phase is worth making faster. Zone steps are part of compile and are left out.",
+         "description": "Elapsed project-pass seconds per second, summed over the selected control-plane replicas. This includes API waits, not just CPU time. Zone steps are excluded: they are nested within compile in whole-project mode, and run independently in per-zone mode.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -1346,7 +1346,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Slowest 10% of each phase and zone step.",
+         "description": "Estimated 90th percentile elapsed time of each reached phase and zone step, including failed attempts.",
          "fieldConfig": {
             "defaults": {
                "color": {

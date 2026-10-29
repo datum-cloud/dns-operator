@@ -4,6 +4,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"testing"
+
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,7 +13,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"testing"
 )
 
 func TestRecordSetReplicatorDoesNotMutateTerminatingShadow(t *testing.T) {
@@ -68,5 +69,25 @@ func TestDeletingRecordSetRetainsFinalizerOnZoneCacheMiss(t *testing.T) {
 	}
 	if len(got.Finalizers) != 1 {
 		t.Fatal("finalizer removed while zone exists")
+	}
+}
+
+func TestRecordSetReplicatorWaitsForTerminatingNamespace(t *testing.T) {
+	now := metav1.Now()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-downstream", DeletionTimestamp: &now, Finalizers: []string{"test/finalizer"}}}
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(ns).Build()
+	r := &DNSRecordSetReplicator{DownstreamClient: cl}
+	upstream := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "record", Namespace: "default"}}
+	strategy := annotatingStrategy{fakeStrategy{namespace: "ns-downstream", client: cl}}
+	_, err := r.ensureDownstreamRecordSet(context.Background(), strategy, upstream)
+	if !errors.Is(err, errRecordSetShadowTerminating) {
+		t.Fatalf("got %v", err)
+	}
+	var records dnsv1alpha1.DNSRecordSetList
+	if err := cl.List(context.Background(), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Items) != 0 {
+		t.Fatal("created a record in a terminating namespace")
 	}
 }

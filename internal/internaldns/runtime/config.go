@@ -20,13 +20,14 @@ import (
 )
 
 const (
-	roleReadiness      = "readiness"
-	roleServing        = "serving"
-	rolePrepare        = "prepare"
-	roleControlPlane   = "control-plane"
-	memberRoleRegional = "regional"
-	roleAgent          = "agent"
-	memberRoleCluster  = "cluster"
+	roleReadiness       = "readiness"
+	roleActivationCheck = "activation-check"
+	roleServing         = "serving"
+	rolePrepare         = "prepare"
+	roleControlPlane    = "control-plane"
+	memberRoleRegional  = "regional"
+	roleAgent           = "agent"
+	memberRoleCluster   = "cluster"
 )
 
 type ProjectConfig struct {
@@ -194,11 +195,11 @@ func (c *Config) Validate(role string) error {
 		return fmt.Errorf("cachedZoneInputs requires perZoneReconcile")
 	}
 	switch role {
-	case roleControlPlane, roleAgent, roleReadiness, roleServing, rolePrepare:
+	case roleControlPlane, roleAgent, roleReadiness, roleActivationCheck, roleServing, rolePrepare:
 	default:
 		return fmt.Errorf("unsupported role %q", role)
 	}
-	if role == roleReadiness || role == roleServing || role == rolePrepare {
+	if role == roleReadiness || role == roleActivationCheck || role == roleServing || role == rolePrepare {
 		if c.Agent.Region == "" {
 			c.Agent.Region = c.Region
 		}

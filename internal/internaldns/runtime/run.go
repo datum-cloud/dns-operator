@@ -63,6 +63,13 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 		return runAgent(ctx, cfg, opts)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)
+	case roleActivationCheck:
+		token, err := serving.CheckActivation(ctx, cfg.Agent)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, token)
+		return err
 	case rolePrepare:
 		return serving.PrepareDNSDist(cfg.Agent.Render)
 	case roleServing:

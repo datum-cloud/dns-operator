@@ -366,7 +366,7 @@ func TestReleaseDestinationsWaitsForWithdrawnSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
-	binding.Status.Phase = "Withdrawn"
+	binding.Status.Phase = dnsValueWithdrawn
 	condition(&binding.Status.Conditions, "FullyReplicated", true, "ReplicaVerification", binding.Generation, now)
 	if err := cl.Status().Update(ctx, binding); err != nil {
 		t.Fatal(err)

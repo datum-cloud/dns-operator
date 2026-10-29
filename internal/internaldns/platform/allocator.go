@@ -206,7 +206,7 @@ func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha
 				return true, nil
 			}
 			fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
-			if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != "Withdrawn" || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
+			if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != dnsValueWithdrawn || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
 				return true, nil
 			}
 		}

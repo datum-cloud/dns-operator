@@ -157,7 +157,6 @@ func TestExplicitWithdrawalAfterRetainedStateRestartRemovesEveryMemberAndPreserv
 	chunk, manifest := testPublication(t, now)
 
 	for _, member := range []string{"member-a", "member-b"} {
-		member := member
 		t.Run(member, func(t *testing.T) {
 			cfg := regionalTestConfig(t)
 			cfg.MemberID, cfg.ReplicaID = member, member

@@ -184,7 +184,7 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			if complete {
 				binding.Status.Phase = dnsValueServing
 				if binding.Spec.Tombstone {
-					binding.Status.Phase = "Withdrawn"
+					binding.Status.Phase = dnsValueWithdrawn
 				}
 				binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
 			} else {
@@ -442,7 +442,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		if complete {
 			b.Status.Phase = dnsValueServing
 			if b.Spec.Tombstone {
-				b.Status.Phase = "Withdrawn"
+				b.Status.Phase = dnsValueWithdrawn
 			}
 			b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
 		} else {

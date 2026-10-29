@@ -456,8 +456,15 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			}
 		}
 	}
-	for i := range existing.Items {
-		b := &existing.Items[i]
+	if err := r.retireContextBindings(ctx, ns, existing.Items, desired); err != nil {
+		return err
+	}
+	return r.releaseDestinations(ctx, held)
+}
+
+func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, existing []dnsv1alpha1.DNSResolverBinding, desired map[string]bool) error {
+	for i := range existing {
+		b := &existing[i]
 		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] {
 			continue
 		}
@@ -507,7 +514,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
-	return r.releaseDestinations(ctx, held)
+	return nil
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

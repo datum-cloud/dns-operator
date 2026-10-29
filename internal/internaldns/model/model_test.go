@@ -49,6 +49,14 @@ func TestServingSnapshotRejectsSharedDestination(t *testing.T) {
 	if err := s.Validate(); err == nil {
 		t.Fatal("duplicate trusted destination accepted")
 	}
+	s.Bindings[0].Tombstone = true
+	if err := s.Validate(); err == nil {
+		t.Fatal("active destination shared with an unverified tombstone")
+	}
+	s.Bindings[1].Tombstone = true
+	if err := s.Validate(); err != nil {
+		t.Fatalf("duplicate withdrawn destination rejected: %v", err)
+	}
 }
 
 func TestServingSnapshotRejectsUnknownMemberRole(t *testing.T) {

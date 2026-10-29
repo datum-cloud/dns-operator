@@ -173,7 +173,7 @@ func (s ServingSnapshot) Validate() error {
 		return errors.New("serving snapshot identity, epoch, revision, and timestamp are required")
 	}
 
-	seenVIP := map[string]string{}
+	seenVIP := map[string]Binding{}
 	seenUID := map[string]struct{}{}
 	seenMembers := map[string]struct{}{}
 	for _, member := range s.Members {
@@ -209,10 +209,10 @@ func (s ServingSnapshot) Validate() error {
 			if err != nil || addr.IsUnspecified() {
 				return fmt.Errorf("binding %q invalid %s %q", b.BindingUID, name, raw)
 			}
-			if old, ok := seenVIP[raw]; ok && old != b.BindingUID {
-				return fmt.Errorf("address %s assigned to bindings %q and %q", raw, old, b.BindingUID)
+			if old, ok := seenVIP[raw]; ok && old.BindingUID != b.BindingUID && (!old.Tombstone || !b.Tombstone) {
+				return fmt.Errorf("address %s assigned to bindings %q and %q", raw, old.BindingUID, b.BindingUID)
 			}
-			seenVIP[raw] = b.BindingUID
+			seenVIP[raw] = b
 		}
 		if b.Port == 0 || len(b.Transports) == 0 || b.Version.Epoch == 0 || b.Version.Sequence == 0 {
 			return fmt.Errorf("binding %q has incomplete transport or access version", b.BindingUID)

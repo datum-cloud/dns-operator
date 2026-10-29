@@ -86,11 +86,11 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 
 .PHONY: lint
 lint: ## Run golangci-lint linter
-	$(GOLANGCI_LINT) run
+	$(GOLANGCI_LINT) run $(LINT_FLAGS)
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint linter and perform fixes
-	$(GOLANGCI_LINT) run --fix
+	$(GOLANGCI_LINT) run --fix $(LINT_FLAGS)
 
 .PHONY: lint-config
 lint-config: ## Verify golangci-lint linter configuration
@@ -397,6 +397,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 DEFAULTER_GEN ?= $(LOCALBIN)/defaulter-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = go tool -modfile=$(CURDIR)/tools/go.mod golangci-lint
+LINT_FLAGS ?= --new-from-merge-base=origin/main
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 CMCTL ?= $(LOCALBIN)/cmctl
 

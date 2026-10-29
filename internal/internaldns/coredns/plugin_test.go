@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coredns/coredns/plugin"
+	coreplugin "github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
 )
 
@@ -516,7 +516,7 @@ func TestMatchZoneMatchesCoreDNSZoneScan(t *testing.T) {
 		"notinternal.",
 	} {
 		query := canonicalQueryName(name)
-		want := plugin.Zones(zones).Matches(query)
+		want := coreplugin.Zones(zones).Matches(query)
 		if got := matchZone(apexes, query); got != want {
 			t.Errorf("matchZone(%q) = %q, CoreDNS zone scan = %q", query, got, want)
 		}
@@ -542,7 +542,7 @@ func BenchmarkMatchZone(b *testing.B) {
 	b.Run("scan", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if got := plugin.Zones(names).Matches(qname); got != "z127.internal." {
+			if got := coreplugin.Zones(names).Matches(qname); got != "z127.internal." {
 				b.Fatal(got)
 			}
 		}

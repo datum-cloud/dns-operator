@@ -589,7 +589,10 @@ func LoadCommittedServingSnapshot(ctx context.Context, c client.Client, namespac
 	if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
 		return nil, nil, err
 	}
-	if e.Kind != model.KindServingSnapshot || e.Region != region || e.Shard != shard || e.Epoch != owner.Epoch || int64(e.Epoch) != out.Spec.WriterEpoch || int64(e.Revision) != out.Spec.Revision {
+	// A lease handoff may advance the owner epoch without changing the
+	// committed snapshot. The active outbox pointer is the commit fence; the
+	// outbox and envelope must agree with each other, not with the next writer.
+	if e.Kind != model.KindServingSnapshot || e.Region != region || e.Shard != shard || int64(e.Epoch) != out.Spec.WriterEpoch || int64(e.Revision) != out.Spec.Revision {
 		return nil, nil, fmt.Errorf("committed serving snapshot fence mismatch")
 	}
 	var snapshot model.ServingSnapshot

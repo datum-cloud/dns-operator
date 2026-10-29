@@ -307,6 +307,49 @@ func TestOutboxDoesNotPublishAnUncommittedRevision(t *testing.T) {
 	}
 }
 
+func TestLoadCommittedServingSnapshotSurvivesLeaseHandoff(t *testing.T) {
+	now := time.Now().UTC()
+	const (
+		namespace = "platform"
+		region    = "east"
+		shard     = "shared"
+	)
+	snapshot := model.ServingSnapshot{Region: region, Shard: shard, ConfigurationEpoch: 1, ConfigurationRevision: 7, GeneratedAt: now}
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "serving-1-7", region, shard, "owner-uid", 1, 7, now, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1alpha1.DNSTransportOutbox{
+		ObjectMeta: metav1.ObjectMeta{Name: envelope.EventID, Namespace: namespace},
+		Spec: dnsv1alpha1.DNSTransportOutboxSpec{
+			WriterEpoch: 1,
+			Revision:    7,
+			Payload:     payload,
+			PayloadHash: model.Hash(payload),
+		},
+	}
+	state, err := json.Marshal(shardState{Epoch: 2, ActiveOutbox: out.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: namespace},
+		Data:       map[string]string{"state": string(state)},
+	}
+
+	gotEnvelope, gotSnapshot, err := LoadCommittedServingSnapshot(context.Background(), testClient(t, owner, out), namespace, region, shard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEnvelope == nil || gotSnapshot == nil || gotEnvelope.Epoch != 1 || gotSnapshot.ConfigurationRevision != 7 {
+		t.Fatalf("unexpected committed snapshot after handoff: envelope=%#v snapshot=%#v", gotEnvelope, gotSnapshot)
+	}
+}
+
 func TestAckCannotForgeAnotherMemberSubject(t *testing.T) {
 	now := time.Now().UTC()
 	a := model.MemberAck{MemberID: "auth-a", ReplicaID: "replica-a", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)}

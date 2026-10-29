@@ -770,3 +770,8 @@ the same tenant isolation and capacity requirements.
 A DNS service VPC, Galactic private connectivity, shared serving capacity,
 protected listener-address allocation, durable project storage, and
 secured NATS capacity. Review regional broker placement and failover policy.
+
+## Reserved scopes
+
+See [Reserved managed-zone scopes](reserved-scopes.md) for platform publisher
+policy, enforcement boundaries, and migration from `instancePublishers`.

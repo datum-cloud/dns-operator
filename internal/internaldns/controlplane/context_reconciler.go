@@ -269,10 +269,10 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 			status = metav1.ConditionFalse
 			reason = "InvalidReference"
 			msg = "private zone and resolver context must match their resolved lifetimes; recreate the association to reattach replacements"
-		} else if managed := zones[model.ManagedZoneName(string(contextPin.UID))]; managed != nil && managed.UID != z.UID && model.IsManagedZone(managed) && model.InsideInstancesScope(z.Spec.DomainName, managed.Spec.DomainName) {
+		} else if r.Options.ReservedScopes.Shadows(z, &resolverContext) {
 			status = metav1.ConditionFalse
 			reason = "ReservedScope"
-			msg = "the zone is inside the managed zone's instances scope, which is reserved for instance names"
+			msg = "zone shadows a reserved subtree in this resolver context"
 		} else if old := owners[apexKey{contextPin.UID, canonicalName(z.Spec.DomainName)}]; old != "" && old != z.UID {
 			status = metav1.ConditionFalse
 			reason = "ApexConflict"

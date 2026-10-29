@@ -20,7 +20,7 @@ import (
 // access binding to another tenant's or a replaced object. This marker
 // registers them for kind and e2e only; in deployed environments the
 // internal-dns control plane registers the same path.
-// +kubebuilder:webhook:path=/validate-internal-dns,mutating=false,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnszoneassociations;dnsregistrations;dnsrecordcontributions;dnsnamingpolicies;dnsresolveraccessbindings,verbs=create;update,versions=v1alpha1,name=vinternaldns.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-internal-dns,mutating=false,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets;dnszoneassociations;dnsregistrations;dnsrecordcontributions;dnsnamingpolicies;dnsresolveraccessbindings,verbs=create;update,versions=v1alpha1,name=vinternaldns.kb.io,admissionReviewVersions=v1
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones;dnsregistrations;dnsresolvercontexts,verbs=get
 
 // SetupWebhooks registers every admission handler the dns-operator serves.
@@ -33,7 +33,8 @@ func SetupWebhooks(mgr mcmanager.Manager) error {
 }
 
 // SetupInternalDNSWebhook serves the private DNS reference checks at
-// internaldnsadmission.Path.
+// internaldnsadmission.Path. Managed namespace writes fail closed here without
+// reservedScopes: protected deployments use the configured internal-DNS server.
 func SetupInternalDNSWebhook(mgr mcmanager.Manager) {
 	mgr.GetWebhookServer().Register(internaldnsadmission.Path, &admission.Webhook{
 		Handler: &internaldnsadmission.Handler{ClientForRequest: liveProjectClient(mgr)},

@@ -14,7 +14,6 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,16 +29,13 @@ const Path = "/validate-internal-dns"
 
 // Resources lists the resources whose writes require live reference checks.
 // The ValidatingWebhookConfiguration must match exactly these resources.
-var Resources = []string{"dnszoneassociations", "dnsregistrations", contributionResource, "dnsnamingpolicies", "dnsresolveraccessbindings"}
+var Resources = []string{"dnsrecordsets", "dnszoneassociations", "dnsregistrations", contributionResource, "dnsnamingpolicies", "dnsresolveraccessbindings"}
 
 // Handler uses an uncached client selected by authenticated project context.
 type Handler struct {
 	Client client.Client
 
-	// InstancePublishers lists the usernames allowed to publish names in the
-	// instances scope of a managed zone. Everyone else is refused there. When
-	// empty, publishing in the scope is not restricted by identity.
-	InstancePublishers []string
+	ReservedScopes model.ReservedScopes
 
 	ClientForRequest func(context.Context, kubeadmission.Request) (client.Client, error)
 }
@@ -82,6 +78,8 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	}
 	var err error
 	switch req.Resource.Resource {
+	case "dnsrecordsets":
+		err = h.recordSet(ctx, cl, req)
 	case "dnsresolveraccessbindings":
 		err = h.resolverAccess(ctx, cl, req)
 	case "dnsregistrations":
@@ -142,7 +140,7 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubead
 			owners = append(owners, record.Name)
 		}
 	}
-	if err := h.refuseInstancesScope(req, zone, owners); err != nil {
+	if err := h.refuseReservedScope(req, zone, owners); err != nil {
 		return err
 	}
 	for _, set := range contribution.Spec.RecordSets {
@@ -205,28 +203,19 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if !resolverContext.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("resolver context is being deleted")
 	}
-	return refuseZoneInsideInstancesScope(ctx, cl, req.Namespace, a.Spec.DNSZoneRef.Name, &resolverContext)
+	return h.refuseZoneInsideReservedScope(ctx, cl, req.Namespace, a.Spec.DNSZoneRef.Name, &resolverContext)
 }
 
-// refuseZoneInsideInstancesScope stops a tenant zone at or below the managed
-// zone's instances scope from shadowing instance names in the same context.
-func refuseZoneInsideInstancesScope(ctx context.Context, cl client.Client, namespace, zoneName string, resolverContext *dnsv1alpha1.DNSResolverContext) error {
-	managedName := model.ManagedZoneName(string(resolverContext.UID))
-	if zoneName == managedName {
-		return nil
-	}
-	var managed dnsv1alpha1.DNSZone
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: managedName}, &managed); apierrors.IsNotFound(err) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("managed zone lookup: %w", err)
-	}
+func (h *Handler) refuseZoneInsideReservedScope(ctx context.Context, cl client.Client, namespace, zoneName string, resolverContext *dnsv1alpha1.DNSResolverContext) error {
 	var zone dnsv1alpha1.DNSZone
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: zoneName}, &zone); err != nil {
-		return fmt.Errorf("private zone lookup: %w", err)
+		return err
 	}
-	if model.IsManagedZone(&managed) && model.InsideInstancesScope(zone.Spec.DomainName, managed.Spec.DomainName) {
-		return fmt.Errorf("zone %q is inside %q, which is reserved for instance names published by the platform", zone.Spec.DomainName, model.InstancesScope+"."+managed.Spec.DomainName)
+	if resolverContext.Spec.ManagedNamespace.Enabled && h.ReservedScopes == nil {
+		return fmt.Errorf("reservedScopes is not configured; use the configured internal-DNS admission endpoint")
+	}
+	if h.ReservedScopes.Shadows(&zone, resolverContext) {
+		return fmt.Errorf("ReservedScope: zone shadows a reserved subtree in this resolver context")
 	}
 	return nil
 }
@@ -311,17 +300,44 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 			return err
 		}
 	}
+	for _, name := range registration.Spec.ReservedDescendants {
+		for _, scope := range h.ReservedScopes {
+			if model.IsManagedZone(zone) && model.Within(scope.Name, model.ZoneRelativeOwner(name, zone.Spec.DomainName)) && !slices.Contains(scope.Publishers, req.UserInfo.Username) {
+				return fmt.Errorf("ReservedScope: claim overlaps reserved subtree %q", scope.Name)
+			}
+		}
+	}
 	names := append([]string{registration.Spec.Name}, registration.Spec.ReservedDescendants...)
-	return h.refuseInstancesScope(req, zone, names)
+	return h.refuseReservedScope(req, zone, names)
 }
 
-func (h *Handler) refuseInstancesScope(req kubeadmission.Request, zone *dnsv1alpha1.DNSZone, owners []string) error {
-	if len(h.InstancePublishers) == 0 || !model.IsManagedZone(zone) || slices.Contains(h.InstancePublishers, req.UserInfo.Username) {
-		return nil
+func (h *Handler) refuseReservedScope(req kubeadmission.Request, zone *dnsv1alpha1.DNSZone, owners []string) error {
+	if model.IsManagedZone(zone) && h.ReservedScopes == nil {
+		return fmt.Errorf("reservedScopes is not configured; use the configured internal-DNS admission endpoint")
 	}
 	for _, owner := range owners {
-		if model.InProviderScope(model.ZoneRelativeOwner(owner, zone.Spec.DomainName)) {
-			return fmt.Errorf("%q is reserved for instance names published by the platform, and %q is not an instance publisher", model.InstancesScope+"."+zone.Spec.DomainName, req.UserInfo.Username)
+		if err := h.ReservedScopes.Authorize(zone, owner, req.UserInfo.Username); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) recordSet(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
+	var rs dnsv1alpha1.DNSRecordSet
+	if err := decode(req, &rs); err != nil {
+		return err
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {
+		return err
+	}
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && model.IsManagedZone(&zone) && h.ReservedScopes == nil {
+		return fmt.Errorf("reservedScopes is not configured; use the configured internal-DNS admission endpoint")
+	}
+	for _, record := range rs.Spec.Records {
+		if scope := h.ReservedScopes.Match(&zone, record.Name); scope != nil {
+			return fmt.Errorf("ReservedScope: %q is reserved for registered publishers", scope.Name)
 		}
 	}
 	return nil

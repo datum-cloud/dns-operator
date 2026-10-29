@@ -320,7 +320,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 			return false, err
 		}
 	}
-	input := CompileInput{Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
+	input := CompileInput{ReservedScopes: r.Options.ReservedScopes, Zone: z, Associations: assocs, Registrations: regs, Contributions: cs, StaticRecords: records, Previous: previous, Now: now}
 	input.AssociationReferences, err = r.associationReferences(ctx, assocs)
 	if err != nil {
 		return false, err

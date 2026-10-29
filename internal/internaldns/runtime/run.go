@@ -175,7 +175,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			// is supplied by SetupWithManager and guarded per writer epoch.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
+				ReservedScopes: cfg.ReservedScopes,
+				ProjectUID:     project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -237,8 +238,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			ClientForRequest:   directory.selectProject,
-			InstancePublishers: cfg.Admission.InstancePublishers,
+			ClientForRequest: directory.selectProject,
+			ReservedScopes:   cfg.ReservedScopes,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 		admissionManager.GetWebhookServer().Register("/readyz", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

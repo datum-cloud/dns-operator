@@ -54,6 +54,7 @@ type RegistrationFence struct {
 }
 
 type CompileInput struct {
+	ReservedScopes             model.ReservedScopes
 	Zone                       *dnsv1alpha1.DNSZone
 	Associations               []dnsv1alpha1.DNSZoneAssociation
 	AssociationReferences      map[types.UID]associationReferences
@@ -526,7 +527,6 @@ func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
 func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32) {
 	validStatic := map[types.UID]bool{}
 	staticTTLs := map[ownershipKey]int32{}
-	managed := model.IsManagedZone(in.Zone)
 	records := append([]dnsv1alpha1.DNSRecordSet(nil), in.StaticRecords...)
 	sort.Slice(records, func(i, j int) bool {
 		a, b := records[i], records[j]
@@ -547,7 +547,7 @@ func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[o
 				reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 				break
 			}
-			if managed && model.InProviderScope(key.name) {
+			if in.ReservedScopes.Match(in.Zone, record.Name) != nil {
 				reasons[rs.UID] = dnsValueReservedScope
 				break
 			}

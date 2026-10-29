@@ -277,7 +277,7 @@ func managedZoneFixture(t *testing.T) (*runtime.Scheme, *dnsv1alpha1.DNSResolver
 	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}}
+	resolverContext := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "ctx", Namespace: "project", UID: "ctx-uid", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
 	controller := true
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{
 		Name: model.ManagedZoneName(string(resolverContext.UID)), Namespace: "project", UID: "managed-uid",
@@ -286,68 +286,78 @@ func managedZoneFixture(t *testing.T) (*runtime.Scheme, *dnsv1alpha1.DNSResolver
 	return scheme, resolverContext, zone
 }
 
-func TestInstancesScopeIsReservedForPublishers(t *testing.T) {
-	scheme, _, zone := managedZoneFixture(t)
-	tenantZone := zone.DeepCopy()
-	tenantZone.Name, tenantZone.UID = "copied-owner", "tenant-zone"
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, tenantZone).Build()
-	h := Handler{Client: cl, InstancePublishers: []string{"compute"}}
-	registration := func(zoneName, name string, reserved ...string) dnsv1alpha1.DNSRegistration {
-		return dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zoneName}, TTLSeconds: 30, Name: name, ReservedDescendants: reserved, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
-	}
-	for _, tt := range []struct {
-		name    string
-		user    string
-		reg     dnsv1alpha1.DNSRegistration
-		allowed bool
-	}{
-		{"publisher registers an instance", "compute", registration(zone.Name, "web.instances"), true},
-		{"tenant registers an instance", "tenant", registration(zone.Name, "web.instances"), false},
-		{"tenant registers an absolute instance name", "tenant", registration(zone.Name, "web.instances.datum.internal"), false},
-		{"tenant reserves the scope", "tenant", registration(zone.Name, "api", "instances"), false},
-		{"tenant registers outside the scope", "tenant", registration(zone.Name, "api"), true},
-		{"tenant zone with a copied owner is not reserved", "tenant", registration(tenantZone.Name, "web.instances"), true},
-	} {
-		if got := h.Handle(context.Background(), request("dnsregistrations", tt.user, tt.reg, nil)); got.Allowed != tt.allowed {
-			t.Errorf("%s: allowed=%v: %v", tt.name, got.Allowed, got.Result)
-		}
-	}
+func TestReservedScopesAreReservedForPublishers(t *testing.T) {
+	for _, scope := range []string{"instances", "databases"} {
+		t.Run(scope, func(t *testing.T) {
+			scheme, _, zone := managedZoneFixture(t)
+			tenantZone := zone.DeepCopy()
+			tenantZone.Name, tenantZone.UID = "copied-owner", "tenant-zone"
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, tenantZone).Build()
+			h := Handler{Client: cl, ReservedScopes: model.ReservedScopes{{Name: scope, Publishers: []string{"compute"}}}}
+			registration := func(zoneName, name string, reserved ...string) dnsv1alpha1.DNSRegistration {
+				return dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zoneName}, TTLSeconds: 30, Name: name, ReservedDescendants: reserved, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+			}
+			for _, tt := range []struct {
+				name    string
+				user    string
+				reg     dnsv1alpha1.DNSRegistration
+				allowed bool
+			}{
+				{"publisher registers an instance", "compute", registration(zone.Name, "web."+scope), true},
+				{"tenant registers an instance", "tenant", registration(zone.Name, "web."+scope), false},
+				{"tenant registers an absolute instance name", "tenant", registration(zone.Name, "web."+scope+".datum.internal"), false},
+				{"tenant reserves the scope", "tenant", registration(zone.Name, "api", scope), false},
+				{"tenant registers outside the scope", "tenant", registration(zone.Name, "api"), true},
+				{"tenant zone with a copied owner is not reserved", "tenant", registration(tenantZone.Name, "web."+scope), true},
+			} {
+				if got := h.Handle(context.Background(), request("dnsregistrations", tt.user, tt.reg, nil)); got.Allowed != tt.allowed {
+					t.Errorf("%s: allowed=%v: %v", tt.name, got.Allowed, got.Result)
+				}
+			}
 
-	reg := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "wide", Namespace: "project", UID: "wide", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "instances", ReservedDescendants: []string{"instances"}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
-	if err := cl.Create(context.Background(), reg); err != nil {
-		t.Fatal(err)
-	}
-	contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web.instances", A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
-	if h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)).Allowed {
-		t.Fatal("tenant contribution published an instance name")
-	}
-	if got := h.Handle(context.Background(), request("dnsrecordcontributions", "compute", contribution, nil)); !got.Allowed {
-		t.Fatalf("publisher contribution rejected: %v", got.Result)
-	}
-	h.InstancePublishers = nil
-	if got := h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)); !got.Allowed {
-		t.Fatalf("an unconfigured publisher list restricted the scope: %v", got.Result)
+			reg := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "wide", Namespace: "project", UID: "wide", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: scope, ReservedDescendants: []string{scope}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
+			if err := cl.Create(context.Background(), reg); err != nil {
+				t.Fatal(err)
+			}
+			contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web." + scope, A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
+			if h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)).Allowed {
+				t.Fatal("tenant contribution published an instance name")
+			}
+			if got := h.Handle(context.Background(), request("dnsrecordcontributions", "compute", contribution, nil)); !got.Allowed {
+				t.Fatalf("publisher contribution rejected: %v", got.Result)
+			}
+			h.ReservedScopes[0].Publishers = nil
+			if got := h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)); got.Allowed {
+				t.Fatalf("an empty publisher list allowed publishing: %v", got.Result)
+			}
+
+		})
 	}
 }
 
-func TestAssociationCannotShadowTheInstancesScope(t *testing.T) {
-	scheme, resolverContext, managed := managedZoneFixture(t)
-	zone := func(name, domain string) *dnsv1alpha1.DNSZone {
-		return &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "project", UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: domain, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	}
-	zones := []*dnsv1alpha1.DNSZone{zone("scope", "instances.datum.internal"), zone("nested", "web.instances.datum.internal"), zone("sibling", "corp.datum.internal"), zone("lookalike", "web.instances"), zone("other", "corp.example")}
-	builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext, managed)
-	for _, z := range zones {
-		builder = builder.WithObjects(z)
-	}
-	h := Handler{Client: builder.Build()}
-	for _, tt := range []struct {
-		zone    string
-		allowed bool
-	}{{managed.Name, true}, {"scope", false}, {"nested", false}, {"sibling", true}, {"lookalike", true}, {"other", true}} {
-		a := &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: tt.zone}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolverContext.Name}}}
-		if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", a, nil)); got.Allowed != tt.allowed {
-			t.Errorf("zone %s: allowed=%v: %v", tt.zone, got.Allowed, got.Result)
-		}
+func TestAssociationCannotShadowReservedScopes(t *testing.T) {
+	for _, scope := range []string{"instances", "databases"} {
+		t.Run(scope, func(t *testing.T) {
+			scheme, resolverContext, managed := managedZoneFixture(t)
+			zone := func(name, domain string) *dnsv1alpha1.DNSZone {
+				return &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "project", UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: domain, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+			}
+			zones := []*dnsv1alpha1.DNSZone{zone("scope", scope+".datum.internal"), zone("nested", "web."+scope+".datum.internal"), zone("sibling", "corp.datum.internal"), zone("lookalike", "web."+scope), zone("other", "corp.example")}
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext, managed)
+			for _, z := range zones {
+				builder = builder.WithObjects(z)
+			}
+			h := Handler{Client: builder.Build(), ReservedScopes: model.ReservedScopes{{Name: scope}}}
+			for _, tt := range []struct {
+				zone    string
+				allowed bool
+			}{{managed.Name, true}, {"scope", false}, {"nested", false}, {"sibling", true}, {"lookalike", true}, {"other", true}} {
+				a := &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: tt.zone}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolverContext.Name}}}
+				if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", a, nil)); got.Allowed != tt.allowed {
+					t.Errorf("zone %s: allowed=%v: %v", tt.zone, got.Allowed, got.Result)
+				}
+			}
+
+		})
 	}
 }

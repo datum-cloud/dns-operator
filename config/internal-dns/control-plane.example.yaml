@@ -30,6 +30,10 @@ data:
       ],
       "clusterPrefix": "fd70:200::/48",
       "privateZoneClassName": "private-coredns",
+      "reservedScopes": [
+        {"name":"instances","publishers":["<username compute writes project DNS objects as>"]},
+        {"name":"databases","publishers":["<username database service writes project DNS objects as>"]}
+      ],
       "managedDomainSuffixes": ["internal"],
       "ownershipLeaseSeconds": 30,
       "shards": [
@@ -59,8 +63,7 @@ data:
       "admission": {
         "enabled": true,
         "port": 9443,
-        "certDir": "/var/run/internal-dns/admission",
-        "instancePublishers": ["<username compute writes project DNS objects as>"]
+        "certDir": "/var/run/internal-dns/admission"
       }
     }
 ---

@@ -26,6 +26,7 @@ import (
 )
 
 type ReconcilerOptions struct {
+	ReservedScopes        model.ReservedScopes
 	ProjectUID            types.UID
 	VerifyProjectIdentity func(context.Context) error
 	ProjectNamespace      string

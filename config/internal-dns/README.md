@@ -467,33 +467,27 @@ associated with the resolver whose reserved subtree it shadows. Registration
 changes trigger both zone compilation and association reconciliation; live policy
 reads fence cached compilation against newly created or changed declarations.
 
-### Migration
+### Companion service and staging changes
 
 Both obsolete settings, `admission.instancePublishers` and `reservedScopes`,
 are rejected at startup, including empty arrays and null. Their absence does not
-synthesize an `instances` policy. A safe rollout requires:
+synthesize an `instances` policy.
 
-1. Install the new `reserve`/`publish` IAM permissions, service-specific grants,
-   and admission SubjectAccessReview permissions. Keep the old enforcement active.
-2. Have each service create persistent root registrations in every applicable
-   managed zone using its currently authorized publisher identity. Audit existing
-   managed-zone `reservedDescendants` declarations: only intended service-owned
-   policies and trusted contributions should remain, since the old API did not
-   require `reserve`/`publish`. Seed all
-   required subtrees before upgrading or opening the namespace to tenants.
-3. Move per-endpoint publication to contributions referencing those roots, removing
-   obsolete child registrations. Retain root registrations even when no endpoint
-   is eligible. Coordinate this change with the service to avoid a publication gap.
-4. Deploy the new DNS binary, remove obsolete settings, and route the fail-closed
-   internal-DNS webhook to upgraded endpoints, including DNSRecordSet checks and
-   registration DELETE operations. Upgrade all reconciliation replicas as part of
-   the same cutover; do not mix old/new enforcement while tenant writes are open.
+Use the companion compute controller and staging infra configuration when testing
+this pre-production change. Compute watches ready managed resolver contexts and
+creates persistent root registrations independently of instances. Contributions
+move to those roots, and normal publisher cleanup removes old per-instance
+registrations. Roots survive an empty service and disappear with their contexts.
 
-The old binary does not enforce newly declared scopes other than its built-in
-`instances` protection. Gate tenant writes throughout staging and cutover for
-newly protected scopes, not only while replicas run mixed versions.
+Staging must use webhook rules that include DNSRecordSet writes and registration
+DELETE, and project credentials capable of reading registrations/contexts and
+creating SubjectAccessReviews. The companion infra change removes the old setting,
+updates those rules, and documents the existing trusted service credentials.
+Customer roles do not receive reservation or publisher privileges.
 
-Service deployment must seed roots for newly created managed zones before tenant
-use. This is service/platform bootstrap policy, not inferred from workload records.
-Rollback to the old implementation cannot protect unrelated service subtrees;
-retain the new enforcement or gate tenant writes during rollback.
+There is no transitional DNS default or strict rollout gate for staging. Until the
+service creates a declaration, its subtree is not reserved. Use matching service,
+DNS and infra changes when evaluating protection; do not infer it from workload
+records or assume the old binary enforces service-owned declarations. A future
+production rollout must account for that bootstrap interval and audit pre-existing
+registrations and contributions before exposing the namespace to tenants.

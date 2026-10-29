@@ -7,6 +7,7 @@ import (
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -69,4 +70,37 @@ func TestNoServiceDeclarationMeansNoReservation(t *testing.T) {
 
 func reservationFixture(zone, scope string) *dnsv1alpha1.DNSRegistration {
 	return &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "service-policy", Namespace: "project", UID: "service-policy", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone}, Name: scope, ReservedDescendants: []string{scope}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}
+}
+
+func TestReservedRecordSetMetadataCleanup(t *testing.T) {
+	for _, scope := range []string{"instances", "databases"} {
+		t.Run(scope, func(t *testing.T) {
+			scheme, _, zone := managedZoneFixture(t)
+			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, reservationFixture(zone.Name, scope)).Build()
+			h := Handler{Client: cl}
+			old := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "legacy", Finalizers: []string{"cleanup"}}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web." + scope, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}
+			next := old.DeepCopy()
+			next.Finalizers = nil
+			next.Labels = map[string]string{"cleanup": "true"}
+			if got := h.Handle(context.Background(), request("dnsrecordsets", "tenant", next, old)); !got.Allowed {
+				t.Fatalf("metadata cleanup denied: %v", got.Result)
+			}
+			changed := next.DeepCopy()
+			changed.Spec.Records[0].A.Content = "192.0.2.2"
+			if got := h.Handle(context.Background(), request("dnsrecordsets", "tenant", changed, old)); got.Allowed {
+				t.Fatal("spec mutation bypassed reservation")
+			}
+			req := request("dnsrecordsets", "tenant", nil, old)
+			req.Operation = admissionv1.Delete
+			if got := h.Handle(context.Background(), req); !got.Allowed {
+				t.Fatal("cleanup deletion denied")
+			}
+			if err := cl.Delete(context.Background(), zone); err != nil {
+				t.Fatal(err)
+			}
+			if got := h.Handle(context.Background(), request("dnsrecordsets", "tenant", next, old)); !got.Allowed {
+				t.Fatal("metadata cleanup required a live zone")
+			}
+		})
+	}
 }

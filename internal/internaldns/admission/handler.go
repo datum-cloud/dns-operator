@@ -14,6 +14,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -340,6 +341,17 @@ func (h *Handler) recordSet(ctx context.Context, cl client.Client, req kubeadmis
 	var rs dnsv1alpha1.DNSRecordSet
 	if err := decode(req, &rs); err != nil {
 		return err
+	}
+	// Metadata changes cannot add publication authority. Permit cleanup of
+	// pre-existing records even after a reservation is introduced or a zone is gone.
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		var old dnsv1alpha1.DNSRecordSet
+		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
+			return err
+		}
+		if equality.Semantic.DeepEqual(old.Spec, rs.Spec) {
+			return nil
+		}
 	}
 	var zone dnsv1alpha1.DNSZone
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {

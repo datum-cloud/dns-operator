@@ -144,6 +144,91 @@ func TestBindingOmissionFenceSurvivesRestartAndRequiresNewSourceAuthority(t *tes
 	}
 }
 
+func TestExplicitWithdrawalAfterRetainedStateRestartRemovesEveryMemberAndPreservesPeer(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	active := testSnapshot(now)
+	unaffected := active.Bindings[0]
+	unaffected.BindingUID, unaffected.ProjectUID, unaffected.ContextUID = "binding-b", "project-b", "context-b"
+	unaffected.ConsumerAddress, unaffected.ClusterAddress = "10.253.0.52", "10.253.0.42"
+	unaffected.Zones = nil
+	active.Bindings = append(active.Bindings, unaffected)
+	active.Members = []model.Member{{MemberID: "member-a", ReplicaID: "member-a", Role: "regional"}, {MemberID: "member-b", ReplicaID: "member-b", Role: "regional"}}
+	chunk, manifest := testPublication(t, now)
+
+	for _, member := range []string{"member-a", "member-b"} {
+		member := member
+		t.Run(member, func(t *testing.T) {
+			cfg := regionalTestConfig(t)
+			cfg.MemberID, cfg.ReplicaID = member, member
+			initial, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := initial.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, active)); err != nil {
+				t.Fatal(err)
+			}
+			if err := initial.Handle(context.Background(), envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
+				t.Fatal(err)
+			}
+			if err := initial.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
+				t.Fatal(err)
+			}
+
+			publisher := &fakePublisher{}
+			restarted, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, AckPublisher: publisher, Clock: func() time.Time { return now.Add(time.Second) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := restarted.restoreActive(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			withdrawn := active
+			withdrawn.Bindings = append([]model.Binding(nil), active.Bindings...)
+			withdrawn.ConfigurationRevision = 2
+			withdrawn.Bindings[0].ConfigurationRevision = 2
+			withdrawn.Bindings[0].Version.Sequence = 2
+			withdrawn.Bindings[0].Tombstone = true
+			withdrawn.Bindings[0].Zones = nil
+			if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 2, withdrawn)); err != nil {
+				t.Fatal(err)
+			}
+			config, err := os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(config), active.Bindings[0].ViewName()) {
+				t.Fatal("withdrawn context remained in active CoreDNS configuration")
+			}
+			if !strings.Contains(string(config), unaffected.ViewName()) {
+				t.Fatal("unaffected context was removed with the deleted network")
+			}
+			acked := false
+			for _, env := range publisher.envs {
+				var ack model.MemberAck
+				if env.Kind == model.KindMemberAck && json.Unmarshal(env.Payload, &ack) == nil && ack.ResourceUID == active.Bindings[0].BindingUID && ack.Epoch == 1 && ack.Revision == 2 && ack.Phase == model.AckVerified {
+					acked = true
+				}
+			}
+			if !acked {
+				t.Fatal("member did not acknowledge the exact installed withdrawal")
+			}
+
+			afterRestart, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now.Add(2 * time.Second) }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := afterRestart.restoreActive(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			config, err = os.ReadFile(cfg.Render.ClusterCoreDNS.Path)
+			if err != nil || strings.Contains(string(config), active.Bindings[0].ViewName()) || !strings.Contains(string(config), unaffected.ViewName()) {
+				t.Fatalf("restart restored revoked access or lost unaffected routing: %v", err)
+			}
+		})
+	}
+}
+
 func TestCheckpointRejectsPreBindingFenceFormatWithoutDiscardingIt(t *testing.T) {
 	t.Parallel()
 	for _, version := range []int{2, 3, checkpointFormatVersion} {

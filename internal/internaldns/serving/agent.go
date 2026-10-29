@@ -218,8 +218,12 @@ func publicationIdentity(p publicationState) string {
 }
 
 type servingAckState struct {
-	phase model.AckPhase
-	at    time.Time
+	phase                 model.AckPhase
+	at                    time.Time
+	snapshotEpoch         uint64
+	snapshotRevision      uint64
+	configurationRevision uint64
+	accessVersion         model.AccessVersion
 }
 
 func NewAgent(c Config, d Dependencies) (*Agent, error) {
@@ -1027,11 +1031,11 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 		}
 	}
 	for _, b := range a.state.Snapshot.Bindings {
-		if b.Tombstone || b.ConfigurationPending {
+		if b.ConfigurationPending {
 			continue
 		}
 		p := model.AckVerified
-		if !active[b.BindingUID] {
+		if !b.Tombstone && !active[b.BindingUID] {
 			p = model.AckApplied
 		}
 		if err := a.emitServingAck(ctx, b, p); err != nil {
@@ -1359,13 +1363,13 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 		interval = 30 * time.Second
 	}
 	last := a.lastServingAck[b.BindingUID]
-	if last.phase == phase && now.Sub(last.at) < interval {
+	if last.phase == phase && last.snapshotEpoch == a.state.ServingFence.Epoch && last.snapshotRevision == a.state.ServingFence.Revision && last.configurationRevision == b.ConfigurationRevision && last.accessVersion == b.Version && now.Sub(last.at) < interval {
 		return nil
 	}
 	if err := a.emitAck(ctx, model.KindServingSnapshot, b.BindingUID, a.state.ServingFence.Epoch, a.state.ServingFence.Revision, phase, ""); err != nil {
 		return err
 	}
-	a.lastServingAck[b.BindingUID] = servingAckState{phase: phase, at: now}
+	a.lastServingAck[b.BindingUID] = servingAckState{phase: phase, at: now, snapshotEpoch: a.state.ServingFence.Epoch, snapshotRevision: a.state.ServingFence.Revision, configurationRevision: b.ConfigurationRevision, accessVersion: b.Version}
 	return nil
 }
 

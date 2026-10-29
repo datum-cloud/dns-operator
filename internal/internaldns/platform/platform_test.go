@@ -550,6 +550,40 @@ func TestBindingReadinessRequiresCurrentCommittedSnapshot(t *testing.T) {
 	}
 }
 
+func TestBindingWithdrawalRequiresEveryMemberAtExactTombstone(t *testing.T) {
+	now := time.Now().UTC()
+	until := metav1.NewTime(now.Add(time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid", Generation: 2}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Tombstone: true, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}}}
+	sink := AckSink{Members: []model.Member{{MemberID: "node-a", Role: "node"}, {MemberID: "node-b", Role: "node"}, {MemberID: "regional-a", Role: "regional"}, {MemberID: "regional-b", Role: "regional"}}}
+	envelope := &model.Envelope{Epoch: 7, Revision: 11}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}, Tombstone: true}}}
+	ack := func(member string) dnsv1alpha1.DNSApplyAcknowledgement {
+		return dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 7, SnapshotRevision: 11, Revision: 2, AccessEpoch: 1, AccessSequence: 2, Phase: string(model.AckVerified), ValidUntil: &until}
+	}
+	binding.Status.MemberAcknowledgements = []dnsv1alpha1.DNSApplyAcknowledgement{ack("node-a"), ack("regional-a")}
+	if !sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("one healthy member per tier did not report the applied withdrawal")
+	}
+	sink.bindingConditions(binding, envelope, snapshot, now, true)
+	if apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated") {
+		t.Fatal("partial withdrawal acknowledgements claimed every member removed access")
+	}
+	if apimeta.IsStatusConditionTrue(binding.Status.Conditions, "Serving") {
+		t.Fatal("a verified tombstone was reported as serving")
+	}
+	binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, ack("node-b"), ack("regional-b"))
+	sink.bindingConditions(binding, envelope, snapshot, now, true)
+	if !apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated") {
+		t.Fatal("the exact tombstone was not proven on every member")
+	}
+	stale := snapshot.Bindings[0]
+	stale.Tombstone = false
+	snapshot.Bindings[0] = stale
+	if sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("an active snapshot satisfied a withdrawal proof")
+	}
+}
+
 func TestExpiredAcknowledgementReplayIsConsumedWithoutStatus(t *testing.T) {
 	now := time.Now().UTC()
 	s := AckSink{Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "auth", ReplicaID: "replica", Role: "regional"}}, Now: func() time.Time { return now }}

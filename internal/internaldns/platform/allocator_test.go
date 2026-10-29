@@ -353,14 +353,29 @@ func TestReleaseDestinationsWaitsForWithdrawnSnapshot(t *testing.T) {
 	if err := p.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 0 {
-		t.Fatalf("tombstone was not withdrawn: %#v", snapshot.Bindings)
+	if snapshot := latestPlannerSnapshot(t, &p); len(snapshot.Bindings) != 1 || !snapshot.Bindings[0].Tombstone || snapshot.Bindings[0].ConfigurationRevision != 2 || snapshot.Bindings[0].Version.Sequence != 2 {
+		t.Fatalf("exact tombstone was not published: %#v", snapshot.Bindings)
+	}
+	if err := allocator.ReleaseDestinations(ctx, "project-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := destinationClaims(t, cl)["fd70::1"]; !ok {
+		t.Fatal("destination was released before every member proved withdrawal")
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
+		t.Fatal(err)
+	}
+	binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
+	binding.Status.Phase = "Withdrawn"
+	condition(&binding.Status.Conditions, "FullyReplicated", true, "ReplicaVerification", binding.Generation, now)
+	if err := cl.Status().Update(ctx, binding); err != nil {
+		t.Fatal(err)
 	}
 	if err := allocator.ReleaseDestinations(ctx, "project-a", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := destinationClaims(t, cl)["fd70::1"]; ok {
-		t.Fatal("withdrawn destination was not released")
+		t.Fatal("fully withdrawn destination was not released")
 	}
 }
 

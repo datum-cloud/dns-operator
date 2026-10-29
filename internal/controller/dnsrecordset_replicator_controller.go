@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -31,6 +32,8 @@ type DNSRecordSetReplicator struct {
 	mgr              mcmanager.Manager
 	DownstreamClient client.Client
 }
+
+var errRecordSetShadowTerminating = errors.New("downstream record set is terminating")
 
 const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 
@@ -165,6 +168,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	}
 	// Ensure the downstream recordset object mirrors the upstream spec
 	operation, err := r.ensureDownstreamRecordSet(ctx, strategy, &upstream)
+	if errors.Is(err, errRecordSetShadowTerminating) {
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -312,11 +318,25 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		return controllerutil.OperationResultNone, err
 	}
 
+	// Do not create replacement shadows or anchors while their namespace drains.
+	var namespace corev1.Namespace
+	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Name: md.Namespace}, &namespace); err != nil && !apierrors.IsNotFound(err) {
+		return controllerutil.OperationResultNone, err
+	}
+	if !namespace.DeletionTimestamp.IsZero() {
+		return controllerutil.OperationResultNone, errRecordSetShadowTerminating
+	}
+
 	shadow := dnsv1alpha1.DNSRecordSet{}
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
 	res, cErr := controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
+		// Namespace deletion may have removed the anchor before the record's
+		// provider finalizer finishes. Do not recreate it or mutate a dying shadow.
+		if !shadow.DeletionTimestamp.IsZero() {
+			return errRecordSetShadowTerminating
+		}
 		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec

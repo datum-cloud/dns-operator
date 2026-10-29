@@ -35,6 +35,7 @@ import (
 // DNSRecordSetReconciler reconciles a DNSRecordSet object
 type DNSRecordSetReconciler struct {
 	client.Client
+	APIReader  client.Reader
 	Scheme     *runtime.Scheme
 	DNSHandler *dns.DNSHandler
 
@@ -88,6 +89,30 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	var zone dnsv1alpha1.DNSZone
 	if err := r.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {
 		if apierrors.IsNotFound(err) {
+			if !rs.DeletionTimestamp.IsZero() && controllerutil.ContainsFinalizer(&rs, downstreamRSFinalizer) {
+				// A cache miss is not proof the provider zone has gone. Check
+				// the API directly before releasing the orphaned finalizer.
+				reader := r.APIReader
+				if reader == nil {
+					reader = r.Client
+				}
+				zoneErr := reader.Get(ctx, client.ObjectKey{Namespace: rs.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone)
+				if zoneErr == nil {
+					return ctrl.Result{RequeueAfter: time.Second}, nil
+				}
+				if !apierrors.IsNotFound(zoneErr) {
+					return ctrl.Result{}, zoneErr
+				}
+				// Zone deletion owns provider-zone cleanup; no record can be
+				// removed from a zone which no longer exists.
+				base := rs.DeepCopy()
+				controllerutil.RemoveFinalizer(&rs, downstreamRSFinalizer)
+				if err := r.Patch(ctx, &rs, client.MergeFrom(base)); client.IgnoreNotFound(err) != nil {
+					return ctrl.Result{}, err
+				}
+				r.aliasChecks.forget(req.NamespacedName)
+				return ctrl.Result{}, nil
+			}
 			if err := r.setAcceptedCondition(ctx, &rs, metav1.ConditionFalse, ReasonPending,
 				fmt.Sprintf("waiting for DNSZone %q", rs.Spec.DNSZoneRef.Name)); err != nil {
 				return ctrl.Result{}, err
@@ -456,6 +481,7 @@ func (r *DNSRecordSetReconciler) setAcceptedCondition(
 //   - Requeues DNSRecordSets when their DNSZone (same ns, same spec.zoneName) changes
 //   - Uses an exponential backoff rate limiter for gentle retries while waiting on zone readiness
 func (r *DNSRecordSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	maxConcurrentReconciles := r.Config.MaxConcurrentReconciles
 	if maxConcurrentReconciles <= 0 {
 		maxConcurrentReconciles = defaultRecordSetMaxConcurrentReconciles

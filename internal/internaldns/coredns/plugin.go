@@ -23,6 +23,7 @@ type contextState struct {
 	pending      bool
 	pendingZones map[string]bool
 	zones        *file.File
+	zoneFiles    map[string]*file.File
 	next         plugin.Handler
 	public       plugin.Handler
 }
@@ -52,7 +53,7 @@ func compile(c Config) (*snapshot, error) {
 	s := &snapshot{contexts: map[string]*contextState{}}
 	public := s.forward(c.PublicUpstreams)
 	for _, definition := range c.Contexts {
-		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}}
+		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}, zoneFiles: map[string]*file.File{}}
 		for _, zone := range definition.Zones {
 			apex := model.AbsoluteName(zone.Apex)
 			state.pendingZones[apex] = zone.Pending
@@ -67,6 +68,10 @@ func compile(c Config) (*snapshot, error) {
 				return nil, err
 			}
 			state.zones.Z[apex] = parsed
+			zoneApex, zoneData := apex, parsed
+			state.zoneFiles[apex] = &file.File{ZoneLookupFunc: func(string) (string, *file.Zone, bool) {
+				return zoneApex, zoneData, true
+			}}
 		}
 		state.next = s.forward(definition.Upstreams)
 		if public != nil && state.next == nil {
@@ -181,7 +186,11 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 			rcode, err := selected.next.ServeDNS(ctx, w, r)
 			return outcomeForwardedNext, rcode, err
 		}
-		rcode, err := selected.zones.ServeDNS(ctx, w, r)
+		zones := selected.zones
+		if selected := selected.zoneFiles[apex]; selected != nil {
+			zones = selected
+		}
+		rcode, err := zones.ServeDNS(ctx, w, r)
 		return outcomeServedZone, rcode, err
 	}
 	if selected.next != nil {

@@ -563,7 +563,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	); err != nil {
 		return err
 	}
-	if hasApexRecordSet(existingList.Items) {
+	if hasApexRecordSet(existingList.Items, upstream.Spec.DomainName) {
 		log.FromContext(ctx).V(1).Info("SOA DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
@@ -587,7 +587,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		}},
 	}
 	log.FromContext(ctx).Info("creating default SOA DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
-	return createApexRecordSet(ctx, c, &newObj)
+	return createApexRecordSet(ctx, c, &newObj, upstream.Spec.DomainName)
 }
 
 // ensureNSRecordSet ensures a root NS recordset reflecting nameservers from the upstream status.
@@ -611,7 +611,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 	); err != nil {
 		return err
 	}
-	if hasApexRecordSet(existingList.Items) {
+	if hasApexRecordSet(existingList.Items, upstream.Spec.DomainName) {
 		log.FromContext(ctx).V(1).Info("NS DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
@@ -634,15 +634,15 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		Records:    records,
 	}
 	log.FromContext(ctx).Info("creating default NS DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
-	return createApexRecordSet(ctx, c, &newObj)
+	return createApexRecordSet(ctx, c, &newObj, upstream.Spec.DomainName)
 }
 
 // hasApexRecordSet excludes delegations: an NS record below the apex does not
 // supply the zone's own nameservers.
-func hasApexRecordSet(items []dnsv1alpha1.DNSRecordSet) bool {
+func hasApexRecordSet(items []dnsv1alpha1.DNSRecordSet, zoneDomain string) bool {
 	for _, item := range items {
 		for _, record := range item.Spec.Records {
-			if record.Name == "@" {
+			if record.Name == "@" || (zoneDomain != "" && strings.EqualFold(strings.TrimSuffix(record.Name, "."), strings.TrimSuffix(zoneDomain, "."))) {
 				return true
 			}
 		}
@@ -653,7 +653,7 @@ func hasApexRecordSet(items []dnsv1alpha1.DNSRecordSet) bool {
 // createApexRecordSet preserves a user record occupying the legacy default name.
 // A parent-zone delegation can legitimately have the same name as a child
 // zone's default NS record. Use a bounded, deterministic fallback in that case.
-func createApexRecordSet(ctx context.Context, c client.Client, desired *dnsv1alpha1.DNSRecordSet) error {
+func createApexRecordSet(ctx context.Context, c client.Client, desired *dnsv1alpha1.DNSRecordSet, zoneDomain string) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		err := c.Create(ctx, desired)
 		if !apierrors.IsAlreadyExists(err) {
@@ -663,7 +663,7 @@ func createApexRecordSet(ctx context.Context, c client.Client, desired *dnsv1alp
 		if err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing); err != nil {
 			return err
 		}
-		if existing.Spec.DNSZoneRef == desired.Spec.DNSZoneRef && existing.Spec.RecordType == desired.Spec.RecordType && hasApexRecordSet([]dnsv1alpha1.DNSRecordSet{existing}) {
+		if existing.Spec.DNSZoneRef == desired.Spec.DNSZoneRef && existing.Spec.RecordType == desired.Spec.RecordType && hasApexRecordSet([]dnsv1alpha1.DNSRecordSet{existing}, zoneDomain) {
 			return nil
 		}
 		if attempt == 1 {
@@ -749,6 +749,9 @@ func (r *DNSZoneReplicator) updateStatus(ctx context.Context, c client.Client, s
 		haveSOA := false
 		haveNS := false
 		for i := range rsList.Items {
+			if !hasApexRecordSet(rsList.Items[i:i+1], upstream.Spec.DomainName) {
+				continue
+			}
 			if rsList.Items[i].Spec.RecordType == dnsv1alpha1.RRTypeSOA {
 				haveSOA = true
 			}

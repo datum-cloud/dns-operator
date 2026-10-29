@@ -25,7 +25,7 @@ func TestCreateApexRecordSetPreservesDelegation(t *testing.T) {
 	desired.Spec.Records[0].Name = "@"
 	for i := 0; i < 2; i++ {
 		copy := desired.DeepCopy()
-		if err := createApexRecordSet(context.Background(), c, copy); err != nil {
+		if err := createApexRecordSet(context.Background(), c, copy, "child.example"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -46,10 +46,16 @@ func TestCreateApexRecordSetPreservesDelegation(t *testing.T) {
 }
 
 func TestHasApexRecordSet(t *testing.T) {
-	for _, name := range []string{"child", "@"} {
-		got := hasApexRecordSet([]dnsv1alpha1.DNSRecordSet{{Spec: dnsv1alpha1.DNSRecordSetSpec{Records: []dnsv1alpha1.RecordEntry{{Name: name}}}}})
-		if got != (name == "@") {
-			t.Fatalf("apex detection for %q = %v", name, got)
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"child", false}, {"child.example.com.", false}, {"@", true},
+		{"example.com", true}, {"example.com.", true}, {"EXAMPLE.COM.", true},
+	} {
+		got := hasApexRecordSet([]dnsv1alpha1.DNSRecordSet{{Spec: dnsv1alpha1.DNSRecordSetSpec{Records: []dnsv1alpha1.RecordEntry{{Name: tc.name}}}}}, "example.com")
+		if got != tc.want {
+			t.Fatalf("apex detection for %q = %v", tc.name, got)
 		}
 	}
 }

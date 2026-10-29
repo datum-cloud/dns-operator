@@ -703,7 +703,7 @@ func (a *Agent) activatePublication(ctx context.Context, uid string, next public
 	if a.bootstrapInProgress || (a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
 		return nil
 	}
-	if err := a.reconcile(ctx); err != nil {
+	if err := a.reconcileWithNodeRouting(ctx, a.retainedNodeRouting()); err != nil {
 		return err
 	}
 	if !next.Manifest.Tombstone && len(a.publicationViews(next)) == 0 {
@@ -879,11 +879,15 @@ func (a *Agent) finishEvent(ctx context.Context) error {
 // returning early would leave the daemons answering with withdrawn data while
 // every retry hits the same error.
 func (a *Agent) reconcile(ctx context.Context) error {
+	return a.reconcileWithNodeRouting(ctx, nil)
+}
+
+func (a *Agent) reconcileWithNodeRouting(ctx context.Context, retained []byte) error {
 	if a.state.Snapshot == nil {
 		return nil
 	}
 	withdrawing := !a.canRetainActive()
-	err := a.reconcileDesired(ctx)
+	err := a.reconcileDesired(ctx, retained)
 	// Shutdown is not a failed install: restart gates again via restoreActive.
 	if err != nil && withdrawing && ctx.Err() == nil {
 		return errors.Join(err, a.failClosed(ctx))
@@ -899,7 +903,7 @@ func (a *Agent) renderDesired(c RenderConfig, snapshot model.ServingSnapshot, ac
 	return renderPublications(c, snapshot, active, a.state.Publications)
 }
 
-func (a *Agent) reconcileDesired(ctx context.Context) error {
+func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 	activated := false
 	active := map[string]bool{}
 	filtered := *a.state.Snapshot
@@ -931,6 +935,9 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 	if err != nil {
 		a.recordActivationFailure("render")
 		return err
+	}
+	if retained != nil {
+		rendered.Files[a.cfg.Render.NodeDNSDist.Path] = retained
 	}
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {

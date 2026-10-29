@@ -22,7 +22,7 @@ webhooks:
   # The API server authorizes resource and status operations.
   - apiGroups: [dns.networking.miloapis.com]
     apiVersions: [v1alpha1]
-    operations: [CREATE, UPDATE]
+    operations: [CREATE, UPDATE, DELETE]
     resources:
     - dnsrecordsets
     - dnszoneassociations

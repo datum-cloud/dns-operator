@@ -21,7 +21,7 @@ func TestRecordSetReservedScopes(t *testing.T) {
 			public := managed.DeepCopy()
 			public.Name = "public"
 			public.Spec.Visibility = dnsv1alpha1.DNSZoneVisibilityPublic
-			h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(managed, tenant, public).Build(), ReservedScopes: model.ReservedScopes{{Name: scope, Publishers: []string{"publisher"}}}}
+			h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(managed, tenant, public, reservationFixture(managed.Name, scope)).Build()}
 			for _, tc := range []struct {
 				zone, owner string
 				allowed     bool
@@ -48,7 +48,7 @@ func TestShadowingWithoutManagedZoneOrRecords(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			scheme, resolver, _ := managedZoneFixture(t)
 			shadow := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "project", UID: "shadow"}, Spec: dnsv1alpha1.DNSZoneSpec{Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate, DomainName: "web." + scope + ".datum.internal"}}
-			h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver, shadow).Build(), ReservedScopes: model.ReservedScopes{{Name: scope}}}
+			h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolver, shadow, reservationFixture(model.ManagedZoneName(string(resolver.UID)), scope)).Build()}
 			a := &dnsv1alpha1.DNSZoneAssociation{Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: shadow.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
 			if got := h.Handle(context.Background(), request("dnszoneassociations", "tenant", a, nil)); got.Allowed || !strings.Contains(got.Result.Message, "ReservedScope") {
 				t.Fatalf("shadow allowed before managed zone creation: %v", got)
@@ -57,15 +57,16 @@ func TestShadowingWithoutManagedZoneOrRecords(t *testing.T) {
 	}
 }
 
-func TestUnconfiguredManagedAdmissionFailsClosed(t *testing.T) {
+func TestNoServiceDeclarationMeansNoReservation(t *testing.T) {
 	scheme, _, zone := managedZoneFixture(t)
 	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone).Build()}
-	reg := &dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "web.instances"}}
-	if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); got.Allowed || !strings.Contains(got.Result.Message, "not configured") {
-		t.Fatalf("missing policy failed open: %v", got)
-	}
-	h.ReservedScopes = model.ReservedScopes{}
+	reg := reservationFixture(zone.Name, "instances")
+	reg.Spec.ReservedDescendants = nil
 	if got := h.Handle(context.Background(), request("dnsregistrations", "tenant", reg, nil)); !got.Allowed {
-		t.Fatalf("explicit empty policy rejected: %v", got)
+		t.Fatalf("undeclared name is reserved: %v", got.Result)
 	}
+}
+
+func reservationFixture(zone, scope string) *dnsv1alpha1.DNSRegistration {
+	return &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "service-policy", Namespace: "project", UID: "service-policy", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone}, Name: scope, ReservedDescendants: []string{scope}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}
 }

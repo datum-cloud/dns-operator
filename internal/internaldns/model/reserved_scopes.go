@@ -2,46 +2,22 @@ package model
 
 import (
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-// ReservedScope reserves a relative subtree of every resolver managed zone.
-// Publishers are authenticated Kubernetes usernames, subject to existing registration
-// and API authorization. An empty list reserves the subtree without a publisher.
+// ReservedScope is derived from a service-owned registration, never from DNS
+// deployment configuration. Its lifetime is the registration's lifetime.
 type ReservedScope struct {
-	Name       string   `json:"name"`
-	Publishers []string `json:"publishers"`
+	Name            string
+	RegistrationUID types.UID
 }
-
 type ReservedScopes []ReservedScope
 
-func (scopes ReservedScopes) Validate() error {
-	if scopes == nil {
-		return fmt.Errorf("reservedScopes is required; use [] only to explicitly disable reservations")
-	}
-	for i, scope := range scopes {
-		if len(validation.IsDNS1123Subdomain(scope.Name)) != 0 {
-			return fmt.Errorf("reservedScopes[%d].name must be a lowercase relative DNS subtree", i)
-		}
-		for _, subject := range scope.Publishers {
-			if strings.TrimSpace(subject) == "" || subject != strings.TrimSpace(subject) {
-				return fmt.Errorf("reservedScopes[%d] has an invalid publisher username", i)
-			}
-		}
-		for _, other := range scopes[:i] {
-			if Within(scope.Name, other.Name) || Within(other.Name, scope.Name) {
-				return fmt.Errorf("reserved scopes %q and %q overlap", scope.Name, other.Name)
-			}
-		}
-	}
-	return nil
-}
-
-// Within compares DNS labels, including the subtree root, case insensitively.
 func Within(name, subtree string) bool {
 	name, subtree = scopeName(name), scopeName(subtree)
 	return name == subtree || strings.HasSuffix(name, "."+subtree)
@@ -50,45 +26,93 @@ func scopeName(s string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(s), "."))
 }
 
-func (scopes ReservedScopes) Match(zone *dnsv1alpha1.DNSZone, owner string) *ReservedScope {
-	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || !IsManagedZone(zone) {
-		return nil
-	}
-	name := ZoneRelativeOwner(owner, zone.Spec.DomainName)
-	for i := range scopes {
-		if Within(name, scopes[i].Name) {
-			return &scopes[i]
+func ValidateReservation(reg *dns.DNSRegistration, apex string) error {
+	for _, name := range reg.Spec.ReservedDescendants {
+		if len(validation.IsDNS1123Subdomain(ZoneRelativeOwner(name, apex))) != 0 {
+			return fmt.Errorf("reserved descendant %q must name a DNS subtree below the zone apex", name)
 		}
 	}
 	return nil
 }
 
-func (scopes ReservedScopes) Authorize(zone *dnsv1alpha1.DNSZone, owner, username string) error {
-	if scope := scopes.Match(zone, owner); scope != nil && !slices.Contains(scope.Publishers, username) {
-		return fmt.Errorf("ReservedScope: %q is reserved and %q is not an authorized publisher", scope.Name+"."+zone.Spec.DomainName, username)
-	}
-	return nil
-}
-
-// Shadows rejects a tenant zone that would capture any reserved name in this
-// context. It uses declared namespace intent, so no zone or record must exist.
-func (scopes ReservedScopes) Shadows(zone *dnsv1alpha1.DNSZone, resolver *dnsv1alpha1.DNSResolverContext) bool {
-	if zone.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || !resolver.Spec.ManagedNamespace.Enabled {
-		return false
-	}
-	if zone.Name == ManagedZoneName(string(resolver.UID)) && IsManagedZone(zone) {
-		return false
-	}
-	apexes := []string{resolver.Spec.ManagedNamespace.DomainSuffix, resolver.Status.ManagedNamespace.Suffix}
-	for _, apex := range apexes {
-		if apex == "" {
+// RegistrationScopes derives all declared subtrees, including terminating
+// reservations until actual deletion. Conflicting declarations remain protected:
+// Owner permits publication only when every matching declaration has that UID.
+// This fails closed even if concurrent admissions both observed no conflict.
+func RegistrationScopes(zoneName, apex string, regs []dns.DNSRegistration) ReservedScopes {
+	var scopes ReservedScopes
+	for _, reg := range regs {
+		if reg.Spec.DNSZoneRef.Name != zoneName || reg.UID == "" {
 			continue
 		}
-		for _, scope := range scopes {
-			root := scope.Name + "." + apex
-			if Within(zone.Spec.DomainName, root) || (Within(root, zone.Spec.DomainName) && Within(zone.Spec.DomainName, apex)) {
-				return true
+		for _, name := range reg.Spec.ReservedDescendants {
+			if len(validation.IsDNS1123Subdomain(ZoneRelativeOwner(name, apex))) != 0 {
+				continue
 			}
+			scopes = append(scopes, ReservedScope{Name: ZoneRelativeOwner(name, apex), RegistrationUID: reg.UID})
+		}
+	}
+	sort.Slice(scopes, func(i, j int) bool {
+		if scopes[i].Name != scopes[j].Name {
+			return scopes[i].Name < scopes[j].Name
+		}
+		return scopes[i].RegistrationUID < scopes[j].RegistrationUID
+	})
+	return scopes
+}
+
+func (scopes ReservedScopes) Match(owner, apex string) bool {
+	name := ZoneRelativeOwner(owner, apex)
+	for _, scope := range scopes {
+		if Within(name, scope.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+// Owner enforces exclusive ownership across record types and descendant claims.
+func (scopes ReservedScopes) Owner(reg *dns.DNSRegistration, apex string) bool {
+	for _, scope := range scopes {
+		if scope.RegistrationUID == reg.UID {
+			continue
+		}
+		if Within(ZoneRelativeOwner(reg.Spec.Name, apex), scope.Name) {
+			return false
+		}
+		for _, name := range reg.Spec.ReservedDescendants {
+			relative := ZoneRelativeOwner(name, apex)
+			if Within(relative, scope.Name) || Within(scope.Name, relative) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (scopes ReservedScopes) Shadows(domain, apex string) bool {
+	for _, scope := range scopes {
+		root := scope.Name + "." + apex
+		if Within(domain, root) || (Within(root, domain) && Within(domain, apex)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ShadowsContext consults declarations for this resolver's deterministic managed
+// zone. No endpoint records or Accepted status are needed to activate a policy.
+func ShadowsContext(zone *dns.DNSZone, resolver *dns.DNSResolverContext, regs []dns.DNSRegistration) bool {
+	if zone.Spec.Visibility != dns.DNSZoneVisibilityPrivate || !resolver.Spec.ManagedNamespace.Enabled {
+		return false
+	}
+	managedName := ManagedZoneName(string(resolver.UID))
+	if zone.Name == managedName && IsManagedZone(zone) {
+		return false
+	}
+	for _, apex := range []string{resolver.Spec.ManagedNamespace.DomainSuffix, resolver.Status.ManagedNamespace.Suffix} {
+		if apex != "" && RegistrationScopes(managedName, apex, regs).Shadows(zone.Spec.DomainName, apex) {
+			return true
 		}
 	}
 	return false

@@ -292,12 +292,13 @@ func TestAssociationInsideReservedScopesIsNotAccepted(t *testing.T) {
 					resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "project", UID: "vpc-context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/vpc", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
 					shadow := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "project", UID: "shadow-uid", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "web." + scope + ".datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 					shadowAssociation := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "project", UID: "shadow-association", Generation: 1}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: shadow.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
-					c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, shadow, shadowAssociation).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					root := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "service", Namespace: "project", UID: "service"}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: model.ManagedZoneName(string(resolver.UID))}, ReservedDescendants: []string{scope}}}
+					c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, shadow, shadowAssociation, root).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 						obj.SetUID(types.UID(obj.GetName() + "-uid"))
 						obj.SetGeneration(1)
 						return cl.Create(ctx, obj, opts...)
 					}}).Build()
-					r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", ReservedScopes: model.ReservedScopes{{Name: scope}}, ManagedDomainSuffixes: []string{"internal"}}}
+					r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", ManagedDomainSuffixes: []string{"internal"}}}
 					r.Options.defaults()
 					ctx := context.Background()
 					now := time.Now()

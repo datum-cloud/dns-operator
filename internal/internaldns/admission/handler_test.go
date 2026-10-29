@@ -262,7 +262,8 @@ func TestAssociationRequiresCurrentResolverContext(t *testing.T) {
 }
 
 func TestDeletingResourceCanRemoveFinalizersWithoutReferences(t *testing.T) {
-	h := Handler{}
+	scheme, _, _ := managedZoneFixture(t)
+	h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	for _, resource := range []string{"dnsregistrations", "dnsrecordcontributions", "dnszoneassociations", "dnsnamingpolicies", "dnsresolveraccessbindings"} {
 		object := metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &metav1.Time{Time: time.Now()}}}
 		if res := h.Handle(context.Background(), request(resource, "publisher", object, object)); !res.Allowed {
@@ -286,55 +287,6 @@ func managedZoneFixture(t *testing.T) (*runtime.Scheme, *dnsv1alpha1.DNSResolver
 	return scheme, resolverContext, zone
 }
 
-func TestReservedScopesAreReservedForPublishers(t *testing.T) {
-	for _, scope := range []string{"instances", "databases"} {
-		t.Run(scope, func(t *testing.T) {
-			scheme, _, zone := managedZoneFixture(t)
-			tenantZone := zone.DeepCopy()
-			tenantZone.Name, tenantZone.UID = "copied-owner", "tenant-zone"
-			cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, tenantZone).Build()
-			h := Handler{Client: cl, ReservedScopes: model.ReservedScopes{{Name: scope, Publishers: []string{"compute"}}}}
-			registration := func(zoneName, name string, reserved ...string) dnsv1alpha1.DNSRegistration {
-				return dnsv1alpha1.DNSRegistration{Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zoneName}, TTLSeconds: 30, Name: name, ReservedDescendants: reserved, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
-			}
-			for _, tt := range []struct {
-				name    string
-				user    string
-				reg     dnsv1alpha1.DNSRegistration
-				allowed bool
-			}{
-				{"publisher registers an instance", "compute", registration(zone.Name, "web."+scope), true},
-				{"tenant registers an instance", "tenant", registration(zone.Name, "web."+scope), false},
-				{"tenant registers an absolute instance name", "tenant", registration(zone.Name, "web."+scope+".datum.internal"), false},
-				{"tenant reserves the scope", "tenant", registration(zone.Name, "api", scope), false},
-				{"tenant registers outside the scope", "tenant", registration(zone.Name, "api"), true},
-				{"tenant zone with a copied owner is not reserved", "tenant", registration(tenantZone.Name, "web."+scope), true},
-			} {
-				if got := h.Handle(context.Background(), request("dnsregistrations", tt.user, tt.reg, nil)); got.Allowed != tt.allowed {
-					t.Errorf("%s: allowed=%v: %v", tt.name, got.Allowed, got.Result)
-				}
-			}
-
-			reg := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "wide", Namespace: "project", UID: "wide", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: scope, ReservedDescendants: []string{scope}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}}}
-			if err := cl.Create(context.Background(), reg); err != nil {
-				t.Fatal(err)
-			}
-			contribution := &dnsv1alpha1.DNSRecordContribution{Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: reg.Name, UID: reg.UID, Generation: reg.Generation}, RecordSets: []dnsv1alpha1.DNSContributionRecordSet{{RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web." + scope, A: &dnsv1alpha1.ARecordSpec{Content: "10.0.0.8"}}}}}}}
-			if h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)).Allowed {
-				t.Fatal("tenant contribution published an instance name")
-			}
-			if got := h.Handle(context.Background(), request("dnsrecordcontributions", "compute", contribution, nil)); !got.Allowed {
-				t.Fatalf("publisher contribution rejected: %v", got.Result)
-			}
-			h.ReservedScopes[0].Publishers = nil
-			if got := h.Handle(context.Background(), request("dnsrecordcontributions", "tenant", contribution, nil)); got.Allowed {
-				t.Fatalf("an empty publisher list allowed publishing: %v", got.Result)
-			}
-
-		})
-	}
-}
-
 func TestAssociationCannotShadowReservedScopes(t *testing.T) {
 	for _, scope := range []string{"instances", "databases"} {
 		t.Run(scope, func(t *testing.T) {
@@ -343,11 +295,11 @@ func TestAssociationCannotShadowReservedScopes(t *testing.T) {
 				return &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "project", UID: types.UID(name)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: domain, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 			}
 			zones := []*dnsv1alpha1.DNSZone{zone("scope", scope+".datum.internal"), zone("nested", "web."+scope+".datum.internal"), zone("sibling", "corp.datum.internal"), zone("lookalike", "web."+scope), zone("other", "corp.example")}
-			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext, managed)
+			builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resolverContext, managed, reservationFixture(managed.Name, scope))
 			for _, z := range zones {
 				builder = builder.WithObjects(z)
 			}
-			h := Handler{Client: builder.Build(), ReservedScopes: model.ReservedScopes{{Name: scope}}}
+			h := Handler{Client: builder.Build()}
 			for _, tt := range []struct {
 				zone    string
 				allowed bool

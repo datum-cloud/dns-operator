@@ -44,7 +44,7 @@ spec:
   kind: DNSRegistration
   plural: dnsregistrations
   singular: dnsregistration
-  permissions: [list, get, watch, create, update, patch, delete]
+  permissions: [list, get, watch, create, update, patch, delete, reserve, publish]
   subresources:
     - name: status
       permissions: [get, update, patch]

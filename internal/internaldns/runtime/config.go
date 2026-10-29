@@ -67,7 +67,8 @@ type RegionalTransportConfig struct {
 }
 
 type Config struct {
-	ReservedScopes        model.ReservedScopes      `json:"reservedScopes"`
+	// Reject the obsolete deployment-owned policy rather than silently unreserving it.
+	LegacyReservedScopes  json.RawMessage           `json:"reservedScopes,omitempty"`
 	MetricsBindAddress    string                    `json:"metricsBindAddress,omitempty"`
 	Region                string                    `json:"region"`
 	Shard                 string                    `json:"shard"`
@@ -194,15 +195,10 @@ func (c *Config) Validate(role string) error {
 		return fmt.Errorf("cachedZoneInputs requires perZoneReconcile")
 	}
 	if len(c.Admission.LegacyInstancePublishers) != 0 {
-		return errors.New("admission.instancePublishers is obsolete: migrate to reservedScopes with an explicit name and publishers list")
+		return errors.New("admission.instancePublishers is obsolete: create service-owned DNSRegistrations with reservedDescendants and reserve/publish permissions before upgrading")
 	}
-	if role == roleControlPlane {
-		if err := c.ReservedScopes.Validate(); err != nil {
-			return err
-		}
-		if len(c.ReservedScopes) > 0 && !c.Admission.Enabled {
-			return errors.New("reservedScopes requires admission.enabled to enforce authenticated publishers")
-		}
+	if len(c.LegacyReservedScopes) != 0 {
+		return errors.New("reservedScopes is obsolete: create service-owned DNSRegistrations with reservedDescendants before upgrading")
 	}
 
 	switch role {

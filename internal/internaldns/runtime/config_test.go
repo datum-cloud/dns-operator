@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -61,7 +62,7 @@ func TestAgentDeliveryConnectionTracksDisconnectAndReconnect(t *testing.T) {
 }
 
 func TestKubeAPIRateLimitDefaultsOverridesAndValidation(t *testing.T) {
-	base := Config{ReservedScopes: model.ReservedScopes{},
+	base := Config{
 		Region: "central", Shard: "one",
 		NATS:   transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
@@ -123,7 +124,7 @@ func TestProjectSourceFailureDoesNotStopHealthySource(t *testing.T) {
 }
 
 func TestControlPlaneRejectsAmbiguousProjectsAndMemberIDs(t *testing.T) {
-	base := Config{ReservedScopes: model.ReservedScopes{},
+	base := Config{
 		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
 		Projects: []ProjectConfig{{ProjectUID: "p1", Namespace: "n1"}, {ProjectUID: "p2", Namespace: "n2"}},
@@ -259,7 +260,7 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 }
 
 func TestControlPlaneProjectDiscoveryValidation(t *testing.T) {
-	base := Config{ReservedScopes: model.ReservedScopes{}, Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://fixture:4222", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Members: []model.Member{{MemberID: "regional", Role: "regional"}}, ProjectDiscovery: &ProjectDiscoveryConfig{Kubeconfig: "/var/run/discovery/kubeconfig"}}
+	base := Config{Region: "central", Shard: "one", NATS: transport.Config{URL: "nats://fixture:4222", AllowInsecure: true}, Stream: transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"}, Members: []model.Member{{MemberID: "regional", Role: "regional"}}, ProjectDiscovery: &ProjectDiscoveryConfig{Kubeconfig: "/var/run/discovery/kubeconfig"}}
 	if err := base.Validate(roleControlPlane); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +292,7 @@ func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {
 }
 
 func TestManagedDomainSuffixesValidation(t *testing.T) {
-	base := Config{ReservedScopes: model.ReservedScopes{},
+	base := Config{
 		Region: "central", Shard: "one",
 		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
@@ -319,7 +320,7 @@ func TestCachedZoneInputsRequiresPerZoneReconcile(t *testing.T) {
 	if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "requires perZoneReconcile") {
 		t.Fatalf("invalid cache configuration accepted: %v", err)
 	}
-	cfg = Config{ReservedScopes: model.ReservedScopes{}, PerZoneReconcile: true, CachedZoneInputs: true,
+	cfg = Config{PerZoneReconcile: true, CachedZoneInputs: true,
 		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
 		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
 		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
@@ -336,27 +337,13 @@ func TestCachedZoneInputsRequiresPerZoneReconcile(t *testing.T) {
 }
 
 func TestReservedScopesConfigurationMigration(t *testing.T) {
-	for _, tc := range []struct{ name, json, want string }{
-		{"missing", `{}`, "reservedScopes is required"},
-		{"null", `{"reservedScopes":null}`, "reservedScopes is required"},
-		{"legacy", `{"admission":{"instancePublishers":["compute"]}}`, "migrate to reservedScopes"},
-		{"legacy empty", `{"reservedScopes":[],"admission":{"instancePublishers":[]}}`, "migrate to reservedScopes"},
-		{"legacy null", `{"reservedScopes":[],"admission":{"instancePublishers":null}}`, "migrate to reservedScopes"},
-		{"disabled admission", `{"reservedScopes":[{"name":"svc"}]}`, "requires admission.enabled"},
-		{"overlap", `{"reservedScopes":[{"name":"svc"},{"name":"nested.svc"}]}`, "overlap"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, []byte(tc.json), 0600); err != nil {
-				t.Fatal(err)
-			}
-			c, err := LoadConfig(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err = c.Validate("control-plane"); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("got %v, want %s", err, tc.want)
-			}
-		})
+	for _, input := range []string{`{"reservedScopes":null}`, `{"reservedScopes":[]}`, `{"reservedScopes":[{"name":"instances","publishers":["compute"]}]}`, `{"admission":{"instancePublishers":null}}`, `{"admission":{"instancePublishers":[]}}`, `{"admission":{"instancePublishers":["compute"]}}`} {
+		var cfg Config
+		if err := json.Unmarshal([]byte(input), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "service-owned DNSRegistrations") {
+			t.Fatalf("obsolete policy silently ignored: %s: %v", input, err)
+		}
 	}
 }

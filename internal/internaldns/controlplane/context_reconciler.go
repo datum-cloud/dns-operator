@@ -238,10 +238,18 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		apex    string
 	}
 	owners := map[apexKey]types.UID{}
+	reservations := map[string][]dnsv1alpha1.DNSRegistration{}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	for i := range items {
 		a := &items[i]
 		base := a.DeepCopy()
+		if _, ok := reservations[a.Namespace]; !ok {
+			var regs dnsv1alpha1.DNSRegistrationList
+			if err := r.sourceReader().List(ctx, &regs, client.InNamespace(a.Namespace)); err != nil {
+				return err
+			}
+			reservations[a.Namespace] = regs.Items
+		}
 		z := zones[a.Spec.DNSZoneRef.Name]
 		currentZone := dnsv1alpha1.DNSObjectReference{Name: a.Spec.DNSZoneRef.Name}
 		if z != nil && z.DeletionTimestamp.IsZero() && z.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -269,7 +277,7 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 			status = metav1.ConditionFalse
 			reason = "InvalidReference"
 			msg = "private zone and resolver context must match their resolved lifetimes; recreate the association to reattach replacements"
-		} else if r.Options.ReservedScopes.Shadows(z, &resolverContext) {
+		} else if model.ShadowsContext(z, &resolverContext, reservations[a.Namespace]) {
 			status = metav1.ConditionFalse
 			reason = "ReservedScope"
 			msg = "zone shadows a reserved subtree in this resolver context"

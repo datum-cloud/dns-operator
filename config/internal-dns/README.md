@@ -433,3 +433,67 @@ Naming-policy selectors organize names; they do not authorize publishers.
 A publisher that can change registration labels can select every matching
 rule for the registration's associated context. Restrict registration writes
 with RBAC when publishers must not share that authority.
+
+## Service-owned reservations
+
+DNS has no service-scope configuration or built-in reserved labels. A service
+creates a long-lived `DNSRegistration` in each managed zone with
+`reservedDescendants`, then publishes through `DNSRecordContribution` objects
+referencing that registration's UID and generation. The declaration protects the
+subtree before any endpoints exist. Keep it for the lifetime of the service's
+namespace, not an individual endpoint. Deleting endpoint contributions does not
+release the reservation. See [the service policy example](examples/service-reservation.yaml).
+
+Grant the service owner `reserve` and its publishers `publish` on the named
+`dnsregistrations` resource, alongside their ordinary API write permissions.
+Admission uses the project API's SubjectAccessReview; RBAC or Milo IAM owns the
+grants. Ordinary registration create/update rights are insufficient. Customer
+roles intentionally do not receive these new permissions. Ensure every project
+admission credential can create `authorization.k8s.io/subjectaccessreviews` and
+list registrations. Authorization or policy-read failures deny the write.
+
+The owner must authorize edits, deletion, and finalizer removal. A terminating
+root protects its scopes until actual deletion. If its zone has disappeared,
+cleanup still requires `reserve` while its resolver context exists; unrelated
+orphaned tenant registrations retain normal cleanup. Revoking `publish` prevents subsequent contribution
+writes; it does not delete previously accepted contributions. Remove those
+contributions explicitly when revoking existing publication.
+
+No declarations (or an empty `reservedDescendants`) means no reserved subtrees.
+Do not release a root until removing its protection is intended. Tenant-owned
+private zones, public zones, and names outside service reservations retain their
+existing behavior. A tenant zone may still exist independently; it cannot be
+associated with the resolver whose reserved subtree it shadows. Registration
+changes trigger both zone compilation and association reconciliation; live policy
+reads fence cached compilation against newly created or changed declarations.
+
+### Migration
+
+Both obsolete settings, `admission.instancePublishers` and `reservedScopes`,
+are rejected at startup, including empty arrays and null. Their absence does not
+synthesize an `instances` policy. A safe rollout requires:
+
+1. Install the new `reserve`/`publish` IAM permissions, service-specific grants,
+   and admission SubjectAccessReview permissions. Keep the old enforcement active.
+2. Have each service create persistent root registrations in every applicable
+   managed zone using its currently authorized publisher identity. Audit existing
+   managed-zone `reservedDescendants` declarations: only intended service-owned
+   policies and trusted contributions should remain, since the old API did not
+   require `reserve`/`publish`. Seed all
+   required subtrees before upgrading or opening the namespace to tenants.
+3. Move per-endpoint publication to contributions referencing those roots, removing
+   obsolete child registrations. Retain root registrations even when no endpoint
+   is eligible. Coordinate this change with the service to avoid a publication gap.
+4. Deploy the new DNS binary, remove obsolete settings, and route the fail-closed
+   internal-DNS webhook to upgraded endpoints, including DNSRecordSet checks and
+   registration DELETE operations. Upgrade all reconciliation replicas as part of
+   the same cutover; do not mix old/new enforcement while tenant writes are open.
+
+The old binary does not enforce newly declared scopes other than its built-in
+`instances` protection. Gate tenant writes throughout staging and cutover for
+newly protected scopes, not only while replicas run mixed versions.
+
+Service deployment must seed roots for newly created managed zones before tenant
+use. This is service/platform bootstrap policy, not inferred from workload records.
+Rollback to the old implementation cannot protect unrelated service subtrees;
+retain the new enforcement or gate tenant writes during rollback.

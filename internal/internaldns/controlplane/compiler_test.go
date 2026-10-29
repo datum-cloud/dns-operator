@@ -299,12 +299,13 @@ func TestCompileRejectsTenantRecordsInReservedScopes(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 			in := fixture(now)
-			in.ReservedScopes = model.ReservedScopes{{Name: scope}}
 			in.Registrations = nil
 			in.Contributions = nil
 			controller := true
 			in.Zone.Name = model.ManagedZoneName("ctx-uid")
 			in.Zone.OwnerReferences = []metav1.OwnerReference{{APIVersion: dnsv1alpha1.GroupVersion.String(), Kind: "DNSResolverContext", Name: "ctx", UID: "ctx-uid", Controller: &controller}}
+			in.Registrations = []dnsv1alpha1.DNSRegistration{{ObjectMeta: metav1.ObjectMeta{Name: "service", UID: "service", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: in.Zone.Name}, Name: scope, ReservedDescendants: []string{scope}, RecordTypes: []dnsv1alpha1.RRType{dnsv1alpha1.RRTypeA}, TTLSeconds: 30}}}
+			in.RegistrationZoneReferences = map[types.UID]dnsv1alpha1.DNSObjectReference{"service": {Name: in.Zone.Name, UID: in.Zone.UID, Generation: in.Zone.Generation}}
 			static := func(uid types.UID, owner string) dnsv1alpha1.DNSRecordSet {
 				return dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: string(uid), UID: uid}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: corev1.LocalObjectReference{Name: in.Zone.Name}, RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: owner, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}
 			}
@@ -438,5 +439,74 @@ func TestCompileInvalidSRVDoesNotBlockWithdrawal(t *testing.T) {
 	}
 	if len(got.Plan.Contributions) != 2 {
 		t.Fatal("rejected contribution lost its generation fence")
+	}
+}
+
+func TestServiceRootOwnsContributionsExclusively(t *testing.T) {
+	for _, scope := range []string{"instances", "databases"} {
+		t.Run(scope, func(t *testing.T) {
+			in := fixture(time.Now().UTC())
+			in.Zone.Name = model.ManagedZoneName("context")
+			controller := true
+			in.Zone.OwnerReferences = []metav1.OwnerReference{{APIVersion: dnsv1alpha1.GroupVersion.String(), Kind: "DNSResolverContext", UID: "context", Controller: &controller}}
+			root := &in.Registrations[0]
+			root.Spec.DNSZoneRef.Name = in.Zone.Name
+			root.Spec.Name = scope
+			root.Spec.ReservedDescendants = []string{scope}
+			zoneRef := dnsv1alpha1.DNSObjectReference{Name: in.Zone.Name, UID: in.Zone.UID, Generation: in.Zone.Generation}
+			in.RegistrationZoneReferences[root.UID] = zoneRef
+			in.Contributions[0].Spec.RecordSets[0].Records[0].Name = "WEB." + scope + ".CORP.INTERNAL."
+			leaf := root.DeepCopy()
+			leaf.Name = "tenant-leaf"
+			leaf.UID = "tenant-leaf"
+			leaf.Spec.Name = "web." + scope
+			leaf.Spec.ReservedDescendants = nil
+			in.RegistrationZoneReferences[leaf.UID] = zoneRef
+			in.Registrations = append(in.Registrations, *leaf)
+			badContribution := in.Contributions[0].DeepCopy()
+			badContribution.UID = "tenant-contribution"
+			badContribution.Spec.RegistrationRef = dnsv1alpha1.DNSObjectReference{Name: leaf.Name, UID: leaf.UID, Generation: leaf.Generation}
+			in.Contributions = append(in.Contributions, *badContribution)
+			in.StaticRecords = []dnsv1alpha1.DNSRecordSet{{ObjectMeta: metav1.ObjectMeta{Name: "static", UID: "static"}, Spec: dnsv1alpha1.DNSRecordSetSpec{DNSZoneRef: structLocal(in.Zone.Name), RecordType: dnsv1alpha1.RRTypeA, Records: []dnsv1alpha1.RecordEntry{{Name: "web." + scope, A: &dnsv1alpha1.ARecordSpec{Content: "192.0.2.1"}}}}}}
+			got, err := Compile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Accepted["registration-a"] || !got.Accepted["contribution-a"] || got.Accepted[leaf.UID] || got.Accepted["tenant-contribution"] || got.Reasons["static"] != dnsValueReservedScope || len(got.Plan.RRsets) != 1 {
+				t.Fatalf("exclusive service publication failed: %#v", got)
+			}
+			// Two concurrent policies can both pass admission before either is stored.
+			// Compilation rejects both rather than publishing an arbitrary winner.
+			overlap := in.Registrations[0].DeepCopy()
+			overlap.Name = "second-policy"
+			overlap.UID = "second-policy"
+			in.Registrations = append(in.Registrations, *overlap)
+			in.RegistrationZoneReferences[overlap.UID] = zoneRef
+			got, err = Compile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Accepted["registration-a"] || got.Accepted[overlap.UID] || len(got.Plan.RRsets) != 0 || got.Reasons["static"] != dnsValueReservedScope {
+				t.Fatalf("conflicting policies failed open: %#v", got)
+			}
+			in.Registrations = in.Registrations[:1]
+			now := metav1.Now()
+			in.Registrations[0].DeletionTimestamp = &now
+			got, err = Compile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Reasons["static"] != dnsValueReservedScope || len(got.Plan.RRsets) != 0 {
+				t.Fatal("terminating policy released subtree")
+			}
+			in.Registrations = nil
+			got, err = Compile(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Accepted["static"] {
+				t.Fatal("removed service policy still implicitly reserves a scope")
+			}
+		})
 	}
 }

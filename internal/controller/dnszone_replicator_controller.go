@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -277,6 +278,9 @@ func (r *DNSZoneReplicator) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 
 	if _, err = r.ensureDownstreamZone(ctx, strategy, &upstream); err != nil {
+		if errors.Is(err, errDownstreamTerminating) {
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -372,11 +376,18 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 		return controllerutil.OperationResultNone, err
 	}
 
+	if err := checkDownstreamNamespace(ctx, strategy.GetClient(), md.Namespace); err != nil {
+		return controllerutil.OperationResultNone, err
+	}
+
 	shadow := dnsv1alpha1.DNSZone{}
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
 	res, cErr := controllerutil.CreateOrPatch(ctx, strategy.GetClient(), &shadow, func() error {
+		if !shadow.DeletionTimestamp.IsZero() {
+			return errDownstreamTerminating
+		}
 		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
@@ -384,7 +395,7 @@ func (r *DNSZoneReplicator) ensureDownstreamZone(ctx context.Context, strategy d
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
-		return res, cErr
+		return res, downstreamTerminationError(cErr)
 	}
 	ensuredLog := log.FromContext(ctx)
 	if res == controllerutil.OperationResultNone {

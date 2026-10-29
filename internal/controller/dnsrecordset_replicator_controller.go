@@ -33,8 +33,6 @@ type DNSRecordSetReplicator struct {
 	DownstreamClient client.Client
 }
 
-var errRecordSetShadowTerminating = errors.New("downstream record set is terminating")
-
 const rsFinalizer = "dns.networking.miloapis.com/finalize-dnsrecordset"
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsrecordsets,verbs=get;list;watch;update;patch;delete
@@ -168,7 +166,7 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	}
 	// Ensure the downstream recordset object mirrors the upstream spec
 	operation, err := r.ensureDownstreamRecordSet(ctx, strategy, &upstream)
-	if errors.Is(err, errRecordSetShadowTerminating) {
+	if errors.Is(err, errDownstreamTerminating) {
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 	if err != nil {
@@ -318,13 +316,8 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		return controllerutil.OperationResultNone, err
 	}
 
-	// Do not create replacement shadows or anchors while their namespace drains.
-	var namespace corev1.Namespace
-	if err := r.DownstreamClient.Get(ctx, client.ObjectKey{Name: md.Namespace}, &namespace); err != nil && !apierrors.IsNotFound(err) {
+	if err := checkDownstreamNamespace(ctx, r.DownstreamClient, md.Namespace); err != nil {
 		return controllerutil.OperationResultNone, err
-	}
-	if !namespace.DeletionTimestamp.IsZero() {
-		return controllerutil.OperationResultNone, errRecordSetShadowTerminating
 	}
 
 	shadow := dnsv1alpha1.DNSRecordSet{}
@@ -335,7 +328,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		// Namespace deletion may have removed the anchor before the record's
 		// provider finalizer finishes. Do not recreate it or mutate a dying shadow.
 		if !shadow.DeletionTimestamp.IsZero() {
-			return errRecordSetShadowTerminating
+			return errDownstreamTerminating
 		}
 		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
@@ -344,7 +337,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
-		return res, cErr
+		return res, downstreamTerminationError(cErr)
 	}
 	ensuredLog := log.FromContext(ctx)
 	if res == controllerutil.OperationResultNone {

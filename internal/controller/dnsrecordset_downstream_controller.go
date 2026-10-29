@@ -103,6 +103,7 @@ func (r *DNSRecordSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				if !apierrors.IsNotFound(zoneErr) {
 					return ctrl.Result{}, zoneErr
 				}
+				logger.Info("releasing orphaned record finalizer after confirming zone is absent", "recordSet", req.NamespacedName, "zone", rs.Spec.DNSZoneRef.Name)
 				// Zone deletion owns provider-zone cleanup; no record can be
 				// removed from a zone which no longer exists.
 				base := rs.DeepCopy()

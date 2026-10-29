@@ -25,7 +25,7 @@ func TestRecordSetReplicatorDoesNotMutateTerminatingShadow(t *testing.T) {
 	upstream.DeletionTimestamp = nil
 	strategy := annotatingStrategy{fakeStrategy{namespace: "ns-downstream", client: cl}}
 	_, err := r.ensureDownstreamRecordSet(context.Background(), strategy, upstream)
-	if !errors.Is(err, errRecordSetShadowTerminating) {
+	if !errors.Is(err, errDownstreamTerminating) {
 		t.Fatalf("got %v", err)
 	}
 	var got dnsv1alpha1.DNSRecordSet
@@ -80,7 +80,7 @@ func TestRecordSetReplicatorWaitsForTerminatingNamespace(t *testing.T) {
 	upstream := &dnsv1alpha1.DNSRecordSet{ObjectMeta: metav1.ObjectMeta{Name: "record", Namespace: "default"}}
 	strategy := annotatingStrategy{fakeStrategy{namespace: "ns-downstream", client: cl}}
 	_, err := r.ensureDownstreamRecordSet(context.Background(), strategy, upstream)
-	if !errors.Is(err, errRecordSetShadowTerminating) {
+	if !errors.Is(err, errDownstreamTerminating) {
 		t.Fatalf("got %v", err)
 	}
 	var records dnsv1alpha1.DNSRecordSetList
@@ -89,5 +89,31 @@ func TestRecordSetReplicatorWaitsForTerminatingNamespace(t *testing.T) {
 	}
 	if len(records.Items) != 0 {
 		t.Fatal("created a record in a terminating namespace")
+	}
+}
+
+func TestZoneReplicatorWaitsForTerminatingNamespace(t *testing.T) {
+	now := metav1.Now()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-downstream", DeletionTimestamp: &now, Finalizers: []string{"test/finalizer"}}}
+	cl := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(ns).Build()
+	r := &DNSZoneReplicator{DownstreamClient: cl}
+	strategy := annotatingStrategy{fakeStrategy{namespace: "ns-downstream", client: cl}}
+	_, err := r.ensureDownstreamZone(context.Background(), strategy, &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "zone", Namespace: "default"}})
+	if !errors.Is(err, errDownstreamTerminating) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestDownstreamTerminationAdmissionRace(t *testing.T) {
+	for _, cause := range []metav1.CauseType{corev1.NamespaceTerminatingCause, metav1.CauseTypeUnexpectedServerResponse} {
+		err := &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonForbidden, Details: &metav1.StatusDetails{Causes: []metav1.StatusCause{{Type: cause}}}}}
+		got := downstreamTerminationError(err)
+		if cause == corev1.NamespaceTerminatingCause {
+			if !errors.Is(got, errDownstreamTerminating) {
+				t.Fatalf("got %v", got)
+			}
+		} else if got != err {
+			t.Fatal("unrelated forbidden error swallowed")
+		}
 	}
 }

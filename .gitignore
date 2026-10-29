@@ -20,7 +20,7 @@ config/**/charts
 .task/
 
 # Per-cluster kubeconfigs generated for the e2e Chainsaw suites
-# (make chainsaw-prepare-kubeconfigs / task env:chainsaw-prepare-kubeconfigs)
+# (task chainsaw-prepare-kubeconfigs / task env:chainsaw-prepare-kubeconfigs)
 test/e2e/kubeconfig-*
 
 # Test binary, built with `go test -c`
@@ -54,3 +54,6 @@ go.work.sum
 # Local output from the internal DNS end-to-end harness (includes kubeconfigs)
 /.internal-dns-e2e/
 /test/internaldns/results/
+
+# Python test caches, from task test:internal-dns-perf
+__pycache__/

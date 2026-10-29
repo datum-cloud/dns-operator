@@ -42,7 +42,7 @@ func TestReplicatorProviderLifecycle(t *testing.T) {
 
 	cfg, err := testEnv.Start()
 	if err != nil {
-		t.Fatalf("starting envtest: %v (run 'make setup-envtest' or set KUBEBUILDER_ASSETS)", err)
+		t.Fatalf("starting envtest: %v (run 'task setup-envtest' or set KUBEBUILDER_ASSETS)", err)
 	}
 	t.Cleanup(func() {
 		if err := testEnv.Stop(); err != nil {
@@ -147,7 +147,7 @@ func TestReplicatorProviderLifecycle(t *testing.T) {
 }
 
 // firstEnvTestBinaryDir locates envtest binaries under ./bin/k8s so the test can
-// run from an IDE without KUBEBUILDER_ASSETS being set. Run 'make setup-envtest'
+// run from an IDE without KUBEBUILDER_ASSETS being set. Run 'task setup-envtest'
 // to populate it.
 func firstEnvTestBinaryDir(t *testing.T) string {
 	t.Helper()

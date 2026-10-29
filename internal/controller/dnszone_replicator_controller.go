@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -562,7 +563,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 	); err != nil {
 		return err
 	}
-	if len(existingList.Items) > 0 {
+	if hasApexRecordSet(existingList.Items) {
 		log.FromContext(ctx).V(1).Info("SOA DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
@@ -586,7 +587,7 @@ func (r *DNSZoneReplicator) ensureSOARecordSet(ctx context.Context, c client.Cli
 		}},
 	}
 	log.FromContext(ctx).Info("creating default SOA DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
-	return c.Create(ctx, &newObj)
+	return createApexRecordSet(ctx, c, &newObj)
 }
 
 // ensureNSRecordSet ensures a root NS recordset reflecting nameservers from the upstream status.
@@ -610,7 +611,7 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 	); err != nil {
 		return err
 	}
-	if len(existingList.Items) > 0 {
+	if hasApexRecordSet(existingList.Items) {
 		log.FromContext(ctx).V(1).Info("NS DNSRecordSet already present; skipping create", "namespace", upstream.Namespace, "dnsZone", upstream.Name)
 		return nil
 	}
@@ -633,7 +634,45 @@ func (r *DNSZoneReplicator) ensureNSRecordSet(ctx context.Context, c client.Clie
 		Records:    records,
 	}
 	log.FromContext(ctx).Info("creating default NS DNSRecordSet (upstream)", "namespace", newObj.Namespace, "dnsZone", upstream.Name)
-	return c.Create(ctx, &newObj)
+	return createApexRecordSet(ctx, c, &newObj)
+}
+
+// hasApexRecordSet excludes delegations: an NS record below the apex does not
+// supply the zone's own nameservers.
+func hasApexRecordSet(items []dnsv1alpha1.DNSRecordSet) bool {
+	for _, item := range items {
+		for _, record := range item.Spec.Records {
+			if record.Name == "@" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// createApexRecordSet preserves a user record occupying the legacy default name.
+// A parent-zone delegation can legitimately have the same name as a child
+// zone's default NS record. Use a bounded, deterministic fallback in that case.
+func createApexRecordSet(ctx context.Context, c client.Client, desired *dnsv1alpha1.DNSRecordSet) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		err := c.Create(ctx, desired)
+		if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		var existing dnsv1alpha1.DNSRecordSet
+		if err := c.Get(ctx, client.ObjectKeyFromObject(desired), &existing); err != nil {
+			return err
+		}
+		if existing.Spec.DNSZoneRef == desired.Spec.DNSZoneRef && existing.Spec.RecordType == desired.Spec.RecordType && hasApexRecordSet([]dnsv1alpha1.DNSRecordSet{existing}) {
+			return nil
+		}
+		if attempt == 1 {
+			return fmt.Errorf("default apex record name %q is occupied by an unrelated record", desired.Name)
+		}
+		digest := sha256.Sum256([]byte(desired.Namespace + "/" + desired.Spec.DNSZoneRef.Name + "/" + string(desired.Spec.RecordType)))
+		desired.Name = fmt.Sprintf("dnszone-apex-%x", digest[:16])
+	}
+	return nil
 }
 
 // updateStatus owns the upstream status synthesis: Accepted/Programmed, Nameservers.

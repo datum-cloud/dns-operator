@@ -456,9 +456,25 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			}
 		}
 	}
-	for i := range existing.Items {
-		b := &existing.Items[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] || b.Spec.Tombstone {
+	if err := r.retireContextBindings(ctx, ns, existing.Items, desired); err != nil {
+		return err
+	}
+	return r.releaseDestinations(ctx, held)
+}
+
+func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, existing []dnsv1alpha1.DNSResolverBinding, desired map[string]bool) error {
+	for i := range existing {
+		b := &existing[i]
+		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] {
+			continue
+		}
+		if b.Spec.Tombstone {
+			fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
+			if b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision && b.Status.Phase == "Withdrawn" && fullyReplicated != nil && fullyReplicated.Status == metav1.ConditionTrue && fullyReplicated.ObservedGeneration == b.Generation {
+				if err := r.Delete(ctx, b); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+			}
 			continue
 		}
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
@@ -498,7 +514,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
-	return r.releaseDestinations(ctx, held)
+	return nil
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

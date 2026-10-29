@@ -15,6 +15,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -200,8 +201,14 @@ func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha
 			continue
 		}
 		shards[b.Spec.Placement.Shard] = true
-		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() && sameAddress(b.Spec.Configuration.Query.NodeAddress, address) {
-			return true, nil
+		if sameAddress(b.Spec.Configuration.Query.NodeAddress, address) {
+			if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() {
+				return true, nil
+			}
+			fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
+			if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != dnsValueWithdrawn || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
+				return true, nil
+			}
 		}
 	}
 	for shard := range shards {
@@ -222,7 +229,7 @@ func (a *Allocator) destinationRouted(ctx context.Context, bindings []dnsv1alpha
 			continue
 		}
 		for _, b := range snapshot.Bindings {
-			if sameAddress(b.ConsumerAddress, address) {
+			if !b.Tombstone && sameAddress(b.ConsumerAddress, address) {
 				return true, nil
 			}
 		}

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	coreplugin "github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
 )
 
@@ -421,6 +422,7 @@ func TestSelectedZoneLookupDoesNotRepeatZoneMatching(t *testing.T) {
 		t.Fatal(err)
 	}
 	selected := p.state.Load().contexts["fd53::a"]
+	selected.zones.Names = nil
 	delete(selected.zones.Z, "apps.datum.internal.")
 	answer, code := query(t, p, "fd53::a", "app.apps.datum.internal.")
 	if code != dns.RcodeSuccess || address(answer) != "198.51.100.10" {
@@ -466,6 +468,85 @@ func TestConcurrentReplaceAndSelectedZoneLookup(t *testing.T) {
 	for err := range errs {
 		t.Fatal(err)
 	}
+}
+
+func TestMatchZone(t *testing.T) {
+	t.Parallel()
+	apexes := map[string]struct{}{
+		".":                  {},
+		"internal.":          {},
+		"child.internal.":    {},
+		"foo\\.bar.example.": {},
+	}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "APP.CHILD.INTERNAL.", want: "child.internal."},
+		{name: "app.internal", want: "internal."},
+		{name: "host.foo\\.BAR.example.", want: "foo\\.bar.example."},
+		{name: "notinternal.", want: "."},
+		{name: ".", want: "."},
+	} {
+		query := canonicalQueryName(test.name)
+		if got := matchZone(apexes, query); got != test.want {
+			t.Errorf("matchZone(%q) = %q, want %q", query, got, test.want)
+		}
+	}
+	delete(apexes, ".")
+	if got := matchZone(apexes, canonicalQueryName("notinternal.")); got != "" {
+		t.Fatalf("unrelated name matched %q", got)
+	}
+}
+
+func TestMatchZoneMatchesCoreDNSZoneScan(t *testing.T) {
+	t.Parallel()
+	zones := []string{".", "internal.", "child.internal.", "foo\\.bar.example.", "deep.foo\\.bar.example."}
+	apexes := make(map[string]struct{}, len(zones))
+	for _, zone := range zones {
+		apexes[zone] = struct{}{}
+	}
+	for _, name := range []string{
+		".",
+		"INTERNAL.",
+		"app.internal.",
+		"APP.CHILD.INTERNAL.",
+		"host.foo\\.BAR.example.",
+		"host.deep.foo\\.bar.example.",
+		"notinternal.",
+	} {
+		query := canonicalQueryName(name)
+		want := coreplugin.Zones(zones).Matches(query)
+		if got := matchZone(apexes, query); got != want {
+			t.Errorf("matchZone(%q) = %q, CoreDNS zone scan = %q", query, got, want)
+		}
+	}
+}
+
+func BenchmarkMatchZone(b *testing.B) {
+	names := make([]string, 128)
+	apexes := make(map[string]struct{}, len(names))
+	for i := range names {
+		names[i] = fmt.Sprintf("z%d.internal.", i)
+		apexes[names[i]] = struct{}{}
+	}
+	qname := canonicalQueryName("APP.Z127.INTERNAL.")
+	b.Run("indexed", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := matchZone(apexes, qname); got != "z127.internal." {
+				b.Fatal(got)
+			}
+		}
+	})
+	b.Run("scan", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := coreplugin.Zones(names).Matches(qname); got != "z127.internal." {
+				b.Fatal(got)
+			}
+		}
+	})
 }
 
 func benchmarkContextPlugin(b *testing.B, selected bool) {

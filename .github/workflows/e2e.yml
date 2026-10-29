@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     name: Run Chainsaw E2E Tests
@@ -50,22 +53,13 @@ jobs:
           install_only: true
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Chainsaw
-        # env:chainsaw invokes `chainsaw` from PATH; `make chainsaw` installs
-        # the pinned version into ./bin, which we add to PATH here.
-        run: |
-          make chainsaw
-          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
-
       - name: Bring up private DNS on the shared Kubernetes foundation
-        run: |
-          go test ./test/internaldns/kubernetes/...
-          task --yes env:internal-dns:up
+        run: task --yes test:internal-dns-kubernetes env:internal-dns:up
 
       - name: Bring up the full DNS environment
         # Creates the upstream (replicator) + control (downstream agent +

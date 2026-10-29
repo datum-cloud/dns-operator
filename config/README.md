@@ -17,7 +17,7 @@ repository ships **two** of those, for two different API servers.
 
 | Path | Registers with | Composed into | Maintained by |
 |---|---|---|---|
-| `webhook/` | The same cluster the manager runs in | `default/`, so kind and e2e get it | `make manifests`, from the kubebuilder markers |
+| `webhook/` | The same cluster the manager runs in | `default/`, so kind and e2e get it | `task manifests`, from the kubebuilder markers |
 | `components/admission-webhooks/` | A separate control-plane API server, reached across clusters | Nothing. Applied on its own, from the published artifact | By hand |
 
 The split exists because the two API servers are not the same machine in a

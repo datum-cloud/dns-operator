@@ -4,7 +4,7 @@ kind: Kustomization
 namespace: network-services-operator-system
 
 resources:
-  # NSO's own deployment, from the clone that `make nso-clone` makes (NSO_DIR)
+  # NSO's own deployment, from the clone that `task nso-clone` makes (NSO_DIR)
   - ../../../dev/network-services-operator/config/default
   - leader-election-rbac.yaml
   - domain-rbac.yaml

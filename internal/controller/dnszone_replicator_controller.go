@@ -671,6 +671,7 @@ func createApexRecordSet(ctx context.Context, c client.Client, desired *dnsv1alp
 		}
 		digest := sha256.Sum256([]byte(desired.Namespace + "/" + desired.Spec.DNSZoneRef.Name + "/" + string(desired.Spec.RecordType)))
 		desired.Name = fmt.Sprintf("dnszone-apex-%x", digest[:16])
+		log.FromContext(ctx).Info("default apex name occupied; using fallback", "dnsZone", desired.Spec.DNSZoneRef.Name, "recordType", desired.Spec.RecordType, "recordSet", desired.Name)
 	}
 	return nil
 }

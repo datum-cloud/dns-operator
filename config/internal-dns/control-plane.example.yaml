@@ -1,3 +1,15 @@
+# reservedScopes is required: missing/null fails startup; [] explicitly disables
+# reservations. Empty/missing publishers denies every publisher in that subtree.
+# Nonempty reservations require admission.enabled. Usernames must match the
+# authenticated project API caller; existing API authorization still applies.
+# Migration: replace admission.instancePublishers with an explicit instances
+# reservation and its publisher list. The legacy field is rejected, even empty.
+# Audit existing objects first; publisher-list changes do not revoke stored
+# contributions. Keep version-matched binary/config pairs during rollout.
+# Switch the failure-closed internal-DNS webhook (including dnsrecordsets) to
+# configured endpoints before removing the old record-set guard. Do not mix
+# old/unconfigured endpoints. Roll reconciliation replicas to the same policy.
+# Rollback to PR #338 alone cannot protect reservations other than instances.
 apiVersion: v1
 kind: ConfigMap
 metadata:

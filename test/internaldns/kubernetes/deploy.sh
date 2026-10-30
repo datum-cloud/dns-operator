@@ -32,8 +32,12 @@ if [[ ${DNS_E2E_SHARED_PREREQUISITES:-0} != 1 ]]; then
   done
 fi
 
-docker build -f test/internaldns/kubernetes/Dockerfile \
-  --iidfile "$work/image.id" -t internal-dns-kubernetes:e2e .
+if [[ ${DNS_E2E_PREBUILT_IMAGES:-0} == 1 ]]; then
+  docker image inspect internal-dns-kubernetes:e2e --format '{{.Id}}' > "$work/image.id"
+else
+  docker build -f test/internaldns/kubernetes/Dockerfile \
+    --iidfile "$work/image.id" -t internal-dns-kubernetes:e2e .
+fi
 kind load docker-image internal-dns-kubernetes:e2e --name dns-control
 go run ./test/internaldns/kubernetes/render --phase bootstrap --out "$work"
 "${platform[@]}" apply -f "$work/platform-bootstrap.json"

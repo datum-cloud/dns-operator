@@ -4,6 +4,11 @@ on:
   push:
     branches: [codex/dns-warm-foundation-experiment]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Docker-capable runner label (datum-linux-kind after infra rollout)'
+        default: ubuntu-latest
+        type: string
 
 permissions:
   contents: read
@@ -33,7 +38,7 @@ jobs:
 
   e2e:
     name: Qualify a single-use warm foundation
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     # Three test-infra kind clusters (upstream + control + edge), each with
     # Flux/cert-manager/Kyverno/Envoy Gateway, plus RustFS and a Lightningstream
     # sync interval the federation/full-chain suites poll for - give it headroom.
@@ -48,6 +53,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Free up disk space
+        if: runner.environment == 'github-hosted'
         # Three test-infra kind clusters (Flux/cert-manager/Kyverno/Envoy each)
         # plus PowerDNS/RustFS/Lightningstream/operator images overflow the
         # runner's ~14GB OS disk, which thrashes `kind load` (observed ~14min)
@@ -60,19 +66,23 @@ jobs:
           df -h /
 
       - name: Setup Go
+        if: runner.environment == 'github-hosted'
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
       - name: Set file watcher limits
+        if: runner.environment == 'github-hosted'
         run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
 
       - name: Setup Kind
+        if: runner.environment == 'github-hosted'
         uses: helm/kind-action@v1
         with:
           install_only: true
 
       - name: Setup Task
+        if: runner.environment == 'github-hosted'
         uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.x
@@ -83,23 +93,40 @@ jobs:
       - name: Prepare a clean warm foundation
         run: python3 hack/time-ci-phase.py foundation-prepare task --yes env:foundation:prepare-warm
 
-      - name: Claim and validate the warm foundation
-        run: python3 hack/time-ci-phase.py foundation-claim task --yes env:foundation:claim-warm
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
 
-      - name: Verify the foundation cannot be claimed twice
+      - name: Restore BuildKit layers and Go caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci-buildkit-cache
+            .ci-go-cache
+          key: dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-build-${{ runner.os }}-${{ runner.arch }}-
+
+      # BuildKit cache-to alone does not persist RUN --mount caches.
+      - name: Restore and retain Go cache mounts
+        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3
+        with:
+          cache-map: |
+            {
+              ".ci-go-cache/modules": "/go/pkg/mod",
+              ".ci-go-cache/build": "/root/.cache/go-build"
+            }
+
+      - name: Record executor capacity
         run: |
-          if python3 hack/ci/warm-foundation.py claim > dev/repeated-claim.log 2>&1; then
-            echo "ERROR: a second claim unexpectedly succeeded" >&2
-            exit 1
-          fi
-          cat dev/repeated-claim.log
-          grep -q 'already been claimed' dev/repeated-claim.log
+          mkdir -p dev
+          { nproc; free -h; df -h; docker info; } > dev/executor.txt
+          for f in cpu.max memory.max; do
+            if test -r /sys/fs/cgroup/$f; then echo "$f: $(cat /sys/fs/cgroup/$f)" >> dev/executor.txt; fi
+          done
 
-      - name: Install shared CRDs and tools
-        run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
-
-      - name: Deploy and test private and public DNS in parallel
-        run: python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py
+      - name: Build images while claiming foundation, then deploy and qualify
+        run: python3 hack/time-ci-phase.py warm-job python3 hack/ci/run-warm-job.py
 
       - name: Retain CI phase timings
         if: always()
@@ -109,6 +136,8 @@ jobs:
           path: |
             dev/ci-timings.jsonl
             dev/ci-lanes/
+            dev/ci-setup/
+            dev/executor.txt
             dev/repeated-claim.log
           if-no-files-found: warn
 

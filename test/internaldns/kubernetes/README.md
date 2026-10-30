@@ -13,7 +13,12 @@ task --yes env:stack-deploy
 The deployment commands require prepared clusters. They do not create clusters or
 reinstall foundation components. Public deployment retains control → edge →
 upstream ordering because the later deployments need RustFS and control API
-connection details. DNS images, DNS CRDs, RustFS, and test fixtures remain in the
+connection details. The public image is built once per Task invocation and loaded
+into each cluster. Control and edge create S3 credentials before applying their
+StatefulSets, then wait for the initial rollout without forcing a restart.
+On an existing environment, changing S3 credentials requires restarting the
+existing pods to refresh environment variables; fresh CI environments avoid that
+extra rollout. DNS images, DNS CRDs, RustFS, and test fixtures remain in the
 deployment phase, so the foundation does not capture the PR's DNS implementation.
 
 `task e2e` prepares the foundation once and runs both deployments and suites.

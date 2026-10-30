@@ -402,6 +402,21 @@ tasks:
           IMG: '{{.KIND_IMAGE}}'
       - '{{.KIND}} load docker-image {{.KIND_IMAGE}} --name {{.CLUSTER}}'
 
+  kind-load-existing-image:
+    desc: Load the already built KIND_IMAGE into CLUSTER
+    requires:
+      vars: [CLUSTER]
+    cmds:
+      - '{{.KIND}} load docker-image {{.KIND_IMAGE}} --name {{.CLUSTER}}'
+
+  env:public-image-build:
+    desc: Build the public DNS image once per task invocation
+    run: once
+    cmds:
+      - task: docker-build
+        vars:
+          IMG: '{{.KIND_IMAGE}}'
+
   kustomize-apply:
     desc: Apply the kustomize directory KUSTOMIZE_DIR to the kubectl context CONTEXT
     deps: [tools:kustomize]
@@ -871,13 +886,6 @@ tasks:
           --from-literal=cluster_id={{.CLUSTER_ID}}- \
           --dry-run=client -o yaml | kubectl --context {{.CONTEXT}} apply -f -
         echo "✅ s3-credentials set in {{.CONTEXT}}: endpoint_url={{.ENDPOINT_URL}}"
-        # The pdns-auth StatefulSet (see config/agent/manager.yaml) is applied
-        # by kustomize-apply BEFORE this secret exists, so its lightningstream
-        # container's secretKeyRef env vars (optional: true) start out empty.
-        # Kubernetes does not live-update already-injected env vars when a
-        # Secret is created/changed, so restart the pod to pick them up.
-        kubectl --context {{.CONTEXT}} -n dns-agent-system rollout restart statefulset/pdns-auth
-        kubectl --context {{.CONTEXT}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
 
   # internal: brings up a test-infra-managed kind cluster (kind cluster +
   # Flux + cert-manager + Kyverno + Envoy Gateway) for CLUSTER_NAME.
@@ -925,7 +933,8 @@ tasks:
     desc: "Deploy dns-operator + PowerDNS + RustFS"
     cmds:
       - task: env:rustfs-up
-      - task: kind-load-image
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"
@@ -933,11 +942,6 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
-      - task: kustomize-apply
-        vars:
-          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
-          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
@@ -947,6 +951,12 @@ tasks:
               export KUBECONFIG={{.ENV_KUBECONFIG}}
               SVC=$(kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} get svc -n rustfs-system -l app.kubernetes.io/instance=rustfs -o jsonpath='{.items[0].metadata.name}')
               echo "http://$SVC.rustfs-system.svc.cluster.local:9000"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ control cluster (kind-{{.CONTROL_CLUSTER_NAME}}) ready"
 
   env:edge-up:
@@ -965,7 +975,8 @@ tasks:
           echo "❌ {{.RUSTFS_NODEPORT_FILE}} not found - run 'task env:control-up' first"
           exit 1
         fi
-      - task: kind-load-image
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.EDGE_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"
@@ -973,17 +984,18 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
-      - task: kustomize-apply
-        vars:
-          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
-          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
           CLUSTER_ID: "{{.EDGE_CLUSTER_NAME}}"
           ENDPOINT_URL:
             sh: echo "http://{{.CONTROL_CLUSTER_NAME}}-control-plane:$(cat {{.RUSTFS_NODEPORT_FILE}})"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.EDGE_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ edge cluster (kind-{{.EDGE_CLUSTER_NAME}}) ready"
 
   env:upstream-up:
@@ -997,7 +1009,8 @@ tasks:
   env:upstream-deploy:
     desc: "Deploy the replicator pointed at the control (downstream agent) cluster"
     cmds:
-      - task: kind-load-image
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.UPSTREAM_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"

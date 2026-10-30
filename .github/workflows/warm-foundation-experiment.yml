@@ -1,8 +1,6 @@
 name: Warm Foundation Experiment
 
 on:
-  push:
-    branches: [codex/dns-warm-foundation-experiment]
   workflow_dispatch:
     inputs:
       runner:
@@ -109,7 +107,7 @@ jobs:
 
       # BuildKit cache-to alone does not persist RUN --mount caches.
       - name: Restore and retain Go cache mounts
-        uses: reproducible-containers/buildkit-cache-dance@5422eac04292c961a382e0f584ea0f03ad9da723 # v3
+        uses: reproducible-containers/buildkit-cache-dance@e475a9cbcb5052f85fd3830f1266fa0c91ef8595
         with:
           cache-map: |
             {

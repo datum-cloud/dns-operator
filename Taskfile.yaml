@@ -756,6 +756,21 @@ tasks:
       - task: env:foundation-up
       - task: env:internal-dns:deploy
 
+  env:foundation:prepare-warm:
+    desc: "Experiment: prepare a fresh single-use foundation on a dedicated Docker executor"
+    cmds:
+      - python3 hack/ci/warm-foundation.py prepare
+
+  env:foundation:claim-warm:
+    desc: "Experiment: claim and validate an already prepared foundation without bootstrapping"
+    cmds:
+      - python3 hack/ci/warm-foundation.py claim
+
+  test:warm-foundation:
+    desc: "Test the foundation handoff contract without a cluster"
+    cmds:
+      - python3 -m unittest discover -s hack/ci -p 'test_warm_foundation.py'
+
   env:foundation-up:
     desc: "Prepare three dual-stack clusters and shared infrastructure without DNS workloads"
     cmds:

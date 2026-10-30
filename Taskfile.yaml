@@ -116,6 +116,7 @@ tasks:
       - task: fmt
       - task: vet
       - task: lint
+      - task: tidy:verify
       - task: test
       - task: test:dnsdist-udp
       - task: test:observability
@@ -254,6 +255,11 @@ tasks:
     desc: Verify the golangci-lint configuration
     cmds:
       - '{{.GOLANGCI_LINT}} config verify'
+
+  tidy:verify:
+    desc: Fail when go mod tidy would change go.mod or go.sum in the root or tools module
+    cmds:
+      - hack/verify-tidy.sh . tools
 
   build:
     desc: Build the manager binary into bin/

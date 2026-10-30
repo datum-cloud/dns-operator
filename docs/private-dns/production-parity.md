@@ -1,4 +1,4 @@
-# Production-oriented internal DNS qualification
+# Production-oriented Private DNS qualification
 
 ## Proposal
 
@@ -17,7 +17,7 @@ address does not qualify the consumer network path.
 This assessment uses tracked infrastructure declarations at
 [`datum-cloud/infra@5cc5caba5`](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac).
 Declarations establish the intended configuration; they do not establish live
-cluster health or that the proposed private DNS fleet is deployed.
+cluster health or that the proposed Private DNS fleet is deployed.
 
 - [DNS control-plane configuration](https://github.com/datum-cloud/infra/tree/5cc5caba5b7f886ca00e7c3ed90726834dac7fac/apps/dns-operator/control-plane/base)
   discovers Milo projects and uses project credentials, certificate trust, and
@@ -44,7 +44,7 @@ cluster health or that the proposed private DNS fleet is deployed.
 
 The existing [Task environment](../../Taskfile.yaml) already deploys public DNS
 across upstream, control, and edge clusters with shared test-infra tooling.
-The [CI workflow](../../.github/workflows/e2e.yml) exercises both private DNS
+The [CI workflow](../../.github/workflows/e2e.yml) exercises both Private DNS
 qualification and that public chain. The shared Task include is pinned to
 `datum-cloud/test-infra@7622c925d5bcf2fa5bc01823775973cf6daf51ca`.
 
@@ -57,54 +57,15 @@ control-plane routing and distinct credentials; namespaces alone cannot prove
 those boundaries. The current independent-source Kind APIs are a distributed
 control-plane fixture, rather than the final deployment topology.
 
-```mermaid
-flowchart LR
-  subgraph A[Project A control plane]
-    CA[Compute publisher A] --> DA[Project DNS APIs]
-  end
-  subgraph B[Project B control plane]
-    CB[Compute publisher B] --> DB[Project DNS APIs]
-  end
-  subgraph M[Management cluster]
-    CORE[Milo core API / project discovery]
-    DNS[DNS service managed project API]
-    CP[Two DNS control-plane replicas]
-    INT[Trusted VPC / DNS integration]
-    JS[Three-node TLS JetStream / persistent volumes]
-    K[Karmada federation API]
-  end
-  DA & DB --> CP
-  CORE --> CP
-  CP <--> DNS
-  CP --> JS
-  K --> E1 & E2
-  INT -->|Access intent| DA & DB
-  subgraph E1[Edge A]
-    V1[Consumer VPC A workload]
-    F1[Private endpoint / well-known resolver]
-    G1[Galactic ServiceRoutePolicy A]
-    V1 --> F1 --> G1
-  end
-  subgraph E2[Edge B]
-    V2[Consumer VPC B workload]
-    F2[Private endpoint / same resolver address]
-    G2[Galactic ServiceRoutePolicy B]
-    V2 --> F2 --> G2
-  end
-  subgraph SV[Producer DNS service VPC]
-    EP1[ServiceEndpoint / node listener A]
-    EP2[ServiceEndpoint / node listener B]
-    N1[Edge A shared node dnsdist / CoreDNS]
-    N2[Edge B shared node dnsdist / CoreDNS]
-    R[Shared regional dnsdist / two CoreDNS members]
-    EP1 --> N1 --> R
-    EP2 --> N2 --> R
-  end
-  G1 --> EP1
-  G2 --> EP2
-  INT -->|Private service authorization| K
-  JS --> N1 & N2 & R
-```
+![Proposed qualification control planes](../architecture/private-dns/diagrams/qualification-control-plane.svg)
+
+![Proposed qualification query paths](../architecture/private-dns/diagrams/qualification-query-path.svg)
+
+These views cover the default forwarding mode. Qualify the optional
+[node authority path](../architecture/private-dns/README.md#query-path-and-network-identity)
+separately: private answers come from node CoreDNS, and public queries use its
+configured upstreams. Keep the regional fleet available while testing migration
+and rollback. Regional publication success alone does not prove node activation.
 
 The two edge clusters model separate edge control planes on one host in one region.
 The DNS service runs in its own producer VPC. Both node and regional resolver

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="390" viewBox="0 0 960 390" role="img" aria-labelledby="title description">
+  <title id="title">One context, two regional access bindings</title>
+  <desc id="description">A consumer project contains one DNSResolverContext and two access bindings. The central binding selects the central shared fleet; the east binding selects the east shared fleet. Regional serving fleets do not imply independent publication or automatic cross-region failover.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="390" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">One context, two regional access bindings</text>
+  <rect x="32" y="115" width="570" height="205" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="48" y="142" class="heading" text-anchor="start">Consumer project API</text>
+  <rect x="55" y="200" width="205" height="50" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="157.5" y="231.0" class="label" text-anchor="middle">DNSResolverContext</text>
+  <rect x="350" y="165" width="230" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="465.0" y="196.0" class="label" text-anchor="middle">Central access binding</text>
+  <rect x="350" y="255" width="230" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="465.0" y="286.0" class="label" text-anchor="middle">East access binding</text>
+  <rect x="700" y="165" width="220" height="50" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="810.0" y="196.0" class="label" text-anchor="middle">Central shared fleet</text>
+  <rect x="700" y="255" width="220" height="50" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="810.0" y="286.0" class="label" text-anchor="middle">East shared fleet</text>
+  <path d="M 260 225 H 305 V 190 H 350" class="edge"/>
+  <path d="M 305 225 V 280 H 350" class="edge"/>
+  <path d="M 580 190 H 700" class="edge"/>
+  <path d="M 580 280 H 700" class="edge"/>
+  <text x="32" y="355" class="detail" text-anchor="start">Each binding owns its access mapping and readiness. Publication still uses a shared store.</text>
+</svg>

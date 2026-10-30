@@ -1,6 +1,6 @@
-# Internal DNS metrics and instrumentation proposal
+# Private DNS metrics and instrumentation proposal
 
-Status: proposal, 2026-10-22. Scope: the signals the internal DNS dashboard strategy (not yet in this repository) needs, and the architecture fixes those signals depend on.
+Status: proposal, 2026-10-22. Scope: the signals the Private DNS dashboard strategy (not yet in this repository) needs, and the architecture fixes those signals depend on.
 
 Code references are to dns-operator `fix/internal-dns-name-references` at `1b90c00` (the build staging runs), NSO and Compute `main`, and infra `main`. Live numbers come from staging VictoriaMetrics, queried 2026-10-22.
 
@@ -29,7 +29,7 @@ These findings change the plan. Each one was checked against code or live data.
 | F7 | Each project's controller is named after its project UID. controller-runtime v0.23.3 rejects duplicate names process-wide. | A project source manager that stops can never restart. The `controller` label also grows by one value per project. | `controlplane/reconciler.go:127` |
 | F8 | Both control-plane replicas run the outbox and ACK-refresh loops, so optimistic-lock conflicts show up as errors. | Error ratios are inflated. Lag is hard to read. | `runtime/run.go:215-230,329` |
 | F9 | Producers return an error together with `RequeueAfter` (NSO, Compute, dns-operator), treat missing preconditions as errors, poll on timers, never log, and emit no Events. NSO runs about 93k reconciles/h for about 73 network contexts. The Compute publisher logs about 6.4k `requeue_after` against about 20 successes per hour. | Today's incident (infra #7513) was about 200 errors/h with no object key, and nothing surfaced it. The publisher's error ratio is still dominated by us-east-1's missing observation source (compute #517), so it can't be used as an incident signal yet. | appendix 03 §1 |
-| F10 | Only 3 of 12 internal DNS kinds have a `Ready` condition. Some kinds track state in free-text `phase`/`state` strings. Outbox and Ownership have no conditions. Condition messages repeat the reason. | A generic "not ready" panel or alert is impossible until there is one. | appendix 03 §1 |
+| F10 | Only 3 of 12 Private DNS kinds have a `Ready` condition. Some kinds track state in free-text `phase`/`state` strings. Outbox and Ownership have no conditions. Condition messages repeat the reason. | A generic "not ready" panel or alert is impossible until there is one. | appendix 03 §1 |
 | F11 | Service-scoped kinds (ResolverBinding, Manifest, Outbox) live in the Milo project `internal-dns-service`, not on the infra cluster. NSO's resource-metrics policy (`datum_cloud_network_context_status_condition`) exists but isn't deployed. The NSO cell manager (`internaldns-cell`) isn't scraped. | The strategy doc's plan to route these through kube-state-metrics wouldn't work. Two cheap wins are available. | appendix 03 §1 |
 | F12 | No probe exercises a private name through `fd53::53`. The insider probe resolves public names only, and its latency didn't move at the #7475 cutover, so it probably still uses the old resolvers. | That's why #7513 went unseen for about 14 hours. | appendix 04 §1 |
 | F13 | Series from lab clusters (`cluster=~".*-lab"`) hit a prepended route to `slack-labs`. | Server-side alerts from the fleet would never page. | infra `alert-routes.yaml` |

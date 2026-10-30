@@ -127,7 +127,6 @@ def prepare(ttl):
     existing = set(run("kind", "get", "clusters").splitlines()) & set(CLUSTERS)
     if existing:
         raise ValueError(f"Refusing to prepare over existing clusters: {sorted(existing)}")
-    key = fingerprint()
     # Reuse the exact CI foundation topology, including dual-stack and audit mounts.
     run("task", "--yes", "env:foundation-up", capture=False)
     expected_ref = re.search(r"TEST_INFRA_REPO_REF: '([0-9a-f]{40})'",
@@ -136,6 +135,9 @@ def prepare(ttl):
     if actual_ref != expected_ref:
         raise ValueError("test-infra checkout does not match the pinned foundation revision")
     run("git", "-C", str(ROOT / ".test-infra"), "diff", "--exit-code", "HEAD", "--")
+    # Bootstrap may upgrade kind; fingerprint the tools that actually prepared
+    # the clusters so a subsequent claim sees the same version.
+    key = fingerprint()
     export_configs()
     identities = health_and_identity()
     now = time.time()

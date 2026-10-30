@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fails when a committed generated file no longer matches what the generators
-# produce. Run after `task generate` and `task manifests`; CI runs it the same
-# way so an API type or marker change without regeneration cannot merge.
+# Must run after regeneration; it compares the regenerated output with HEAD.
 
 set -euo pipefail
 
@@ -59,7 +57,8 @@ if ! drift="$(git diff HEAD -- "${GENERATED_PATHS[@]}")" || [[ -n "${drift}" ]];
   echo "${drift}"
   fail "Generated files are out of sync with their source" \
     "These generated files differ from what is committed:" \
-    "$(git diff HEAD --name-only -- "${GENERATED_PATHS[@]}")"
+    "$(git diff HEAD --name-only -- "${GENERATED_PATHS[@]}")" \
+    "Regenerated output that is not yet committed also fails, because this compares against HEAD."
 fi
 
 untracked="$(git ls-files --others --exclude-standard -- "${GENERATED_PATHS[@]}")"

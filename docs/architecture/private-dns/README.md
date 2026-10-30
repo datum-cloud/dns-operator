@@ -572,7 +572,7 @@ its UID and generation; endpoint controllers need `publish` on that registration
 in addition to their ordinary contribution write permissions. Only the policy
 owner needs `reserve`. Other registrations cannot delegate into the reserved
 subtree. See the [service-owned policy example](../../../config/internal-dns/examples/service-reservation.yaml)
-and [rollout notes](../../../config/internal-dns/README.md#service-owned-reservations).
+and [rollout notes](../../private-dns/deployment.md#service-owned-reservations).
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1

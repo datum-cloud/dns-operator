@@ -536,7 +536,7 @@ creates a long-lived `DNSRegistration` in each managed zone with
 referencing that registration's UID and generation. The declaration protects the
 subtree before any endpoints exist. Keep it for the lifetime of the service's
 namespace, not an individual endpoint. Deleting endpoint contributions does not
-release the reservation. See [the service policy example](examples/service-reservation.yaml).
+release the reservation. See [the service policy example](../../config/internal-dns/examples/service-reservation.yaml).
 
 Grant the service owner `reserve` and its publishers `publish` on the named
 `dnsregistrations` resource, alongside their ordinary API write permissions.

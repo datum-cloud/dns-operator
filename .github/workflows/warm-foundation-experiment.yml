@@ -95,12 +95,13 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Restore BuildKit layers and Go caches
+        id: build-cache
         uses: actions/cache@v4
         with:
           path: |
             .ci-buildkit-cache
             .ci-go-cache
-          key: dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
           restore-keys: |
             dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
             dns-build-${{ runner.os }}-${{ runner.arch }}-
@@ -109,6 +110,7 @@ jobs:
       - name: Restore and retain Go cache mounts
         uses: reproducible-containers/buildkit-cache-dance@e475a9cbcb5052f85fd3830f1266fa0c91ef8595
         with:
+          skip-extraction: ${{ steps.build-cache.outputs.cache-hit == 'true' }}
           cache-map: |
             {
               ".ci-go-cache/modules": "/go/pkg/mod",
@@ -124,6 +126,8 @@ jobs:
           done
 
       - name: Build images while claiming foundation, then deploy and qualify
+        env:
+          DNS_BUILD_CACHE_HIT: ${{ steps.build-cache.outputs.cache-hit }}
         run: python3 hack/time-ci-phase.py warm-job python3 hack/ci/run-warm-job.py
 
       - name: Retain CI phase timings

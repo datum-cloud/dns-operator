@@ -13,7 +13,8 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     go build -trimpath -ldflags="-s -w" -o /out/dns-mcp ./cmd/dns-mcp && \
     go build -trimpath -o /out/internal-dns ./cmd/internal-dns && \
     go build -trimpath -o /out/coredns ./cmd/internal-dns-coredns && \
-    go build -trimpath -o /out/dns-qualify ./test/internaldns/kubernetes/qualify
+    go build -trimpath -o /out/dns-qualify ./test/internaldns/kubernetes/qualify && \
+    go build -trimpath -o /out/dns-render ./test/internaldns/kubernetes/render
 
 FROM gcr.io/distroless/static:nonroot AS public
 COPY --from=build /out/manager /manager
@@ -28,6 +29,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/internal-dns /internal-dns
 COPY --from=build /out/dns-qualify /dns-qualify
+COPY --from=build /out/dns-render /dns-render
 COPY --from=build /out/coredns /usr/local/bin/coredns
 COPY config/internal-dns/commands/ /usr/local/sbin/
 USER 65532:65532

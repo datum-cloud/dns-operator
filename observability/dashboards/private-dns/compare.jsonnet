@@ -214,7 +214,7 @@ local phaseSide(run, selector) =
 
 local passPhases = compareBars(
   'Pass phases, average',
-  'Average time one project pass spent in each phase while each run was going.',
+  'Average elapsed time of each reached project-pass phase during each run, including failed attempts. The legacy compile phase queues independent zone keys in per-zone mode, or compiles and updates publication status in whole-project mode.',
   [qTable(phaseSide('$run_a', 'phase!~"zone .*"'), 'A'), qTable(phaseSide('$run_b', 'phase!~"zone .*"'), 'B')],
   'phase',
   '',
@@ -225,7 +225,7 @@ local passPhases = compareBars(
 
 local zoneSteps = compareBars(
   'Zone compile steps, average',
-  'Average time of each step of compiling one changed zone while each run was going.',
+  'Average elapsed time of each reached zone-compile step during each run, including failed attempts and unchanged inputs, in either scheduling mode. Unreached steps are not counted.',
   [qTable(phaseSide('$run_a', 'phase=~"zone .*"'), 'A'), qTable(phaseSide('$run_b', 'phase=~"zone .*"'), 'B')],
   'phase',
   '',

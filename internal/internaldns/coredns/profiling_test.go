@@ -127,7 +127,15 @@ func TestCPUProfileCancellationReleasesCapture(t *testing.T) {
 		t.Fatalf("invalid CPU profile: %v", err)
 	}
 	w := httptest.NewRecorder()
+	started := time.Now()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/debug/pprof/profile?seconds=1", nil))
+	elapsed := time.Since(started)
+	// The runtime profile writer starts asynchronously, so the encoded profile
+	// can begin after the handler's timer. Measure the requested capture window
+	// at the handler boundary rather than requiring identical profiler timing.
+	if elapsed < time.Second || elapsed > 3*time.Second {
+		t.Fatalf("one-second capture elapsed time = %s", elapsed)
+	}
 	if w.Code != http.StatusOK {
 		t.Fatalf("next CPU profile = %d: %s", w.Code, w.Body.String())
 	}
@@ -135,7 +143,7 @@ func TestCPUProfileCancellationReleasesCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invalid subsequent CPU profile: %v", err)
 	}
-	if p.DurationNanos < int64(time.Second) || p.DurationNanos > int64(3*time.Second) {
+	if p.DurationNanos <= 0 || p.DurationNanos > int64(3*time.Second) {
 		t.Fatalf("one-second capture duration = %s", time.Duration(p.DurationNanos))
 	}
 }

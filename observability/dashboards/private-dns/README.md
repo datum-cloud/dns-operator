@@ -48,6 +48,29 @@ once per second alongside the actual sent rate.
 the total generator iterations dropped, emitted at the end of the run. Missing
 series remain blank for older reports; they must not be interpreted as zero.
 
+## Control-plane phase timings
+
+`internal_dns_project_pass_seconds` measures a whole project pass, including
+failed attempts, but excludes queue/slot waits and identity verification before
+the pass starts. Independent zone keys use `internal_dns_zone_reconcile_seconds`
+instead. The controller-runtime histogram remains a compatibility fallback for
+older versions; its population includes other reconcile keys and is not an
+exact substitute for a project-pass duration.
+
+`internal_dns_project_pass_phase_seconds{phase}` records elapsed time, including
+API waits, for each reached phase or zone step. The labels are a fixed set with
+no project or zone identity. Failed attempts are included; steps skipped by
+caching, unchanged content or early errors do not add observations.
+
+The legacy `compile` phase covers the project pass's zone loop, including
+publication status updates in whole-project mode. With per-zone reconciliation,
+it only dispatches zone keys. The `zone ...` steps describe compilation in both
+modes and must not be added to project-pass phases: they overlap in whole-project
+mode and run independently in per-zone mode. `zone persist` starts only when a
+new publication is attempted, including revision reservation and ownership
+updates. Its average excludes unchanged publications. Per-phase averages have
+different populations and need not sum to the whole-pass average.
+
 ## Reading UDP latency
 
 The resolver percentile charts estimate p50 and p99 from dnsdist's coarse

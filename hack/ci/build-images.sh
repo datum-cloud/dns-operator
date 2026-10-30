@@ -17,4 +17,5 @@ mkdir -p bin
 container=$(docker create internal-dns-kubernetes:e2e)
 trap 'docker rm -f "$container" >/dev/null' EXIT
 docker cp "$container:/dns-render" bin/dns-e2e-render
-chmod +x bin/dns-e2e-render
+docker cp "$container:/dns-qualify" bin/dns-e2e-qualify
+chmod +x bin/dns-e2e-render bin/dns-e2e-qualify

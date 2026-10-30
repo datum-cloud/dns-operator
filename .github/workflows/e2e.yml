@@ -58,25 +58,31 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bring up private DNS on the shared Kubernetes foundation
-        run: task --yes test:internal-dns-kubernetes env:internal-dns:up
+      - name: Test private DNS Kubernetes harness
+        run: python3 hack/time-ci-phase.py harness-tests task --yes test:internal-dns-kubernetes
 
-      - name: Bring up the full DNS environment
-        # Creates the upstream (replicator) + control (downstream agent +
-        # PowerDNS + Lightningstream + RustFS) + edge clusters and wires the
-        # whole production chain together. No sample data (env:stack-up, not
-        # env:up) so the suites own all zones on the shared control PowerDNS.
-        run: task --yes env:stack-up
+      - name: Prepare shared Kubernetes foundation
+        run: python3 hack/time-ci-phase.py foundation task --yes env:foundation-up
+
+      - name: Deploy private DNS
+        run: python3 hack/time-ci-phase.py private-dns-deploy task --yes env:internal-dns:deploy
+
+      - name: Deploy public DNS
+        run: python3 hack/time-ci-phase.py public-dns-deploy task --yes env:stack-deploy
 
       - name: Qualify private DNS publication and serving
-        run: task --yes env:internal-dns:qualify
+        run: python3 hack/time-ci-phase.py private-dns-qualification task --yes env:internal-dns:qualify
 
       - name: Run Chainsaw tests
-        # Runs every suite under test/e2e against the environment: the
-        # upstream->control replicator suites (alias, display-annotations,
-        # zones-and-records), the control->edge Lightningstream suite
-        # (federation), and the end-to-end upstream->edge suite (full-chain).
-        run: task --yes env:chainsaw
+        run: python3 hack/time-ci-phase.py chainsaw-tests task --yes env:chainsaw
+
+      - name: Retain CI phase timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-phase-timings
+          path: dev/ci-timings.jsonl
+          if-no-files-found: warn
 
       - name: Collect Kubernetes bootstrap diagnostics
         if: failure()

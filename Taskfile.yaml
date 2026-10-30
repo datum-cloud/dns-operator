@@ -127,8 +127,9 @@ tasks:
     desc: Bring up the kind environment and run every end-to-end suite, as CI does
     cmds:
       - task: test:internal-dns-kubernetes
-      - task: env:internal-dns:up
-      - task: env:stack-up
+      - task: env:foundation-up
+      - task: env:internal-dns:deploy
+      - task: env:stack-deploy
       - task: env:internal-dns:qualify
       - task: env:chainsaw
 
@@ -707,7 +708,13 @@ tasks:
         vars: { NAME: cmctl, PACKAGE: github.com/cert-manager/cmctl/v2, VERSION: '{{.CMCTL_VERSION}}' }
 
   env:internal-dns:up:
-    desc: "Deploy private DNS pods on the shared upstream/control/edge environment"
+    desc: "Prepare the foundation and deploy private DNS"
+    cmds:
+      - task: env:foundation-up
+      - task: env:internal-dns:deploy
+
+  env:foundation-up:
+    desc: "Prepare three dual-stack clusters and shared infrastructure without DNS workloads"
     cmds:
       - task: test-infra:ensure-repo
       - task: test-infra:ensure-tools
@@ -724,6 +731,10 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
           KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+
+  env:internal-dns:deploy:
+    desc: "Deploy private DNS onto an already prepared foundation"
+    cmds:
       - task: tools:kustomize
       - test/internaldns/kubernetes/deploy.sh
 
@@ -903,11 +914,16 @@ tasks:
       - kind export kubeconfig --name {{.CLUSTER_NAME}} --kubeconfig {{.ENV_KUBECONFIG}}
 
   env:control-up:
-    desc: "Create the control kind cluster and deploy dns-operator + PowerDNS + RustFS"
+    desc: "Prepare the control cluster and deploy DNS"
     cmds:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.CONTROL_CLUSTER_NAME}}"
+      - task: env:control-deploy
+
+  env:control-deploy:
+    desc: "Deploy dns-operator + PowerDNS + RustFS"
+    cmds:
       - task: env:rustfs-up
       - task: kind-load-image
         vars:
@@ -934,16 +950,21 @@ tasks:
       - echo "✅ control cluster (kind-{{.CONTROL_CLUSTER_NAME}}) ready"
 
   env:edge-up:
-    desc: "Create the edge kind cluster and deploy PowerDNS pointed at the control cluster's RustFS"
+    desc: "Prepare the edge cluster and deploy DNS"
+    cmds:
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
+      - task: env:edge-deploy
+
+  env:edge-deploy:
+    desc: "Deploy PowerDNS pointed at the control cluster's RustFS"
     cmds:
       - |
         if [ ! -f {{.RUSTFS_NODEPORT_FILE}} ]; then
           echo "❌ {{.RUSTFS_NODEPORT_FILE}} not found - run 'task env:control-up' first"
           exit 1
         fi
-      - task: env:test-infra-cluster-up
-        vars:
-          CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
       - task: kind-load-image
         vars:
           CLUSTER: "{{.EDGE_CLUSTER_NAME}}"
@@ -966,11 +987,16 @@ tasks:
       - echo "✅ edge cluster (kind-{{.EDGE_CLUSTER_NAME}}) ready"
 
   env:upstream-up:
-    desc: "Create the upstream kind cluster and deploy the replicator pointed at the control (downstream agent) cluster"
+    desc: "Prepare the upstream cluster and deploy DNS"
     cmds:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
+      - task: env:upstream-deploy
+
+  env:upstream-deploy:
+    desc: "Deploy the replicator pointed at the control (downstream agent) cluster"
+    cmds:
       - task: kind-load-image
         vars:
           CLUSTER: "{{.UPSTREAM_CLUSTER_NAME}}"
@@ -1018,14 +1044,20 @@ tasks:
       - echo "✅ upstream cluster (kind-{{.UPSTREAM_CLUSTER_NAME}}) ready"
 
   env:stack-up:
-    desc: "Bring up all three clusters and the full DNS chain (no sample data) - used by CI"
+    desc: "Prepare the foundation and deploy the public DNS chain (no sample data)"
+    cmds:
+      - task: env:foundation-up
+      - task: env:stack-deploy
+
+  env:stack-deploy:
+    desc: "Deploy public DNS onto an already prepared foundation"
     cmds:
       # Order matters: the replicator (upstream) needs the control cluster
       # reachable, and edge needs control's RustFS NodePort, so control comes
       # up first, then edge, then upstream.
-      - task: env:control-up
-      - task: env:edge-up
-      - task: env:upstream-up
+      - task: env:control-deploy
+      - task: env:edge-deploy
+      - task: env:upstream-deploy
 
   env:up:
     desc: "Bring up the full local DNS federation environment (upstream + control + edge) with sample data"

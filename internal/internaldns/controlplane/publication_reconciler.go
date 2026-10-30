@@ -26,6 +26,10 @@ import (
 const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publication"
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
+	started := time.Now()
+	defer func() { passDuration.Observe(time.Since(started).Seconds()) }()
+	timer := newPhaseTimer("list")
+	defer timer.finish()
 	now := r.Options.Now().UTC()
 
 	var zones dnsv1alpha1.DNSZoneList
@@ -39,6 +43,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
+	timer.next("contexts")
 	listed := newListedManagedObjects(zones.Items, assocs.Items)
 	if err := r.reconcileResolverContexts(withListedManagedObjects(ctx, listed), ns, now); err != nil {
 		return ctrl.Result{}, err
@@ -50,6 +55,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 		}
 	}
+	timer.next("associations")
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
@@ -61,6 +67,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("references")
 	var sources []client.Object
 	for i := range assocs.Items {
 		sources = append(sources, &assocs.Items[i])
@@ -90,9 +97,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("bindings")
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("ownership")
 	var earliest time.Time
 	var zoneErrors []error
 	held := map[types.UID]heldOwnership{}
@@ -105,6 +114,9 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		own, retryAt, err := r.holdOwnership(ctx, z)
 		held[z.UID] = heldOwnership{own: own, retryAt: retryAt, err: err}
 	}
+	// Keep the existing phase label. In per-zone mode this loop only queues
+	// compilation; in whole-project mode it also compiles and updates status.
+	timer.next("compile")
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -310,16 +322,20 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, registrationZones map[types.UID]dnsv1alpha1.DNSObjectReference, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
+	timer := newPhaseTimer("zone load")
+	defer timer.finish()
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err
 	}
 	if session := inputSession(ctx); session == nil || !session.cached {
+		timer.next("zone confirm")
 		cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
 		if err != nil {
 			return false, err
 		}
 	}
+	timer.next("zone references")
 	assocs, err = r.reservationSafeAssociations(ctx, z, assocs)
 	if err != nil {
 		return false, err
@@ -335,6 +351,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	var ownPlan PublicationPlan
 	var accepted map[types.UID]bool
 	if !tombstone {
+		timer.next("zone compile")
 		compiled, used, err := r.compileCachedInputs(ctx, input)
 		if err != nil {
 			return false, err
@@ -352,10 +369,12 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		if err != nil {
 			return false, err
 		}
+		timer.next("zone statuses")
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
 			return false, err
 		}
 	}
+	timer.next("zone targets")
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
@@ -400,6 +419,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		// The process is handing its leases over; the next holder publishes.
 		return false, nil
 	}
+	timer.next("zone persist")
 	reservationBase := own.DeepCopy()
 	own.Spec.NextRevision = revision + 1
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))

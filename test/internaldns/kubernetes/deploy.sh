@@ -24,7 +24,7 @@ if ! grep -q ':' <<< "$pod_cidrs"; then
 fi
 test/internaldns/kubernetes/reset.sh
 
-make kustomize
+test -x bin/kustomize || { echo "bin/kustomize is missing; run: task tools:kustomize" >&2; exit 1; }
 bin/kustomize build config/crd > "$work/crds.yaml"
 for file in platform project-a project-b; do
   kubectl --kubeconfig "$work/$file.kubeconfig" apply --server-side -f "$work/crds.yaml"

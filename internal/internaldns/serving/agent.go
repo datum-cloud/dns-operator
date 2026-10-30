@@ -218,8 +218,12 @@ func publicationIdentity(p publicationState) string {
 }
 
 type servingAckState struct {
-	phase model.AckPhase
-	at    time.Time
+	phase                 model.AckPhase
+	at                    time.Time
+	snapshotEpoch         uint64
+	snapshotRevision      uint64
+	configurationRevision uint64
+	accessVersion         model.AccessVersion
 }
 
 func NewAgent(c Config, d Dependencies) (*Agent, error) {
@@ -703,7 +707,7 @@ func (a *Agent) activatePublication(ctx context.Context, uid string, next public
 	if a.bootstrapInProgress || (a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
 		return nil
 	}
-	if err := a.reconcile(ctx); err != nil {
+	if err := a.reconcileWithNodeRouting(ctx, a.retainedNodeRouting()); err != nil {
 		return err
 	}
 	if !next.Manifest.Tombstone && len(a.publicationViews(next)) == 0 {
@@ -879,11 +883,15 @@ func (a *Agent) finishEvent(ctx context.Context) error {
 // returning early would leave the daemons answering with withdrawn data while
 // every retry hits the same error.
 func (a *Agent) reconcile(ctx context.Context) error {
+	return a.reconcileWithNodeRouting(ctx, nil)
+}
+
+func (a *Agent) reconcileWithNodeRouting(ctx context.Context, retained []byte) error {
 	if a.state.Snapshot == nil {
 		return nil
 	}
 	withdrawing := !a.canRetainActive()
-	err := a.reconcileDesired(ctx)
+	err := a.reconcileDesired(ctx, retained)
 	// Shutdown is not a failed install: restart gates again via restoreActive.
 	if err != nil && withdrawing && ctx.Err() == nil {
 		return errors.Join(err, a.failClosed(ctx))
@@ -899,7 +907,7 @@ func (a *Agent) renderDesired(c RenderConfig, snapshot model.ServingSnapshot, ac
 	return renderPublications(c, snapshot, active, a.state.Publications)
 }
 
-func (a *Agent) reconcileDesired(ctx context.Context) error {
+func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 	activated := false
 	active := map[string]bool{}
 	filtered := *a.state.Snapshot
@@ -931,6 +939,9 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 	if err != nil {
 		a.recordActivationFailure("render")
 		return err
+	}
+	if retained != nil {
+		rendered.Files[a.cfg.Render.NodeDNSDist.Path] = retained
 	}
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
@@ -1020,11 +1031,11 @@ func (a *Agent) reconcileDesired(ctx context.Context) error {
 		}
 	}
 	for _, b := range a.state.Snapshot.Bindings {
-		if b.Tombstone || b.ConfigurationPending {
+		if b.ConfigurationPending {
 			continue
 		}
 		p := model.AckVerified
-		if !active[b.BindingUID] {
+		if !b.Tombstone && !active[b.BindingUID] {
 			p = model.AckApplied
 		}
 		if err := a.emitServingAck(ctx, b, p); err != nil {
@@ -1352,13 +1363,13 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 		interval = 30 * time.Second
 	}
 	last := a.lastServingAck[b.BindingUID]
-	if last.phase == phase && now.Sub(last.at) < interval {
+	if last.phase == phase && last.snapshotEpoch == a.state.ServingFence.Epoch && last.snapshotRevision == a.state.ServingFence.Revision && last.configurationRevision == b.ConfigurationRevision && last.accessVersion == b.Version && now.Sub(last.at) < interval {
 		return nil
 	}
 	if err := a.emitAck(ctx, model.KindServingSnapshot, b.BindingUID, a.state.ServingFence.Epoch, a.state.ServingFence.Revision, phase, ""); err != nil {
 		return err
 	}
-	a.lastServingAck[b.BindingUID] = servingAckState{phase: phase, at: now}
+	a.lastServingAck[b.BindingUID] = servingAckState{phase: phase, at: now, snapshotEpoch: a.state.ServingFence.Epoch, snapshotRevision: a.state.ServingFence.Revision, configurationRevision: b.ConfigurationRevision, accessVersion: b.Version}
 	return nil
 }
 

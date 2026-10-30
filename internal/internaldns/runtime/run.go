@@ -63,6 +63,13 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 		return runAgent(ctx, cfg, opts)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)
+	case roleActivationCheck:
+		token, err := serving.CheckActivation(ctx, cfg.Agent)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, token)
+		return err
 	case rolePrepare:
 		return serving.PrepareDNSDist(cfg.Agent.Render)
 	case roleServing:
@@ -230,8 +237,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			ClientForRequest:   directory.selectProject,
-			InstancePublishers: cfg.Admission.InstancePublishers,
+			ClientForRequest: directory.selectProject,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 		admissionManager.GetWebhookServer().Register("/readyz", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

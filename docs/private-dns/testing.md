@@ -116,3 +116,7 @@ The suite uses wire version `v1alpha6` and persistent format 7 checkpoints.
 Compatible fleet upgrades retain those checkpoints and transport state. Roll out
 serving support before enabling new controller output; see the
 [rollout contract](deployment.md#rollout-and-recovery).
+
+For a staged rollout or rollback, retain positive fixtures until the
+[activation and UDP/TCP validation gate](../../test/internaldns/validation/README.md) succeeds. It is
+stricter than readiness and never performs cleanup itself.

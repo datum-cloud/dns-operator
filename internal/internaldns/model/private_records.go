@@ -31,26 +31,6 @@ func ValidatePrivateRecordOwner(owner, apex, recordType string) error {
 	return nil
 }
 
-// InstancesScope is the label compute publishes instance names under in a
-// resolver context's managed zone, so an instance named web-01 answers as
-// web-01.instances.<zone>.
-const InstancesScope = "instances"
-
-// InProviderScope reports whether a zone-relative owner name falls inside a
-// scope reserved for a publishing provider.
-func InProviderScope(relativeOwner string) bool {
-	name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(relativeOwner), "."))
-	return name == InstancesScope || strings.HasSuffix(name, "."+InstancesScope)
-}
-
-// InsideInstancesScope reports whether domain is the instances scope of the
-// managed apex or a name below it.
-func InsideInstancesScope(domain, managedApex string) bool {
-	d := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
-	scope := InstancesScope + "." + strings.ToLower(strings.TrimSuffix(strings.TrimSpace(managedApex), "."))
-	return d == scope || strings.HasSuffix(d, "."+scope)
-}
-
 // ZoneRelativeOwner returns owner relative to apex, or "@" for the apex. A
 // name that already ends in the apex is treated as absolute with or without a
 // trailing dot, matching how private zones are compiled.

@@ -126,7 +126,7 @@ func run(m *testing.M) (int, error) {
 	}
 	h.cfg, err = h.env.Start()
 	if err != nil {
-		return 0, fmt.Errorf("starting envtest (run `make setup-envtest`): %w", err)
+		return 0, fmt.Errorf("starting envtest (run `task setup-envtest`): %w", err)
 	}
 	defer func() { _ = h.env.Stop() }()
 

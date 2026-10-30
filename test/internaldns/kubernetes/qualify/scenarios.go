@@ -419,7 +419,9 @@ func (s *suite) offlineServing(a, b *project) (resultErr error) {
 			restarts = status.RestartCount
 		}
 	}
-	cmd := exec.CommandContext(s.ctx, "kubectl", "--kubeconfig", s.env.PlatformKubeconfig, "-n", s.env.Namespace, "exec", pod.Name, "-c", "agent", "--", "pkill", "-TERM", "-f", "^/internal-dns --role=agent")
+	// The pod shares one process namespace, so signal the agent from the serving
+	// container: an exec into the agent container dies with its own restart.
+	cmd := exec.CommandContext(s.ctx, "kubectl", "--kubeconfig", s.env.PlatformKubeconfig, "-n", s.env.Namespace, "exec", pod.Name, "-c", "serving", "--", "pkill", "-TERM", "-f", "^/internal-dns --role=agent")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("restart resolver agent: %w: %s", err, output)
 	}

@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   package:
     name: Qualify internal DNS runtime package
@@ -16,8 +19,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and qualify the runtime package
-        run: test/internaldns/qualify-package.sh
+        run: task --yes test:internal-dns-package
       - name: Retain package evidence
         if: always()
         uses: actions/upload-artifact@v4

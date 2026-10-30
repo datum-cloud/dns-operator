@@ -40,14 +40,20 @@ func (p *daemonProcess) start() error {
 	return nil
 }
 
+// Fail-closed transitions must retain the short kill deadline. Only normal
+// supervisor shutdown grants the child time to drain its backend health.
 func (p *daemonProcess) stop() error {
+	return p.stopWithin(time.Second)
+}
+
+func (p *daemonProcess) stopWithin(timeout time.Duration) error {
 	if p.cmd == nil {
 		return nil
 	}
 	_ = p.cmd.Process.Signal(unix.SIGTERM)
 	select {
 	case <-p.done:
-	case <-time.After(time.Second):
+	case <-time.After(timeout):
 		_ = p.cmd.Process.Kill()
 		select {
 		case <-p.done:
@@ -111,7 +117,11 @@ func RunDaemons(ctx context.Context, config Config) error {
 	}
 	defer func() {
 		for _, p := range processes {
-			_ = p.stop()
+			if ctx.Err() != nil {
+				_ = p.stopWithin(contextdns.ShutdownTimeout)
+			} else {
+				_ = p.stop()
+			}
 		}
 	}()
 	names := make([]string, 0, len(processes))

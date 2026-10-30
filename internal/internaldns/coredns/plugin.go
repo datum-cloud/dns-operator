@@ -30,8 +30,9 @@ type contextState struct {
 }
 
 type snapshot struct {
-	contexts map[string]*contextState
-	proxies  []*proxy.Proxy
+	listenerHost netip.Addr
+	contexts     map[string]*contextState
+	proxies      []*proxy.Proxy
 }
 
 func (s *snapshot) close() {
@@ -43,6 +44,7 @@ func (s *snapshot) close() {
 type ContextPlugin struct {
 	state       atomic.Pointer[snapshot]
 	identityKey []byte
+	draining    atomic.Bool
 }
 
 func (p *ContextPlugin) Name() string { return "dnscontext" }
@@ -51,7 +53,8 @@ func compile(c Config) (*snapshot, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	s := &snapshot{contexts: map[string]*contextState{}}
+	host, _, _ := net.SplitHostPort(c.ListenAddress)
+	s := &snapshot{listenerHost: netip.MustParseAddr(host).Unmap(), contexts: map[string]*contextState{}}
 	public := s.forward(c.PublicUpstreams)
 	for _, definition := range c.Contexts {
 		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zoneApexes: map[string]struct{}{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}, zoneFiles: map[string]*file.File{}}
@@ -130,6 +133,9 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeServfailNoState, dns.RcodeServerFailure, nil
 	}
 	if IsReadinessCanary(r) {
+		if p.draining.Load() {
+			return outcomeDraining, dns.RcodeServerFailure, nil
+		}
 		if p.identityKey != nil {
 			if asserted, present := identityDestination(r, p.identityKey); !present || !asserted.IsValid() {
 				return outcomeServfailCanaryIdentity, dns.RcodeServerFailure, nil
@@ -151,6 +157,11 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	host, _, err := net.SplitHostPort(destination.String())
 	if err != nil {
 		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
+	}
+	// Withdraw from dnsdist health checks while tenant requests keep flowing.
+	probeHost, _ := netip.ParseAddr(host)
+	if p.draining.Load() && probeHost.Unmap() == state.listenerHost && isBackendProbe(r) {
+		return outcomeDraining, dns.RcodeServerFailure, nil
 	}
 	if p.identityKey != nil {
 		asserted, present := identityDestination(r, p.identityKey)
@@ -267,4 +278,22 @@ func (w contextWriter) WriteMsg(message *dns.Msg) error {
 		message.Truncate(int(size))
 	}
 	return w.ResponseWriter.WriteMsg(message)
+}
+
+// dnsdist probes the management address with an unkeyed root SOA.
+// A tenant's keyed root lookup must continue to follow normal routing.
+func isBackendProbe(r *dns.Msg) bool {
+	if r.Opcode != dns.OpcodeQuery || len(r.Question) != 1 || r.Question[0].Name != "." || r.Question[0].Qtype != dns.TypeSOA || r.Question[0].Qclass != dns.ClassINET {
+		return false
+	}
+	for _, rr := range r.Extra {
+		if opt, ok := rr.(*dns.OPT); ok {
+			for _, option := range opt.Option {
+				if option.Option() == IdentityOption {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }

@@ -112,6 +112,7 @@ tasks:
     cmds:
       - task: generate
       - task: manifests
+      - task: generate:verify
       - task: fmt
       - task: vet
       - task: lint
@@ -146,6 +147,13 @@ tasks:
     deps: [tools:controller-gen]
     cmds:
       - '{{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:artifacts:config=config/webhook'
+
+  generate:verify:
+    desc: Regenerate code and manifests, then fail when the committed files differ
+    cmds:
+      - task: generate
+      - task: manifests
+      - hack/verify-generated.sh
 
   fmt:
     desc: Run go fmt

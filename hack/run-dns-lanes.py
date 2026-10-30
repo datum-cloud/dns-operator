@@ -19,7 +19,9 @@ LANES = {
 }
 
 
-def run_lanes(lanes, output, command):
+def run_lanes(lanes, output, command, lane_env=None):
+    if lane_env is None:
+        lane_env = {"DNS_E2E_SHARED_PREREQUISITES": "1"}
     output.mkdir(parents=True, exist_ok=True)
     processes = set()
     lock = threading.Lock()
@@ -43,7 +45,7 @@ def run_lanes(lanes, output, command):
         summary = output / f"{name}.md"
         timings.write_text("")
         summary.write_text("")
-        env = {**os.environ, "DNS_E2E_SHARED_PREREQUISITES": "1",
+        env = {**os.environ, **lane_env,
                "CI_TIMINGS_FILE": str(timings), "GITHUB_STEP_SUMMARY": str(summary)}
         code = 0
         with (output / f"{name}.log").open("w") as log:

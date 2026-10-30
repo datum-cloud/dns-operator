@@ -429,6 +429,8 @@ tasks:
 
   env:public-image-build:
     desc: Build the public DNS image once per task invocation
+    status:
+      - test "${DNS_E2E_PREBUILT_IMAGES:-0}" = 1 && docker image inspect {{.KIND_IMAGE}} >/dev/null
     run: once
     cmds:
       - task: docker-build
@@ -878,6 +880,8 @@ tasks:
 
   env:rustfs-up:
     desc: "Deploy RustFS (S3-compatible object store) into the control cluster via Flux"
+    status:
+      - test "${DNS_E2E_WARM_FOUNDATION:-0}" = 1 && test -s dev/warm-foundation-claimed.json && test -s {{.RUSTFS_NODEPORT_FILE}}
     silent: true
     cmds:
       - echo "➡️  Installing RustFS into kind-{{.CONTROL_CLUSTER_NAME}}..."

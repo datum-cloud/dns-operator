@@ -1,0 +1,19 @@
+# More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
+# Ignore everything by default and re-include only needed files
+**
+
+# Re-include Go source files (but not *_test.go)
+!**/*.go
+**/*_test.go
+
+# Re-include Go module files
+!go.mod
+!go.sum
+
+# Re-include the knowledge document and skills dns-mcp embeds via go:embed
+# (docs/agent/embed.go). Without these, the container build fails with
+# "pattern llms-full.txt: no matching files found".
+!docs/agent/llms-full.txt
+!docs/agent/skills/*.md
+
+!config/internal-dns/commands/**

@@ -1,0 +1,161 @@
+name: Warm Foundation Experiment
+
+on:
+  push:
+    branches: [codex/dns-warm-foundation-experiment]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    name: Test private DNS Kubernetes harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test harness and CI orchestration
+        run: |
+          python3 -m unittest discover -s hack -p 'test_*ci*.py'
+          python3 -m unittest discover -s hack/ci -p 'test_warm_foundation.py'
+          python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
+      - name: Retain harness timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-phase-timings
+          path: dev/ci-timings.jsonl
+          if-no-files-found: warn
+
+  e2e:
+    name: Qualify a single-use warm foundation
+    runs-on: ubuntu-latest
+    # Three test-infra kind clusters (upstream + control + edge), each with
+    # Flux/cert-manager/Kyverno/Envoy Gateway, plus RustFS and a Lightningstream
+    # sync interval the federation/full-chain suites poll for - give it headroom.
+    timeout-minutes: 90
+    env:
+      # The Taskfile pulls in the shared datum-cloud/test-infra Taskfile as a
+      # remote include; go-task gates that behind this experiment flag, and
+      # `--yes` (below) auto-accepts the download in this non-interactive run.
+      TASK_X_REMOTE_TASKFILES: "1"
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        # Three test-infra kind clusters (Flux/cert-manager/Kyverno/Envoy each)
+        # plus PowerDNS/RustFS/Lightningstream/operator images overflow the
+        # runner's ~14GB OS disk, which thrashes `kind load` (observed ~14min)
+        # and destabilizes the API servers. Reclaim ~20GB of preinstalled
+        # toolchains we don't use (keep /opt/hostedtoolcache - Go/Task live there).
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/share/powershell || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set file watcher limits
+        run: sudo sysctl -w fs.inotify.max_user_instances=8192 fs.inotify.max_user_watches=1048576
+
+      - name: Setup Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Setup Task
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Preparation is outside the simulated job's critical path. This workflow
+      # deliberately measures it on the same disposable executor as consumption.
+      - name: Prepare a clean warm foundation
+        run: python3 hack/time-ci-phase.py foundation-prepare task --yes env:foundation:prepare-warm
+
+      - name: Claim and validate the warm foundation
+        run: python3 hack/time-ci-phase.py foundation-claim task --yes env:foundation:claim-warm
+
+      - name: Verify the foundation cannot be claimed twice
+        run: |
+          if python3 hack/ci/warm-foundation.py claim > dev/repeated-claim.log 2>&1; then
+            echo "ERROR: a second claim unexpectedly succeeded" >&2
+            exit 1
+          fi
+          cat dev/repeated-claim.log
+          grep -q 'already been claimed' dev/repeated-claim.log
+
+      - name: Install shared CRDs and tools
+        run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
+
+      - name: Deploy and test private and public DNS in parallel
+        run: python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py
+
+      - name: Retain CI phase timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warm-foundation-phase-timings
+          path: |
+            dev/ci-timings.jsonl
+            dev/ci-lanes/
+            dev/repeated-claim.log
+          if-no-files-found: warn
+
+      - name: Collect Kubernetes bootstrap diagnostics
+        if: failure()
+        run: hack/collect-kind-diagnostics.sh
+
+      - name: Collect diagnostic logs
+        if: failure()
+        env:
+          KUBECONFIG: dev/kubeconfig
+        run: |
+          echo "=== [upstream] replicator logs ==="
+          kubectl --context kind-dns-upstream -n dns-replicator-system logs deployment/dns-operator-controller-manager --tail=200 || true
+          echo ""
+          echo "=== [upstream] DNSZones / DNSRecordSets ==="
+          kubectl --context kind-dns-upstream get dnszones,dnsrecordsets -A || true
+          echo ""
+          for ctx in kind-dns-control kind-dns-edge; do
+            echo "=== [$ctx] pods (all namespaces) ==="
+            kubectl --context "$ctx" get pods -A || true
+            echo ""
+            echo "=== [$ctx] dns-operator agent logs (manager) ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c manager --tail=200 || true
+            echo ""
+            echo "=== [$ctx] lightningstream logs ==="
+            kubectl --context "$ctx" -n dns-agent-system logs statefulset/pdns-auth -c lightningstream --tail=200 || true
+            echo ""
+            echo "=== [$ctx] DNSZones / DNSRecordSets ==="
+            kubectl --context "$ctx" get dnszones,dnsrecordsets -A || true
+            echo ""
+          done
+          echo "=== RustFS logs (control) ==="
+          kubectl --context kind-dns-control -n rustfs-system logs -l app.kubernetes.io/instance=rustfs --tail=100 || true
+
+      - name: Collect private DNS deployment evidence
+        if: always()
+        run: test/internaldns/kubernetes/collect.sh
+
+      - name: Retain private DNS qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: internal-dns-kubernetes
+          path: test/internaldns/results/kubernetes*
+          if-no-files-found: warn
+
+      - name: Tear down the environment
+        if: always()
+        run: task --yes env:down || true

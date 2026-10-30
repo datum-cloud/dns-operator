@@ -87,13 +87,19 @@ rebuild rather than manually modifying their expiry.
 After assigning the prepared executor to a single job:
 
 ```sh
-python3 hack/time-ci-phase.py harness-tests task --yes test:internal-dns-kubernetes
 python3 hack/time-ci-phase.py foundation-claim task --yes env:foundation:claim-warm
-python3 hack/time-ci-phase.py private-dns-deploy task --yes env:internal-dns:deploy
-python3 hack/time-ci-phase.py public-dns-deploy task --yes env:stack-deploy
-python3 hack/time-ci-phase.py private-dns-qualification task --yes env:internal-dns:qualify
-python3 hack/time-ci-phase.py chainsaw-tests task --yes env:chainsaw
+python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
+python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py --include-harness
 ```
+
+The experiment workflow `.github/workflows/warm-foundation-experiment.yml` runs
+on this experiment branch. It uses a fresh GitHub-hosted runner, times preparation
+and claim separately, verifies a second claim is rejected, then runs the same
+shared prerequisites and parallel DNS lanes as PR #432. Harness tests run in a
+separate job. Preparation and consumption occur in one workflow: this validates
+the handoff and qualification, but does not measure real pool assignment latency,
+long idle residence, or snapshot restore. Keep the preparation cost separate from
+the simulated consuming job's critical path.
 
 Run these sequentially and stop on any error (use `set -e` in a script). Retain
 `dev/ci-timings.jsonl` and qualification evidence. After evidence collection,
@@ -103,8 +109,8 @@ than continuing or retrying it as an available warm environment.
 
 Compare the current-head cold foundation timing from PR #432 with the successful
 `foundation-claim` timing. Their difference is the measured *foundation* saving;
-subtract any future broker assignment/connection latency as well. The earlier
-6m24s foundation duration is a reference, not a promised saving. Report deployment
+subtract any future broker assignment/connection latency as well. The latest passing parallel CI run 40990741956
+measured a 370.802s foundation duration is a reference, not a promised saving. Report deployment
 and test durations independently. Preparation remains real compute cost shifted
 out of the job's critical path; include idle-pool cost when judging the tradeoff.
 Run cold-bootstrap qualification separately so dependency installation failures

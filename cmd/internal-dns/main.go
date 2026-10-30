@@ -16,7 +16,7 @@ import (
 func main() {
 	var role, configPath, kubeconfig string
 	var opts internruntime.Options
-	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, readiness, or prepare")
+	flag.StringVar(&role, "role", "", "Process role: control-plane, agent, serving, readiness, activation-check, or prepare")
 	flag.StringVar(&configPath, "config", "", "Absolute path to the internal DNS JSON configuration")
 	flag.StringVar(&opts.MetricsBindAddress, "metrics-bind-address", ":8080", "Control-plane metrics listener, or 0 to disable; the configuration's metricsBindAddress overrides it")
 	flag.StringVar(&opts.AgentMetricsBindAddress, "agent-metrics-bind-address", "0", "Agent metrics listener, or 0 to disable")

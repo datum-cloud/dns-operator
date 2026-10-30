@@ -189,7 +189,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&dnsv1alpha1.DNSZone{}, enqueue).Watches(&dnsv1alpha1.DNSZoneAssociation{}, enqueue).
 		Watches(&dnsv1alpha1.DNSRecordSet{}, enqueue).Watches(&dnsv1alpha1.DNSNamingPolicy{}, enqueue)
 
-	return b.Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
+	return b.Watches(&dnsv1alpha1.DNSRegistration{}, enqueue, builder.WithPredicates(predicate.GenerationChangedPredicate{})).Watches(&dnsv1alpha1.DNSResolverContext{}, enqueue).Watches(&dnsv1alpha1.DNSResolverAccessBinding{}, enqueue).Complete(r)
 
 }
 
@@ -211,6 +211,7 @@ func (r *Reconciler) setupPerZone(mgr ctrl.Manager, name string, project handler
 		WithOptions(controller.Options{RateLimiter: projectRateLimiter(), MaxConcurrentReconciles: zoneWorkers}).
 		Watches(&dnsv1alpha1.DNSRecordSet{}, zoneEvents{keys: recordSetZone}, generation).
 		Watches(&dnsv1alpha1.DNSRegistration{}, zoneEvents{keys: registrationZone}, generation).
+		Watches(&dnsv1alpha1.DNSRegistration{}, project, generation).
 		Watches(&dnsv1alpha1.DNSRecordContribution{}, zoneEvents{keys: contributionRegistration}, generation).
 		Watches(&dnsv1alpha1.DNSZone{}, project).
 		Watches(&dnsv1alpha1.DNSZone{}, zoneEvents{keys: zoneItself}, generation).

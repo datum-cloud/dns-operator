@@ -183,6 +183,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			complete := s.bindingVerified(binding, e, snapshot, now)
 			if complete {
 				binding.Status.Phase = dnsValueServing
+				if binding.Spec.Tombstone {
+					binding.Status.Phase = dnsValueWithdrawn
+				}
 				binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
 			} else {
 				binding.Status.Phase = dnsValuePending
@@ -438,6 +441,10 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 		s.bindingConditions(b, envelope, snapshot, now, complete)
 		if complete {
 			b.Status.Phase = dnsValueServing
+			if b.Spec.Tombstone {
+				b.Status.Phase = dnsValueWithdrawn
+			}
+			b.Status.ObservedConfigurationRevision = b.Spec.Configuration.Revision
 		} else {
 			b.Status.Phase = dnsValuePending
 		}
@@ -582,7 +589,10 @@ func LoadCommittedServingSnapshot(ctx context.Context, c client.Client, namespac
 	if err := json.Unmarshal(out.Spec.Payload, &e); err != nil {
 		return nil, nil, err
 	}
-	if e.Kind != model.KindServingSnapshot || e.Region != region || e.Shard != shard || e.Epoch != owner.Epoch || int64(e.Epoch) != out.Spec.WriterEpoch || int64(e.Revision) != out.Spec.Revision {
+	// A lease handoff may advance the owner epoch without changing the
+	// committed snapshot. The active outbox pointer is the commit fence; the
+	// outbox and envelope must agree with each other, not with the next writer.
+	if e.Kind != model.KindServingSnapshot || e.Region != region || e.Shard != shard || int64(e.Epoch) != out.Spec.WriterEpoch || int64(e.Revision) != out.Spec.Revision {
 		return nil, nil, fmt.Errorf("committed serving snapshot fence mismatch")
 	}
 	var snapshot model.ServingSnapshot
@@ -600,12 +610,12 @@ func (s *AckSink) bindingVerified(b *dnsv1alpha1.DNSResolverBinding, envelope *m
 }
 
 func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time, all bool) bool {
-	if envelope == nil || snapshot == nil || b.Spec.Tombstone {
+	if envelope == nil || snapshot == nil {
 		return false
 	}
 	present := false
 	for _, desired := range snapshot.Bindings {
-		if desired.BindingUID == string(b.UID) && !desired.Tombstone && int64(desired.BindingGeneration) == b.Spec.Configuration.Generation && int64(desired.ConfigurationRevision) == b.Spec.Configuration.Revision && int64(desired.Version.Epoch) == b.Spec.Version.Epoch && int64(desired.Version.Sequence) == b.Spec.Version.Sequence {
+		if desired.BindingUID == string(b.UID) && desired.Tombstone == b.Spec.Tombstone && int64(desired.BindingGeneration) == b.Spec.Configuration.Generation && int64(desired.ConfigurationRevision) == b.Spec.Configuration.Revision && int64(desired.Version.Epoch) == b.Spec.Version.Epoch && int64(desired.Version.Sequence) == b.Spec.Version.Sequence {
 			present = true
 			break
 		}
@@ -649,7 +659,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope *model.Envelope, snapshot *model.ServingSnapshot, now time.Time, available bool) {
 	condition(&b.Status.Conditions, "FullyReplicated", s.bindingProof(b, envelope, snapshot, now, true), "ReplicaVerification", b.Generation, now)
 	condition(&b.Status.Conditions, "ObservationHealthy", available, "MemberObservation", b.Generation, now)
-	condition(&b.Status.Conditions, dnsValueServing, available, "MemberVerification", b.Generation, now)
+	condition(&b.Status.Conditions, dnsValueServing, available && !b.Spec.Tombstone, "MemberVerification", b.Generation, now)
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}

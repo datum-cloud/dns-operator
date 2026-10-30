@@ -14,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -80,6 +81,18 @@ func (r *Reconciler) loadReferenceState(ctx context.Context, source client.Objec
 }
 
 func (r *Reconciler) pinReferences(ctx context.Context, source client.Object, selected map[string]dnsv1.DNSObjectReference) (map[string]dnsv1.DNSObjectReference, bool, error) {
+	var references map[string]dnsv1.DNSObjectReference
+	var current bool
+	// A competing creator's state must pass source and reference identity checks.
+	err := retry.OnError(retry.DefaultRetry, apierrors.IsAlreadyExists, func() error {
+		var err error
+		references, current, err = r.pinReferencesOnce(ctx, source, selected)
+		return err
+	})
+	return references, current, err
+}
+
+func (r *Reconciler) pinReferencesOnce(ctx context.Context, source client.Object, selected map[string]dnsv1.DNSObjectReference) (map[string]dnsv1.DNSObjectReference, bool, error) {
 	object, state, err := r.loadReferenceState(ctx, source)
 	if err != nil {
 		return nil, false, err

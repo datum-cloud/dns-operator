@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -87,7 +89,14 @@ func (r *Reconciler) readZoneInputs(ctx context.Context, z *dns.DNSZone, cached 
 	}
 	var regs dns.DNSRegistrationList
 	var records dns.DNSRecordSetList
-	if err := reader.List(ctx, &regs, options...); err != nil {
+	registrationReader, registrationOptions := reader, options
+	// Reservations are authority, never trust an informer that may not yet know
+	// a newly created policy. Keep record/contribution payload caching unchanged.
+	if model.IsManagedZone(z) {
+		registrationReader = r.sourceReader()
+		registrationOptions = []client.ListOption{client.InNamespace(z.Namespace)}
+	}
+	if err := registrationReader.List(ctx, &regs, registrationOptions...); err != nil {
 		return zoneInputs{}, err
 	}
 	if err := reader.List(ctx, &records, options...); err != nil {
@@ -317,6 +326,7 @@ func (r *Reconciler) compileCachedInputs(ctx context.Context, in CompileInput) (
 }
 
 type accessSnapshot struct {
+	reservations map[string]reservationVersion
 	zone         dns.DNSZone
 	associations []dns.DNSZoneAssociation
 	contexts     []dns.DNSResolverContext
@@ -326,6 +336,7 @@ type accessSnapshot struct {
 
 func (r *Reconciler) zoneAccessSnapshot(ctx context.Context, z *dns.DNSZone) (accessSnapshot, error) {
 	out := accessSnapshot{associations: []dns.DNSZoneAssociation{}}
+
 	if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(z), &out.zone); err != nil {
 		return out, err
 	}
@@ -344,6 +355,17 @@ func (r *Reconciler) zoneAccessSnapshot(ctx context.Context, z *dns.DNSZone) (ac
 			return out, err
 		}
 		out.contexts = append(out.contexts, c)
+	}
+	needReservations := model.IsManagedZone(z)
+	for _, c := range out.contexts {
+		needReservations = needReservations || c.Spec.ManagedNamespace.Enabled
+	}
+	if needReservations {
+		var regs dns.DNSRegistrationList
+		if err := r.sourceReader().List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
+			return out, err
+		}
+		out.reservations = reservationVersions(regs.Items, "")
 	}
 	var err error
 	out.pins, err = r.associationReferences(ctx, out.associations)
@@ -378,6 +400,17 @@ func (r *Reconciler) guardZoneAccess(ctx context.Context, z *dns.DNSZone, assocs
 		}
 	}
 	return func(in CompileInput) error {
+		if model.IsManagedZone(z) {
+			expected := map[string]reservationVersion{}
+			for k, v := range before.reservations {
+				if strings.HasPrefix(k, z.Name+"/") {
+					expected[k] = v
+				}
+			}
+			if !reflect.DeepEqual(expected, reservationVersions(in.Registrations, z.Name)) {
+				return cacheConflict(z.Name)
+			}
+		}
 		after, err := r.zoneAccessSnapshot(ctx, z)
 		if err != nil {
 			return err

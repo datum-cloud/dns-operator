@@ -13,7 +13,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
-var zoneLeaseAcquisitionResults = []string{"held", "created", "taken_over", "standby", "conflict", "error"}
+const (
+	zoneLeaseResultConflict = "conflict"
+	zoneLeaseResultError    = "error"
+)
+
+var zoneLeaseAcquisitionResults = []string{"held", "created", "taken_over", "standby", zoneLeaseResultConflict, zoneLeaseResultError}
 
 var zoneLeaseAcquisitions = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_zone_lease_acquisitions_total",
@@ -25,7 +30,7 @@ var zoneLeaseTakeovers = prometheus.NewCounter(prometheus.CounterOpts{
 	Help: "Private zone leases this replica took from a different holder after expiry or explicit release.",
 })
 
-var zoneLeaseRenewalResults = []string{"renewed", "conflict", "error"}
+var zoneLeaseRenewalResults = []string{"renewed", zoneLeaseResultConflict, zoneLeaseResultError}
 
 var zoneLeaseRenewals = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Name: "internal_dns_zone_lease_renewals_total",
@@ -72,9 +77,9 @@ func (r *Reconciler) patchLease(ctx context.Context, own, base *dnsv1alpha1.DNSP
 	case err == nil:
 		zoneLeaseRenewals.WithLabelValues("renewed").Inc()
 	case apierrors.IsConflict(err):
-		zoneLeaseRenewals.WithLabelValues("conflict").Inc()
+		zoneLeaseRenewals.WithLabelValues(zoneLeaseResultConflict).Inc()
 	default:
-		zoneLeaseRenewals.WithLabelValues("error").Inc()
+		zoneLeaseRenewals.WithLabelValues(zoneLeaseResultError).Inc()
 	}
 	return err
 }

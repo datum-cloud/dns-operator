@@ -49,6 +49,7 @@ vars:
   # fixed path so behavior doesn't depend on call order or that leak.
   ENV_KUBECONFIG: 'dev/kubeconfig'
   ACTIONS_REPO: https://github.com/datum-cloud/actions.git
+  DNS_E2E_SHARED_PREREQUISITES: '{{env "DNS_E2E_SHARED_PREREQUISITES" | default "0"}}'
 
   # Build, test, and tool pins. Override on the command line, for example
   # `task kind-create CLUSTER=dns-downstream`.
@@ -124,14 +125,31 @@ tasks:
       - task: vuln-scan
 
   e2e:
-    desc: Bring up the kind environment and run every end-to-end suite, as CI does
+    desc: Prepare shared infrastructure and run independent DNS lanes in parallel
     cmds:
-      - task: test:internal-dns-kubernetes
       - task: env:foundation-up
-      - task: env:internal-dns:deploy
-      - task: env:stack-deploy
-      - task: env:internal-dns:qualify
-      - task: env:chainsaw
+      - task: env:shared-prerequisites
+      - python3 hack/run-dns-lanes.py --include-harness
+
+  env:shared-prerequisites:
+    desc: Install shared tools and CRDs before concurrent DNS deployment
+    cmds:
+      - task: tools:kustomize
+      - task: tools:controller-gen
+      - task: tools:chainsaw
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.CONTROL_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.UPSTREAM_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.EDGE_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-networking-crds
+        vars: { CONTEXT: 'kind-{{.UPSTREAM_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - |
+        for cluster in {{.CONTROL_CLUSTER_NAME}} {{.UPSTREAM_CLUSTER_NAME}} {{.EDGE_CLUSTER_NAME}}; do
+          KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context "kind-$cluster" wait crd --all --for=condition=Established --timeout=120s || exit 1
+        done
+
 
   generate:
     desc: Generate DeepCopy methods and config defaults
@@ -633,6 +651,8 @@ tasks:
       - '{{.TOOL_DIR}}/kustomize build --load-restrictor LoadRestrictionsNone config/overlays/nso | KUBECONFIG={{.KUBECONFIG}} {{.KUBECTL}} apply --server-side=true --force-conflicts -f -'
 
   install-networking-crds:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1"'
     desc: Generate the networking services CRDs (Domain and others) and install them into CONTEXT
     deps: [tools:controller-gen]
     requires:
@@ -643,6 +663,8 @@ tasks:
       - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f dev/crds/network-services'
 
   install-dns-operator-crds:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1"'
     desc: Install the DNS operator CRDs into CONTEXT
     deps: [tools:kustomize]
     requires:
@@ -684,12 +706,16 @@ tasks:
       - hack/install-go-tool.sh {{.TOOL_DIR}} {{.NAME}} {{.PACKAGE}} {{.VERSION}}
 
   tools:kustomize:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/kustomize"'
     desc: Install kustomize into bin/
     cmds:
       - task: tools:go-install
         vars: { NAME: kustomize, PACKAGE: sigs.k8s.io/kustomize/kustomize/v5, VERSION: '{{.KUSTOMIZE_VERSION}}' }
 
   tools:controller-gen:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/controller-gen"'
     desc: Install controller-gen into bin/
     cmds:
       - task: tools:go-install
@@ -711,6 +737,8 @@ tasks:
         vars: { NAME: setup-envtest, PACKAGE: sigs.k8s.io/controller-runtime/tools/setup-envtest, VERSION: '{{.ENVTEST_VERSION}}' }
 
   tools:chainsaw:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/chainsaw"'
     desc: Install chainsaw into bin/
     cmds:
       - task: tools:go-install
@@ -955,7 +983,7 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/agent-powerdns-federated-ci{{else}}config/overlays/agent-powerdns-federated{{end}}'
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ control cluster (kind-{{.CONTROL_CLUSTER_NAME}}) ready"
 
@@ -994,7 +1022,7 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/agent-powerdns-federated-ci{{else}}config/overlays/agent-powerdns-federated{{end}}'
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.EDGE_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ edge cluster (kind-{{.EDGE_CLUSTER_NAME}}) ready"
 
@@ -1052,7 +1080,7 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/replicator"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/replicator-ci{{else}}config/overlays/replicator{{end}}'
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=180s
       - echo "✅ upstream cluster (kind-{{.UPSTREAM_CLUSTER_NAME}}) ready"
 

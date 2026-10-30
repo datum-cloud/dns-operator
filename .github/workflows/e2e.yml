@@ -11,6 +11,27 @@ permissions:
   contents: read
 
 jobs:
+  harness:
+    name: Test private DNS Kubernetes harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test harness and CI orchestration
+        run: |
+          python3 -m unittest discover -s hack -p 'test_*ci*.py'
+          python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
+      - name: Retain harness timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-phase-timings
+          path: dev/ci-timings.jsonl
+          if-no-files-found: warn
+
   e2e:
     name: Run Chainsaw E2E Tests
     runs-on: ubuntu-latest
@@ -58,30 +79,23 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Test private DNS Kubernetes harness
-        run: python3 hack/time-ci-phase.py harness-tests task --yes test:internal-dns-kubernetes
-
       - name: Prepare shared Kubernetes foundation
         run: python3 hack/time-ci-phase.py foundation task --yes env:foundation-up
 
-      - name: Deploy private DNS
-        run: python3 hack/time-ci-phase.py private-dns-deploy task --yes env:internal-dns:deploy
+      - name: Install shared CRDs and tools
+        run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
 
-      - name: Deploy public DNS
-        run: python3 hack/time-ci-phase.py public-dns-deploy task --yes env:stack-deploy
-
-      - name: Qualify private DNS publication and serving
-        run: python3 hack/time-ci-phase.py private-dns-qualification task --yes env:internal-dns:qualify
-
-      - name: Run Chainsaw tests
-        run: python3 hack/time-ci-phase.py chainsaw-tests task --yes env:chainsaw
+      - name: Deploy and test private and public DNS in parallel
+        run: python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py
 
       - name: Retain CI phase timings
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-phase-timings
-          path: dev/ci-timings.jsonl
+          path: |
+            dev/ci-timings.jsonl
+            dev/ci-lanes/
           if-no-files-found: warn
 
       - name: Collect Kubernetes bootstrap diagnostics

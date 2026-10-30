@@ -26,9 +26,11 @@ test/internaldns/kubernetes/reset.sh
 
 test -x bin/kustomize || { echo "bin/kustomize is missing; run: task tools:kustomize" >&2; exit 1; }
 bin/kustomize build config/crd > "$work/crds.yaml"
-for file in platform project-a project-b; do
-  kubectl --kubeconfig "$work/$file.kubeconfig" apply --server-side -f "$work/crds.yaml"
-done
+if [[ ${DNS_E2E_SHARED_PREREQUISITES:-0} != 1 ]]; then
+  for file in platform project-a project-b; do
+    kubectl --kubeconfig "$work/$file.kubeconfig" apply --server-side -f "$work/crds.yaml"
+  done
+fi
 
 docker build -f test/internaldns/kubernetes/Dockerfile \
   --iidfile "$work/image.id" -t internal-dns-kubernetes:e2e .

@@ -49,6 +49,7 @@ vars:
   # fixed path so behavior doesn't depend on call order or that leak.
   ENV_KUBECONFIG: 'dev/kubeconfig'
   ACTIONS_REPO: https://github.com/datum-cloud/actions.git
+  DNS_E2E_SHARED_PREREQUISITES: '{{env "DNS_E2E_SHARED_PREREQUISITES" | default "0"}}'
 
   # Build, test, and tool pins. Override on the command line, for example
   # `task kind-create CLUSTER=dns-downstream`.
@@ -125,13 +126,31 @@ tasks:
       - task: vuln-scan
 
   e2e:
-    desc: Bring up the kind environment and run every end-to-end suite, as CI does
+    desc: Prepare shared infrastructure and run independent DNS lanes in parallel
     cmds:
-      - task: test:internal-dns-kubernetes
-      - task: env:internal-dns:up
-      - task: env:stack-up
-      - task: env:internal-dns:qualify
-      - task: env:chainsaw
+      - task: env:foundation-up
+      - task: env:shared-prerequisites
+      - python3 hack/run-dns-lanes.py --include-harness
+
+  env:shared-prerequisites:
+    desc: Install shared tools and CRDs before concurrent DNS deployment
+    cmds:
+      - task: tools:kustomize
+      - task: tools:controller-gen
+      - task: tools:chainsaw
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.CONTROL_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.UPSTREAM_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-dns-operator-crds
+        vars: { CONTEXT: 'kind-{{.EDGE_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - task: install-networking-crds
+        vars: { CONTEXT: 'kind-{{.UPSTREAM_CLUSTER_NAME}}', KUBECONFIG: '{{.ENV_KUBECONFIG}}' }
+      - |
+        for cluster in {{.CONTROL_CLUSTER_NAME}} {{.UPSTREAM_CLUSTER_NAME}} {{.EDGE_CLUSTER_NAME}}; do
+          KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context "kind-$cluster" wait crd --all --for=condition=Established --timeout=120s || exit 1
+        done
+
 
   generate:
     desc: Generate DeepCopy methods and config defaults
@@ -409,6 +428,21 @@ tasks:
           IMG: '{{.KIND_IMAGE}}'
       - '{{.KIND}} load docker-image {{.KIND_IMAGE}} --name {{.CLUSTER}}'
 
+  kind-load-existing-image:
+    desc: Load the already built KIND_IMAGE into CLUSTER
+    requires:
+      vars: [CLUSTER]
+    cmds:
+      - '{{.KIND}} load docker-image {{.KIND_IMAGE}} --name {{.CLUSTER}}'
+
+  env:public-image-build:
+    desc: Build the public DNS image once per task invocation
+    run: once
+    cmds:
+      - task: docker-build
+        vars:
+          IMG: '{{.KIND_IMAGE}}'
+
   kustomize-apply:
     desc: Apply the kustomize directory KUSTOMIZE_DIR to the kubectl context CONTEXT
     deps: [tools:kustomize]
@@ -625,6 +659,8 @@ tasks:
       - '{{.TOOL_DIR}}/kustomize build --load-restrictor LoadRestrictionsNone config/overlays/nso | KUBECONFIG={{.KUBECONFIG}} {{.KUBECTL}} apply --server-side=true --force-conflicts -f -'
 
   install-networking-crds:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1"'
     desc: Generate the networking services CRDs (Domain and others) and install them into CONTEXT
     deps: [tools:controller-gen]
     requires:
@@ -635,6 +671,8 @@ tasks:
       - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f dev/crds/network-services'
 
   install-dns-operator-crds:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1"'
     desc: Install the DNS operator CRDs into CONTEXT
     deps: [tools:kustomize]
     requires:
@@ -676,12 +714,16 @@ tasks:
       - hack/install-go-tool.sh {{.TOOL_DIR}} {{.NAME}} {{.PACKAGE}} {{.VERSION}}
 
   tools:kustomize:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/kustomize"'
     desc: Install kustomize into bin/
     cmds:
       - task: tools:go-install
         vars: { NAME: kustomize, PACKAGE: sigs.k8s.io/kustomize/kustomize/v5, VERSION: '{{.KUSTOMIZE_VERSION}}' }
 
   tools:controller-gen:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/controller-gen"'
     desc: Install controller-gen into bin/
     cmds:
       - task: tools:go-install
@@ -703,6 +745,8 @@ tasks:
         vars: { NAME: setup-envtest, PACKAGE: sigs.k8s.io/controller-runtime/tools/setup-envtest, VERSION: '{{.ENVTEST_VERSION}}' }
 
   tools:chainsaw:
+    status:
+      - 'test "{{.DNS_E2E_SHARED_PREREQUISITES}}" = "1" && test -x "{{.TOOL_DIR}}/chainsaw"'
     desc: Install chainsaw into bin/
     cmds:
       - task: tools:go-install
@@ -715,7 +759,13 @@ tasks:
         vars: { NAME: cmctl, PACKAGE: github.com/cert-manager/cmctl/v2, VERSION: '{{.CMCTL_VERSION}}' }
 
   env:internal-dns:up:
-    desc: "Deploy private DNS pods on the shared upstream/control/edge environment"
+    desc: "Prepare the foundation and deploy private DNS"
+    cmds:
+      - task: env:foundation-up
+      - task: env:internal-dns:deploy
+
+  env:foundation-up:
+    desc: "Prepare three dual-stack clusters and shared infrastructure without DNS workloads"
     cmds:
       - task: test-infra:ensure-repo
       - task: test-infra:ensure-tools
@@ -732,6 +782,10 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
           KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+
+  env:internal-dns:deploy:
+    desc: "Deploy private DNS onto an already prepared foundation"
+    cmds:
       - task: tools:kustomize
       - test/internaldns/kubernetes/deploy.sh
 
@@ -868,13 +922,6 @@ tasks:
           --from-literal=cluster_id={{.CLUSTER_ID}}- \
           --dry-run=client -o yaml | kubectl --context {{.CONTEXT}} apply -f -
         echo "✅ s3-credentials set in {{.CONTEXT}}: endpoint_url={{.ENDPOINT_URL}}"
-        # The pdns-auth StatefulSet (see config/agent/manager.yaml) is applied
-        # by kustomize-apply BEFORE this secret exists, so its lightningstream
-        # container's secretKeyRef env vars (optional: true) start out empty.
-        # Kubernetes does not live-update already-injected env vars when a
-        # Secret is created/changed, so restart the pod to pick them up.
-        kubectl --context {{.CONTEXT}} -n dns-agent-system rollout restart statefulset/pdns-auth
-        kubectl --context {{.CONTEXT}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
 
   # internal: brings up a test-infra-managed kind cluster (kind cluster +
   # Flux + cert-manager + Kyverno + Envoy Gateway) for CLUSTER_NAME.
@@ -911,13 +958,19 @@ tasks:
       - kind export kubeconfig --name {{.CLUSTER_NAME}} --kubeconfig {{.ENV_KUBECONFIG}}
 
   env:control-up:
-    desc: "Create the control kind cluster and deploy dns-operator + PowerDNS + RustFS"
+    desc: "Prepare the control cluster and deploy DNS"
     cmds:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.CONTROL_CLUSTER_NAME}}"
+      - task: env:control-deploy
+
+  env:control-deploy:
+    desc: "Deploy dns-operator + PowerDNS + RustFS"
+    cmds:
       - task: env:rustfs-up
-      - task: kind-load-image
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"
@@ -925,11 +978,6 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
-      - task: kustomize-apply
-        vars:
-          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
-          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
@@ -939,20 +987,32 @@ tasks:
               export KUBECONFIG={{.ENV_KUBECONFIG}}
               SVC=$(kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} get svc -n rustfs-system -l app.kubernetes.io/instance=rustfs -o jsonpath='{.items[0].metadata.name}')
               echo "http://$SVC.rustfs-system.svc.cluster.local:9000"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/agent-powerdns-federated-ci{{else}}config/overlays/agent-powerdns-federated{{end}}'
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.CONTROL_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ control cluster (kind-{{.CONTROL_CLUSTER_NAME}}) ready"
 
   env:edge-up:
-    desc: "Create the edge kind cluster and deploy PowerDNS pointed at the control cluster's RustFS"
+    desc: "Prepare the edge cluster and deploy DNS"
+    cmds:
+      - task: env:test-infra-cluster-up
+        vars:
+          CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
+      - task: env:edge-deploy
+
+  env:edge-deploy:
+    desc: "Deploy PowerDNS pointed at the control cluster's RustFS"
     cmds:
       - |
         if [ ! -f {{.RUSTFS_NODEPORT_FILE}} ]; then
           echo "❌ {{.RUSTFS_NODEPORT_FILE}} not found - run 'task env:control-up' first"
           exit 1
         fi
-      - task: env:test-infra-cluster-up
-        vars:
-          CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
-      - task: kind-load-image
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.EDGE_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"
@@ -960,26 +1020,33 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
-      - task: kustomize-apply
-        vars:
-          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
-          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
           CLUSTER_ID: "{{.EDGE_CLUSTER_NAME}}"
           ENDPOINT_URL:
             sh: echo "http://{{.CONTROL_CLUSTER_NAME}}-control-plane:$(cat {{.RUSTFS_NODEPORT_FILE}})"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/agent-powerdns-federated-ci{{else}}config/overlays/agent-powerdns-federated{{end}}'
+      - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.EDGE_CLUSTER_NAME}} -n dns-agent-system rollout status statefulset/pdns-auth --timeout=120s
       - echo "✅ edge cluster (kind-{{.EDGE_CLUSTER_NAME}}) ready"
 
   env:upstream-up:
-    desc: "Create the upstream kind cluster and deploy the replicator pointed at the control (downstream agent) cluster"
+    desc: "Prepare the upstream cluster and deploy DNS"
     cmds:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
-      - task: kind-load-image
+      - task: env:upstream-deploy
+
+  env:upstream-deploy:
+    desc: "Deploy the replicator pointed at the control (downstream agent) cluster"
+    cmds:
+      - task: env:public-image-build
+      - task: kind-load-existing-image
         vars:
           CLUSTER: "{{.UPSTREAM_CLUSTER_NAME}}"
           IMG: "{{.IMG}}"
@@ -1021,19 +1088,25 @@ tasks:
         vars:
           KUBECONFIG: "{{.ENV_KUBECONFIG}}"
           CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
-          KUSTOMIZE_DIR: "config/overlays/replicator"
+          KUSTOMIZE_DIR: '{{if eq .DNS_E2E_SHARED_PREREQUISITES "1"}}config/overlays/replicator-ci{{else}}config/overlays/replicator{{end}}'
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=180s
       - echo "✅ upstream cluster (kind-{{.UPSTREAM_CLUSTER_NAME}}) ready"
 
   env:stack-up:
-    desc: "Bring up all three clusters and the full DNS chain (no sample data) - used by CI"
+    desc: "Prepare the foundation and deploy the public DNS chain (no sample data)"
+    cmds:
+      - task: env:foundation-up
+      - task: env:stack-deploy
+
+  env:stack-deploy:
+    desc: "Deploy public DNS onto an already prepared foundation"
     cmds:
       # Order matters: the replicator (upstream) needs the control cluster
       # reachable, and edge needs control's RustFS NodePort, so control comes
       # up first, then edge, then upstream.
-      - task: env:control-up
-      - task: env:edge-up
-      - task: env:upstream-up
+      - task: env:control-deploy
+      - task: env:edge-deploy
+      - task: env:upstream-deploy
 
   env:up:
     desc: "Bring up the full local DNS federation environment (upstream + control + edge) with sample data"

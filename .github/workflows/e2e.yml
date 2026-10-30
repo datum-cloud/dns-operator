@@ -11,6 +11,27 @@ permissions:
   contents: read
 
 jobs:
+  harness:
+    name: Test private DNS Kubernetes harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test harness and CI orchestration
+        run: |
+          python3 -m unittest discover -s hack -p 'test_*ci*.py'
+          python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
+      - name: Retain harness timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-phase-timings
+          path: dev/ci-timings.jsonl
+          if-no-files-found: warn
+
   e2e:
     name: Run Chainsaw E2E Tests
     runs-on: ubuntu-latest
@@ -58,25 +79,24 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Bring up private DNS on the shared Kubernetes foundation
-        run: task --yes test:internal-dns-kubernetes env:internal-dns:up
+      - name: Prepare shared Kubernetes foundation
+        run: python3 hack/time-ci-phase.py foundation task --yes env:foundation-up
 
-      - name: Bring up the full DNS environment
-        # Creates the upstream (replicator) + control (downstream agent +
-        # PowerDNS + Lightningstream + RustFS) + edge clusters and wires the
-        # whole production chain together. No sample data (env:stack-up, not
-        # env:up) so the suites own all zones on the shared control PowerDNS.
-        run: task --yes env:stack-up
+      - name: Install shared CRDs and tools
+        run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
 
-      - name: Qualify private DNS publication and serving
-        run: task --yes env:internal-dns:qualify
+      - name: Deploy and test private and public DNS in parallel
+        run: python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py
 
-      - name: Run Chainsaw tests
-        # Runs every suite under test/e2e against the environment: the
-        # upstream->control replicator suites (alias, display-annotations,
-        # zones-and-records), the control->edge Lightningstream suite
-        # (federation), and the end-to-end upstream->edge suite (full-chain).
-        run: task --yes env:chainsaw
+      - name: Retain CI phase timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-phase-timings
+          path: |
+            dev/ci-timings.jsonl
+            dev/ci-lanes/
+          if-no-files-found: warn
 
       - name: Collect Kubernetes bootstrap diagnostics
         if: failure()

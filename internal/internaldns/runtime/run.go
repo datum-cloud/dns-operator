@@ -237,8 +237,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			ClientForRequest:   directory.selectProject,
-			InstancePublishers: cfg.Admission.InstancePublishers,
+			ClientForRequest: directory.selectProject,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 		admissionManager.GetWebhookServer().Register("/readyz", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

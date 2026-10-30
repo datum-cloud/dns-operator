@@ -433,3 +433,61 @@ Naming-policy selectors organize names; they do not authorize publishers.
 A publisher that can change registration labels can select every matching
 rule for the registration's associated context. Restrict registration writes
 with RBAC when publishers must not share that authority.
+
+## Service-owned reservations
+
+DNS has no service-scope configuration or built-in reserved labels. A service
+creates a long-lived `DNSRegistration` in each managed zone with
+`reservedDescendants`, then publishes through `DNSRecordContribution` objects
+referencing that registration's UID and generation. The declaration protects the
+subtree before any endpoints exist. Keep it for the lifetime of the service's
+namespace, not an individual endpoint. Deleting endpoint contributions does not
+release the reservation. See [the service policy example](examples/service-reservation.yaml).
+
+Grant the service owner `reserve` and its publishers `publish` on the named
+`dnsregistrations` resource, alongside their ordinary API write permissions.
+Admission uses the project API's SubjectAccessReview; RBAC or Milo IAM owns the
+grants. Ordinary registration create/update rights are insufficient. Customer
+roles intentionally do not receive these new permissions. Ensure every project
+admission credential can create `authorization.k8s.io/subjectaccessreviews` and
+list registrations. Authorization or policy-read failures deny the write.
+
+The owner must authorize edits, deletion, and finalizer removal. A terminating
+root protects its scopes until actual deletion. If its zone has disappeared,
+cleanup still requires `reserve` while its resolver context exists; unrelated
+orphaned tenant registrations retain normal cleanup. Revoking `publish` prevents subsequent contribution
+writes; it does not delete previously accepted contributions. Remove those
+contributions explicitly when revoking existing publication.
+
+No declarations (or an empty `reservedDescendants`) means no reserved subtrees.
+Do not release a root until removing its protection is intended. Tenant-owned
+private zones, public zones, and names outside service reservations retain their
+existing behavior. A tenant zone may still exist independently; it cannot be
+associated with the resolver whose reserved subtree it shadows. Registration
+changes trigger both zone compilation and association reconciliation; live policy
+reads fence cached compilation against newly created or changed declarations.
+
+### Companion service and staging changes
+
+Both obsolete settings, `admission.instancePublishers` and `reservedScopes`,
+are rejected at startup, including empty arrays and null. Their absence does not
+synthesize an `instances` policy.
+
+Use the companion compute controller and staging infra configuration when testing
+this pre-production change. Compute watches ready managed resolver contexts and
+creates persistent root registrations independently of instances. Contributions
+move to those roots, and normal publisher cleanup removes old per-instance
+registrations. Roots survive an empty service and disappear with their contexts.
+
+Staging must use webhook rules that include DNSRecordSet writes and registration
+DELETE, and project credentials capable of reading registrations/contexts and
+creating SubjectAccessReviews. The companion infra change removes the old setting,
+updates those rules, and documents the existing trusted service credentials.
+Customer roles do not receive reservation or publisher privileges.
+
+There is no transitional DNS default or strict rollout gate for staging. Until the
+service creates a declaration, its subtree is not reserved. Use matching service,
+DNS and infra changes when evaluating protection; do not infer it from workload
+records or assume the old binary enforces service-owned declarations. A future
+production rollout must account for that bootstrap interval and audit pre-existing
+registrations and contributions before exposing the namespace to tenants.

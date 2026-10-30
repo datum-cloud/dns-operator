@@ -67,7 +67,9 @@ webhooks:
     operations:
     - CREATE
     - UPDATE
+    - DELETE
     resources:
+    - dnsrecordsets
     - dnszoneassociations
     - dnsregistrations
     - dnsrecordcontributions

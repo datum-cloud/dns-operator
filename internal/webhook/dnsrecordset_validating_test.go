@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
 var errClusterNotEngaged = errors.New("cluster not engaged")
@@ -462,52 +461,4 @@ func withContent(rs *dnsv1alpha1.DNSRecordSet, content string) *dnsv1alpha1.DNSR
 		rs.Spec.Records[i].TXT = &dnsv1alpha1.TXTRecordSpec{Content: content}
 	}
 	return rs
-}
-
-func TestDNSRecordSetValidator_ProviderScope(t *testing.T) {
-	t.Parallel()
-
-	scheme := validatorScheme(t)
-	controller := true
-	zone := func(domain string, managed bool) *dnsv1alpha1.DNSZone {
-		z := &dnsv1alpha1.DNSZone{
-			ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
-			Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: domain, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate},
-		}
-		if managed {
-			z.Name = model.ManagedZoneName("ctx-uid")
-			z.OwnerReferences = []metav1.OwnerReference{{APIVersion: dnsv1alpha1.GroupVersion.String(), Kind: "DNSResolverContext", Name: "ctx", UID: "ctx-uid", Controller: &controller}}
-		}
-		return z
-	}
-	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	const hint = "reserved for instance names"
-
-	tests := []struct {
-		name        string
-		zone        *dnsv1alpha1.DNSZone
-		owners      []string
-		wantRefused bool
-		wantIn      []string
-	}{
-		{name: "instance name in a managed zone is refused", zone: zone("datum.internal", true), owners: []string{"web.instances"}, wantRefused: true, wantIn: []string{hint, "spec.records[0].name"}},
-		{name: "scope label itself is refused", zone: zone("datum.internal", true), owners: []string{"api", "Instances"}, wantRefused: true, wantIn: []string{hint, "spec.records[1].name"}},
-		{name: "absolute instance name is refused", zone: zone("datum.internal", true), owners: []string{"a.b.instances.datum.internal."}, wantRefused: true, wantIn: []string{hint}},
-		{name: "apex-suffixed name without a trailing dot is refused", zone: zone("datum.internal", true), owners: []string{"web.instances.datum.internal"}, wantRefused: true, wantIn: []string{hint}},
-		{name: "name ending in the label without a dot is accepted", zone: zone("datum.internal", true), owners: []string{"myinstances"}},
-		{name: "name under a label that contains instances is accepted", zone: zone("datum.internal", true), owners: []string{"instances.web"}},
-		{name: "apex of a zone named after the scope is accepted", zone: zone("corp.instances", true), owners: []string{"@"}},
-		{name: "a tenant's own private zone is not scoped", zone: zone("corp.example", false), owners: []string{"web.instances"}},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			v := &DNSRecordSetValidator{
-				Client: fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(tc.zone).Build(),
-			}
-			_, err := v.ValidateCreate(context.Background(), recordSet("set", tc.zone.Name, dnsv1alpha1.RRTypeTXT, base, tc.owners...))
-			assertRefusal(t, err, tc.wantRefused, tc.wantIn)
-		})
-	}
 }

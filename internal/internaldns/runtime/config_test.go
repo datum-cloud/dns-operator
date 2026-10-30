@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -332,5 +333,17 @@ func TestCachedZoneInputsRequiresPerZoneReconcile(t *testing.T) {
 	defaults.defaults()
 	if defaults.CachedZoneInputs {
 		t.Fatal("cache enabled by default")
+	}
+}
+
+func TestReservedScopesConfigurationMigration(t *testing.T) {
+	for _, input := range []string{`{"reservedScopes":null}`, `{"reservedScopes":[]}`, `{"reservedScopes":[{"name":"instances","publishers":["compute"]}]}`, `{"admission":{"instancePublishers":null}}`, `{"admission":{"instancePublishers":[]}}`, `{"admission":{"instancePublishers":["compute"]}}`} {
+		var cfg Config
+		if err := json.Unmarshal([]byte(input), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "service-owned DNSRegistrations") {
+			t.Fatalf("obsolete policy silently ignored: %s: %v", input, err)
+		}
 	}
 }

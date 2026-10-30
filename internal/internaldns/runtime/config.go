@@ -55,10 +55,8 @@ type AdmissionConfig struct {
 	Enabled bool   `json:"enabled"`
 	Port    int    `json:"port,omitempty"`
 	CertDir string `json:"certDir,omitempty"`
-	// InstancePublishers lists the usernames allowed to publish instance names
-	// in a managed zone's instances scope. Leaving it empty leaves the scope
-	// open to any writer the API server authorizes.
-	InstancePublishers []string `json:"instancePublishers,omitempty"`
+	// Legacy field is recognized only to reject unsafe implicit migration.
+	LegacyInstancePublishers json.RawMessage `json:"instancePublishers,omitempty"`
 }
 
 type RegionalTransportConfig struct {
@@ -69,6 +67,8 @@ type RegionalTransportConfig struct {
 }
 
 type Config struct {
+	// Reject the obsolete deployment-owned policy rather than silently unreserving it.
+	LegacyReservedScopes  json.RawMessage           `json:"reservedScopes,omitempty"`
 	MetricsBindAddress    string                    `json:"metricsBindAddress,omitempty"`
 	Region                string                    `json:"region"`
 	Shard                 string                    `json:"shard"`
@@ -194,6 +194,13 @@ func (c *Config) Validate(role string) error {
 	if c.CachedZoneInputs && !c.PerZoneReconcile {
 		return fmt.Errorf("cachedZoneInputs requires perZoneReconcile")
 	}
+	if len(c.Admission.LegacyInstancePublishers) != 0 {
+		return errors.New("admission.instancePublishers is obsolete: create service-owned DNSRegistrations with reservedDescendants and reserve/publish permissions before upgrading")
+	}
+	if len(c.LegacyReservedScopes) != 0 {
+		return errors.New("reservedScopes is obsolete: create service-owned DNSRegistrations with reservedDescendants before upgrading")
+	}
+
 	switch role {
 	case roleControlPlane, roleAgent, roleReadiness, roleActivationCheck, roleServing, rolePrepare:
 	default:

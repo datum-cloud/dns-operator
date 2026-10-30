@@ -29,6 +29,12 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 	return Process{MetricsAddress: metricsAddress}.Run(ctx, path)
 }
 
+// DrainDuration covers three one-second dnsdist checks plus propagation margin.
+const DrainDuration = 5 * time.Second
+
+// ShutdownTimeout also allows both DNS listeners to finish outstanding work.
+const ShutdownTimeout = 15 * time.Second
+
 type Process struct {
 	MetricsAddress  string
 	ProfileAddress  string
@@ -74,7 +80,8 @@ func (pr Process) Run(ctx context.Context, path string) error {
 		queries := metrics.New(metricsAddress)
 		queries.AddZone(".")
 		chain = append([]plugin.Plugin{func(next plugin.Handler) plugin.Handler { queries.Next = next; return queries }}, chain...)
-		metricsCtx, stopMetrics := context.WithCancel(ctx)
+		// Keep metrics and readiness available throughout the drain phase.
+		metricsCtx, stopMetrics := context.WithCancel(context.WithoutCancel(ctx))
 		defer stopMetrics()
 		if metricsDone, err = serveMetrics(metricsCtx, metricsAddress, p); err != nil {
 			log.Printf("CoreDNS serves without metrics: %v", err)
@@ -136,9 +143,23 @@ func (pr Process) Run(ctx context.Context, path string) error {
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	shutdown := ctx.Done()
+	var drain <-chan time.Time
+	var drainTimer *time.Timer
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+	}()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-shutdown:
+			p.draining.Store(true)
+			shutdown = nil
+			drainTimer = time.NewTimer(DrainDuration)
+			drain = drainTimer.C
+			log.Printf("CoreDNS draining for %s before closing listeners", DrainDuration)
+		case <-drain:
 			return stop()
 		case err := <-done:
 			_ = stop()

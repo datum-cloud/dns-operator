@@ -10,7 +10,7 @@ spec:
   chart:
     spec:
       chart: rustfs
-      version: 0.1.x  # Use latest 0.1.x version
+      version: 0.1.1  # Exact warm-foundation fixture version
       sourceRef:
         kind: HelmRepository
         name: rustfs
@@ -22,7 +22,7 @@ spec:
       accessKey: "dns-federation"
       secretKey: "dns-federation-secret"
 
-    # NOTE: the pinned chart version below (0.1.x) predates this chart's
+    # NOTE: the pinned chart version below (0.1.1) predates this chart's
     # `setup.buckets` bucket-provisioning hook (added around 0.10.x) - so
     # that value is silently ignored here. The "lightningstream" bucket is
     # instead created explicitly by Taskfile.yaml's env:rustfs-up (via a

@@ -429,6 +429,8 @@ tasks:
 
   env:public-image-build:
     desc: Build the public DNS image once per task invocation
+    status:
+      - test "${DNS_E2E_PREBUILT_IMAGES:-0}" = 1 && docker image inspect {{.KIND_IMAGE}} >/dev/null
     run: once
     cmds:
       - task: docker-build
@@ -756,6 +758,21 @@ tasks:
       - task: env:foundation-up
       - task: env:internal-dns:deploy
 
+  env:foundation:prepare-warm:
+    desc: "Experiment: prepare a fresh single-use foundation on a dedicated Docker executor"
+    cmds:
+      - python3 hack/ci/warm-foundation.py prepare
+
+  env:foundation:claim-warm:
+    desc: "Experiment: claim and validate an already prepared foundation without bootstrapping"
+    cmds:
+      - python3 hack/ci/warm-foundation.py claim
+
+  test:warm-foundation:
+    desc: "Test the foundation handoff contract without a cluster"
+    cmds:
+      - python3 -m unittest discover -s hack/ci -p 'test_warm_foundation.py'
+
   env:foundation-up:
     desc: "Prepare three dual-stack clusters and shared infrastructure without DNS workloads"
     cmds:
@@ -784,7 +801,7 @@ tasks:
   env:internal-dns:qualify:
     desc: "Qualify private DNS through scoped product APIs and Kubernetes serving pods"
     cmds:
-      - go run ./test/internaldns/kubernetes/qualify --environment .internal-dns-e2e/kubernetes/environment.json --results test/internaldns/results/kubernetes.json
+      - bash test/internaldns/kubernetes/qualify.sh
 
   env:internal-dns:package:
     desc: "Build and qualify the internal DNS runtime image and deployment contracts"
@@ -863,6 +880,8 @@ tasks:
 
   env:rustfs-up:
     desc: "Deploy RustFS (S3-compatible object store) into the control cluster via Flux"
+    status:
+      - test "${DNS_E2E_WARM_FOUNDATION:-0}" = 1 && test -s dev/warm-foundation-claimed.json && test -s {{.RUSTFS_NODEPORT_FILE}}
     silent: true
     cmds:
       - echo "➡️  Installing RustFS into kind-{{.CONTROL_CLUSTER_NAME}}..."

@@ -191,7 +191,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		if !valid {
 			status, reason, msg = metav1.ConditionFalse, "InvalidIdentity", "consumerID is required and context must be live"
 			if duplicate {
-				reason, msg = "DuplicateConsumerID", "another live resolver context owns this consumerID"
+				reason, msg = dnsValueDuplicateConsumerID, "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
 				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
@@ -238,10 +238,18 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		apex    string
 	}
 	owners := map[apexKey]types.UID{}
+	reservations := map[string][]dnsv1alpha1.DNSRegistration{}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	for i := range items {
 		a := &items[i]
 		base := a.DeepCopy()
+		if _, ok := reservations[a.Namespace]; !ok {
+			var regs dnsv1alpha1.DNSRegistrationList
+			if err := r.sourceReader().List(ctx, &regs, client.InNamespace(a.Namespace)); err != nil {
+				return err
+			}
+			reservations[a.Namespace] = regs.Items
+		}
 		z := zones[a.Spec.DNSZoneRef.Name]
 		currentZone := dnsv1alpha1.DNSObjectReference{Name: a.Spec.DNSZoneRef.Name}
 		if z != nil && z.DeletionTimestamp.IsZero() && z.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -269,10 +277,10 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 			status = metav1.ConditionFalse
 			reason = "InvalidReference"
 			msg = "private zone and resolver context must match their resolved lifetimes; recreate the association to reattach replacements"
-		} else if managed := zones[model.ManagedZoneName(string(contextPin.UID))]; managed != nil && managed.UID != z.UID && model.IsManagedZone(managed) && model.InsideInstancesScope(z.Spec.DomainName, managed.Spec.DomainName) {
+		} else if model.ShadowsContext(z, &resolverContext, reservations[a.Namespace]) {
 			status = metav1.ConditionFalse
 			reason = "ReservedScope"
-			msg = "the zone is inside the managed zone's instances scope, which is reserved for instance names"
+			msg = "zone shadows a reserved subtree in this resolver context"
 		} else if old := owners[apexKey{contextPin.UID, canonicalName(z.Spec.DomainName)}]; old != "" && old != z.UID {
 			status = metav1.ConditionFalse
 			reason = "ApexConflict"
@@ -456,9 +464,25 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			}
 		}
 	}
-	for i := range existing.Items {
-		b := &existing.Items[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] || b.Spec.Tombstone {
+	if err := r.retireContextBindings(ctx, ns, existing.Items, desired); err != nil {
+		return err
+	}
+	return r.releaseDestinations(ctx, held)
+}
+
+func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, existing []dnsv1alpha1.DNSResolverBinding, desired map[string]bool) error {
+	for i := range existing {
+		b := &existing[i]
+		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] {
+			continue
+		}
+		if b.Spec.Tombstone {
+			fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
+			if b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision && b.Status.Phase == "Withdrawn" && fullyReplicated != nil && fullyReplicated.Status == metav1.ConditionTrue && fullyReplicated.ObservedGeneration == b.Generation {
+				if err := r.Delete(ctx, b); err != nil && !apierrors.IsNotFound(err) {
+					return err
+				}
+			}
 			continue
 		}
 		if b.Labels["internal-dns.miloapis.com/context-uid"] == "" {
@@ -498,7 +522,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			return err
 		}
 	}
-	return r.releaseDestinations(ctx, held)
+	return nil
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
@@ -540,7 +564,7 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return false, nil
 	}
 	if ready.Status != metav1.ConditionTrue {
-		return ready.Reason == "InvalidIdentity" || ready.Reason == "DuplicateConsumerID" || ready.Reason == "InvalidManagedDomain", nil
+		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == "InvalidManagedDomain", nil
 	}
 	if access.Generation < binding.Spec.Source.AccessBindingRef.Generation {
 		return false, nil

@@ -14,7 +14,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,22 +24,22 @@ import (
 const subresourceStatus = "status"
 
 const contributionResource = "dnsrecordcontributions"
+const registrationResource = "dnsregistrations"
+const namingPolicyResource = "dnsnamingpolicies"
+const resolverAccessResource = "dnsresolveraccessbindings"
+const recordSetResource = "dnsrecordsets"
+const associationResource = "dnszoneassociations"
 
 // Path is where the dns-operator webhook server serves this handler.
 const Path = "/validate-internal-dns"
 
 // Resources lists the resources whose writes require live reference checks.
 // The ValidatingWebhookConfiguration must match exactly these resources.
-var Resources = []string{"dnszoneassociations", "dnsregistrations", contributionResource, "dnsnamingpolicies", "dnsresolveraccessbindings"}
+var Resources = []string{recordSetResource, associationResource, registrationResource, contributionResource, namingPolicyResource, resolverAccessResource}
 
 // Handler uses an uncached client selected by authenticated project context.
 type Handler struct {
 	Client client.Client
-
-	// InstancePublishers lists the usernames allowed to publish names in the
-	// instances scope of a managed zone. Everyone else is refused there. When
-	// empty, publishing in the scope is not restricted by identity.
-	InstancePublishers []string
 
 	ClientForRequest func(context.Context, kubeadmission.Request) (client.Client, error)
 }
@@ -51,7 +51,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		return kubeadmission.Denied("unexpected API group")
 	}
 	// The API server authorizes resource and status access through RBAC.
-	if req.Operation == admissionv1.Delete {
+	if req.Operation == admissionv1.Delete && req.Resource.Resource != registrationResource {
 		return kubeadmission.Allowed("API server authorization applies")
 	}
 	if req.SubResource == subresourceStatus {
@@ -60,7 +60,7 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if !slices.Contains(Resources, req.Resource.Resource) {
 		return kubeadmission.Allowed("API server authorization and schema validation apply")
 	}
-	if req.Operation == admissionv1.Update {
+	if req.Operation == admissionv1.Update && req.Resource.Resource != registrationResource {
 		var object metav1.PartialObjectMetadata
 		if err := json.Unmarshal(req.Object.Raw, &object); err != nil {
 			return kubeadmission.Denied("invalid resource metadata")
@@ -80,17 +80,31 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if cl == nil {
 		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
 	}
+	if req.Resource.Resource == registrationResource {
+		if err := authorizeReservationMutation(ctx, cl, req); err != nil {
+			return kubeadmission.Denied(err.Error())
+		}
+		var reg dnsv1alpha1.DNSRegistration
+		if err := decode(req, &reg); err != nil {
+			return kubeadmission.Denied(err.Error())
+		}
+		if req.Operation == admissionv1.Delete || !reg.DeletionTimestamp.IsZero() {
+			return kubeadmission.Allowed("authorized registration retirement")
+		}
+	}
 	var err error
 	switch req.Resource.Resource {
-	case "dnsresolveraccessbindings":
+	case recordSetResource:
+		err = h.recordSet(ctx, cl, req)
+	case resolverAccessResource:
 		err = h.resolverAccess(ctx, cl, req)
-	case "dnsregistrations":
+	case registrationResource:
 		err = h.registration(ctx, cl, req)
 	case contributionResource:
 		err = h.contribution(ctx, cl, req)
-	case "dnszoneassociations":
+	case associationResource:
 		err = h.association(ctx, cl, req)
-	case "dnsnamingpolicies":
+	case namingPolicyResource:
 		err = h.namingPolicy(ctx, cl, req)
 	default:
 		return kubeadmission.Allowed("project API authorization applies")
@@ -136,14 +150,19 @@ func (h *Handler) contribution(ctx context.Context, cl client.Client, req kubead
 	if err != nil {
 		return err
 	}
-	var owners []string
-	for _, set := range contribution.Spec.RecordSets {
-		for _, record := range set.Records {
-			owners = append(owners, record.Name)
+	if model.IsManagedZone(zone) {
+		scopes, err := registrationScopes(ctx, cl, zone)
+		if err != nil {
+			return err
 		}
-	}
-	if err := h.refuseInstancesScope(req, zone, owners); err != nil {
-		return err
+		if !scopes.Owner(&registration, zone.Spec.DomainName) {
+			return fmt.Errorf("ReservedScope: registration overlaps another reservation")
+		}
+		if len(registration.Spec.ReservedDescendants) > 0 {
+			if err := authorizeRegistration(ctx, cl, req, registration.Name, "publish"); err != nil {
+				return err
+			}
+		}
 	}
 	for _, set := range contribution.Spec.RecordSets {
 		if !containsType(registration.Spec.RecordTypes, set.RecordType) {
@@ -205,28 +224,23 @@ func (h *Handler) association(ctx context.Context, cl client.Client, req kubeadm
 	if !resolverContext.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("resolver context is being deleted")
 	}
-	return refuseZoneInsideInstancesScope(ctx, cl, req.Namespace, a.Spec.DNSZoneRef.Name, &resolverContext)
+	return h.refuseZoneInsideReservedScope(ctx, cl, req.Namespace, a.Spec.DNSZoneRef.Name, &resolverContext)
 }
 
-// refuseZoneInsideInstancesScope stops a tenant zone at or below the managed
-// zone's instances scope from shadowing instance names in the same context.
-func refuseZoneInsideInstancesScope(ctx context.Context, cl client.Client, namespace, zoneName string, resolverContext *dnsv1alpha1.DNSResolverContext) error {
-	managedName := model.ManagedZoneName(string(resolverContext.UID))
-	if zoneName == managedName {
-		return nil
-	}
-	var managed dnsv1alpha1.DNSZone
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: managedName}, &managed); apierrors.IsNotFound(err) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("managed zone lookup: %w", err)
-	}
+func (h *Handler) refuseZoneInsideReservedScope(ctx context.Context, cl client.Client, namespace, zoneName string, resolverContext *dnsv1alpha1.DNSResolverContext) error {
 	var zone dnsv1alpha1.DNSZone
 	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: zoneName}, &zone); err != nil {
-		return fmt.Errorf("private zone lookup: %w", err)
+		return err
 	}
-	if model.IsManagedZone(&managed) && model.InsideInstancesScope(zone.Spec.DomainName, managed.Spec.DomainName) {
-		return fmt.Errorf("zone %q is inside %q, which is reserved for instance names published by the platform", zone.Spec.DomainName, model.InstancesScope+"."+managed.Spec.DomainName)
+	if !resolverContext.Spec.ManagedNamespace.Enabled || (zone.Name == model.ManagedZoneName(string(resolverContext.UID)) && model.IsManagedZone(&zone)) {
+		return nil
+	}
+	var regs dnsv1alpha1.DNSRegistrationList
+	if err := cl.List(ctx, &regs, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	if model.ShadowsContext(&zone, resolverContext, regs.Items) {
+		return fmt.Errorf("ReservedScope: zone shadows a service reservation")
 	}
 	return nil
 }
@@ -311,19 +325,50 @@ func (h *Handler) registration(ctx context.Context, cl client.Client, req kubead
 			return err
 		}
 	}
-	names := append([]string{registration.Spec.Name}, registration.Spec.ReservedDescendants...)
-	return h.refuseInstancesScope(req, zone, names)
-}
-
-func (h *Handler) refuseInstancesScope(req kubeadmission.Request, zone *dnsv1alpha1.DNSZone, owners []string) error {
-	if len(h.InstancePublishers) == 0 || !model.IsManagedZone(zone) || slices.Contains(h.InstancePublishers, req.UserInfo.Username) {
-		return nil
-	}
-	for _, owner := range owners {
-		if model.InProviderScope(model.ZoneRelativeOwner(owner, zone.Spec.DomainName)) {
-			return fmt.Errorf("%q is reserved for instance names published by the platform, and %q is not an instance publisher", model.InstancesScope+"."+zone.Spec.DomainName, req.UserInfo.Username)
+	if model.IsManagedZone(zone) {
+		scopes, err := registrationScopes(ctx, cl, zone)
+		if err != nil {
+			return err
+		}
+		if !scopes.Owner(&registration, zone.Spec.DomainName) {
+			return fmt.Errorf("ReservedScope: registration overlaps a service reservation; publish through its owning registration")
 		}
 	}
+	return nil
+}
+
+func (h *Handler) recordSet(ctx context.Context, cl client.Client, req kubeadmission.Request) error {
+	var rs dnsv1alpha1.DNSRecordSet
+	if err := decode(req, &rs); err != nil {
+		return err
+	}
+	// Metadata changes cannot add publication authority. Permit cleanup of
+	// pre-existing records even after a reservation is introduced or a zone is gone.
+	if req.Operation == admissionv1.Update && len(req.OldObject.Raw) > 0 {
+		var old dnsv1alpha1.DNSRecordSet
+		if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
+			return err
+		}
+		if equality.Semantic.DeepEqual(old.Spec, rs.Spec) {
+			return nil
+		}
+	}
+	var zone dnsv1alpha1.DNSZone
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: rs.Spec.DNSZoneRef.Name}, &zone); err != nil {
+		return err
+	}
+	if zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && model.IsManagedZone(&zone) {
+		scopes, err := registrationScopes(ctx, cl, &zone)
+		if err != nil {
+			return err
+		}
+		for _, record := range rs.Spec.Records {
+			if scopes.Match(record.Name, zone.Spec.DomainName) {
+				return fmt.Errorf("ReservedScope: record belongs to a service reservation")
+			}
+		}
+	}
+
 	return nil
 }
 

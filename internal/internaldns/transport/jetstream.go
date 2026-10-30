@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -176,6 +177,42 @@ func (j *JetStream) Close() error {
 	return nil
 }
 
+// ConnectionStates reports the initial broker connection state and every
+// subsequent disconnect/reconnect transition until ctx is canceled. The
+// returned stream is intentionally process-scoped rather than per-message so
+// serving metrics can distinguish a healthy idle consumer from a partitioned
+// one without adding query-path work.
+func (j *JetStream) ConnectionStates(ctx context.Context) <-chan bool {
+	states := make(chan bool, 1)
+	if j == nil || j.nc == nil {
+		close(states)
+		return states
+	}
+	changes := j.nc.StatusChanged(nats.CONNECTED, nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
+	go func() {
+		defer close(states)
+		defer j.nc.RemoveStatusListener(changes)
+		connected := j.nc.IsConnected()
+		for {
+			select {
+			case states <- connected:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case status, ok := <-changes:
+				if !ok {
+					return
+				}
+				connected = status == nats.CONNECTED
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return states
+}
+
 type PublishAck struct {
 	Stream    string
 	Sequence  uint64
@@ -287,7 +324,10 @@ type Consumer struct {
 	c        jetstream.Consumer
 	prefetch int
 	asyncAck bool
-	iter     jetstream.MessagesContext
+	// mu guards iter: several workers pull from one consumer, and any of them
+	// may replace the iterator after an error.
+	mu   sync.Mutex
+	iter jetstream.MessagesContext
 }
 
 func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, error) {
@@ -369,17 +409,25 @@ func (c *Consumer) pull(ctx context.Context) (jetstream.Msg, error) {
 	if c.prefetch <= 1 {
 		return c.c.Next(jetstream.FetchContext(ctx))
 	}
+	c.mu.Lock()
 	if c.iter == nil {
 		iter, err := c.c.Messages(jetstream.PullMaxMessages(c.prefetch))
 		if err != nil {
+			c.mu.Unlock()
 			return nil, err
 		}
 		c.iter = iter
 	}
-	m, err := c.iter.Next(jetstream.NextContext(ctx))
+	iter := c.iter
+	c.mu.Unlock()
+	m, err := iter.Next(jetstream.NextContext(ctx))
 	if err != nil {
-		c.iter.Stop()
-		c.iter = nil
+		c.mu.Lock()
+		if c.iter == iter {
+			iter.Stop()
+			c.iter = nil
+		}
+		c.mu.Unlock()
 	}
 	return m, err
 }

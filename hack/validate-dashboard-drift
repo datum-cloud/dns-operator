@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Fails when a rendered dashboard JSON under config/components/dashboards/ no
-# longer matches its jsonnet source. Run after rendering (`task -d observability/dashboards/private-dns install build`); CI runs
-# it the same way so hand edits to the rendered JSON, or source changes without
+# longer matches its jsonnet source. Run after rendering (`task dashboards:install dashboards:build`); CI runs it
+# the same way so hand edits to the rendered JSON, or source changes without
 # a rebuild, cannot merge.
 
 set -euo pipefail
@@ -18,7 +18,7 @@ readonly GENERATED_PATHS=(
 )
 
 readonly FIX_STEPS=(
-  "task -d observability/dashboards/private-dns install build"
+  "task dashboards:install dashboards:build"
   "git add config/components/dashboards/"
   "git commit"
 )

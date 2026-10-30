@@ -114,6 +114,13 @@ destination. Regional dnsdist selects the same context and load-balances the
 healthy CoreDNS members. Every regional CoreDNS member hosts the context's
 private zones. Public queries forward to a shared PowerDNS Recursor service.
 
+As an opt-in migration, a node agent may use `mode: "combined"` with
+`nodeAuthoritative: true` and `render.role: "node"`. Node CoreDNS then embeds
+the same validated publications instead of forwarding private zones to the
+regional destination. Regional control planes still compile and publish the
+records, and regional serving stays in place until the node fleet is validated.
+See [Node-local Private DNS authority](../../docs/enhancements/node-local-private-dns-authority.md).
+
 An owned name without eligible answers carries service-only `TYPE65280`
 metadata at that exact name. This private-use record preserves NODATA without
 adding a child name or conflicting with a recovered CNAME. Tenant declarations
@@ -156,6 +163,57 @@ zone before installation. Atomic rename exposes one complete snapshot; the
 plugin builds its replacement state before swapping the lookup table. Invalid
 updates retain the accepted state. A record update does not restart CoreDNS.
 The agent proves the installed publication over UDP and TCP before acknowledging it.
+
+With `identityKeyFile` configured, CoreDNS listens on both UDP and TCP at its
+management address. Both transports accept only `proxyPeers`; each UDP query
+must additionally carry a valid keyed destination option. Members without an
+identity key retain the TCP-only PROXYv2 listener. The key is a shared secret,
+not encryption: keep this hop on the trusted serving network.
+
+To try UDP between dnsdist and CoreDNS, set `backendTransport: "udp"` in
+`render.nodeDNSDist` or `render.clusterDNSDist`. The default is `"tcp"` (including
+when omitted). UDP mode sends UDP client queries over UDP and keeps TCP for TCP
+clients, including retries of truncated answers. It requires `identityKeyFile`.
+Deploy the UDP-capable CoreDNS image first, permit UDP on the backend port (5300
+in the example) from the configured peers, then replace the dnsdist member with
+the new setting. A transport change requires replacement; a rules reload cannot
+change existing backend connections. Restore `"tcp"` and replace the dnsdist
+member to roll back. Keyed CoreDNS readiness checks both transports.
+
+For a multi-tier fleet, enable keyed UDP on the regional CoreDNS members and
+regional dnsdist before enabling it on node members. The node CoreDNS forwarder
+uses the incoming query's transport upstream, so node UDP also makes the traffic
+arriving at regional dnsdist UDP. Leaving that regional front in TCP-only mode
+moves UDP-to-TCP conversion to the regional tier. In staging load tests this
+mixed configuration saturated regional dnsdist and exhausted its memory even
+though the node listener had spare CPU. Mount the shared regional identity key
+in both the dnsdist sidecar and its agent, and in each regional CoreDNS member.
+Roll back node members before returning the regional tier to TCP-only mode.
+
+Transport rollback should retain the identity keys and keyed TCP configuration.
+Changing between legacy PROXYv2 and keyed identity is a separate fleet migration:
+keyed CoreDNS rejects unkeyed readiness canaries even though it can still serve
+trusted PROXYv2 TCP queries. Do not wait for an unkeyed frontend to become ready
+against an entirely keyed backend fleet. Use a separately ready regional fleet
+for the identity-mode cutover; the transport rollout order above assumes the
+regional identity configuration is already compatible.
+
+For keyed UDP listeners, `render.nodeCoreDNS.udpReadBufferBytes` and
+`render.clusterCoreDNS.udpReadBufferBytes` request a socket receive buffer in
+bytes. Omitted or zero preserves the operating system default; negative values
+are rejected. Changing this setting requires a CoreDNS restart. This controls
+queued datagrams, not the maximum DNS response payload. Linux may clamp the
+request to `net.core.rmem_max` and reports twice the requested size for socket
+accounting. Startup logs report the requested and effective sizes. Compare
+socket drops, successful-answer tail latency, CPU per successful query, and
+memory when testing larger buffers: buffering can replace drops with queueing.
+
+Compare query outcome/latency metrics with
+`internal_dns_transport_datagrams_total{outcome="accepted"}` and
+`internal_dns_transport_datagrams_total{outcome="untrusted_peer"}`. These counters
+count datagrams before DNS parsing and identity validation; accepted datagrams
+are not necessarily successful queries. TCP admission counters remain available
+for TCP client traffic and fallback.
 
 Publication acknowledgements report verified configuration versions. The fleet
 retains accepted proofs during control plane or broker outages and continues
@@ -272,13 +330,16 @@ contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
 
-### Control-plane monitoring
+### Control-plane and agent monitoring
 
-The control-plane process serves `/metrics` on `--metrics-bind-address`
-(default `:8080`) and `/healthz` and `/readyz` on
-`--health-probe-bind-address` (default `:8081`). Set either flag to `0` to
-disable it. The deprecated `metricsBindAddress` configuration key still
-overrides the metrics flag. Restrict access to the monitoring network.
+The control plane serves `/metrics` on `--metrics-bind-address` (default
+`:8080`) and `/healthz` plus `/readyz` on `--health-probe-bind-address`
+(default `:8081`). The deprecated `metricsBindAddress` configuration key still
+overrides the control-plane metrics flag. Agent metrics are deliberately off by
+default for compatibility with pods that already own port 8080; enable their
+`/metrics` endpoint explicitly with `--agent-metrics-bind-address`. Set any
+listener flag to `0` to disable it and restrict enabled endpoints to the
+monitoring network.
 
 `/healthz` fails when a periodic loop has not completed a run in three times
 its interval, or ten minutes, whichever is longer. It checks that loops are
@@ -301,11 +362,13 @@ Each private zone is published by the replica that holds its ownership lease.
 These metrics show leases moving between replicas:
 
 - `internal_dns_zone_lease_takeovers_total`: leases this replica took from a
-  different holder whose lease had expired. A takeover bumps the writer epoch;
-  the new holder republishes only if the zone's content changed. Restarts and
-  rollouts also cause takeovers, because a new process has a new holder
-  identity and leases are not released on shutdown. Alert on a sustained rate,
-  not a single increase.
+  different holder whose lease has expired or been explicitly released. A
+  takeover bumps the writer epoch and republishes the zone under that epoch,
+  even when its content is unchanged. Graceful shutdown releases held leases
+  so another replica can take over immediately; an abrupt exit may leave them
+  to expire. Restarts and rollouts therefore also cause takeovers. Interpret
+  sustained rates alongside rollout activity rather than paging on a single
+  increase.
 - `internal_dns_zone_lease_acquisitions_total{result}`: lease acquisition
   attempts. `result` is `held` when this replica already holds the lease,
   `created`, `taken_over`, `standby` when another replica holds a live lease,
@@ -332,6 +395,12 @@ metrics with binding conditions, broker backlog, and DNS queries from a VPC.
 `internal_dns_operation_last_success_timestamp_seconds{operation}` are
 deprecated and will be removed once dashboards move to the loop metrics. They
 fold region and shard into `operation` and count conflicts as errors.
+
+Agent processes also expose delivery connection state, aggregate publication
+lag, activation failures, and the last successful activation. The series use
+only `region`, `shard`, `mode`, and a fixed activation `stage`; they never label
+tenant or zone identity. The node-authority enhancement documents their names,
+interpretation, and required deployment alerts.
 
 ### Serving monitoring
 
@@ -392,3 +461,61 @@ Naming-policy selectors organize names; they do not authorize publishers.
 A publisher that can change registration labels can select every matching
 rule for the registration's associated context. Restrict registration writes
 with RBAC when publishers must not share that authority.
+
+## Service-owned reservations
+
+DNS has no service-scope configuration or built-in reserved labels. A service
+creates a long-lived `DNSRegistration` in each managed zone with
+`reservedDescendants`, then publishes through `DNSRecordContribution` objects
+referencing that registration's UID and generation. The declaration protects the
+subtree before any endpoints exist. Keep it for the lifetime of the service's
+namespace, not an individual endpoint. Deleting endpoint contributions does not
+release the reservation. See [the service policy example](examples/service-reservation.yaml).
+
+Grant the service owner `reserve` and its publishers `publish` on the named
+`dnsregistrations` resource, alongside their ordinary API write permissions.
+Admission uses the project API's SubjectAccessReview; RBAC or Milo IAM owns the
+grants. Ordinary registration create/update rights are insufficient. Customer
+roles intentionally do not receive these new permissions. Ensure every project
+admission credential can create `authorization.k8s.io/subjectaccessreviews` and
+list registrations. Authorization or policy-read failures deny the write.
+
+The owner must authorize edits, deletion, and finalizer removal. A terminating
+root protects its scopes until actual deletion. If its zone has disappeared,
+cleanup still requires `reserve` while its resolver context exists; unrelated
+orphaned tenant registrations retain normal cleanup. Revoking `publish` prevents subsequent contribution
+writes; it does not delete previously accepted contributions. Remove those
+contributions explicitly when revoking existing publication.
+
+No declarations (or an empty `reservedDescendants`) means no reserved subtrees.
+Do not release a root until removing its protection is intended. Tenant-owned
+private zones, public zones, and names outside service reservations retain their
+existing behavior. A tenant zone may still exist independently; it cannot be
+associated with the resolver whose reserved subtree it shadows. Registration
+changes trigger both zone compilation and association reconciliation; live policy
+reads fence cached compilation against newly created or changed declarations.
+
+### Companion service and staging changes
+
+Both obsolete settings, `admission.instancePublishers` and `reservedScopes`,
+are rejected at startup, including empty arrays and null. Their absence does not
+synthesize an `instances` policy.
+
+Use the companion compute controller and staging infra configuration when testing
+this pre-production change. Compute watches ready managed resolver contexts and
+creates persistent root registrations independently of instances. Contributions
+move to those roots, and normal publisher cleanup removes old per-instance
+registrations. Roots survive an empty service and disappear with their contexts.
+
+Staging must use webhook rules that include DNSRecordSet writes and registration
+DELETE, and project credentials capable of reading registrations/contexts and
+creating SubjectAccessReviews. The companion infra change removes the old setting,
+updates those rules, and documents the existing trusted service credentials.
+Customer roles do not receive reservation or publisher privileges.
+
+There is no transitional DNS default or strict rollout gate for staging. Until the
+service creates a declaration, its subtree is not reserved. Use matching service,
+DNS and infra changes when evaluating protection; do not infer it from workload
+records or assume the old binary enforces service-owned declarations. A future
+production rollout must account for that bootstrap interval and audit pre-existing
+registrations and contributions before exposing the namespace to tenants.

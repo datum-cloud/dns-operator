@@ -99,6 +99,7 @@ local runsTable =
     qTable('sum by (%s) (avg_over_time(idns_perf_query_qps{%s}[$__range]))' % [byRun, runSel], 'J'),
     qTable('max by (%s) (max_over_time(idns_perf_query_p99_ms{%s}[$__range]))' % [byRun, runSel], 'K'),
     qTable('sum by (%s) (sum_over_time(idns_perf_query_failed{%s}[$__range]))' % [byRun, runSel], 'L'),
+    qTable('sum by (%s) (sum_over_time(idns_perf_query_dropped_iterations{%s}[$__range]))' % [byRun, runSel], 'M'),
   ])
   + table.queryOptions.withTransformations([
     { id: 'merge', options: {} },
@@ -112,7 +113,7 @@ local runsTable =
         indexByName: {
           run: 0, scenario: 1, commit: 2, 'Value #A': 3, 'Value #B': 4,
           'Value #C': 5, 'Value #D': 6, 'Value #E': 7, 'Value #F': 8, 'Value #G': 9, 'Value #H': 10,
-          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #FROM': 15, 'Value #TO': 16, 'Value #CMP': 17,
+          'Value #I': 11, 'Value #J': 12, 'Value #K': 13, 'Value #L': 14, 'Value #M': 15, 'Value #FROM': 16, 'Value #TO': 17, 'Value #CMP': 18,
         },
         renameByName: {
           'Value #A': 'started', 'Value #B': 'duration',
@@ -120,7 +121,7 @@ local runsTable =
           'Value #E': 'update p50', 'Value #F': 'update p99',
           'Value #G': 'delete p50', 'Value #H': 'delete p99',
           'Value #I': 'never answered', 'Value #J': 'query rate',
-          'Value #K': 'query worst p99', 'Value #L': 'failed queries',
+          'Value #K': 'query worst p99', 'Value #L': 'failed queries', 'Value #M': 'dropped iterations',
           'Value #FROM': 'from', 'Value #TO': 'to', 'Value #CMP': 'compare_from',
         },
       },
@@ -144,7 +145,7 @@ local runsTable =
     + table.fieldOverride.byName.withProperty('custom.width', 200),
     table.fieldOverride.byName.new('duration')
     + table.fieldOverride.byName.withProperty('unit', 's'),
-    table.fieldOverride.byRegexp.new('never answered|failed queries')
+    table.fieldOverride.byRegexp.new('never answered|failed queries|dropped iterations')
     + table.fieldOverride.byRegexp.withProperty('unit', 'short')
     + table.fieldOverride.byRegexp.withProperty('custom.cellOptions', { type: 'color-text' })
     + table.fieldOverride.byRegexp.withProperty('thresholds', { mode: 'absolute', steps: [lib.green, { color: 'red', value: 1 }] }),
@@ -263,9 +264,12 @@ local queryLatency = ts(
 );
 
 local queryRate = ts(
-  'Load test queries sent',
-  'Queries per second across all generators, by run and query kind.',
-  [qRange('sum by (run, kind) (avg_over_time(idns_perf_query_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}}')],
+  'Load test queries offered and sent',
+  'Configured query rate versus queries actually sent across all generators, by run and query kind. A gap can indicate generator saturation; inspect dropped iterations in the runs table. Older reports may not include offered rates.',
+  [
+    qRange('sum by (run, kind) (avg_over_time(idns_perf_query_offered_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}} offered'),
+    qRange('sum by (run, kind) (avg_over_time(idns_perf_query_qps{%s}[$__interval]))' % runSel, '{{run}} {{kind}} sent'),
+  ],
   'reqps',
   grid(8, 8, 8, 35),
   interval='1s',
@@ -404,7 +408,7 @@ local loopTime = ts(
 local controlPlaneCpu = ts(
   'Control plane and broker CPU, cores',
   'CPU used by each control-plane and broker pod, by container.',
-  [qRange('sum by (pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % controlPlane, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % controlPlane, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
   grid(8, 8, 8, 69),
 );
@@ -412,7 +416,7 @@ local controlPlaneCpu = ts(
 local controlPlaneMemory = ts(
   'Control plane and broker memory',
   'Working set memory of each control-plane and broker pod, by container.',
-  [qRange('sum by (pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % controlPlane, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % controlPlane, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
   grid(8, 8, 16, 69),
 );
@@ -454,21 +458,13 @@ local answersByRcode = ts(
   grid(8, 8, 16, 78),
 );
 
-local resolverLatency = ts(
-  'Resolver answer time',
-  'p50 and p99 answer time measured by dnsdist, by tier. dnsdist counts answers in 1, 10, 50, 100 and 1000 ms buckets, so a value is an estimate within its bucket.',
-  [
-    qRange('histogram_quantile(0.5, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p50' % tier),
-    qRange('histogram_quantile(0.99, sum by (%(tier)s, le) (rate(dnsdist_latency_bucket{%(sel)s}[$__rate_interval])))' % { tier: tier, sel: dnsdist }, '{{%s}} p99' % tier),
-  ],
-  'ms',
-  grid(8, 8, 0, 86),
-);
-
+local resolverLatency = lib.udpLatencyEstimate(dnsdist, grid(8, 8, 0, 86));
+local udpAnswerShares = lib.udpLatencyShares(dnsdist, grid(7, 12, 0, 94));
+local udpAnswerCounts = lib.udpLatencyCounts(dnsdist, grid(7, 12, 12, 94));
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion).',
-  [qRange('sum by (pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % memberPods, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[$__rate_interval]))' % memberPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'short',
   grid(8, 8, 8, 86),
 );
@@ -476,7 +472,7 @@ local fleetCpu = ts(
 local fleetMemory = ts(
   'Serving memory by container',
   'Working set memory of each serving pod, by container.',
-  [qRange('sum by (pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % memberPods, '{{pod}} {{container}}')],
+  [qRange('max by (cluster, namespace, pod, container) (container_memory_working_set_bytes{%s,container!="",container!="POD"})' % memberPods, '{{cluster}} {{namespace}} {{pod}} {{container}}')],
   'bytes',
   grid(8, 8, 16, 86),
 );
@@ -539,4 +535,6 @@ lib.dashboard(
   resolverLatency,
   fleetCpu,
   fleetMemory,
+  udpAnswerShares,
+  udpAnswerCounts,
 ])

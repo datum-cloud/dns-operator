@@ -167,6 +167,8 @@ See the [API Reference](./api-reference.md) for complete field documentation.
   contexts, regional access, private zones, and product publication
 - [Record Ownership](./record-ownership.md) — Who owns a name in a zone, and
   when that changes
+- [Zone Claims](./zone-claims/README.md) — Who may serve a name and its
+  subtree, and serving a zone before its domain is verified
 - [Conditions and Reasons](./conditions.md) — What each status reason means, and
   whether it needs a person
 - [Deployment Topology](./topology.md) — Roles, control planes, and the serving

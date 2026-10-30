@@ -11,9 +11,9 @@ evidence_dir=$(cd "$evidence_dir" && pwd)
 # The RBAC test skips without a real API server. Require its binaries rather
 # than accepting that skip as deployment qualification.
 if [[ -z ${KUBEBUILDER_ASSETS:-} ]]; then
-  make setup-envtest > "$evidence_dir/envtest.log" 2>&1
+  test -x bin/setup-envtest || { echo "bin/setup-envtest is missing; run: task tools:setup-envtest" >&2; exit 1; }
   k8s_version=$(go list -m -f '{{.Version}}' k8s.io/api | awk -F'[v.]' '{printf "1.%d", $3}')
-  KUBEBUILDER_ASSETS=$(bin/setup-envtest use "$k8s_version" --bin-dir bin -p path)
+  KUBEBUILDER_ASSETS=$(bin/setup-envtest use "$k8s_version" --bin-dir bin -p path 2> "$evidence_dir/envtest.log")
   export KUBEBUILDER_ASSETS
 fi
 # go test runs from the package directory, not this script's repository root.
@@ -26,7 +26,7 @@ go test ./internal/internaldns/runtime \
   -run '^(TestDeploymentExampleConfigsValidate|TestDeploymentRolesAuthorizeWorkerAndDiscoveryBoundaries|TestNATSExampleUsesExactMemberAckSubjects|TestEveryMemberCanCreateAllRuntimeConsumers|TestReadOnlyServingImageHasWritableCoreDNSWorkingDirectory)$' \
   -count=1 -v > "$evidence_dir/contracts.log" 2>&1
 # Use the same pinned Kustomize binary as installation and the public E2E job.
-make kustomize > "$evidence_dir/kustomize.log" 2>&1
+test -x bin/kustomize || { echo "bin/kustomize is missing; run: task tools:kustomize" >&2; exit 1; }
 bin/kustomize build config/crd > "$evidence_dir/crds.yaml"
 crd_files=(config/crd/bases/*.yaml)
 test "$(grep -c '^kind: CustomResourceDefinition$' "$evidence_dir/crds.yaml")" -eq "${#crd_files[@]}"
@@ -44,7 +44,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
   > "$evidence_dir/help.log" 2>&1
 # Confirm this is the internal DNS entry point rather than an image that only
 # happens to exit successfully.
-grep -q 'Process role: control-plane, agent, serving, readiness, or prepare' "$evidence_dir/help.log"
+grep -q 'Process role: control-plane, agent, serving, readiness, activation-check, or prepare' "$evidence_dir/help.log"
 git rev-parse HEAD > "$evidence_dir/source.commit"
 git status --porcelain > "$evidence_dir/source.status"
 printf 'Internal DNS package qualification passed; evidence: %s\n' "$evidence_dir"

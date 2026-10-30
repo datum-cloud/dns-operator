@@ -22,7 +22,7 @@ var zoneLeaseAcquisitions = prometheus.NewCounterVec(prometheus.CounterOpts{
 
 var zoneLeaseTakeovers = prometheus.NewCounter(prometheus.CounterOpts{
 	Name: "internal_dns_zone_lease_takeovers_total",
-	Help: "Private zone leases this replica took from a different holder after that holder's lease expired.",
+	Help: "Private zone leases this replica took from a different holder after expiry or explicit release.",
 })
 
 var zoneLeaseRenewalResults = []string{"renewed", "conflict", "error"}

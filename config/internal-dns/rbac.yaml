@@ -59,6 +59,9 @@ kind: ClusterRole
 metadata:
   name: internal-dns-control-plane
 rules:
+- apiGroups: [authorization.k8s.io]
+  resources: [subjectaccessreviews]
+  verbs: [create]
 - apiGroups: [dns.networking.miloapis.com]
   resources:
   - dnszones

@@ -22,7 +22,9 @@ import (
 type contextState struct {
 	pending      bool
 	pendingZones map[string]bool
+	zoneApexes   map[string]struct{}
 	zones        *file.File
+	zoneFiles    map[string]*file.File
 	next         plugin.Handler
 	public       plugin.Handler
 }
@@ -52,10 +54,11 @@ func compile(c Config) (*snapshot, error) {
 	s := &snapshot{contexts: map[string]*contextState{}}
 	public := s.forward(c.PublicUpstreams)
 	for _, definition := range c.Contexts {
-		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}}
+		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zoneApexes: map[string]struct{}{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}, zoneFiles: map[string]*file.File{}}
 		for _, zone := range definition.Zones {
 			apex := model.AbsoluteName(zone.Apex)
 			state.pendingZones[apex] = zone.Pending
+			state.zoneApexes[apex] = struct{}{}
 			state.zones.Names = append(state.zones.Names, apex)
 			if zone.Pending || len(definition.Upstreams) > 0 {
 				state.zones.Z[apex] = nil
@@ -67,6 +70,10 @@ func compile(c Config) (*snapshot, error) {
 				return nil, err
 			}
 			state.zones.Z[apex] = parsed
+			zoneApex, zoneData := apex, parsed
+			state.zoneFiles[apex] = &file.File{ZoneLookupFunc: func(string) (string, *file.Zone, bool) {
+				return zoneApex, zoneData, true
+			}}
 		}
 		state.next = s.forward(definition.Upstreams)
 		if public != nil && state.next == nil {
@@ -146,7 +153,11 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
 	}
 	if p.identityKey != nil {
-		if asserted, present := identityDestination(r, p.identityKey); present {
+		asserted, present := identityDestination(r, p.identityKey)
+		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp && !present {
+			return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
+		}
+		if present {
 			if !asserted.IsValid() {
 				return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
 			}
@@ -168,7 +179,7 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeRefusedTransfer, dns.RcodeRefused, nil
 	}
 	w = contextWriter{ResponseWriter: w, destination: destination, request: r, recursionAvailable: selected.next != nil || selected.public != nil}
-	apex := plugin.Zones(selected.zones.Names).Matches(strings.ToLower(r.Question[0].Name))
+	apex := matchZone(selected.zoneApexes, canonicalQueryName(r.Question[0].Name))
 	if apex != "" {
 		if selected.pendingZones[apex] {
 			return outcomeServfailZone, dns.RcodeServerFailure, nil
@@ -177,7 +188,11 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 			rcode, err := selected.next.ServeDNS(ctx, w, r)
 			return outcomeForwardedNext, rcode, err
 		}
-		rcode, err := selected.zones.ServeDNS(ctx, w, r)
+		zones := selected.zones
+		if selected := selected.zoneFiles[apex]; selected != nil {
+			zones = selected
+		}
+		rcode, err := zones.ServeDNS(ctx, w, r)
 		return outcomeServedZone, rcode, err
 	}
 	if selected.next != nil {
@@ -189,6 +204,31 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 	rcode, err := selected.public.ServeDNS(ctx, w, r)
 	return outcomeForwardedPublic, rcode, err
+}
+
+func canonicalQueryName(name string) string {
+	return strings.ToLower(dns.Fqdn(name))
+}
+
+// matchZone finds the most-specific configured apex by walking DNS label
+// boundaries from the complete query name toward the root. Both the query and
+// the immutable apex set are canonical when the snapshot is compiled, so this
+// avoids comparing and splitting the query once for every configured zone.
+func matchZone(apexes map[string]struct{}, qname string) string {
+	for offset := 0; offset < len(qname); {
+		if _, ok := apexes[qname[offset:]]; ok {
+			return qname[offset:]
+		}
+		next, end := dns.NextLabel(qname, offset)
+		if end {
+			break
+		}
+		offset = next
+	}
+	if _, ok := apexes["."]; ok {
+		return "."
+	}
+	return ""
 }
 
 // The canary is answered before a context is selected, so it proves a loaded

@@ -13,9 +13,10 @@ import (
 )
 
 type activeConfiguration struct {
-	Snapshot     model.ServingSnapshot       `json:"snapshot"`
-	Publications map[string]publicationState `json:"publications"`
-	Files        map[string][]byte           `json:"files"`
+	Snapshot          model.ServingSnapshot       `json:"snapshot"`
+	Publications      map[string]publicationState `json:"publications"`
+	Files             map[string][]byte           `json:"files"`
+	NodeAuthoritative bool                        `json:"nodeAuthoritative,omitempty"`
 }
 
 func (a *Agent) gateRejectedUpdate(ctx context.Context, err error) {
@@ -30,6 +31,9 @@ func (a *Agent) gateRejectedUpdate(ctx context.Context, err error) {
 func (a *Agent) canRetainActive() bool {
 	old := a.state.Active
 	if old == nil || a.state.Snapshot == nil {
+		return false
+	}
+	if old.NodeAuthoritative != a.cfg.NodeAuthoritative {
 		return false
 	}
 	next := map[string]model.Binding{}
@@ -80,8 +84,40 @@ func (a *Agent) canRetainActive() bool {
 	return true
 }
 
+// Only an unchanged authorized view may keep its proven routing while an
+// additive publication is installed and verified. Withdrawal uses normal gating.
+func (a *Agent) retainedNodeRouting() []byte {
+	if !a.cfg.NodeAuthoritative || a.needsActivation || !a.canRetainActive() {
+		return nil
+	}
+	active := a.state.Active
+	if !equalJSON(active.Snapshot, *a.state.Snapshot) || a.state.RenderedHash != hashFiles(active.Files) || activationPending(a.cfg.StateDir) || !installedFilesMatch(active.Files) {
+		return nil
+	}
+	renderConfig := a.cfg.Render
+	renderConfig.NodeAuthoritative = true
+	renderConfig.ReadyZoneMembers = map[string]map[string]map[string]bool{}
+	ready := map[string]bool{}
+	for _, binding := range active.Snapshot.Bindings {
+		ready[binding.BindingUID] = !binding.Tombstone && !binding.ConfigurationPending
+		renderConfig.ReadyZoneMembers[binding.BindingUID] = map[string]map[string]bool{}
+		for _, zone := range binding.Zones {
+			publication, ok := active.Publications[zone.ZoneUID]
+			if !ok || zone.Pending || !publication.Verified || publication.Manifest.Tombstone || model.Compare(publication.Fence.Epoch, publication.Fence.Revision, zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision) < 0 {
+				return nil
+			}
+			renderConfig.ReadyZoneMembers[binding.BindingUID][zone.ZoneUID] = map[string]bool{a.cfg.MemberID: true}
+		}
+	}
+	rendered, err := renderPublications(renderConfig, active.Snapshot, ready, active.Publications)
+	if err != nil || string(rendered.Files[renderConfig.NodeDNSDist.Path]) != string(active.Files[renderConfig.NodeDNSDist.Path]) {
+		return nil
+	}
+	return active.Files[renderConfig.NodeDNSDist.Path]
+}
+
 func (a *Agent) approveConfiguration(files map[string][]byte) error {
-	candidate := activeConfiguration{Snapshot: *a.state.Snapshot, Publications: a.state.Publications, Files: files}
+	candidate := activeConfiguration{Snapshot: *a.state.Snapshot, Publications: a.state.Publications, Files: files, NodeAuthoritative: a.cfg.NodeAuthoritative}
 	data, err := json.Marshal(candidate)
 	if err != nil {
 		return err
@@ -107,7 +143,7 @@ const localDaemonStartGrace = 10 * time.Second
 const restoredCheckpointLimit = 15 * time.Minute
 
 func (a *Agent) restoredCheckpointExpired() bool {
-	return !a.restoredAt.IsZero() && !a.stateReceived && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
+	return !a.restoredAt.IsZero() && !a.bootstrapComplete && !a.deps.Clock().Before(a.restoredAt.Add(restoredCheckpointLimit))
 }
 
 func (a *Agent) withdrawRestoredCheckpoint(ctx context.Context) error {

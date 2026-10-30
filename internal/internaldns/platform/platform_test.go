@@ -307,6 +307,49 @@ func TestOutboxDoesNotPublishAnUncommittedRevision(t *testing.T) {
 	}
 }
 
+func TestLoadCommittedServingSnapshotSurvivesLeaseHandoff(t *testing.T) {
+	now := time.Now().UTC()
+	const (
+		namespace = "platform"
+		region    = "east"
+		shard     = "shared"
+	)
+	snapshot := model.ServingSnapshot{Region: region, Shard: shard, ConfigurationEpoch: 1, ConfigurationRevision: 7, GeneratedAt: now}
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "serving-1-7", region, shard, "owner-uid", 1, 7, now, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1alpha1.DNSTransportOutbox{
+		ObjectMeta: metav1.ObjectMeta{Name: envelope.EventID, Namespace: namespace},
+		Spec: dnsv1alpha1.DNSTransportOutboxSpec{
+			WriterEpoch: 1,
+			Revision:    7,
+			Payload:     payload,
+			PayloadHash: model.Hash(payload),
+		},
+	}
+	state, err := json.Marshal(shardState{Epoch: 2, ActiveOutbox: out.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: namespace},
+		Data:       map[string]string{"state": string(state)},
+	}
+
+	gotEnvelope, gotSnapshot, err := LoadCommittedServingSnapshot(context.Background(), testClient(t, owner, out), namespace, region, shard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEnvelope == nil || gotSnapshot == nil || gotEnvelope.Epoch != 1 || gotSnapshot.ConfigurationRevision != 7 {
+		t.Fatalf("unexpected committed snapshot after handoff: envelope=%#v snapshot=%#v", gotEnvelope, gotSnapshot)
+	}
+}
+
 func TestAckCannotForgeAnotherMemberSubject(t *testing.T) {
 	now := time.Now().UTC()
 	a := model.MemberAck{MemberID: "auth-a", ReplicaID: "replica-a", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)}
@@ -547,6 +590,40 @@ func TestBindingReadinessRequiresCurrentCommittedSnapshot(t *testing.T) {
 	snapshot.Bindings = nil
 	if s.bindingVerified(b, envelope, snapshot, now) {
 		t.Fatal("omitted binding remained ready")
+	}
+}
+
+func TestBindingWithdrawalRequiresEveryMemberAtExactTombstone(t *testing.T) {
+	now := time.Now().UTC()
+	until := metav1.NewTime(now.Add(time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid", Generation: 2}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Tombstone: true, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}}}
+	sink := AckSink{Members: []model.Member{{MemberID: "node-a", Role: "node"}, {MemberID: "node-b", Role: "node"}, {MemberID: "regional-a", Role: "regional"}, {MemberID: "regional-b", Role: "regional"}}}
+	envelope := &model.Envelope{Epoch: 7, Revision: 11}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}, Tombstone: true}}}
+	ack := func(member string) dnsv1alpha1.DNSApplyAcknowledgement {
+		return dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 7, SnapshotRevision: 11, Revision: 2, AccessEpoch: 1, AccessSequence: 2, Phase: string(model.AckVerified), ValidUntil: &until}
+	}
+	binding.Status.MemberAcknowledgements = []dnsv1alpha1.DNSApplyAcknowledgement{ack("node-a"), ack("regional-a")}
+	if !sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("one healthy member per tier did not report the applied withdrawal")
+	}
+	sink.bindingConditions(binding, envelope, snapshot, now, true)
+	if apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated") {
+		t.Fatal("partial withdrawal acknowledgements claimed every member removed access")
+	}
+	if apimeta.IsStatusConditionTrue(binding.Status.Conditions, "Serving") {
+		t.Fatal("a verified tombstone was reported as serving")
+	}
+	binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, ack("node-b"), ack("regional-b"))
+	sink.bindingConditions(binding, envelope, snapshot, now, true)
+	if !apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated") {
+		t.Fatal("the exact tombstone was not proven on every member")
+	}
+	stale := snapshot.Bindings[0]
+	stale.Tombstone = false
+	snapshot.Bindings[0] = stale
+	if sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("an active snapshot satisfied a withdrawal proof")
 	}
 }
 

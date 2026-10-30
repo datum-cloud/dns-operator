@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -43,9 +44,10 @@ import (
 const parentNameExtra = "iam.miloapis.com/parent-name"
 
 type Options struct {
-	Kubeconfig             string
-	MetricsBindAddress     string
-	HealthProbeBindAddress string
+	Kubeconfig              string
+	MetricsBindAddress      string
+	AgentMetricsBindAddress string
+	HealthProbeBindAddress  string
 }
 
 // Run starts one of the deliberately separate production roles. Agent and
@@ -58,9 +60,16 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 	case roleControlPlane:
 		return runControlPlane(ctx, cfg, opts)
 	case roleAgent:
-		return runAgent(ctx, cfg)
+		return runAgent(ctx, cfg, opts)
 	case roleReadiness:
 		return serving.Readiness(ctx, cfg.Agent)
+	case roleActivationCheck:
+		token, err := serving.CheckActivation(ctx, cfg.Agent)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(os.Stdout, token)
+		return err
 	case rolePrepare:
 		return serving.PrepareDNSDist(cfg.Agent.Render)
 	case roleServing:
@@ -126,8 +135,12 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	identity := holderIdentity()
+	// stopping is set when the process is told to exit, so reconcilers stop
+	// taking zone leases before the leases are released.
+	var stopping atomic.Bool
 	var discoveryReader client.Reader
 	passSlots := make(chan struct{}, maxConcurrentProjectPasses)
+	zoneSlots := make(chan struct{}, maxConcurrentZoneCompiles)
 	// Each project manager lists and watches its project's DNS resources as it
 	// starts, so pace starts rather than open every watch in the same second.
 	projectStarts := rate.NewLimiter(rate.Limit(10), 10)
@@ -158,12 +171,11 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
-			// Manager caches deliver watch events only. Every reconciliation read goes
-			// to the source API so a partition cannot refresh access mappings from stale
-			// contexts, access bindings, associations, registrations, or producer observations.
+			// Access decisions use the source API. The optional zone input cache
+			// is supplied by SetupWithManager and guarded per writer epoch.
 			routed := &RoutingClient{Client: platformClient, Source: direct, PlatformNamespace: cfg.PlatformNamespace}
 			reconciler := &controlplane.Reconciler{Client: routed, APIReader: direct, Scheme: scheme, Options: controlplane.ReconcilerOptions{
-				ProjectUID: project.ProjectUID, PassSlots: passSlots,
+				ProjectUID: project.ProjectUID, PassSlots: passSlots, Stopping: stopping.Load,
 				VerifyProjectIdentity: func(ctx context.Context) error {
 					if discoveryReader == nil {
 						return nil
@@ -176,6 +188,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
+				PerZoneReconcile:      cfg.PerZoneReconcile,
+				CachedZoneInputs:      cfg.CachedZoneInputs,
+				ZoneSlots:             zoneSlots,
 			}}
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
@@ -222,8 +237,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return fmt.Errorf("create admission manager: %w", err)
 		}
 		handler := &dnsadmission.Handler{
-			ClientForRequest:   directory.selectProject,
-			InstancePublishers: cfg.Admission.InstancePublishers,
+			ClientForRequest: directory.selectProject,
 		}
 		admissionManager.GetWebhookServer().Register(dnsadmission.Path, &kubeadmission.Webhook{Handler: handler})
 		admissionManager.GetWebhookServer().Register("/readyz", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -231,7 +245,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}))
 	}
 
-	errCh := make(chan error, len(projects)+len(planners)*3+8)
+	errCh := make(chan error, len(projects)+len(planners)*4+8)
 	if address := metricsBindAddress(cfg, opts); address != "" && address != "0" {
 		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, platformREST, nil)
 		if err != nil {
@@ -273,23 +287,42 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 
 	sinks := map[string]*platform.AckSink{}
+	// One process per region runs the region's outbox and acknowledgement
+	// refresh, so replicas do not race each other's writes. The lease only
+	// elects; it depends on nothing else the control plane does.
+	regionLeases := map[string]*platform.RegionLease{}
+	for _, pc := range planners {
+		if regionLeases[pc.Region] != nil {
+			continue
+		}
+		l := &platform.RegionLease{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, Region: pc.Region, Identity: identity, LeaseDuration: cfg.ownershipLease(), Stopping: stopping.Load}
+		regionLeases[pc.Region] = l
+		go retryLoop(ctx, regionLeaseInterval(l.LeaseDuration), loopID{Loop: "region lease", Region: pc.Region}, live, l.Step, errCh)
+	}
+	shardPlanners := make([]*platform.Planner, 0, len(planners))
 	for _, plannerCfg := range planners {
 		pc := plannerCfg
-		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc}
+		planner := &platform.Planner{Client: regionalClient(pc.Region), Allocator: allocator, Config: pc, Stopping: stopping.Load}
+		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
 			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
 		sinks[pc.Region+"/"+pc.Shard] = sink
-		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, sink.Refresh, errCh)
+		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
-		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live)
+		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, regionLeases[region])
 	}, errCh)
+	defer releaseRegionLeases(&stopping, regionLeases)
 
 	select {
 	case <-ctx.Done():
+		stopping.Store(true)
+		releaseLeases(platformClient, cfg.PlatformNamespace, identity, shardPlanners)
 		return nil
 	case err := <-errCh:
+		stopping.Store(true)
+		releaseLeases(platformClient, cfg.PlatformNamespace, identity, shardPlanners)
 		if err == nil || errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -297,10 +330,86 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 }
 
+// whileLeading runs step only while this process holds the region lease;
+// otherwise the step is a successful no-op, so the replica stays healthy.
+func whileLeading(step func(context.Context) error, lease *platform.RegionLease) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if lease == nil || !lease.Leads(time.Now()) {
+			return nil
+		}
+		return step(ctx)
+	}
+}
+
+// regionLeaseInterval renews the region lease well before a third of it has
+// passed, so a holder never looks expired between steps.
+func regionLeaseInterval(lease time.Duration) time.Duration {
+	return max(lease/6, time.Second)
+}
+
+// releaseRegionLeases hands the region leases over on exit, so another
+// process runs the regions' outboxes at once.
+func releaseRegionLeases(stopping *atomic.Bool, leases map[string]*platform.RegionLease) {
+	stopping.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for region, l := range leases {
+		if _, err := l.Release(ctx); err != nil {
+			ctrl.Log.WithName("internal-dns-region-lease").Error(err, "release region lease", "region", region)
+		}
+	}
+}
+
+// leaseReleaseTimeout bounds lease release at shutdown, well inside the
+// default 30 s termination grace period.
+const leaseReleaseTimeout = 10 * time.Second
+
+// leaseReleaseSettle lets compiles that were already past their lease check
+// finish before a second release pass catches any lease they extended.
+const leaseReleaseSettle = 2 * time.Second
+
+// releaseLeases hands this process's zone and shard leases over on exit, so
+// the next control plane publishes and plans at once instead of after a lease
+// duration.
+func releaseLeases(c client.Client, namespace, identity string, planners []*platform.Planner) {
+	ctx, cancel := context.WithTimeout(context.Background(), leaseReleaseTimeout)
+	defer cancel()
+	log := ctrl.Log.WithName("internal-dns-lease-release")
+	zones, skipped, shards := 0, 0, 0
+	for pass := 0; pass < 2; pass++ {
+		if pass > 0 {
+			select {
+			case <-time.After(leaseReleaseSettle):
+			case <-ctx.Done():
+			}
+		}
+		released, conflicted, err := controlplane.ReleaseOwnership(ctx, c, namespace, identity, time.Now().UTC())
+		zones += released
+		skipped = conflicted
+		if err != nil {
+			log.Error(err, "release zone leases")
+		}
+		for _, p := range planners {
+			ok, err := p.Release(ctx, time.Now().UTC())
+			if err != nil {
+				log.Error(err, "release shard lease", "region", p.Config.Region, "shard", p.Config.Shard)
+			}
+			if ok {
+				shards++
+			}
+		}
+	}
+	log.Info("released leases", "zones", zones, "shards", shards, "zonesSkippedOnLastPass", skipped)
+}
+
 // maxConcurrentProjectPasses bounds how many project passes one control-plane
 // replica runs at once. Every project starts a full pass when the process
 // starts; unbounded, those passes hit the API server together.
 const maxConcurrentProjectPasses = 16
+
+// maxConcurrentZoneCompiles bounds how many zone keys one control-plane
+// replica compiles at once across every project when per-zone reconcile is on.
+const maxConcurrentZoneCompiles = 16
 
 // plannerInterval is a third of the ownership lease, capped so a new or
 // changed resolver binding never waits long for the shard planner when the
@@ -352,7 +461,7 @@ func startRegionalWorkers(planners []platform.PlannerConfig, run func(string, []
 	}
 }
 
-func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness) error {
+func runControlPlaneRegion(ctx context.Context, cfg Config, region string, planners []platform.PlannerConfig, platformClient client.Client, sinks map[string]*platform.AckSink, live *loopLiveness, lease *platform.RegionLease) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-region").WithValues("region", region)
 	for ctx.Err() == nil {
 		regional, err := connectRegional(ctx, cfg, []string{region})
@@ -399,7 +508,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		const ackWorkers = 4
 		localDone := make(chan error, len(consumers)*ackWorkers+1)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
-		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, outbox.Step, localDone)
+		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, whileLeading(outbox.Step, lease), localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)
@@ -424,7 +533,7 @@ func waitForRetry(ctx context.Context) bool {
 	}
 }
 
-func runAgent(ctx context.Context, cfg Config) error {
+func runAgent(ctx context.Context, cfg Config, opts Options) error {
 	log := ctrl.LoggerFrom(ctx).WithName("internal-dns-agent")
 	publisher := &agentPublisher{}
 	agent, err := serving.NewAgent(cfg.Agent, serving.Dependencies{AckPublisher: publisher, OnError: func(err error) { log.Error(err, "serving agent operation failed; retrying") }})
@@ -435,6 +544,16 @@ func runAgent(ctx context.Context, cfg Config) error {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- agent.Start(workerCtx) }()
+	var metricsDone <-chan error
+	if address := opts.AgentMetricsBindAddress; address != "" && address != "0" {
+		server, err := metricsserver.NewServer(metricsserver.Options{BindAddress: address}, nil, nil)
+		if err != nil {
+			return fmt.Errorf("create agent metrics server: %w", err)
+		}
+		result := make(chan error, 1)
+		metricsDone = result
+		go func() { result <- server.Start(workerCtx) }()
+	}
 	go func() {
 		for workerCtx.Err() == nil {
 			err := runAgentTransport(workerCtx, cfg, agent, publisher)
@@ -453,6 +572,8 @@ func runAgent(ctx context.Context, cfg Config) error {
 	case <-ctx.Done():
 		return <-done
 	case err := <-done:
+		return err
+	case err := <-metricsDone:
 		return err
 	}
 }
@@ -499,7 +620,32 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	}
 	publisher.set(route.bus)
 	defer publisher.set(nil)
+	statusCtx, stopStatus := context.WithCancel(ctx)
+	statusDone := make(chan struct{})
+	go func() {
+		defer close(statusDone)
+		observeAgentDeliveryConnection(statusCtx, route.bus.ConnectionStates(statusCtx), agent.SetDeliveryConnected)
+	}()
+	defer func() {
+		stopStatus()
+		<-statusDone
+		agent.SetDeliveryConnected(false)
+	}()
 	return agent.RunTransport(ctx, serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard}, sources...)
+}
+
+func observeAgentDeliveryConnection(ctx context.Context, states <-chan bool, observe func(bool)) {
+	for {
+		select {
+		case connected, ok := <-states:
+			if !ok {
+				return
+			}
+			observe(connected)
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func newScheme() (*runtime.Scheme, error) {

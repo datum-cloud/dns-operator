@@ -45,17 +45,667 @@ vars:
   # test-infra Taskfile sets KUBECONFIG to its own `.test-infra/kubeconfig`
   # this way, and that value silently leaks into every cmd we run for the
   # rest of the process, clobbering the default kubeconfig assumption. Every
-  # kubectl/kind/make invocation below explicitly sets KUBECONFIG to this
+  # kubectl/kind invocation below explicitly sets KUBECONFIG to this
   # fixed path so behavior doesn't depend on call order or that leak.
   ENV_KUBECONFIG: 'dev/kubeconfig'
+  ACTIONS_REPO: https://github.com/datum-cloud/actions.git
+
+  # Build, test, and tool pins. Override on the command line, for example
+  # `task kind-create CLUSTER=dns-downstream`.
+  TOOL_DIR: '{{.ROOT_DIR}}/bin'
+  CONTAINER_TOOL: docker
+  KUBECTL: kubectl
+  KIND: kind
+  GORELEASER: goreleaser
+  PLATFORMS: linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
+  KUSTOMIZE_VERSION: v5.7.1
+  CONTROLLER_TOOLS_VERSION: v0.19.0
+  DEFAULTER_GEN_VERSION: v0.32.3
+  ENVTEST_K8S_VERSION: '1.36.0'
+  # Lint only code changed since main; `task lint LINT_FLAGS=` runs the full set.
+  LINT_FLAGS: --new-from-merge-base=origin/main
+  GOLANGCI_LINT: go tool -modfile={{.ROOT_DIR}}/tools/go.mod golangci-lint
+  CHAINSAW_VERSION: v0.2.15
+  CMCTL_VERSION: v2.1.1
+  GATEWAY_API_VERSION: v1.1.0
+  # The Prometheus Operator CRDs infra installs (NSO's config/default ships a ServiceMonitor)
+  PROMETHEUS_OPERATOR_VERSION: v0.81.0
+  # Where datumctl looks for managed plugins. datumctl reads the same location
+  # from DATUMCTL_PLUGINS_DIR, so a throwaway install is:
+  #   task install-plugin DATUMCTL_PLUGIN_DIR=/tmp/p && DATUMCTL_PLUGINS_DIR=/tmp/p datumctl dns --help
+  DATUMCTL_PLUGIN_DIR: '{{env "HOME"}}/.datumctl/plugins'
+  KIND_CLUSTER: dns-operator-test-e2e
+  # The older two-cluster bootstrap (bootstrap-e2e) and the Network Services
+  # Operator integration it can deploy into the upstream cluster.
+  DOWNSTREAM_CLUSTER_NAME: dns-downstream
+  KIND_IMAGE: '{{.IMG}}'
+  NSO_REPO: https://github.com/datum-cloud/network-services-operator.git
+  # config/overlays/nso builds NSO from this default path
+  NSO_DIR: dev/network-services-operator
+  NSO_IMG: ghcr.io/datum-cloud/network-services-operator:latest
+  NSO_DEPLOY: 'false'
+  # In-network API port for kubeconfigs rewritten by export-kind-kubeconfig;
+  # see hack/export-kind-kubeconfig.sh.
+  KIND_KUBECONFIG_PORT: '6443'
+  DNS_DEBUG_CONTEXT: kind-dns-downstream
+  DNS_DEBUG_NAMESPACE: dns-agent-system
+  DNS_DEBUG_ZONE: example.com
+  DNS_DEBUG_HOST: www
+  E2E_DOWNSTREAM_KUBECONFIG: dev/downstream.kubeconfig
+  E2E_INSECURE: 'true'
+  CHAINSAW_TEST_DIR: '.'
+  CHAINSAW_ARGS: ''
+  IGNORE_NOT_FOUND: 'false'
 
 includes:
   test-infra:
     taskfile: https://raw.githubusercontent.com/datum-cloud/test-infra/{{.TEST_INFRA_REPO_REF}}/Taskfile.yml
     vars:
       REPO_REF: "{{.TEST_INFRA_REPO_REF}}"
+  dashboards:
+    taskfile: observability/dashboards/private-dns/Taskfile.yaml
+    dir: observability/dashboards/private-dns
 
 tasks:
+  ci:
+    desc: Run every check CI runs on a single machine (the kind-based suites are `task e2e`)
+    cmds:
+      - task: generate
+      - task: manifests
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: test
+      - task: test:dnsdist-udp
+      - task: test:observability
+      - task: test:dashboards
+      - task: test:internal-dns-perf
+      - task: test:internal-dns-package
+      - task: vuln-scan
+
+  e2e:
+    desc: Bring up the kind environment and run every end-to-end suite, as CI does
+    cmds:
+      - task: test:internal-dns-kubernetes
+      - task: env:internal-dns:up
+      - task: env:stack-up
+      - task: env:internal-dns:qualify
+      - task: env:chainsaw
+
+  generate:
+    desc: Generate DeepCopy methods and config defaults
+    run: once
+    deps: [tools:controller-gen, tools:defaulter-gen]
+    cmds:
+      - '{{.TOOL_DIR}}/controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+      - '{{.TOOL_DIR}}/defaulter-gen ./internal/config --output-file=zz_generated.defaults.go'
+
+  manifests:
+    desc: Generate the CRD, RBAC, and webhook manifests
+    run: once
+    deps: [tools:controller-gen]
+    cmds:
+      - '{{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases output:webhook:artifacts:config=config/webhook'
+
+  fmt:
+    desc: Run go fmt
+    run: once
+    cmds:
+      - go fmt ./...
+
+  vet:
+    desc: Run go vet
+    run: once
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run the Go tests under envtest, after code generation
+    cmds:
+      - task: generate
+      - task: manifests
+      - task: fmt
+      - task: vet
+      - task: setup-envtest
+      - KUBEBUILDER_ASSETS="$({{.TOOL_DIR}}/setup-envtest use {{.ENVTEST_K8S_VERSION}} --bin-dir {{.TOOL_DIR}} -p path)" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+      - INTERNAL_DNS_TEST_PUBLICATION_STORE=memory go test ./internal/internaldns/platform/
+
+  test:dnsdist-udp:
+    desc: Test the generated DNSdist rules with the serving DNSdist image
+    preconditions:
+      - sh: command -v docker
+        msg: docker is required
+    cmds:
+      - hack/test-dnsdist-udp.sh
+
+  test:observability:
+    desc: Test the DNS alert rules and dashboard latency queries with promtool
+    preconditions:
+      - sh: command -v "${PROMTOOL:-promtool}"
+        msg: promtool 3 or later is required (or set PROMTOOL)
+      - sh: command -v jsonnet
+        msg: jsonnet is required
+      - sh: python3 -c 'import yaml'
+        msg: python3 with PyYAML is required
+    cmds:
+      - hack/test-dashboard-latency.sh
+      - hack/test-observability-rules.sh
+
+  test:dashboards:
+    desc: Render the Grafana dashboards and fail when the committed JSON differs
+    preconditions:
+      - sh: command -v jb
+        msg: jsonnet-bundler (jb) is required
+      - sh: command -v jsonnet
+        msg: jsonnet is required
+      - sh: command -v kubectl
+        msg: kubectl is required
+    cmds:
+      - task: dashboards:install
+      - task: dashboards:build
+      - hack/validate-dashboard-drift
+      - hack/validate-dashboards-component.sh
+
+  test:internal-dns-perf:
+    desc: Test the internal DNS performance export scripts
+    preconditions:
+      - sh: command -v python3
+        msg: python3 is required
+      - sh: command -v node
+        msg: node is required
+    cmds:
+      - bash -n test/internaldns/perf/run.sh test/internaldns/perf/report.sh
+      - python3 -m unittest discover -s test/internaldns/perf -p 'test_report.py'
+      - node test/internaldns/perf/test-metadata.cjs
+
+  test:internal-dns-package:
+    desc: Build and qualify the internal DNS runtime image and deployment contracts
+    deps: [tools:setup-envtest, tools:kustomize]
+    preconditions:
+      - sh: command -v docker
+        msg: docker is required
+    cmds:
+      - test/internaldns/qualify-package.sh
+
+  test:internal-dns-kubernetes:
+    desc: Test the private DNS Kubernetes harness
+    cmds:
+      - go test ./test/internaldns/kubernetes/...
+
+  lint:
+    desc: Run golangci-lint on code changed since main (LINT_FLAGS= lints everything)
+    cmds:
+      - '{{.GOLANGCI_LINT}} run {{.LINT_FLAGS}}'
+
+  lint-fix:
+    desc: Run golangci-lint and apply fixes
+    cmds:
+      - '{{.GOLANGCI_LINT}} run --fix {{.LINT_FLAGS}}'
+
+  lint-config:
+    desc: Verify the golangci-lint configuration
+    cmds:
+      - '{{.GOLANGCI_LINT}} config verify'
+
+  build:
+    desc: Build the manager binary into bin/
+    cmds:
+      - task: generate
+      - task: manifests
+      - task: fmt
+      - task: vet
+      - go build -o {{.TOOL_DIR}}/manager cmd/main.go
+
+  run:
+    desc: Run the manager from the host
+    cmds:
+      - task: generate
+      - task: manifests
+      - task: fmt
+      - task: vet
+      - go run ./cmd/main.go
+
+  docker-build:
+    desc: Build the manager image as IMG
+    cmds:
+      - '{{.CONTAINER_TOOL}} build -t {{.IMG}} .'
+
+  docker-push:
+    desc: Push the manager image IMG
+    cmds:
+      - '{{.CONTAINER_TOOL}} push {{.IMG}}'
+
+  docker-buildx:
+    desc: Build and push the manager image for every platform in PLATFORMS
+    cmds:
+      - |
+        set -euo pipefail
+        sed -e '1 s/\(^FROM\)/FROM --platform=${BUILDPLATFORM}/; t' -e ' 1,// s//FROM --platform=${BUILDPLATFORM}/' Dockerfile > Dockerfile.cross
+        {{.CONTAINER_TOOL}} buildx create --name dns-operator-builder || true
+        {{.CONTAINER_TOOL}} buildx use dns-operator-builder
+        {{.CONTAINER_TOOL}} buildx build --push --platform={{.PLATFORMS}} --tag {{.IMG}} -f Dockerfile.cross . || true
+        {{.CONTAINER_TOOL}} buildx rm dns-operator-builder || true
+        rm Dockerfile.cross
+
+  build-installer:
+    desc: Write a consolidated install manifest with CRDs and the deployment to dist/install.yaml
+    deps: [tools:kustomize]
+    cmds:
+      - task: manifests
+      - task: generate
+      - mkdir -p dist
+      - cd config/manager && {{.TOOL_DIR}}/kustomize edit set image controller={{.IMG}}
+      - '{{.TOOL_DIR}}/kustomize build config/default > dist/install.yaml'
+
+  build-plugin:
+    desc: Build the datumctl-dns plugin binary into bin/
+    vars:
+      # Release builds go through goreleaser (.goreleaser-plugin.yaml); this
+      # stamps local builds.
+      PLUGIN_VERSION:
+        sh: git describe --tags --dirty --always 2>/dev/null || echo dev
+    cmds:
+      - mkdir -p {{.TOOL_DIR}}
+      - go build -ldflags "-X main.version={{.PLUGIN_VERSION}}" -o {{.TOOL_DIR}}/datumctl-dns ./cmd/datumctl-dns
+
+  install-plugin:
+    desc: Install the datumctl-dns plugin into DATUMCTL_PLUGIN_DIR
+    deps: [build-plugin]
+    cmds:
+      - mkdir -p {{.DATUMCTL_PLUGIN_DIR}}
+      - install -m 0755 {{.TOOL_DIR}}/datumctl-dns {{.DATUMCTL_PLUGIN_DIR}}/datumctl-dns
+      - echo "Installed {{.DATUMCTL_PLUGIN_DIR}}/datumctl-dns; try 'datumctl dns --help'"
+
+  release-plugin-snapshot:
+    desc: Build the plugin release archives into dist/ without publishing
+    preconditions:
+      - sh: command -v {{.GORELEASER}}
+        msg: "goreleaser is not installed. Install it (for example 'brew install goreleaser') or set GORELEASER=<path>."
+    cmds:
+      - '{{.GORELEASER}} release --config .goreleaser-plugin.yaml --snapshot --clean'
+
+  install:
+    desc: Install the CRDs into the cluster in the current kubeconfig
+    deps: [tools:kustomize]
+    cmds:
+      - task: manifests
+      - |
+        out="$({{.TOOL_DIR}}/kustomize build config/crd 2>/dev/null || true)"
+        if [ -n "$out" ]; then echo "$out" | {{.KUBECTL}} apply -f -; else echo "No CRDs to install; skipping."; fi
+
+  uninstall:
+    desc: Uninstall the CRDs from the cluster in the current kubeconfig (IGNORE_NOT_FOUND=true ignores missing resources)
+    deps: [tools:kustomize]
+    cmds:
+      - task: manifests
+      - |
+        out="$({{.TOOL_DIR}}/kustomize build config/crd 2>/dev/null || true)"
+        if [ -n "$out" ]; then echo "$out" | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -; else echo "No CRDs to delete; skipping."; fi
+
+  deploy:
+    desc: Deploy the controller as IMG into the cluster in the current kubeconfig
+    deps: [tools:kustomize]
+    cmds:
+      - task: manifests
+      - cd config/manager && {{.TOOL_DIR}}/kustomize edit set image controller={{.IMG}}
+      - '{{.TOOL_DIR}}/kustomize build config/default | {{.KUBECTL}} apply -f -'
+
+  undeploy:
+    desc: Remove the controller from the cluster in the current kubeconfig (IGNORE_NOT_FOUND=true ignores missing resources)
+    deps: [tools:kustomize]
+    cmds:
+      - '{{.TOOL_DIR}}/kustomize build config/default | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -'
+
+  cert-manager:
+    desc: Install cert-manager into the cluster selected by CONTEXT and/or KUBECONFIG
+    deps: [tools:kustomize, tools:cmctl]
+    vars:
+      FLAGS: '{{if .CONTEXT}}--context {{.CONTEXT}}{{end}} {{if .KUBECONFIG}}--kubeconfig {{.KUBECONFIG}}{{end}}'
+    cmds:
+      - echo "[cert-manager] applying with {{.FLAGS}}"
+      - '{{.TOOL_DIR}}/kustomize build --enable-helm config/tools/cert-manager | {{.KUBECTL}} {{.FLAGS}} apply --server-side=true --force-conflicts -f -'
+      - '{{.TOOL_DIR}}/cmctl {{.FLAGS}} check api --wait=5m'
+
+  setup-test-e2e:
+    desc: Create the KIND_CLUSTER kind cluster for e2e tests if it does not exist
+    cmds:
+      - task: kind-create
+        vars:
+          CLUSTER: '{{.KIND_CLUSTER}}'
+
+  kind-create:
+    desc: Create the kind cluster CLUSTER if it does not exist
+    requires:
+      vars: [CLUSTER]
+    cmds:
+      - |
+        case "$({{.KIND}} get clusters)" in
+          *"{{.CLUSTER}}"*) echo "Kind cluster '{{.CLUSTER}}' already exists. Skipping." ;;
+          *) echo "Creating Kind cluster '{{.CLUSTER}}'..."; {{.KIND}} create cluster --name {{.CLUSTER}} ;;
+        esac
+
+  kind-delete:
+    desc: Delete the kind cluster CLUSTER
+    requires:
+      vars: [CLUSTER]
+    cmds:
+      - '{{.KIND}} delete cluster --name {{.CLUSTER}}'
+
+  kind-load-image:
+    desc: Build the manager image as KIND_IMAGE and load it into the kind cluster CLUSTER
+    requires:
+      vars: [CLUSTER]
+    cmds:
+      - task: docker-build
+        vars:
+          IMG: '{{.KIND_IMAGE}}'
+      - '{{.KIND}} load docker-image {{.KIND_IMAGE}} --name {{.CLUSTER}}'
+
+  kustomize-apply:
+    desc: Apply the kustomize directory KUSTOMIZE_DIR to the kubectl context CONTEXT
+    deps: [tools:kustomize]
+    requires:
+      vars: [KUSTOMIZE_DIR, CONTEXT]
+    cmds:
+      - '{{.TOOL_DIR}}/kustomize build --load-restrictor LoadRestrictionsNone {{.KUSTOMIZE_DIR}} | {{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f -'
+
+  kustomize-apply-ssa:
+    desc: Apply the kustomize directory KUSTOMIZE_DIR to CONTEXT with server-side apply, forcing conflicts
+    deps: [tools:kustomize]
+    requires:
+      vars: [KUSTOMIZE_DIR, CONTEXT]
+    cmds:
+      - '{{.TOOL_DIR}}/kustomize build --load-restrictor LoadRestrictionsNone {{.KUSTOMIZE_DIR}} | {{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply --server-side=true --force-conflicts -f -'
+
+  export-kind-kubeconfig:
+    desc: Export the kubeconfig of kind cluster CLUSTER to OUT, rewritten for in-network access
+    requires:
+      vars: [CLUSTER, OUT]
+    cmds:
+      - KIND={{.KIND}} KIND_KUBECONFIG_PORT={{.KIND_KUBECONFIG_PORT}} KIND_KUBECONFIG_HOST={{.KIND_KUBECONFIG_HOST}} KIND_KUBECONFIG_INSECURE={{.KIND_KUBECONFIG_INSECURE}} hack/export-kind-kubeconfig.sh {{.CLUSTER}} {{.OUT}}
+
+  export-kind-kubeconfig-raw:
+    desc: Export the kubeconfig of kind cluster CLUSTER to OUT as kind reports it
+    requires:
+      vars: [CLUSTER, OUT]
+    cmds:
+      - mkdir -p "$(dirname {{.OUT}})"
+      - '{{.KIND}} get kubeconfig --name {{.CLUSTER}} > {{.OUT}}'
+
+  secret-from-file:
+    desc: Create or update secret NAME from FILE under key KEY in NAMESPACE on CONTEXT
+    requires:
+      vars: [NAMESPACE, NAME, KEY, FILE, CONTEXT]
+    cmds:
+      - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} -n {{.NAMESPACE}} create secret generic {{.NAME}} --from-file={{.KEY}}={{.FILE}} --dry-run=client -o yaml | {{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f -'
+
+  bootstrap-downstream:
+    desc: Create the kind downstream cluster and deploy the agent with embedded PowerDNS
+    cmds:
+      - task: kind-create
+        vars:
+          CLUSTER: '{{.DOWNSTREAM_CLUSTER_NAME}}'
+      - task: kind-load-image
+        vars:
+          CLUSTER: '{{.DOWNSTREAM_CLUSTER_NAME}}'
+      - task: install-dns-operator-crds
+        vars:
+          CONTEXT: kind-{{.DOWNSTREAM_CLUSTER_NAME}}
+      - task: kustomize-apply
+        vars:
+          CONTEXT: kind-{{.DOWNSTREAM_CLUSTER_NAME}}
+          KUSTOMIZE_DIR: config/overlays/agent-powerdns
+      # Export the external kubeconfig for the downstream cluster (reachable from the host and other containers)
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: '{{.DOWNSTREAM_CLUSTER_NAME}}'
+          OUT: dev/kind.downstream.kubeconfig
+
+  bootstrap-upstream:
+    desc: Create the kind upstream cluster and deploy the replicator pointing at DOWNSTREAM_KUBECONFIG
+    preconditions:
+      - sh: test -n "{{.DOWNSTREAM_KUBECONFIG}}"
+        msg: "DOWNSTREAM_KUBECONFIG is required. Generate it with: task export-downstream-kubeconfig OUT=dev/downstream.kubeconfig"
+    cmds:
+      - task: kind-create
+        vars:
+          CLUSTER: '{{.UPSTREAM_CLUSTER_NAME}}'
+      - task: kind-load-image
+        vars:
+          CLUSTER: '{{.UPSTREAM_CLUSTER_NAME}}'
+      - task: cert-manager
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+      # The replicator also watches networking-services types (Domain, etc.)
+      - task: install-networking-crds
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+      # Export the external kubeconfig for the upstream cluster (used to deploy NSO)
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: '{{.UPSTREAM_CLUSTER_NAME}}'
+          OUT: dev/kind.upstream.kubeconfig
+      - task: bootstrap-upstream-nso
+        vars:
+          NSO_DEPLOY: '{{.NSO_DEPLOY}}'
+      - '{{.KUBECTL}} --context kind-{{.UPSTREAM_CLUSTER_NAME}} create namespace dns-replicator-system --dry-run=client -o yaml | {{.KUBECTL}} --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -'
+      - task: secret-from-file
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+          NAMESPACE: dns-replicator-system
+          NAME: downstream-kubeconfig
+          KEY: kubeconfig
+          FILE: '{{.DOWNSTREAM_KUBECONFIG}}'
+      - task: kustomize-apply
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+          KUSTOMIZE_DIR: config/overlays/replicator
+
+  bootstrap-upstream-nso:
+    desc: Build and deploy the Network Services Operator into the upstream cluster when NSO_DEPLOY=true
+    internal: true
+    status:
+      - test "{{.NSO_DEPLOY}}" != "true"
+    cmds:
+      - echo "[bootstrap-upstream] Installing Kubernetes Gateway API CRDs ({{.GATEWAY_API_VERSION}})"
+      - task: install-gateway-api-crds
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+      - task: install-prometheus-operator-crds
+        vars:
+          CONTEXT: kind-{{.UPSTREAM_CLUSTER_NAME}}
+      - task: nso-deploy-upstream
+        vars:
+          KUBECONFIG: '{{.ROOT_DIR}}/dev/kind.upstream.kubeconfig'
+
+  export-downstream-kubeconfig:
+    desc: Export the downstream kubeconfig to OUT, rewritten for in-cluster use by upstream
+    requires:
+      vars: [OUT]
+    cmds:
+      - task: export-kind-kubeconfig
+        vars:
+          CLUSTER: '{{.DOWNSTREAM_CLUSTER_NAME}}'
+          OUT: '{{.OUT}}'
+          KIND_KUBECONFIG_INSECURE: '{{.KIND_KUBECONFIG_INSECURE}}'
+
+  bootstrap-e2e:
+    desc: Bootstrap downstream, export its kubeconfig, then bootstrap upstream
+    cmds:
+      - task: bootstrap-downstream
+      - task: export-downstream-kubeconfig
+        vars:
+          OUT: '{{.E2E_DOWNSTREAM_KUBECONFIG}}'
+          KIND_KUBECONFIG_INSECURE: '{{.E2E_INSECURE}}'
+      - task: bootstrap-upstream
+        vars:
+          DOWNSTREAM_KUBECONFIG: '{{.E2E_DOWNSTREAM_KUBECONFIG}}'
+          NSO_DEPLOY: '{{.NSO_DEPLOY}}'
+      - 'echo "E2E bootstrap complete. Upstream: {{.UPSTREAM_CLUSTER_NAME}}, Downstream: {{.DOWNSTREAM_CLUSTER_NAME}}."'
+      - 'echo "Downstream kubeconfig: {{.E2E_DOWNSTREAM_KUBECONFIG}}"'
+      - 'echo "External kubeconfigs: dev/kind.downstream.kubeconfig, dev/kind.upstream.kubeconfig"'
+
+  bootstrap-e2e-with-nso:
+    desc: Bootstrap e2e and also install and configure NSO in upstream
+    cmds:
+      - task: bootstrap-e2e
+        vars:
+          NSO_DEPLOY: 'true'
+
+  dns-debug:
+    desc: Launch a DNS tools pod on DNS_DEBUG_CONTEXT and query PowerDNS for DNS_DEBUG_ZONE
+    cmds:
+      - |
+        set -euo pipefail
+        kubectl="{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}kubectl --context {{.DNS_DEBUG_CONTEXT}} -n {{.DNS_DEBUG_NAMESPACE}}"
+        pdns=pdns-auth.{{.DNS_DEBUG_NAMESPACE}}.svc.cluster.local
+        echo "[dns-debug] Ensuring dnstools pod exists in {{.DNS_DEBUG_NAMESPACE}}"
+        eval "$kubectl get pod dnstools" >/dev/null 2>&1 || \
+          eval "$kubectl run dnstools --image=infoblox/dnstools:latest --restart=Never --command -- sh -c 'sleep 3600'"
+        eval "$kubectl wait --for=condition=Ready pod/dnstools --timeout=90s"
+        echo "[dns-debug] Querying PDNS Service $pdns"
+        eval "$kubectl exec dnstools -- sh -lc 'echo SOA:; dig +time=2 +tries=1 +short @$pdns {{.DNS_DEBUG_ZONE}} SOA; \
+          echo NS:; dig +time=2 +tries=1 +short @$pdns {{.DNS_DEBUG_ZONE}} NS; \
+          echo A {{.DNS_DEBUG_HOST}}.{{.DNS_DEBUG_ZONE}}:; dig +time=2 +tries=1 +short @$pdns {{.DNS_DEBUG_HOST}}.{{.DNS_DEBUG_ZONE}} A'"
+
+  chainsaw-prepare-kubeconfigs:
+    desc: Copy the dev kind kubeconfigs into test/e2e for stable relative resolution
+    preconditions:
+      - sh: test -f dev/kind.upstream.kubeconfig
+        msg: Missing dev/kind.upstream.kubeconfig. Bootstrap clusters first.
+      - sh: test -f dev/kind.downstream.kubeconfig
+        msg: Missing dev/kind.downstream.kubeconfig. Bootstrap clusters first.
+    cmds:
+      - cp dev/kind.upstream.kubeconfig test/e2e/kubeconfig-upstream
+      - cp dev/kind.downstream.kubeconfig test/e2e/kubeconfig-downstream
+
+  chainsaw-test:
+    desc: Run the Chainsaw tests in CHAINSAW_TEST_DIR with CHAINSAW_ARGS against the bootstrapped clusters
+    deps: [tools:chainsaw]
+    cmds:
+      - task: chainsaw-prepare-kubeconfigs
+      - cd test/e2e && {{.TOOL_DIR}}/chainsaw test {{.CHAINSAW_ARGS}} {{.CHAINSAW_TEST_DIR}}
+
+  nso-clone:
+    desc: Clone network-services-operator into NSO_DIR if missing
+    status:
+      - test -d {{.NSO_DIR}}
+    cmds:
+      - echo "Cloning {{.NSO_REPO}} into {{.NSO_DIR}}"
+      - git clone {{.NSO_REPO}} {{.NSO_DIR}}
+
+  nso-build:
+    desc: Build the NSO image NSO_IMG from NSO_DIR
+    deps: [nso-clone]
+    cmds:
+      - make -C {{.NSO_DIR}} docker-build IMG={{.NSO_IMG}}
+
+  nso-load-upstream:
+    desc: Load the NSO image into the upstream kind cluster
+    cmds:
+      - '{{.KIND}} load docker-image {{.NSO_IMG}} --name {{.UPSTREAM_CLUSTER_NAME}}'
+
+  nso-deploy-upstream:
+    desc: Deploy NSO with config/overlays/nso into the upstream cluster using KUBECONFIG
+    deps: [tools:kustomize]
+    requires:
+      vars: [KUBECONFIG]
+    cmds:
+      - task: nso-build
+      - task: nso-load-upstream
+      - KUBECONFIG={{.KUBECONFIG}} make -C {{.NSO_DIR}} set-image-controller IMG={{.NSO_IMG}}
+      - '{{.TOOL_DIR}}/kustomize build --load-restrictor LoadRestrictionsNone config/overlays/nso | KUBECONFIG={{.KUBECONFIG}} {{.KUBECTL}} apply --server-side=true --force-conflicts -f -'
+
+  install-networking-crds:
+    desc: Generate the networking services CRDs (Domain and others) and install them into CONTEXT
+    deps: [tools:controller-gen]
+    requires:
+      vars: [CONTEXT]
+    cmds:
+      - mkdir -p dev/crds/network-services
+      - '{{.TOOL_DIR}}/controller-gen crd:crdVersions=v1 paths="go.datum.net/network-services-operator/api/v1alpha" output:crd:dir=dev/crds/network-services'
+      - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f dev/crds/network-services'
+
+  install-dns-operator-crds:
+    desc: Install the DNS operator CRDs into CONTEXT
+    deps: [tools:kustomize]
+    requires:
+      vars: [CONTEXT]
+    cmds:
+      - '{{.TOOL_DIR}}/kustomize build config/crd | {{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -f -'
+
+  install-gateway-api-crds:
+    desc: Install the Kubernetes Gateway API CRDs into CONTEXT
+    requires:
+      vars: [CONTEXT]
+    cmds:
+      - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply -k "github.com/kubernetes-sigs/gateway-api/config/crd?ref={{.GATEWAY_API_VERSION}}"'
+
+  install-prometheus-operator-crds:
+    desc: Install the Prometheus Operator CRDs into CONTEXT
+    requires:
+      vars: [CONTEXT]
+    cmds:
+      - '{{if .KUBECONFIG}}KUBECONFIG={{.KUBECONFIG}} {{end}}{{.KUBECTL}} --context {{.CONTEXT}} apply --server-side -f "https://github.com/prometheus-operator/prometheus-operator/releases/download/{{.PROMETHEUS_OPERATOR_VERSION}}/stripped-down-crds.yaml"'
+
+  setup-envtest:
+    desc: Download the envtest binaries for ENVTEST_K8S_VERSION into bin/
+    deps: [tools:setup-envtest]
+    cmds:
+      - echo "Setting up envtest binaries for Kubernetes version {{.ENVTEST_K8S_VERSION}}..."
+      - '{{.TOOL_DIR}}/setup-envtest use {{.ENVTEST_K8S_VERSION}} --bin-dir {{.TOOL_DIR}} -p path'
+
+  tools:go-install:
+    desc: Install a Go tool into bin/ as NAME-VERSION, symlinked from NAME
+    internal: true
+    run: when_changed
+    requires:
+      vars: [NAME, PACKAGE, VERSION]
+    status:
+      - test -x {{.TOOL_DIR}}/{{.NAME}}-{{.VERSION}}
+      - test "$(readlink {{.TOOL_DIR}}/{{.NAME}})" = "{{.TOOL_DIR}}/{{.NAME}}-{{.VERSION}}"
+    cmds:
+      - hack/install-go-tool.sh {{.TOOL_DIR}} {{.NAME}} {{.PACKAGE}} {{.VERSION}}
+
+  tools:kustomize:
+    desc: Install kustomize into bin/
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: kustomize, PACKAGE: sigs.k8s.io/kustomize/kustomize/v5, VERSION: '{{.KUSTOMIZE_VERSION}}' }
+
+  tools:controller-gen:
+    desc: Install controller-gen into bin/
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: controller-gen, PACKAGE: sigs.k8s.io/controller-tools/cmd/controller-gen, VERSION: '{{.CONTROLLER_TOOLS_VERSION}}' }
+
+  tools:defaulter-gen:
+    desc: Install defaulter-gen into bin/
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: defaulter-gen, PACKAGE: k8s.io/code-generator/cmd/defaulter-gen, VERSION: '{{.DEFAULTER_GEN_VERSION}}' }
+
+  tools:setup-envtest:
+    desc: Install setup-envtest into bin/, from the controller-runtime release branch in go.mod
+    vars:
+      ENVTEST_VERSION:
+        sh: go list -m sigs.k8s.io/controller-runtime | awk '{split($2, v, "."); printf "release-%s.%s", substr(v[1], 2), v[2]}'
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: setup-envtest, PACKAGE: sigs.k8s.io/controller-runtime/tools/setup-envtest, VERSION: '{{.ENVTEST_VERSION}}' }
+
+  tools:chainsaw:
+    desc: Install chainsaw into bin/
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: chainsaw, PACKAGE: github.com/kyverno/chainsaw, VERSION: '{{.CHAINSAW_VERSION}}' }
+
+  tools:cmctl:
+    desc: Install cmctl into bin/
+    cmds:
+      - task: tools:go-install
+        vars: { NAME: cmctl, PACKAGE: github.com/cert-manager/cmctl/v2, VERSION: '{{.CMCTL_VERSION}}' }
+
   env:internal-dns:up:
     desc: "Deploy private DNS pods on the shared upstream/control/edge environment"
     cmds:
@@ -74,6 +724,7 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
           KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+      - task: tools:kustomize
       - test/internaldns/kubernetes/deploy.sh
 
   env:internal-dns:qualify:
@@ -84,7 +735,50 @@ tasks:
   env:internal-dns:package:
     desc: "Build and qualify the internal DNS runtime image and deployment contracts"
     cmds:
-      - test/internaldns/qualify-package.sh
+      - task: test:internal-dns-package
+
+  vuln-scan:
+    desc: Scan dependencies for known vulnerabilities, the same way CI does
+    # Needs bash, git, curl, and jq, plus go for Go modules, and python3 3.11
+    # or later (for tomllib) when the repository has an osv-scanner.toml.
+    vars:
+      # The ref, a tag or a commit SHA, on the uses: line that calls
+      # vuln-scan.yaml in .github/workflows. When Renovate bumps that line,
+      # the local scan moves with it.
+      ACTIONS_REF:
+        sh: |
+          grep -rhoE "datum-cloud/actions/\.github/workflows/vuln-scan\.yaml@[^[:space:]\"'#]+" \
+            "{{.ROOT_DIR}}/.github/workflows" 2> /dev/null | sed 's/.*@//' | sort -u | paste -sd ' ' -
+      # Scripts are cached per commit, so a tag that is moved to another
+      # commit is fetched again.
+      COMMIT:
+        sh: |
+          case "{{.ACTIONS_REF}}" in
+            "" | *" "*) ;;
+            *[!0-9a-f]*) git ls-remote "{{.ACTIONS_REPO}}" "refs/tags/{{.ACTIONS_REF}}" "refs/tags/{{.ACTIONS_REF}}^{}" | tail -n 1 | cut -f 1 ;;
+            *) echo "{{.ACTIONS_REF}}" ;;
+          esac
+      SCRIPTS:
+        sh: echo "${XDG_CACHE_HOME:-$HOME/.cache}/datum-vuln-scan/scripts/{{.COMMIT}}"
+    cmds:
+      - test -n "{{.ACTIONS_REF}}" || (echo "no workflow in .github/workflows calls datum-cloud/actions/.github/workflows/vuln-scan.yaml" >&2; exit 1)
+      - case "{{.ACTIONS_REF}}" in *" "*) echo "workflows call vuln-scan.yaml at different refs ({{.ACTIONS_REF}}); use one" >&2; exit 1 ;; esac
+      - test -n "{{.COMMIT}}" || (echo "{{.ACTIONS_REPO}} has no tag {{.ACTIONS_REF}}" >&2; exit 1)
+      - task: vuln-scan:fetch
+        vars: { COMMIT: "{{.COMMIT}}", SCRIPTS: "{{.SCRIPTS}}" }
+      - bash "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+
+  vuln-scan:fetch:
+    internal: true
+    status:
+      - test -f "{{.SCRIPTS}}/scripts/vuln-scan/run.sh"
+    cmds:
+      - rm -rf "{{.SCRIPTS}}.tmp"
+      - git -c init.defaultBranch=main init --quiet "{{.SCRIPTS}}.tmp"
+      - git -C "{{.SCRIPTS}}.tmp" sparse-checkout set --no-cone '/scripts/vuln-scan/*.sh' '/scripts/vuln-scan/*.py'
+      - git -C "{{.SCRIPTS}}.tmp" fetch --quiet --depth 1 "{{.ACTIONS_REPO}}" "{{.COMMIT}}"
+      - git -C "{{.SCRIPTS}}.tmp" checkout --quiet FETCH_HEAD
+      - mv "{{.SCRIPTS}}.tmp" "{{.SCRIPTS}}"
 
   default:
     desc: "Show available commands"
@@ -98,6 +792,12 @@ tasks:
       - echo "  task env:internal-dns:up       Deploy private DNS on the shared clusters"
       - echo "  task env:internal-dns:qualify  Validate private DNS publication and isolation"
       - echo "  task env:dns-check   Query control + edge PowerDNS for the sample record"
+      - echo "  task vuln-scan       Scan dependencies for known vulnerabilities, as CI does"
+      - echo "  task ci              Run every check CI runs on this machine"
+      - echo "  task e2e             Bring up the environment and run every end-to-end suite"
+      - echo "  task test            Run the Go tests under envtest"
+      - echo "  task lint            Run golangci-lint"
+      - echo "  task --list-all      List every task, including build, deploy, kind, and tool tasks"
       - echo ""
       - echo "Individual pieces:"
       - echo "  task env:control-up  Control cluster only (dns-operator + PowerDNS + RustFS)"
@@ -193,8 +893,8 @@ tasks:
       # KUBECONFIG_FILE (e.g. .test-infra/kubeconfig when run from an
       # external repo like this one) via `kind create cluster --kubeconfig
       # <file>`, which does NOT merge a kind-<name> context into the
-      # default kubeconfig. Every other task in this Taskfile (and `make`
-      # targets it shells out to) assumes the standard `kubectl --context
+      # default kubeconfig. Every other task in this Taskfile (and the
+      # tasks it calls) assumes the standard `kubectl --context
       # kind-<name>` convention, so re-export/merge it into the default
       # kubeconfig here - into our own dedicated ENV_KUBECONFIG file (not the
       # default ~/.kube/config, which is subject to the same leaked-env risk
@@ -209,9 +909,19 @@ tasks:
         vars:
           CLUSTER_NAME: "{{.CONTROL_CLUSTER_NAME}}"
       - task: env:rustfs-up
-      - CLUSTER={{.CONTROL_CLUSTER_NAME}} IMG={{.IMG}} make kind-load-image
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}} make install-dns-operator-crds
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/agent-powerdns-federated make kustomize-apply
+      - task: kind-load-image
+        vars:
+          CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
+          IMG: "{{.IMG}}"
+      - task: install-dns-operator-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
@@ -234,9 +944,19 @@ tasks:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.EDGE_CLUSTER_NAME}}"
-      - CLUSTER={{.EDGE_CLUSTER_NAME}} IMG={{.IMG}} make kind-load-image
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.EDGE_CLUSTER_NAME}} make install-dns-operator-crds
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.EDGE_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/agent-powerdns-federated make kustomize-apply
+      - task: kind-load-image
+        vars:
+          CLUSTER: "{{.EDGE_CLUSTER_NAME}}"
+          IMG: "{{.IMG}}"
+      - task: install-dns-operator-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/agent-powerdns-federated"
       - task: env:s3-secret
         vars:
           CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
@@ -251,25 +971,49 @@ tasks:
       - task: env:test-infra-cluster-up
         vars:
           CLUSTER_NAME: "{{.UPSTREAM_CLUSTER_NAME}}"
-      - CLUSTER={{.UPSTREAM_CLUSTER_NAME}} IMG={{.IMG}} make kind-load-image
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} make install-dns-operator-crds
+      - task: kind-load-image
+        vars:
+          CLUSTER: "{{.UPSTREAM_CLUSTER_NAME}}"
+          IMG: "{{.IMG}}"
+      - task: install-dns-operator-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
       # The replicator's manager watches networking-services types (Domain,
       # etc.) in addition to DNS resources; install those CRDs so its
-      # controllers start cleanly (mirrors `make bootstrap-upstream`).
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} make install-networking-crds
+      # controllers start cleanly (mirrors `task bootstrap-upstream`).
+      - task: install-networking-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
       # The replicator reaches the control cluster's API (its "downstream")
       # through a kubeconfig Secret. Export control's kubeconfig rewritten to
       # the control-plane container's in-network address (host:6443, TLS-skip)
       # so it is reachable from the upstream cluster's pods over the shared
       # kind docker network - the same cross-cluster addressing env:edge-up
       # already uses for RustFS.
-      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT={{.CONTROL_INCLUSTER_KUBECONFIG}} KIND_KUBECONFIG_INSECURE=true make export-kind-kubeconfig
+      - task: export-kind-kubeconfig
+        vars:
+          CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
+          OUT: "{{.CONTROL_INCLUSTER_KUBECONFIG}}"
+          KIND_KUBECONFIG_INSECURE: "true"
       - |
         set -euo pipefail
         export KUBECONFIG={{.ENV_KUBECONFIG}}
         kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} create namespace dns-replicator-system --dry-run=client -o yaml | kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} apply -f -
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE={{.CONTROL_INCLUSTER_KUBECONFIG}} make secret-from-file
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/replicator make kustomize-apply
+      - task: secret-from-file
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
+          NAMESPACE: "dns-replicator-system"
+          NAME: "downstream-kubeconfig"
+          KEY: "kubeconfig"
+          FILE: "{{.CONTROL_INCLUSTER_KUBECONFIG}}"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/replicator"
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deployment/dns-operator-controller-manager --timeout=180s
       - echo "✅ upstream cluster (kind-{{.UPSTREAM_CLUSTER_NAME}}) ready"
 
@@ -303,26 +1047,49 @@ tasks:
     desc: "Query both control and edge PowerDNS for the sample www.example.com record"
     cmds:
       - echo "🔎 control (kind-{{.CONTROL_CLUSTER_NAME}}):"
-      - KUBECONFIG={{.ENV_KUBECONFIG}} make dns-debug DNS_DEBUG_CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}} DNS_DEBUG_ZONE=example.com DNS_DEBUG_HOST=www
+      - task: dns-debug
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          DNS_DEBUG_CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
+          DNS_DEBUG_ZONE: "example.com"
+          DNS_DEBUG_HOST: "www"
       - echo "🔎 edge (kind-{{.EDGE_CLUSTER_NAME}}) - should match control once Lightningstream syncs:"
-      - KUBECONFIG={{.ENV_KUBECONFIG}} make dns-debug DNS_DEBUG_CONTEXT=kind-{{.EDGE_CLUSTER_NAME}} DNS_DEBUG_ZONE=example.com DNS_DEBUG_HOST=www
+      - task: dns-debug
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          DNS_DEBUG_CONTEXT: "kind-{{.EDGE_CLUSTER_NAME}}"
+          DNS_DEBUG_ZONE: "example.com"
+          DNS_DEBUG_HOST: "www"
 
   env:chainsaw-prepare-kubeconfigs:
     desc: "Export upstream/control/edge kind kubeconfigs into test/e2e/ for the Chainsaw suites"
     cmds:
-      - CLUSTER={{.UPSTREAM_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-upstream make export-kind-kubeconfig-raw
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: "{{.UPSTREAM_CLUSTER_NAME}}"
+          OUT: "test/e2e/kubeconfig-upstream"
       # The control cluster is addressed as "downstream" by the replicator
       # suites and as "control" by the federation/full-chain suites, so export
       # its kubeconfig under both names.
-      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-downstream make export-kind-kubeconfig-raw
-      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-control make export-kind-kubeconfig-raw
-      - CLUSTER={{.EDGE_CLUSTER_NAME}} OUT=test/e2e/kubeconfig-edge make export-kind-kubeconfig-raw
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
+          OUT: "test/e2e/kubeconfig-downstream"
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
+          OUT: "test/e2e/kubeconfig-control"
+      - task: export-kind-kubeconfig-raw
+        vars:
+          CLUSTER: "{{.EDGE_CLUSTER_NAME}}"
+          OUT: "test/e2e/kubeconfig-edge"
       - echo "✅ wrote test/e2e/kubeconfig-{upstream,downstream,control,edge}"
 
   env:chainsaw:
     desc: "Run the full Chainsaw e2e suite (replicator + federation + full-chain) against the environment"
     deps:
       - env:chainsaw-prepare-kubeconfigs
+      - tools:chainsaw
     cmds:
       # Chainsaw needs *a* default KUBECONFIG to initialize its client even
       # though each suite addresses its clusters by name (spec.clusters) -
@@ -333,7 +1100,7 @@ tasks:
       # The drift suites deliberately live outside this tree, in test/e2e-drift:
       # they need the Milo environment and the kubeconfigs that only
       # env:chainsaw-milo builds, and `.` would otherwise discover them here.
-      - cd test/e2e && KUBECONFIG=kubeconfig-control chainsaw test .
+      - cd test/e2e && KUBECONFIG=kubeconfig-control {{.TOOL_DIR}}/chainsaw test .
 
   env:down:
     desc: "Tear down all clusters (upstream + control + edge)"
@@ -469,6 +1236,8 @@ tasks:
 
   env:chainsaw-milo:
     desc: "Run the control-plane drift Chainsaw suite (happy-path/orphan/missing) against the running Milo env"
+    deps:
+      - tools:chainsaw
     cmds:
       - |
         set -euo pipefail
@@ -494,7 +1263,7 @@ tasks:
         kubectl config --kubeconfig=kubeconfig-alpha set-cluster alpha \
           --server=https://127.0.0.1:16443/apis/resourcemanager.miloapis.com/v1alpha1/projects/alpha/control-plane \
           --insecure-skip-tls-verify=true >/dev/null
-        KUBECONFIG=kubeconfig-infra chainsaw test --config .chainsaw.yaml {{.CHAINSAW_SUITE | default "."}}
+        KUBECONFIG=kubeconfig-infra {{.TOOL_DIR}}/chainsaw test --config .chainsaw.yaml {{.CHAINSAW_SUITE | default "."}}
 
   env:upstream-milo-up:
     desc: "Create dns-upstream and deploy the replicator (discovery.mode=milo, 2 replicas): discovery via Milo, shadow objects to dns-control's apiserver"
@@ -531,9 +1300,24 @@ tasks:
       # Export control's kubeconfig rewritten to the control-plane container's
       # in-network address so pods on dns-upstream can reach it over the shared
       # kind docker network — the same mechanism env:upstream-up uses.
-      - CLUSTER={{.CONTROL_CLUSTER_NAME}} OUT={{.CONTROL_INCLUSTER_KUBECONFIG}} KIND_KUBECONFIG_INSECURE=true make export-kind-kubeconfig
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} NAMESPACE=dns-replicator-system NAME=downstream-kubeconfig KEY=kubeconfig FILE={{.CONTROL_INCLUSTER_KUBECONFIG}} make secret-from-file
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.UPSTREAM_CLUSTER_NAME}} KUSTOMIZE_DIR=config/overlays/replicator-milo make kustomize-apply
+      - task: export-kind-kubeconfig
+        vars:
+          CLUSTER: "{{.CONTROL_CLUSTER_NAME}}"
+          OUT: "{{.CONTROL_INCLUSTER_KUBECONFIG}}"
+          KIND_KUBECONFIG_INSECURE: "true"
+      - task: secret-from-file
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
+          NAMESPACE: "dns-replicator-system"
+          NAME: "downstream-kubeconfig"
+          KEY: "kubeconfig"
+          FILE: "{{.CONTROL_INCLUSTER_KUBECONFIG}}"
+      - task: kustomize-apply
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.UPSTREAM_CLUSTER_NAME}}"
+          KUSTOMIZE_DIR: "config/overlays/replicator-milo"
       - KUBECONFIG={{.ENV_KUBECONFIG}} kubectl --context kind-{{.UPSTREAM_CLUSTER_NAME}} -n dns-replicator-system rollout status deploy/dns-operator-controller-manager --timeout=180s
       - echo "✅ replicator up on kind-{{.UPSTREAM_CLUSTER_NAME}} (mode=milo, 2 replicas)"
 
@@ -547,13 +1331,19 @@ tasks:
       # project CP (upstream), and dns-control's own apiserver stores the shadow
       # objects the replicator writes (downstream). Production installs the
       # downstream copy through the agent bundle, which pulls in config/crd.
-      - KUBECONFIG={{.ENV_KUBECONFIG}} CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}} make install-dns-operator-crds
+      - task: install-dns-operator-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
       # The replicator (dnszone/dnszonediscovery controllers) indexes Domain
       # (networking.datumapis.com); without its CRD, project-CP engagement fails
       # on cache-index setup. Generate the networking CRDs and install them into
-      # the core CP (shared to all project CPs). The make target also applies to
+      # the core CP (shared to all project CPs). The task also applies to
       # the local kind API (harmless) and writes dev/crds/network-services.
-      - KUBECONFIG={{.ENV_KUBECONFIG}} make install-networking-crds CONTEXT=kind-{{.CONTROL_CLUSTER_NAME}}
+      - task: install-networking-crds
+        vars:
+          KUBECONFIG: "{{.ENV_KUBECONFIG}}"
+          CONTEXT: "kind-{{.CONTROL_CLUSTER_NAME}}"
       - task: env:with-milo-admin
         vars:
           CMD: kubectl apply -f dev/crds/network-services

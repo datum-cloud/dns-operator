@@ -36,7 +36,7 @@ func TestInternalDNSWebhookIsRegisteredFailClosed(t *testing.T) {
 	if !slices.Equal(rule.APIGroups, []string{dnsv1alpha1.GroupVersion.Group}) {
 		t.Errorf("apiGroups = %v", rule.APIGroups)
 	}
-	ops := []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update}
+	ops := []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update, admissionregistrationv1.Delete}
 	if !slices.Equal(rule.Operations, ops) {
 		t.Errorf("operations = %v, want %v", rule.Operations, ops)
 	}

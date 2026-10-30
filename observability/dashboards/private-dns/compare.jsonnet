@@ -82,6 +82,7 @@ local measures = [
   { name: 'query rate (per second)', expr: function(run) 'sum(avg_over_time(idns_perf_query_qps{run="%s"}[$__range]))' % run },
   { name: 'query worst p99 (ms)', expr: function(run) 'max(max_over_time(idns_perf_query_p99_ms{run="%s"}[$__range]))' % run },
   { name: 'queries failed', expr: function(run) 'sum(sum_over_time(idns_perf_query_failed{run="%s"}[$__range]))' % run },
+  { name: 'generator iterations dropped', expr: function(run) 'sum(sum_over_time(idns_perf_query_dropped_iterations{run="%s"}[$__range]))' % run },
   { name: 'project pass p50 (s)', expr: passQuantile('0.5') },
   { name: 'project pass p90 (s)', expr: passQuantile('0.9') },
   { name: 'project pass p99 (s)', expr: passQuantile('0.99') },
@@ -93,10 +94,10 @@ local measures = [
   { name: 'API conflicts, 409 (per second)', expr: rateDuring('sum(rate(rest_client_requests_total{%s,code="409"}[%s]))' % [controlPlane, step]) },
   { name: 'API throttled, 429 (per second)', expr: rateDuring('sum(rate(rest_client_requests_total{%s,code="429"}[%s]))' % [controlPlane, step]) },
   { name: 'client rate limit wait (s per s)', expr: rateDuring('sum(rate(internal_dns_kube_client_throttle_seconds_sum{%s}[%s]))' % [controlPlane, step]) },
-  { name: 'control plane CPU (cores)', expr: rateDuring('sum(rate(container_cpu_usage_seconds_total{%s,pod=~"internal-dns-control-plane-.*",container!="",container!="POD"}[%s]))' % [controlPlane, step]) },
-  { name: 'broker CPU (cores)', expr: rateDuring('sum(rate(container_cpu_usage_seconds_total{%s,pod=~"internal-dns-nats-.*",container!="",container!="POD"}[%s]))' % [controlPlane, step]) },
-  { name: 'serving fleet CPU (cores)', expr: rateDuring('sum(rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[%s]))' % [fleetPods, step]) },
-  { name: 'serving fleet agent CPU (cores)', expr: rateDuring('sum(rate(container_cpu_usage_seconds_total{%s,container="agent"}[%s]))' % [fleetPods, step]) },
+  { name: 'control plane CPU (cores)', expr: rateDuring('sum(max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,pod=~"internal-dns-control-plane-.*",container!="",container!="POD"}[%s])))' % [controlPlane, step]) },
+  { name: 'broker CPU (cores)', expr: rateDuring('sum(max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,pod=~"internal-dns-nats-.*",container!="",container!="POD"}[%s])))' % [controlPlane, step]) },
+  { name: 'serving fleet CPU (cores)', expr: rateDuring('sum(max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[%s])))' % [fleetPods, step]) },
+  { name: 'serving fleet agent CPU (cores)', expr: rateDuring('sum(max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container="agent"}[%s])))' % [fleetPods, step]) },
 ];
 
 // One query per side. Every measure is labelled with its name and position,
@@ -261,10 +262,11 @@ local apiByCode =
     },
   ]);
 
+// Deduplicate scrape jobs before summing containers or pods.
 // Pods are renamed when they restart, so CPU is summed per member type
 // (<deployment> without the pod suffix) inside the window, not per pod.
 local fleetSide(run) =
-  avgOverRun(run, 'sum by (member, container) (label_replace(rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[%s]), "member", "$1", "pod", "internal-dns-(.+)-[a-z0-9]+-[a-z0-9]+"))' % [fleetPods, step]);
+  avgOverRun(run, 'sum by (member, container) (label_replace(max by (cluster, namespace, pod, container) (rate(container_cpu_usage_seconds_total{%s,container!="",container!="POD"}[%s])), "member", "$1", "pod", "internal-dns-(.+)-[a-z0-9]+-[a-z0-9]+"))' % [fleetPods, step]);
 
 local fleetCpu =
   compareBars(

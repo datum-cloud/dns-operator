@@ -186,10 +186,13 @@ Shared node and regional tiers use:
    separate by context and bypasses caching for private names.
 
 [dnsdist PROXYv2](https://www.dnsdist.org/advanced/passing-source-address.html)
-preserves the destination. The CoreDNS transport adapter accepts PROXYv2 only
-from configured service peers over TCP. dnsdist forwards both consumer UDP and
-TCP queries over this protected TCP backend; CoreDNS has no UDP listener.
-Unknown contexts are rejected before record or cache lookup.
+preserves the destination on legacy TCP backends. Keyed members also accept a
+shared-secret EDNS destination option on each query and bind both UDP and TCP,
+restricted to configured service peers. The default dnsdist backend transport
+remains TCP. Opting into UDP keeps UDP client queries on UDP, with TCP retained
+for TCP clients and retries of truncated answers. Unknown contexts are rejected
+before record or cache lookup. See the [serving configuration guide](../../../config/internal-dns/README.md)
+for key distribution and the required regional-before-node UDP rollout order.
 
 The publication agent validates and persists a complete snapshot. The context
 plugin builds a replacement lookup table, then atomically activates it without
@@ -239,7 +242,9 @@ validates ownership and resource generations, then compiles a zone snapshot.
 DNS does not rank publishers. A Compute instance, a Connect export, and a
 customer registration that claim the same name compete under one rule:
 
-1. Static records in the zone claim their names first.
+1. In managed zones, service-owned registrations reserve their declared subtrees
+   first, across all record types. Static records outside those subtrees claim
+   their names before ordinary registrations.
 2. Among registrations, the oldest by creation time wins; the UID breaks ties.
 3. A claim conflicts with another claim for the same name and record type. A
    CNAME conflicts with every other type at that name, so registrations for
@@ -341,7 +346,8 @@ Agents retain desired version fences and an activated configuration separately.
 A rejected expansion retains that configuration; a rejected withdrawal gates
 serving. Healthy DNS continues through normal agent stops and restarts.
 Readiness verifies durable activation state, the active checkpoint, and local
-consumer listeners over UDP and TCP and CoreDNS over TCP, without contacting
+consumer listeners over UDP and TCP and CoreDNS over TCP (also UDP for keyed
+members), without contacting
 the broker or project APIs. A SERVFAIL answer is not ready. A routine
 installation held by a live agent's transaction lock stays ready while the
 daemons answer, for up to one minute.
@@ -375,6 +381,12 @@ The project API server authenticates callers and uses RBAC to authorize resource
 and status operations. Separate roles govern product publication, network integration, and DNS
 controllers. Product services are trusted within their project permissions.
 Admission validates live references; DNS checks name conflicts and record scope.
+In managed zones, services own persistent `DNSRegistration` objects whose
+`reservedDescendants` declare exclusive subtrees. Admission checks `reserve` on
+the named registration for policy mutations (including deletion), and `publish`
+for contributions to it, using SubjectAccessReview with the caller's identity.
+These are additional RBAC/IAM permissions, not a DNS-maintained publisher list.
+Tenant-owned private zones retain their existing authorization and precedence.
 
 #### Context and regional access
 
@@ -533,33 +545,40 @@ when reserving additional names. Project RBAC authorizes publication.
 
 #### Product publication
 
-Compute reserves names in the managed namespace and publishes eligible interface
-addresses. Connect uses the same contribution API with its export eligibility
-policy. Each service authenticates to the project API with scoped RBAC access.
+A service creates a persistent registration in each managed zone before publishing
+endpoints. Its `reservedDescendants` reserve names immediately, even with no
+contributions. DNS blocks other registrations, static records, and tenant-zone
+associations that shadow those subtrees in the same resolver context. DNS has no
+built-in service names: `instances` below is compute policy; `databases` works
+identically. Overlapping declarations fail closed, including concurrent claims.
+
+The service retains the root while endpoints come and go. Contributions reference
+its UID and generation; endpoint controllers need `publish` on that registration
+in addition to their ordinary contribution write permissions. Only the policy
+owner needs `reserve`. Other registrations cannot delegate into the reserved
+subtree. See the [service-owned policy example](../../../config/internal-dns/examples/service-reservation.yaml)
+and [rollout notes](../../../config/internal-dns/README.md#service-owned-reservations).
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRegistration
 metadata:
-  name: instance-web-01
-  # Naming policies match these generic registration labels.
-  labels:
-    app: storefront
+  name: compute-instances
 spec:
   # Select the managed zone allocated for the resource's DNS context.
   dnsZoneRef:
     name: managed-application
   # Reserve this relative owner name, rather than one particular IP address.
-  name: web-01
+  name: instances
   # Constrain which record types contributions can populate.
   recordTypes: [A, AAAA]
   # Bound client caching after a record update or withdrawal.
   ttlSeconds: 30
   # Optional descendant reservations must not overlap other owners.
-  reservedDescendants: []
+  reservedDescendants: [instances]
 status:
   # DNS-owned output for product status and consumer display.
-  canonicalFQDN: web-01.datum.internal
+  canonicalFQDN: instances.datum.internal
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSRecordContribution
@@ -568,7 +587,7 @@ metadata:
 spec:
   # Bind the contribution to the reserved name and its current policy.
   registrationRef:
-    name: instance-web-01
+    name: compute-instances
     uid: 55555555-5555-4555-8555-555555555555
     generation: 1
   # Publish eligibility and addresses together in one desired-state update.
@@ -579,13 +598,13 @@ spec:
   recordSets:
     - recordType: A
       records:
-        - name: web-01
+        - name: web-01.instances
           ttl: 30
           a:
             content: 10.20.0.10
     - recordType: AAAA
       records:
-        - name: web-01
+        - name: web-01.instances
           ttl: 30
           aaaa:
             content: fd20::10

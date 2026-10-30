@@ -2,6 +2,7 @@ package serving
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -137,6 +138,109 @@ func TestDNSDistUsesPersistentIdentityAndBackendHealthCheck(t *testing.T) {
 	}
 }
 
+func TestDNSDistListenerCountUsesReusePort(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderRegionalDNSDist
+	c.ClusterDNSDist.ListenerCount = 2
+	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(r.Files[c.ClusterDNSDist.Path])
+	for _, required := range []string{
+		`setLocal("0.0.0.0:53",{reusePort=true})`,
+		`addLocal("0.0.0.0:53",{reusePort=true})`,
+	} {
+		if strings.Count(conf, required) != 1 {
+			t.Fatalf("dnsdist config has %d copies of %q:\n%s", strings.Count(conf, required), required, conf)
+		}
+	}
+	if strings.Contains(conf, `setLocal("0.0.0.0:53")`) {
+		t.Fatal("multiple listeners left the first socket without SO_REUSEPORT")
+	}
+	defaultConfig := c
+	defaultConfig.ClusterDNSDist.ListenerCount = 0
+	defaultRendered, err := Render(defaultConfig, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(defaultRendered.Files[c.ClusterDNSDist.Path]), `setLocal("0.0.0.0:53")`) ||
+		strings.Contains(string(defaultRendered.Files[c.ClusterDNSDist.Path]), "reusePort") {
+		t.Fatal("default listener rendering changed")
+	}
+	if dnsdistTopology(r.Files[c.ClusterDNSDist.Path]) == dnsdistTopology(defaultRendered.Files[c.ClusterDNSDist.Path]) {
+		t.Fatal("listener count change does not require a replacement member")
+	}
+	oneConfig := defaultConfig
+	oneConfig.ClusterDNSDist.ListenerCount = 1
+	oneRendered, err := Render(oneConfig, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsdistTopology(oneRendered.Files[c.ClusterDNSDist.Path]) != dnsdistTopology(defaultRendered.Files[c.ClusterDNSDist.Path]) {
+		t.Fatal("explicit one listener differs from the default topology")
+	}
+}
+
+func TestDNSDistDefaultListenerPreservesExistingTopology(t *testing.T) {
+	t.Parallel()
+	// Golden fingerprints from the five-field topology before listener counts.
+	for _, tc := range []struct {
+		name      string
+		keyed     bool
+		transport model.Transport
+		node      string
+		cluster   string
+	}{
+		{"proxy-tcp", false, model.TransportTCP, "ba41b13eaa9e1933e4eb0e80", "858e9d456ddb5ecdd9a6351c"},
+		{"keyed-tcp", true, model.TransportTCP, "e5ee10ae649a91fb9f9dc5ff", "7670be8c2671ee502583ee5f"},
+		{"keyed-udp", true, model.TransportUDP, "600669ab28d94a569708b223", "dfcbd4369bfbef342891111c"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, count := range []int{0, 1, 2, 3} {
+				c, s := renderFixture(t)
+				if tc.keyed {
+					c.NodeCoreDNS.IdentityKeyFile = "/run/identity.key"
+					c.ClusterCoreDNS.IdentityKeyFile = "/run/identity.key"
+				}
+				for _, config := range []*DNSDistRenderConfig{&c.NodeDNSDist, &c.ClusterDNSDist} {
+					config.ListenerCount = count
+					config.BackendTransport = tc.transport
+					if tc.keyed {
+						config.IdentityKeyFile = "/run/identity.key"
+					}
+				}
+				r, err := Render(c, s, map[string]bool{"bind-a": true})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for path, want := range map[string]string{c.NodeDNSDist.Path: tc.node, c.ClusterDNSDist.Path: tc.cluster} {
+					got := dnsdistTopology(r.Files[path])
+					if count <= 1 && got != strconv.Quote(want) {
+						t.Errorf("%s count %d changed existing topology: got %s, want %q", path, count, got, want)
+					}
+					if count > 1 && got == strconv.Quote(want) {
+						t.Errorf("%s count %d retained single-listener topology", path, count)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDNSDistRejectsInvalidListenerCount(t *testing.T) {
+	t.Parallel()
+	for _, count := range []int{-1, 65} {
+		c, s := renderFixture(t)
+		c.Role = RenderRegionalDNSDist
+		c.ClusterDNSDist.ListenerCount = count
+		if _, err := Render(c, s, nil); err == nil {
+			t.Fatalf("listener count %d accepted", count)
+		}
+	}
+}
+
 func bindingReadyInConfig(config, address string) bool {
 	tagged := `appendRule(destination("` + address + `"), SetTagAction("dns-context"`
 	unready := `appendRule(destination("` + address + `"), SetTagAction("context-unready"`
@@ -196,6 +300,52 @@ func TestDNSDistIdentityOptionReplacesPerQueryProxyHeader(t *testing.T) {
 	}
 	if dnsdistTopology([]byte(conf)) == dnsdistTopology(proxy.Files[c.NodeDNSDist.Path]) {
 		t.Fatal("changing the backend transport does not require a replacement member")
+	}
+}
+
+func TestDNSDistUDPBackendRequiresKeyAndReplacement(t *testing.T) {
+	t.Parallel()
+	c, s := renderFixture(t)
+	c.Role = RenderNode
+	c.NodeDNSDist.BackendTransport = model.TransportUDP
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("UDP enabled without per-query identity")
+	}
+	c.NodeDNSDist.IdentityKeyFile = "/run/internal-dns/identity.key"
+	c.NodeCoreDNS.IdentityKeyFile = c.NodeDNSDist.IdentityKeyFile
+	r, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := string(r.Files[c.NodeDNSDist.Path])
+	for _, required := range []string{"tcpOnly=false", "checkTCP=false", "SetEDNSOptionAction(65431"} {
+		if !strings.Contains(conf, required) {
+			t.Fatalf("UDP configuration missing %q", required)
+		}
+	}
+	if strings.Contains(conf, "useProxyProtocol") {
+		t.Fatal("UDP still uses connection identity")
+	}
+	// The documented JSON spelling must work as well as model.TransportUDP,
+	// whose value is uppercase because it is also used by Kubernetes APIs.
+	if err := json.Unmarshal([]byte(`{"backendTransport":"udp"}`), &c.NodeDNSDist); err != nil {
+		t.Fatal(err)
+	}
+	lower, err := Render(c, s, map[string]bool{"bind-a": true})
+	if err != nil || string(lower.Files[c.NodeDNSDist.Path]) != conf {
+		t.Fatalf("documented lowercase UDP changes rendering: %v", err)
+	}
+	c.NodeDNSDist.BackendTransport = model.TransportTCP
+	tcp, err := Render(c, s, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dnsdistTopology(tcp.Files[c.NodeDNSDist.Path]) == dnsdistTopology(r.Files[c.NodeDNSDist.Path]) {
+		t.Fatal("transport changed without requiring a replacement member")
+	}
+	c.NodeDNSDist.BackendTransport = "quic"
+	if _, err := Render(c, s, nil); err == nil {
+		t.Fatal("unsupported transport accepted")
 	}
 }
 

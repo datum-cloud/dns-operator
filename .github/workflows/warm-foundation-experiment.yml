@@ -94,23 +94,31 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Restore BuildKit layers and Go caches
+      - name: Restore BuildKit layers
         id: build-cache
         uses: actions/cache@v4
         with:
-          path: |
-            .ci-buildkit-cache
-            .ci-go-cache
-          key: dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          path: .ci-buildkit-cache
+          key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
           restore-keys: |
-            dns-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
-            dns-build-${{ runner.os }}-${{ runner.arch }}-
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore Go compilation caches for rebuilds
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: .ci-go-cache
+          key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          restore-keys: |
+            dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-go-${{ runner.os }}-${{ runner.arch }}-
 
       # BuildKit cache-to alone does not persist RUN --mount caches.
       - name: Restore and retain Go cache mounts
+        if: steps.build-cache.outputs.cache-hit != 'true'
         uses: reproducible-containers/buildkit-cache-dance@e475a9cbcb5052f85fd3830f1266fa0c91ef8595
         with:
-          skip-extraction: ${{ steps.build-cache.outputs.cache-hit == 'true' }}
           cache-map: |
             {
               ".ci-go-cache/modules": "/go/pkg/mod",

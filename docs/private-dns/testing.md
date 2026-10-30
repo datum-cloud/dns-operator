@@ -1,6 +1,6 @@
-# Internal DNS end-to-end qualification
+# Private DNS end-to-end qualification
 
-Run private DNS on the repository's shared Kubernetes test environment. Task
+Run Private DNS on the repository's shared Kubernetes test environment. Task
 reuses the pinned `datum-cloud/test-infra` bootstrap, cluster names, add-ons, and
 cleanup. The environment also supports the existing public DNS regression chain.
 The qualification uses Go clients and Kubernetes workloads.
@@ -18,16 +18,16 @@ task --yes env:internal-dns:up
 task --yes env:internal-dns:qualify
 ```
 
-`env:internal-dns:up` resets only the owned private DNS fixtures, then rebuilds
+`env:internal-dns:up` resets only the owned Private DNS fixtures, then rebuilds
 and deploys them on the existing clusters. Run it again before repeating the
 qualification. It retains the shared bootstrap and public DNS workloads.
 
-Start private DNS first on fresh clusters to select the shared dual-stack Kind
+Start Private DNS first on fresh clusters to select the shared dual-stack Kind
 configuration. If an existing public-only environment uses IPv4, the preflight
 stops before resetting private fixtures. When ready to replace that environment,
 run `env:down`, then start `env:internal-dns:up` before `env:stack-up`.
 
-To validate public DNS alongside private DNS, use the same lifecycle as CI:
+To validate public DNS alongside Private DNS, use the same lifecycle as CI:
 
 ```sh
 task --yes env:internal-dns:up
@@ -46,15 +46,7 @@ broker replicas after fault injection, including a failed scenario.
 
 ## Deployed path
 
-```mermaid
-flowchart LR
-  A[Project A API / scoped publisher] --> C[Two DNS controller Deployments]
-  B[Project B API / scoped publisher] --> C
-  C --> J[Three TLS JetStream replicas / PVCs]
-  J --> N[Shared node dnsdist / CoreDNS]
-  J --> R[Shared regional dnsdist / two CoreDNS members]
-  P[Separate consumer probe] -->|Service destination fixture| N --> R
-```
+![Kubernetes qualification environment](../architecture/private-dns/diagrams/test-environment.svg)
 
 The `dns-upstream` and `dns-edge` clusters provide independent project APIs.
 The `dns-control` cluster hosts the DNS service API, admission Service, broker,
@@ -70,9 +62,11 @@ managed names from `DNSResolverContext.status.managedNamespace`.
 Contribution writes publish records and eligibility atomically. Qualification
 checks health withdrawal, stale-write conflicts, and DNS-owned status permissions.
 
-The fleet contains one node member, one regional frontend, and two regional
+The fleet contains one forwarding node, one regional frontend, and two regional
 CoreDNS members, each with independent persistent state. Agents validate and
-activate configuration and prove UDP/TCP publication. Local readiness verifies\napproved files and live daemons while healthy DNS survives agent restarts.
+activate configuration. Regional agents prove publication directly over TCP;
+consumer-path probes check UDP and TCP. Local readiness verifies approved files
+and live daemons while healthy DNS survives agent restarts.
 The broker uses three persistent replicas, client and route TLS, and scoped
 subject permissions. cert-manager issues broker, client, and admission
 certificates. ACK timing matches the shipped 30-second interval and 90-second
@@ -80,6 +74,11 @@ lease; the fixture shortens the ownership lease to 10 seconds and pod
 termination grace to 2 seconds for fault tests.
 
 ## Qualification scenarios
+
+This environment does not enable node authority. Before rolling out that mode,
+also run the
+[node authority migration checks](../enhancements/node-local-private-dns-authority.md#migration-and-rollback).
+The forwarding qualification results do not establish node authority readiness.
 
 The Go qualifier covers overlapping tenant names over UDP and TCP, A/AAAA and
 negative-cache isolation, multiple zones, managed name discovery, scoped
@@ -116,8 +115,8 @@ capacity.
 The suite uses wire version `v1alpha6` and persistent format 7 checkpoints.
 Compatible fleet upgrades retain those checkpoints and transport state. Roll out
 serving support before enabling new controller output; see the
-[rollout contract](../../config/internal-dns/README.md#rollout-and-recovery).
+[rollout contract](deployment.md#rollout-and-recovery).
 
 For a staged rollout or rollback, retain positive fixtures until the
-[activation and UDP/TCP validation gate](validation/README.md) succeeds. It is
+[activation and UDP/TCP validation gate](../../test/internaldns/validation/README.md) succeeds. It is
 stricter than readiness and never performs cleanup itself.

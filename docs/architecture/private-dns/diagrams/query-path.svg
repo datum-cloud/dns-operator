@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="660" viewBox="0 0 960 660" role="img" aria-labelledby="title description">
+  <title id="title">Default: regional query serving</title>
+  <desc id="description">Queries flow left to right from the VPC client through Galactic, node dnsdist and CoreDNS, then regional dnsdist and one of two CoreDNS members. Galactic carries UDP or TCP. Both dnsdist-to-CoreDNS hops use TCP or keyed UDP. Node CoreDNS selects a context-specific regional destination. Each regional member answers private names from its applied snapshot; public names use its per-context cache and the shared PowerDNS Recursor.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="660" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Default: regional query serving</text>
+  <rect x="32" y="140" width="235" height="200" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="48" y="167" class="heading" text-anchor="start">VPC access</text>
+  <rect x="315" y="140" width="275" height="200" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="331" y="167" class="heading" text-anchor="start">Shared node tier</text>
+  <rect x="640" y="140" width="288" height="200" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="656" y="167" class="heading" text-anchor="start">Shared regional tier</text>
+  <rect x="45" y="220" width="90" height="74" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="90.0" y="251.0" class="label" text-anchor="middle">VPC</text>
+  <text x="90.0" y="275.0" class="label" text-anchor="middle">client</text>
+  <rect x="160" y="220" width="95" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="207.5" y="263.0" class="label" text-anchor="middle">Galactic</text>
+  <rect x="330" y="220" width="100" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="380.0" y="263.0" class="label" text-anchor="middle">dnsdist</text>
+  <rect x="475" y="220" width="100" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="525.0" y="263.0" class="label" text-anchor="middle">CoreDNS</text>
+  <rect x="655" y="220" width="100" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="705.0" y="263.0" class="label" text-anchor="middle">dnsdist</text>
+  <rect x="800" y="220" width="110" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="855.0" y="251.0" class="label" text-anchor="middle">CoreDNS</text>
+  <text x="855.0" y="275.0" class="label" text-anchor="middle">members</text>
+  <path d="M 135 257 H 160" class="edge"/>
+  <path d="M 255 257 H 330" class="edge"/>
+  <path d="M 430 257 H 475" class="edge"/>
+  <path d="M 575 257 H 655" class="edge"/>
+  <path d="M 755 257 H 800" class="edge"/>
+  <text x="292" y="205" class="message" text-anchor="middle">UDP or TCP</text>
+  <text x="615" y="190" class="message" text-anchor="middle">Context</text>
+  <text x="615" y="214" class="message" text-anchor="middle">destination</text>
+  <text x="150" y="322" class="detail" text-anchor="middle">Authorized private path</text>
+  <text x="452" y="322" class="detail" text-anchor="middle">TCP or keyed UDP</text>
+  <text x="760" y="322" class="detail" text-anchor="middle">TCP or keyed UDP</text>
+  <rect x="50" y="405" width="560" height="165" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="70" y="551" class="detail" text-anchor="start">Within each regional CoreDNS member</text>
+  <rect x="70" y="445" width="260" height="74" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="200.0" y="476.0" class="label" text-anchor="middle">Applied private-zone</text>
+  <text x="200.0" y="500.0" class="label" text-anchor="middle">snapshot</text>
+  <rect x="370" y="445" width="220" height="74" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="476.0" class="label" text-anchor="middle">Per-context</text>
+  <text x="480.0" y="500.0" class="label" text-anchor="middle">public cache</text>
+  <rect x="690" y="445" width="230" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="805.0" y="476.0" class="label" text-anchor="middle">Shared PowerDNS</text>
+  <text x="805.0" y="500.0" class="label" text-anchor="middle">Recursor</text>
+  <path d="M 855 294 V 380 H 200 V 445" class="edge"/>
+  <path d="M 480 380 V 445" class="edge"/>
+  <path d="M 590 482 H 690" class="edge"/>
+  <text x="200" y="426" class="message" text-anchor="middle">Private name</text>
+  <text x="480" y="426" class="message" text-anchor="middle">Public name</text>
+  <text x="32" y="605" class="detail" text-anchor="start">Both CoreDNS members follow these lookup branches. Private names never use public resolution.</text>
+  <text x="32" y="629" class="detail" text-anchor="start">The upstream Recursor is shared; its public cache is not isolated by context.</text>
+</svg>

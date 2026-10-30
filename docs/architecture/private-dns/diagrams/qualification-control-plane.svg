@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="850" viewBox="0 0 960 850" role="img" aria-labelledby="title description">
+  <title id="title">Proposed qualification: control planes</title>
+  <desc id="description">Two project control planes each contain a Compute publisher and project DNS APIs. Trusted VPC integration writes access intent to both and private service authorization to Karmada. The management cluster hosts Milo project discovery, two DNS control-plane replicas, the DNS service managed project API, three-node TLS JetStream with persistent volumes, and Karmada. Controllers read project APIs and Milo discovery, read and write the DNS service API, and publish to JetStream. Karmada distributes to both edge clusters. JetStream carries serving updates to both node tiers and the regional tier.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="850" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Proposed qualification: control planes</text>
+  <rect x="50" y="110" width="360" height="190" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="66" y="137" class="heading" text-anchor="start">Project A control plane</text>
+  <rect x="105" y="150" width="250" height="50" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="230.0" y="181.0" class="label" text-anchor="middle">Compute publisher A</text>
+  <rect x="105" y="245" width="250" height="40" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="230.0" y="271.0" class="label" text-anchor="middle">Project DNS APIs</text>
+  <path d="M 230 200 V 245" class="edge"/>
+  <rect x="530" y="110" width="360" height="190" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="546" y="137" class="heading" text-anchor="start">Project B control plane</text>
+  <rect x="585" y="150" width="250" height="50" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="710.0" y="181.0" class="label" text-anchor="middle">Compute publisher B</text>
+  <rect x="585" y="245" width="250" height="40" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="710.0" y="271.0" class="label" text-anchor="middle">Project DNS APIs</text>
+  <path d="M 710 200 V 245" class="edge"/>
+  <rect x="50" y="370" width="860" height="385" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="397" class="heading" text-anchor="middle">Management cluster</text>
+  <rect x="70" y="415" width="225" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="182.5" y="446.0" class="label" text-anchor="middle">Trusted VPC / DNS</text>
+  <text x="182.5" y="470.0" class="label" text-anchor="middle">integration</text>
+  <rect x="665" y="415" width="220" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="775.0" y="446.0" class="label" text-anchor="middle">Milo core API</text>
+  <text x="775.0" y="470.0" class="label" text-anchor="middle">Project discovery</text>
+  <rect x="350" y="535" width="260" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="566.0" class="label" text-anchor="middle">Two DNS control-plane</text>
+  <text x="480.0" y="590.0" class="label" text-anchor="middle">replicas</text>
+  <path d="M 182.5 415 V 335 H 480 V 265 H 355" class="edge"/>
+  <path d="M 480 265 H 585" class="edge"/>
+  <text x="500" y="330" class="message" text-anchor="start">Access intent</text>
+  <path d="M 230 285 V 315 H 330 V 565 H 350" class="edge"/>
+  <path d="M 710 285 V 315 H 630 V 565 H 610" class="edge"/>
+  <path d="M 775 489 V 510 H 480 V 535" class="edge"/>
+  <rect x="70" y="660" width="225" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="182.5" y="691.0" class="label" text-anchor="middle">Karmada</text>
+  <text x="182.5" y="715.0" class="label" text-anchor="middle">federation API</text>
+  <rect x="350" y="660" width="260" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="691.0" class="label" text-anchor="middle">DNS service managed</text>
+  <text x="480.0" y="715.0" class="label" text-anchor="middle">project API</text>
+  <rect x="665" y="648" width="220" height="98" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="775.0" y="679.0" class="label" text-anchor="middle">TLS JetStream</text>
+  <text x="775.0" y="703.0" class="label" text-anchor="middle">3 nodes with</text>
+  <text x="775.0" y="727.0" class="label" text-anchor="middle">persistent volumes</text>
+  <path d="M 182.5 489 V 660" class="edge"/>
+  <text x="195" y="570" class="message" text-anchor="start">Private service</text>
+  <text x="195" y="594" class="message" text-anchor="start">authorization</text>
+  <path d="M 480 609 V 660" class="edge" marker-start="url(#arrow)"/>
+  <path d="M 600 609 V 630 H 775 V 648" class="edge"/>
+  <path d="M 182.5 734 V 790" class="edge"/>
+  <text x="182.5" y="820" class="message" text-anchor="middle">To Edge A and Edge B</text>
+  <path d="M 775 746 V 790" class="edge return"/>
+  <text x="775" y="820" class="message" text-anchor="middle">To node and regional tiers</text>
+</svg>

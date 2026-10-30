@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-labelledby="title description">
+  <title id="title">Kubernetes qualification environment</title>
+  <desc id="description">Project A and B APIs with scoped publishers feed two DNS controller deployments. Controllers publish through three TLS JetStream replicas with persistent volumes to shared node and regional tiers. A separate consumer probe queries the node tier through a service destination fixture, then the node tier forwards to the regional tier. The test fixture does not implement Galactic private connectivity.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="560" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Kubernetes qualification environment</text>
+  <rect x="40" y="125" width="200" height="74" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="140.0" y="156.0" class="label" text-anchor="middle">Project A API</text>
+  <text x="140.0" y="180.0" class="label" text-anchor="middle">Scoped publisher</text>
+  <rect x="40" y="240" width="200" height="74" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="140.0" y="271.0" class="label" text-anchor="middle">Project B API</text>
+  <text x="140.0" y="295.0" class="label" text-anchor="middle">Scoped publisher</text>
+  <rect x="365" y="180" width="230" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="211.0" class="label" text-anchor="middle">Two DNS controller</text>
+  <text x="480.0" y="235.0" class="label" text-anchor="middle">Deployments</text>
+  <rect x="705" y="180" width="220" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="815.0" y="211.0" class="label" text-anchor="middle">TLS JetStream</text>
+  <text x="815.0" y="235.0" class="label" text-anchor="middle">3 replicas with PVCs</text>
+  <path d="M 240 162 H 300 V 205 H 365" class="edge"/>
+  <path d="M 240 277 H 300 V 230 H 365" class="edge"/>
+  <path d="M 595 217 H 705" class="edge"/>
+  <rect x="40" y="405" width="200" height="50" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="140.0" y="436.0" class="label" text-anchor="middle">Consumer probe</text>
+  <rect x="365" y="393" width="230" height="74" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="424.0" class="label" text-anchor="middle">Shared node tier</text>
+  <text x="480.0" y="448.0" class="label" text-anchor="middle">dnsdist / CoreDNS</text>
+  <rect x="705" y="381" width="220" height="98" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="815.0" y="412.0" class="label" text-anchor="middle">Shared regional tier</text>
+  <text x="815.0" y="436.0" class="label" text-anchor="middle">dnsdist / 2</text>
+  <text x="815.0" y="460.0" class="label" text-anchor="middle">CoreDNS members</text>
+  <path d="M 240 430 H 365" class="edge"/>
+  <text x="300" y="370" class="message" text-anchor="middle">Service destination</text>
+  <text x="300" y="394" class="message" text-anchor="middle">fixture</text>
+  <path d="M 595 430 H 705" class="edge"/>
+  <text x="650" y="414" class="message" text-anchor="middle">Query</text>
+  <path d="M 815 254 V 381" class="edge return"/>
+  <path d="M 815 325 H 480 V 393" class="edge return"/>
+  <text x="650" y="312" class="message" text-anchor="middle">Serving updates</text>
+  <text x="32" y="515" class="detail" text-anchor="start">Dashed arrows carry updates. Queries use a fixture, not Galactic private access.</text>
+</svg>

@@ -617,7 +617,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 	name := ownershipName(z.UID)
 	o := &dnsv1alpha1.DNSPublicationOwnership{}
 	key := client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}
-	result := "error"
+	result := zoneLeaseResultError
 	defer func() { zoneLeaseAcquisitions.WithLabelValues(result).Inc() }()
 	zoneLeaseDuration.Set(r.Options.LeaseDuration.Seconds())
 	err := r.Get(ctx, key, o)
@@ -625,7 +625,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 		o = &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: key.Namespace}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: z.UID, HolderIdentity: r.Options.Identity, WriterEpoch: int64(model.NextWriterEpoch(0, now)), NextRevision: 1, LeaseUntil: metav1.NewTime(now.Add(r.Options.LeaseDuration))}}
 		switch err := r.Create(ctx, o); {
 		case apierrors.IsAlreadyExists(err):
-			result = "conflict"
+			result = zoneLeaseResultConflict
 		case err != nil:
 			return nil, time.Time{}, err
 		default:
@@ -650,7 +650,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 		o.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
 		if err := r.Patch(ctx, o, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			if apierrors.IsConflict(err) {
-				result = "conflict"
+				result = zoneLeaseResultConflict
 			}
 			return nil, time.Time{}, err
 		}

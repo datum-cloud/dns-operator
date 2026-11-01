@@ -14,4 +14,4 @@ permissions:
 
 jobs:
   vuln-scan:
-    uses: datum-cloud/actions/.github/workflows/vuln-scan.yaml@v1.23.1
+    uses: datum-cloud/actions/.github/workflows/vuln-scan.yaml@v1.26.0

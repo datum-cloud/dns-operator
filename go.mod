@@ -2,6 +2,8 @@ module go.miloapis.com/dns-operator
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/miekg/dns v1.1.72
 	github.com/moby/moby/api v1.55.0

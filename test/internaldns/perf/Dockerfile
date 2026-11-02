@@ -1,6 +1,6 @@
 # k6 load generator for internal DNS, built with the xk6-dns extension because
 # k6 has no DNS protocol support of its own.
-FROM golang:1.26@sha256:672c944cfd07599b5f1bb179869270cdc94c6254e41db4d431259693cb286b82 AS build
+FROM golang:1.27@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS build
 ARG XK6_VERSION=v1.4.14
 ARG K6_VERSION=v2.3.0
 ARG XK6_DNS_VERSION=v1.2.1

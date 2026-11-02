@@ -772,6 +772,16 @@ tasks:
       - task: env:foundation-up
       - task: env:internal-dns:deploy
 
+  env:warm-create-kind:
+    desc: "Create one dual-stack warm foundation cluster using its isolated kubeconfig"
+    requires:
+      vars: [CLUSTER_NAME]
+    cmds:
+      - task: test-infra:create-kind
+        vars:
+          CLUSTER_NAME: "{{.CLUSTER_NAME}}"
+          KIND_CFG: .internal-dns-e2e/kubernetes/kind-config.yaml
+
   env:foundation:prepare-warm:
     desc: "Experiment: prepare a fresh single-use foundation on a dedicated Docker executor"
     cmds:

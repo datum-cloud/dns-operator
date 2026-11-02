@@ -294,10 +294,16 @@ def validate_receipt(receipt, expected_fingerprint, now):
         raise ValueError("Foundation expired; prepare a fresh environment")
 
 
+def cluster_task(cluster, task, *args):
+    # The pinned include selects KUBECONFIG from the environment only when
+    # the file exists; otherwise it silently falls back to a shared file.
+    run("env", f"KUBECONFIG={config(cluster)}", "task", "--yes", task,
+        f"CLUSTER_NAME={cluster}", *args, capture=False)
+
+
 def finish_cluster(cluster):
     kubeconfig = config(cluster)
-    run("task", "--yes", "test-infra:install-components",
-        f"CLUSTER_NAME={cluster}", f"KUBECONFIG_FILE={kubeconfig}", capture=False)
+    cluster_task(cluster, "test-infra:install-components")
     if cluster == CLUSTERS[0]:
         run("task", "--yes", "env:rustfs-up", f"ENV_KUBECONFIG={kubeconfig}", capture=False)
 
@@ -306,15 +312,18 @@ def bootstrap_clusters():
     run("task", "--yes", "test-infra:ensure-repo", capture=False)
     run("task", "--yes", "test-infra:ensure-tools", capture=False)
     run("test/internaldns/kubernetes/prepare-kind.sh", capture=False)
+    (ROOT / "dev").mkdir(exist_ok=True)
     config(CLUSTERS[0]).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Serialize kind creation on the small runner. Each finished API server
     # can reconcile its add-ons while the next cluster starts.
     with ThreadPoolExecutor(max_workers=2) as pool:
         installs = []
         for cluster in CLUSTERS:
-            run("task", "--yes", "test-infra:create-kind", f"CLUSTER_NAME={cluster}",
-                "KIND_CFG=.internal-dns-e2e/kubernetes/kind-config.yaml",
-                f"KUBECONFIG_FILE={config(cluster)}", capture=False)
+            config(cluster).write_text("")
+            config(cluster).chmod(0o600)
+            cluster_task(cluster, "env:warm-create-kind")
+            run("kind", "export", "kubeconfig", "--name", cluster,
+                "--kubeconfig", str(ROOT / "dev/kubeconfig"))
             installs.append(pool.submit(finish_cluster, cluster))
         for install in installs:
             install.result()

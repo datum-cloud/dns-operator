@@ -60,6 +60,7 @@ class ReceiptTests(unittest.TestCase):
             foundation.prepare(100)
         run.assert_called_once_with("kind", "get", "clusters")
 
+    @patch.object(foundation, "bootstrap_clusters")
     @patch.object(foundation, "export_configs")
     @patch.object(foundation, "fingerprint", return_value="matching")
     @patch.object(foundation, "health_and_identity", side_effect=ValueError("unhealthy"))
@@ -68,16 +69,17 @@ class ReceiptTests(unittest.TestCase):
     def test_failed_preparation_never_advertises_ready_receipt(self, run, kubectl, *_):
         pin = foundation.re.search(r"TEST_INFRA_REPO_REF: '([0-9a-f]{40})'",
                                    (foundation.ROOT / "Taskfile.yaml").read_text()).group(1)
-        run.side_effect = ["", None, pin, ""]
+        run.side_effect = ["", pin, ""]
         with self.assertRaisesRegex(ValueError, "unhealthy"):
             foundation.prepare(100)
         kubectl.assert_not_called()
 
+    @patch.object(foundation, "bootstrap_clusters")
     @patch.object(foundation, "export_configs")
     @patch.object(foundation, "fingerprint", return_value="matching")
     @patch.object(foundation, "health_and_identity")
     @patch.object(foundation, "kubectl")
-    @patch.object(foundation, "run", side_effect=["", None, "wrong revision"])
+    @patch.object(foundation, "run", side_effect=["", "wrong revision"])
     def test_unpinned_checkout_cannot_be_published(self, run, kubectl, health, *_):
         with self.assertRaisesRegex(ValueError, "pinned"):
             foundation.prepare(100)

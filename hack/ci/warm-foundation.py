@@ -5,6 +5,7 @@ This is a prepared-environment handoff, not a pool scheduler or a VM snapshotter
 The selected Docker daemon must belong exclusively to this environment's owner.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -293,12 +294,38 @@ def validate_receipt(receipt, expected_fingerprint, now):
         raise ValueError("Foundation expired; prepare a fresh environment")
 
 
+def finish_cluster(cluster):
+    kubeconfig = config(cluster)
+    run("task", "--yes", "test-infra:install-components",
+        f"CLUSTER_NAME={cluster}", f"KUBECONFIG_FILE={kubeconfig}", capture=False)
+    if cluster == CLUSTERS[0]:
+        run("task", "--yes", "env:rustfs-up", f"ENV_KUBECONFIG={kubeconfig}", capture=False)
+
+
+def bootstrap_clusters():
+    run("task", "--yes", "test-infra:ensure-repo", capture=False)
+    run("task", "--yes", "test-infra:ensure-tools", capture=False)
+    run("test/internaldns/kubernetes/prepare-kind.sh", capture=False)
+    config(CLUSTERS[0]).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Serialize kind creation on the small runner. Each finished API server
+    # can reconcile its add-ons while the next cluster starts.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        installs = []
+        for cluster in CLUSTERS:
+            run("task", "--yes", "test-infra:create-kind", f"CLUSTER_NAME={cluster}",
+                "KIND_CFG=.internal-dns-e2e/kubernetes/kind-config.yaml",
+                f"KUBECONFIG_FILE={config(cluster)}", capture=False)
+            installs.append(pool.submit(finish_cluster, cluster))
+        for install in installs:
+            install.result()
+
+
 def prepare(ttl):
     existing = set(run("kind", "get", "clusters").splitlines()) & set(CLUSTERS)
     if existing:
         raise ValueError(f"Refusing to prepare over existing clusters: {sorted(existing)}")
     # Reuse the exact CI foundation topology, including dual-stack and audit mounts.
-    run("task", "--yes", "env:foundation-up", capture=False)
+    bootstrap_clusters()
     expected_ref = re.search(r"TEST_INFRA_REPO_REF: '([0-9a-f]{40})'",
                              (ROOT / "Taskfile.yaml").read_text()).group(1)
     actual_ref = run("git", "-C", str(ROOT / ".test-infra"), "rev-parse", "HEAD")
@@ -312,7 +339,6 @@ def prepare(ttl):
     identities = health_and_identity()
     install_tools()
     tools = tool_inventory()
-    run("task", "--yes", "env:rustfs-up", capture=False)
     rustfs = rustfs_inventory()
     now = time.time()
     receipt = {

@@ -83,6 +83,8 @@ jobs:
         run: python3 hack/time-ci-phase.py foundation task --yes env:foundation-up
 
       - name: Install shared CRDs and tools
+        env:
+          DNS_CI_RELEASE_TOOLS: "1"
         run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
 
       - name: Deploy and test private and public DNS in parallel

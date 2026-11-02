@@ -4,7 +4,7 @@
 # vocabulary: internal/agent's catalog classifies every reason the operator's
 # controllers publish. Each Deployment picks its binary with `command`; see
 # config/manager and config/components/dns-mcp.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev

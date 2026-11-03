@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -11,14 +12,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// originUIDAnnotation is the UID an object has where it was written. A
-// federation hub copy gets a UID of its own, but references between objects
-// carry the origin's UIDs.
-const originUIDAnnotation = "internal-dns.miloapis.com/origin-uid"
+// originUIDAnnotation and originGenerationAnnotation are the UID and
+// generation an object has where it was written. A federation hub copy gets
+// a UID and generation of its own, but references between objects carry the
+// origin's.
+const (
+	originUIDAnnotation        = "internal-dns.miloapis.com/origin-uid"
+	originGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
+)
 
-// originUIDClient presents every copy it reads with its origin's UID, so
-// references between copies resolve as they do at the origin. Writes use
-// patches, which never carry the UID.
+// originUIDClient presents every copy it reads with its origin's UID and
+// generation, so references between copies resolve as they do at the origin
+// and conditions report the origin's generation. Writes use patches, which
+// never carry either.
 type originUIDClient struct{ client.Client }
 
 func (c originUIDClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -44,5 +50,8 @@ func (c originUIDClient) List(ctx context.Context, list client.ObjectList, opts 
 func withOriginUID(obj client.Object) {
 	if uid := obj.GetAnnotations()[originUIDAnnotation]; uid != "" {
 		obj.SetUID(types.UID(uid))
+	}
+	if g, err := strconv.ParseInt(obj.GetAnnotations()[originGenerationAnnotation], 10, 64); err == nil {
+		obj.SetGeneration(g)
 	}
 }

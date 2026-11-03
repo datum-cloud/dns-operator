@@ -5,7 +5,7 @@ This is a prepared-environment handoff, not a pool scheduler or a VM snapshotter
 The selected Docker daemon must belong exclusively to this environment's owner.
 """
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -325,19 +325,24 @@ def bootstrap_clusters():
     run("test/internaldns/kubernetes/prepare-kind.sh", capture=False)
     (ROOT / "dev").mkdir(exist_ok=True)
     config(CLUSTERS[0]).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # Serialize kind creation on the small runner. Each finished API server
-    # can reconcile its add-ons while the next cluster starts.
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    for cluster in CLUSTERS:
+        config(cluster).write_text("")
+        config(cluster).chmod(0o600)
+    # Each create task includes waiting for Flux. Overlap two clusters while
+    # retaining separate processes and kubeconfigs for every bootstrap.
+    with ThreadPoolExecutor(max_workers=2) as creators, ThreadPoolExecutor(max_workers=2) as installers:
+        creates = {creators.submit(cluster_task, cluster, "env:warm-create-kind"): cluster
+                   for cluster in CLUSTERS}
         installs = []
-        for cluster in CLUSTERS:
-            config(cluster).write_text("")
-            config(cluster).chmod(0o600)
-            cluster_task(cluster, "env:warm-create-kind")
+        for created in as_completed(creates):
+            created.result()
+            cluster = creates[created]
+            # Only this thread merges contexts into the diagnostic kubeconfig.
             run("kind", "export", "kubeconfig", "--name", cluster,
                 "--kubeconfig", str(ROOT / "dev/kubeconfig"))
-            installs.append(pool.submit(finish_cluster, cluster))
-        for install in installs:
-            install.result()
+            installs.append(installers.submit(finish_cluster, cluster))
+        for installed in installs:
+            installed.result()
 
 
 def prepare(ttl):

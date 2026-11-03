@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"sort"
@@ -776,10 +777,102 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 	return nil
 }
 
+const (
+	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	managedObjectValue = "true"
+	// managedByLabel is the Kubernetes well-known label naming the manager.
+	managedByLabel = "app.kubernetes.io/managed-by"
+	managedByValue = "dns.networking.miloapis.com"
+	// managedLabelsAnnotation lists, comma separated, the context labels to copy
+	// onto the zone and association the context manages. Only listed labels
+	// are copied, so labels used to track the context, such as GitOps ones,
+	// never select the managed objects.
+	managedLabelsAnnotation = "dns.networking.miloapis.com/managed-object-labels"
+)
+
+// managedObjectLabels labels the zone and association a context manages with
+// the context labels it lists in managedLabelsAnnotation, so whoever creates
+// the context can say what the zone is for, and marks them as managed, with
+// the well-known managed-by label too.
+func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
+	l := map[string]string{}
+	for _, key := range strings.Split(c.Annotations[managedLabelsAnnotation], ",") {
+		key = strings.TrimSpace(key)
+		if v, ok := c.Labels[key]; ok && key != "" {
+			l[key] = v
+		}
+	}
+	l[managedObjectLabel] = managedObjectValue
+	l[managedByLabel] = managedByValue
+	return l
+}
+
+// managedObjectAnnotations carries the context's description, if it has one.
+func managedObjectAnnotations(c *dnsv1alpha1.DNSResolverContext) map[string]string {
+	if description, ok := c.Annotations[descriptionAnnotation]; ok {
+		return map[string]string{descriptionAnnotation: description}
+	}
+	return nil
+}
+
+// descriptionAnnotation is the well-known annotation clients show as an
+// object's description. A context's description is copied to its managed zone
+// and association, so they say what they are for.
+const descriptionAnnotation = "kubernetes.io/description"
+
+// syncManagedMetadata adds or corrects the copied labels and description on a
+// live object the context controls, for objects created before the context
+// had them. Nothing is ever removed. The metadata is informational, so a
+// failed write is logged and never stops the pass.
+func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNSResolverContext, o client.Object) {
+	if !metav1.IsControlledBy(o, c) || !o.GetDeletionTimestamp().IsZero() {
+		return
+	}
+	objLabels, annotations := o.GetLabels(), o.GetAnnotations()
+	wantLabels := managedObjectLabels(c)
+	stale := false
+	for k, v := range wantLabels {
+		if got, ok := objLabels[k]; !ok || got != v {
+			stale = true
+			break
+		}
+	}
+	description, hasDescription := c.Annotations[descriptionAnnotation]
+	if hasDescription && annotations[descriptionAnnotation] != description {
+		stale = true
+	}
+	if !stale {
+		return
+	}
+	base := o.DeepCopyObject().(client.Object)
+	mergedLabels := maps.Clone(objLabels)
+	if mergedLabels == nil {
+		mergedLabels = map[string]string{}
+	}
+	maps.Copy(mergedLabels, wantLabels)
+	o.SetLabels(mergedLabels)
+	if hasDescription {
+		mergedAnnotations := maps.Clone(annotations)
+		if mergedAnnotations == nil {
+			mergedAnnotations = map[string]string{}
+		}
+		mergedAnnotations[descriptionAnnotation] = description
+		o.SetAnnotations(mergedAnnotations)
+	}
+	if listed, _ := ctx.Value(listedManagedObjectsKey{}).(*listedManagedObjects); listed != nil {
+		listed.changed = true
+	}
+	if err := r.Patch(ctx, o, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		o.SetLabels(objLabels)
+		o.SetAnnotations(annotations)
+		ctrl.LoggerFrom(ctx).Error(err, "label managed object", "kind", fmt.Sprintf("%T", o), "name", o.GetName())
+	}
+}
+
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
 	zoneName := managedZoneName(c)
-	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: managedObjectLabels(c), Annotations: managedObjectAnnotations(c)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, zone, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err
@@ -788,7 +881,8 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.getOrCreate(ctx, zone); err != nil {
 		return false, err
 	}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
+	r.syncManagedMetadata(ctx, c, zone)
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: managedObjectLabels(c), Annotations: managedObjectAnnotations(c)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err
@@ -796,6 +890,10 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	}
 	if err := r.getOrCreate(ctx, association); err != nil {
 		return false, err
+	}
+	// The association webhook needs a live zone, so leave it until there is one.
+	if zone.DeletionTimestamp.IsZero() {
+		r.syncManagedMetadata(ctx, c, association)
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
 	refs, err := r.readReferences(ctx, association)

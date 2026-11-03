@@ -34,8 +34,12 @@ bin/kustomize build config/internal-dns > "$evidence_dir/deployment-examples.yam
 
 # Run by immutable local image ID, so an unrelated tag cannot replace the
 # artifact between build and verification. Docker selects the host architecture.
-docker build --file config/internal-dns/Dockerfile \
-  --iidfile "$evidence_dir/image.id" . > "$evidence_dir/build.log" 2>&1
+if [[ -n ${INTERNAL_DNS_PACKAGE_IMAGE:-} ]]; then
+  docker image inspect --format '{{.Id}}' "$INTERNAL_DNS_PACKAGE_IMAGE" > "$evidence_dir/image.id"
+else
+  docker build --file config/internal-dns/Dockerfile \
+    --iidfile "$evidence_dir/image.id" . > "$evidence_dir/build.log" 2>&1
+fi
 image_id=$(cat "$evidence_dir/image.id")
 docker image inspect "$image_id" > "$evidence_dir/image.json"
 test "$(docker image inspect --format '{{.Config.User}}' "$image_id")" = '65532:65532'

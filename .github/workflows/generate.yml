@@ -2,10 +2,16 @@ name: Generated code
 
 on:
   push:
+    branches: [main]
+    tags: ['**']
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -25,6 +31,10 @@ jobs:
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: ./.github/actions/cache-ci-tools
+        with:
+          purpose: generation
 
       - name: Verify generated code
         run: task --yes generate:verify

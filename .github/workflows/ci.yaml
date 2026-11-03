@@ -4,13 +4,44 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['**']
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  tests:
+    uses: ./.github/workflows/test.yml
+
+  image:
+    name: Validate operator image
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check workflow contracts
+        run: bash hack/ci/test-workflows.sh
+      - uses: docker/setup-buildx-action@v4
+      - name: Build production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          cache-from: type=gha,scope=validate-operator
+          cache-to: type=gha,scope=validate-operator,mode=max
+
   ci:
-    uses: datum-cloud/actions/.github/workflows/ci-basic.yaml@v1.26.0
-    with:
-      skip: test
-      run: bash hack/unit-test.sh
+    name: ci / Build and test
+    if: always()
+    needs: [tests, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require every validation job to pass
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: bash hack/ci/check-validation.sh

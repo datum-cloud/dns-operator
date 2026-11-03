@@ -39,7 +39,7 @@ cat > fake-bin/git <<'MOCK'
 set -euo pipefail
 case "$1" in
   fetch) ;;
-  diff) printf '%s' "$CHANGED_FILES" ;;
+  diff) [[ "$2" == --no-renames ]] || exit 1; printf '%s' "$CHANGED_FILES" ;;
   *) exit 1 ;;
 esac
 MOCK
@@ -48,11 +48,14 @@ export PATH="$work/fake-bin:$PATH"
 export GITHUB_EVENT_PATH="$work/event.json"
 printf '{"pull_request":{"base":{"sha":"base"},"head":{"sha":"head"}}}\n' > "$GITHUB_EVENT_PATH"
 export GITHUB_EVENT_NAME=pull_request
-for file in observability/alerts.yaml config/components/dashboards/test.yaml hack/test-observability-rules.sh Taskfile.yaml .github/workflows/test.yml go.mod; do
+for file in config/observability/rules/dns-drift-rules.yaml test/observability/dns-drift.test.yaml observability/alerts.yaml config/components/dashboards/test.yaml hack/test-observability-rules.sh Taskfile.yaml .github/workflows/test.yml go.mod; do
   : > "$GITHUB_OUTPUT"
   CHANGED_FILES="$file" bash "$root/hack/ci/observability-changes.sh"
   grep -qx 'run=true' "$GITHUB_OUTPUT"
 done
+: > "$GITHUB_OUTPUT"
+CHANGED_FILES=$'config/observability/rules/removed.yaml\ndocs/removed.yaml' bash "$root/hack/ci/observability-changes.sh"
+grep -qx 'run=true' "$GITHUB_OUTPUT"
 : > "$GITHUB_OUTPUT"
 CHANGED_FILES=README.md bash "$root/hack/ci/observability-changes.sh"
 grep -qx 'run=false' "$GITHUB_OUTPUT"

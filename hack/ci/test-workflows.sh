@@ -5,14 +5,21 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cd "$work"
 export RUNNER_TEMP="$work" GITHUB_OUTPUT="$work/output" GITHUB_SHA=0123456789012345678901234567890123456789
+export IMAGE_GROUP=internal
 export OPERATOR_METADATA='{"tags":["ghcr.io/datum-cloud/dns-operator:v0.0.0-test"],"labels":{"test":"operator"}}'
 export RUNTIME_METADATA='{"tags":["ghcr.io/datum-cloud/internal-dns:v0.0.0-test"],"labels":{"test":"runtime"}}'
 export SERVING_METADATA='{"tags":["ghcr.io/datum-cloud/internal-dns-serving:v0.0.0-test"],"labels":{"test":"serving"}}'
 bash "$root/hack/ci/publish-images.sh" prepare
-jq -e '.group.default.targets | length == 3' dev/publish-bake.json
+jq -e '.group.default.targets == ["runtime","serving"]' dev/publish-bake.json
 jq -e '[.target[] | .["cache-to"][0]] | unique | length == 3' dev/publish-bake.json
 jq -e '.target.runtime.args == .target.serving.args' dev/publish-bake.json
 jq -e 'all(.target[]; .platforms == ["linux/amd64", "linux/arm64"] and (.output[0] | startswith("type=oci,")))' dev/publish-bake.json
+IMAGE_GROUP=operator bash "$root/hack/ci/publish-images.sh" prepare
+jq -e '.group.default.targets == ["operator"]' dev/publish-bake.json
+if IMAGE_GROUP=unknown bash "$root/hack/ci/publish-images.sh" prepare; then
+  echo 'Unknown image group passed' >&2
+  exit 1
+fi
 if OPERATOR_METADATA='{"tags":[],"labels":{}}' bash "$root/hack/ci/publish-images.sh" prepare; then
   echo 'Empty image metadata passed' >&2
   exit 1

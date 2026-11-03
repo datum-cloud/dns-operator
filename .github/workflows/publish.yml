@@ -8,15 +8,25 @@ on:
     types: ['published']
 
 jobs:
-  publish-images:
+  publish-container-image:
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/publish-images.yml
+    with:
+      group: operator
+
+  publish-internal-dns-images:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-images.yml
+    with:
+      group: internal
 
   publish-kustomize-bundles:
     # The bundle names the image by tag, so it must not be published until that image exists.
-    needs: [publish-images]
+    needs: [publish-container-image]
     permissions:
       id-token: write
       contents: read
@@ -53,7 +63,7 @@ jobs:
 
   publish-internal-dns-builds:
     if: github.event_name == 'release' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')))
-    needs: [publish-images, publish-kustomize-bundles]
+    needs: [publish-internal-dns-images, publish-kustomize-bundles]
     permissions:
       contents: read
       packages: write
@@ -69,6 +79,6 @@ jobs:
       - uses: fluxcd/flux2/action@v2.10.0
       - name: Publish the runtime and serving image pair
         env:
-          RUNTIME_TAG: ${{ needs.publish-images.outputs.tag }}
-          SERVING_TAG: ${{ needs.publish-images.outputs.tag }}
+          RUNTIME_TAG: ${{ needs.publish-internal-dns-images.outputs.tag }}
+          SERVING_TAG: ${{ needs.publish-internal-dns-images.outputs.tag }}
         run: hack/publish-internal-dns-channel.sh

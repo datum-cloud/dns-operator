@@ -2,6 +2,11 @@ name: Publish operator and internal DNS images
 
 on:
   workflow_call:
+    inputs:
+      group:
+        description: operator or internal
+        type: string
+        required: true
     outputs:
       tag:
         description: Shared image tag
@@ -82,6 +87,7 @@ jobs:
       - name: Prepare shared image build
         id: prepare
         env:
+          IMAGE_GROUP: ${{ inputs.group }}
           OPERATOR_METADATA: ${{ steps.operator.outputs.json }}
           RUNTIME_METADATA: ${{ steps.runtime.outputs.json }}
           SERVING_METADATA: ${{ steps.serving.outputs.json }}
@@ -97,9 +103,11 @@ jobs:
       - name: Read immutable build digests
         id: digests
         env:
+          IMAGE_GROUP: ${{ inputs.group }}
           BUILD_METADATA: ${{ steps.build.outputs.metadata }}
         run: bash hack/ci/record-build-metadata.sh
       - name: Filter certificates and publish operator
+        if: inputs.group == 'operator'
         uses: docker/build-push-action@v7
         with:
           context: ${{ runner.temp }}/drop-distrusted-roots
@@ -109,6 +117,7 @@ jobs:
           labels: ${{ steps.operator.outputs.labels }}
           platforms: linux/amd64,linux/arm64
       - name: Filter certificates and publish runtime
+        if: inputs.group == 'internal'
         uses: docker/build-push-action@v7
         with:
           context: ${{ runner.temp }}/drop-distrusted-roots
@@ -118,6 +127,7 @@ jobs:
           labels: ${{ steps.runtime.outputs.labels }}
           platforms: linux/amd64,linux/arm64
       - name: Filter certificates and publish serving
+        if: inputs.group == 'internal'
         uses: docker/build-push-action@v7
         with:
           context: ${{ runner.temp }}/drop-distrusted-roots

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+case "${IMAGE_GROUP:?required image group}" in
+  operator) targets='["operator"]' ;;
+  internal) targets='["runtime","serving"]' ;;
+  *) echo 'Unknown image group' >&2; exit 2 ;;
+esac
 case "${1:-}" in
   prepare)
     mkdir -p dev
     jq -n -e \
-      --argjson operator "$OPERATOR_METADATA" \
+      --argjson targets "$targets" --argjson operator "$OPERATOR_METADATA" \
       --argjson runtime "$RUNTIME_METADATA" \
       --argjson serving "$SERVING_METADATA" \
       --arg sha "$GITHUB_SHA" --arg directory "$RUNNER_TEMP" \
@@ -19,7 +24,7 @@ case "${1:-}" in
          output: ["type=oci,dest=" + $directory + "/" + $name + ",tar=false"],
          "cache-from": ["type=gha,scope=publish-" + $name],
          "cache-to": ["type=gha,scope=publish-" + $name + ",mode=max"]} end;
-      {group: {default: {targets: ["operator", "runtime", "serving"]}},
+      {group: {default: {targets: $targets}},
        target: {operator: target("operator"; $operator; "Dockerfile"; ""),
                 runtime: target("runtime"; $runtime; "config/internal-dns/Dockerfile"; "runtime"),
                 serving: target("serving"; $serving; "config/internal-dns/Dockerfile"; "serving")}}
@@ -28,7 +33,7 @@ case "${1:-}" in
     echo "tag=$tag" >> "$GITHUB_OUTPUT"
     ;;
   digests)
-    for name in operator runtime serving; do
+    for name in $(jq -er 'join(" ")' <<< "$targets"); do
       digest=$(jq -er --arg name "$name" '.[$name]["containerimage.digest"] | select(test("^sha256:[0-9a-f]{64}$"))' dev/publish-metadata.json)
       echo "$name=$digest" >> "$GITHUB_OUTPUT"
     done

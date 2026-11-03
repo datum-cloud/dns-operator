@@ -27,7 +27,7 @@ jobs:
           python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
       - name: Retain harness timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: harness-phase-timings
           path: dev/ci-timings.jsonl
@@ -133,7 +133,7 @@ jobs:
 
       - name: Retain CI phase timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-phase-timings
           path: |
@@ -182,7 +182,7 @@ jobs:
 
       - name: Retain private DNS qualification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: internal-dns-kubernetes
           path: test/internaldns/results/kubernetes*

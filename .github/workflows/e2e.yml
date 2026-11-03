@@ -89,7 +89,7 @@ jobs:
 
       - name: Restore BuildKit layers
         id: build-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-buildkit-cache
           key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
@@ -99,7 +99,7 @@ jobs:
 
       - name: Restore Go compilation caches for rebuilds
         if: steps.build-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .ci-go-cache
           key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}

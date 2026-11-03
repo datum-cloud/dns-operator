@@ -524,7 +524,8 @@ independent zones with the same apex. Static records have no health lease.
 The context directly owns its managed zone and association. DNS allocates the
 requested zone and exposes its reference and suffix in context status. Product
 publishers use these outputs. The managed zone and association carry the label
-`dns.networking.miloapis.com/managed: "true"`. They also get a copy of the
+`dns.networking.miloapis.com/managed: "true"` and the well-known
+`app.kubernetes.io/managed-by: dns.networking.miloapis.com`. They also get a copy of the
 context labels named, comma separated, in the context's
 `dns.networking.miloapis.com/managed-object-labels` annotation, so whoever
 creates the context can tag what the zone is for, such as the network it

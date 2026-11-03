@@ -779,6 +779,9 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 
 const (
 	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	// managedByLabel is the Kubernetes well-known label naming the manager.
+	managedByLabel = "app.kubernetes.io/managed-by"
+	managedByValue = "dns.networking.miloapis.com"
 	// managedLabelsAnnotation lists, comma separated, the context labels to copy
 	// onto the zone and association the context manages. Only listed labels
 	// are copied, so labels used to track the context, such as GitOps ones,
@@ -788,7 +791,8 @@ const (
 
 // managedObjectLabels labels the zone and association a context manages with
 // the context labels it lists in managedLabelsAnnotation, so whoever creates
-// the context can say what the zone is for, and marks them as managed.
+// the context can say what the zone is for, and marks them as managed, with
+// the well-known managed-by label too.
 func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
 	l := map[string]string{}
 	for _, key := range strings.Split(c.Annotations[managedLabelsAnnotation], ",") {
@@ -798,6 +802,7 @@ func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
 		}
 	}
 	l[managedObjectLabel] = "true"
+	l[managedByLabel] = managedByValue
 	return l
 }
 

@@ -385,7 +385,7 @@ func TestManagedZoneCarriesContextLabels(t *testing.T) {
 	if err := r.reconcileResolverContexts(ctx, "project", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	check(map[string]string{managedObjectLabel: "true"})
+	check(map[string]string{managedObjectLabel: "true", managedByLabel: managedByValue})
 	if err := c.Get(ctx, client.ObjectKeyFromObject(resolver), resolver); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestManagedZoneCarriesContextLabels(t *testing.T) {
 	if err := r.reconcileResolverContexts(ctx, "project", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	check(map[string]string{"example.com/network-name": "vpc-a", managedObjectLabel: "true"})
+	check(map[string]string{"example.com/network-name": "vpc-a", managedObjectLabel: "true", managedByLabel: managedByValue})
 	// Labels the context does not list are never copied.
 	var zone dnsv1alpha1.DNSZone
 	if err := c.Get(ctx, zoneKey, &zone); err != nil {

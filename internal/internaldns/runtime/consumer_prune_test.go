@@ -12,33 +12,74 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 )
 
-func TestRetiredConsumersPrunesOnlyIdleConsumersOfRemovedMembers(t *testing.T) {
-	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	idle := now.Add(-2 * retiredConsumerGrace)
+func prunerFixture() (*consumerPruner, []string, []string, []string) {
 	planners := []platform.PlannerConfig{{Region: "region-a", Shard: "shared-0", Members: []model.Member{
 		{MemberID: "node-a-0", ReplicaID: "node-a-0", Role: "node"},
-		{MemberID: "regional-a-0", ReplicaID: "regional-a-0", Role: "regional"},
+		{MemberID: "Regional A/0", ReplicaID: "Regional A/0", Role: "regional"},
 	}}}
-	serving := []string{model.ServingSubject("region-a", "shared-0")}
-	records := []string{model.RecordConsumerFilter("region-a", "shared-0")}
-	acks := []string{ackFilter("region-a", "shared-0")}
+	return newConsumerPruner(planners),
+		[]string{model.ServingSubject("region-a", "shared-0")},
+		[]string{model.RecordConsumerFilter("region-a", "shared-0")},
+		[]string{ackFilter("region-a", "shared-0")}
+}
+
+func TestConsumerPrunerSelectsOnlyMemberFeedsOfRemovedMembers(t *testing.T) {
+	p, serving, records, acks := prunerFixture()
+	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	consumers := []transport.ConsumerSummary{
-		{Name: "node-a-0-serving", FilterSubjects: serving, LastActive: idle},
-		{Name: "regional-a-0-records", FilterSubjects: records, LastActive: idle},
-		{Name: "control-plane-region-a-shared-0-acks", FilterSubjects: acks, LastActive: idle},
-		{Name: "front-a-0-serving", FilterSubjects: serving, LastActive: idle},
-		{Name: "front-a-0-records", FilterSubjects: records, LastActive: idle},
-		{Name: "front-a-0-acks", FilterSubjects: acks, LastActive: idle},
-		{Name: "starting-a-0-serving", FilterSubjects: serving, LastActive: now.Add(-time.Minute)},
-		{Name: "reading-a-0-serving", FilterSubjects: serving, LastActive: idle, Waiting: 1},
-		{Name: "other-region-serving", FilterSubjects: []string{model.ServingSubject("region-b", "shared-0")}, LastActive: idle},
-		{Name: "mixed-filters", FilterSubjects: []string{serving[0], model.ServingSubject("region-b", "shared-0")}, LastActive: idle},
-		{Name: "unfiltered", LastActive: idle},
+		{Name: "node-a-0-serving", FilterSubjects: serving, LastActive: old},
+		{Name: durable("Regional A/0", "records"), FilterSubjects: records, LastActive: old},
+		{Name: "control-plane-region-a-shared-0-acks", FilterSubjects: acks, LastActive: old},
+		{Name: "front-a-0-serving", FilterSubjects: serving, LastActive: old},
+		{Name: "front-a-0-records", FilterSubjects: records, LastActive: old},
+		{Name: "front-a-0-acks", FilterSubjects: acks, LastActive: old},
+		{Name: "front-a-0-serving-copy", FilterSubjects: serving, LastActive: old},
+		{Name: "debug-records", FilterSubjects: serving, LastActive: old},
+		{Name: "other-region-serving", FilterSubjects: []string{model.ServingSubject("region-b", "shared-0")}, LastActive: old},
+		{Name: "mixed-serving", FilterSubjects: []string{serving[0], records[0]}, LastActive: old},
+		{Name: "unfiltered-serving", LastActive: old},
 	}
-	got := retiredConsumers(planners, consumers, now)
+	var got []string
+	for _, c := range consumers {
+		if p.orphaned(c) {
+			got = append(got, c.Name)
+		}
+	}
 	slices.Sort(got)
 	want := []string{"front-a-0-acks", "front-a-0-records", "front-a-0-serving"}
 	if !slices.Equal(got, want) {
-		t.Fatalf("retired consumers = %v, want %v", got, want)
+		t.Fatalf("orphaned consumers = %v, want %v", got, want)
+	}
+}
+
+func TestConsumerPrunerWaitsForSustainedIdleness(t *testing.T) {
+	p, serving, _, _ := prunerFixture()
+	start := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	created := start.Add(-30 * 24 * time.Hour)
+	orphan := transport.ConsumerSummary{Name: "front-a-0-serving", FilterSubjects: serving, LastActive: created}
+
+	if got := p.retired([]transport.ConsumerSummary{orphan}, start); len(got) != 0 {
+		t.Fatalf("first sighting retired %v; an old creation time alone must not count", got)
+	}
+	if got := p.retired([]transport.ConsumerSummary{orphan}, start.Add(retiredConsumerGrace-time.Minute)); len(got) != 0 {
+		t.Fatalf("retired %v before the grace period passed", got)
+	}
+
+	reading := orphan
+	reading.Waiting = 1
+	p.retired([]transport.ConsumerSummary{reading}, start.Add(retiredConsumerGrace))
+	if got := p.retired([]transport.ConsumerSummary{orphan}, start.Add(retiredConsumerGrace+time.Minute)); len(got) != 0 {
+		t.Fatalf("retired %v right after a waiting reader reset the clock", got)
+	}
+
+	resumed := start.Add(retiredConsumerGrace)
+	if got := p.retired([]transport.ConsumerSummary{orphan}, resumed.Add(retiredConsumerGrace)); !slices.Equal(got, []string{orphan.Name}) {
+		t.Fatalf("retired = %v, want %s after a full unread grace period", got, orphan.Name)
+	}
+
+	active := orphan
+	active.LastActive = resumed.Add(retiredConsumerGrace)
+	if got := p.retired([]transport.ConsumerSummary{active}, resumed.Add(2*retiredConsumerGrace)); len(got) != 0 {
+		t.Fatalf("retired %v although its delivery timestamp moved", got)
 	}
 }

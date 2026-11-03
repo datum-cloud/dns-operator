@@ -424,6 +424,11 @@ func (a *Agent) consume(ctx context.Context, source EventSource) error {
 				return ctx.Err()
 			}
 			a.report(err)
+			// A deleted durable never comes back on this handle; returning lets
+			// the transport reconnect and recreate it.
+			if errors.Is(err, transport.ErrConsumerGone) {
+				return err
+			}
 			if !waitRetry(ctx, retry) {
 				return ctx.Err()
 			}

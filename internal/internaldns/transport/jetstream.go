@@ -351,6 +351,10 @@ func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, 
 	return &Consumer{c: cons, prefetch: c.Prefetch, asyncAck: c.AsyncAck}, nil
 }
 
+// ErrConsumerGone reports that a durable consumer was deleted while it was
+// being read, so the reader has to recreate it.
+var ErrConsumerGone = errors.New("durable consumer no longer exists")
+
 // ConsumerSummary is the part of a durable consumer's state that decides
 // whether it still has a reader.
 type ConsumerSummary struct {
@@ -426,6 +430,9 @@ func (c *Consumer) Next(ctx context.Context) (Message, error) {
 		m, err = c.pull(ctx)
 		if errors.Is(err, nats.ErrTimeout) {
 			continue
+		}
+		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil, fmt.Errorf("%w: %w", ErrConsumerGone, err)
 		}
 		if err != nil {
 			return nil, err

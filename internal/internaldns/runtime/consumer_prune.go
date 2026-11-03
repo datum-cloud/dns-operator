@@ -5,6 +5,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -13,68 +15,128 @@ import (
 )
 
 const (
+	// consumerPruneCheck keeps the loop's success fresh for liveness while the
+	// stream is listed only every consumerPruneInterval.
+	consumerPruneCheck    = 30 * time.Second
 	consumerPruneInterval = 10 * time.Minute
-	// retiredConsumerGrace leaves a member's consumers alone while it may still
-	// be starting up ahead of the configuration that names it.
+	// retiredConsumerGrace is how long a consumer must stay continuously
+	// unread, as observed by this leader, before it is deleted. Broker restarts
+	// reset a consumer's delivery timestamps, so they alone cannot prove that.
 	retiredConsumerGrace = 6 * time.Hour
 )
 
-var memberFeeds = []string{"serving", "records", "acks"}
-
-// retiredConsumers names the durable consumers that read a shard this control
-// plane plans but belong to no member configured for it. A consumer with a
-// waiting reader, or with any activity inside the grace period, is kept.
-func retiredConsumers(planners []platform.PlannerConfig, consumers []transport.ConsumerSummary, now time.Time) []string {
-	shardOf := map[string]string{}
-	expected := map[string]map[string]bool{}
-	for _, p := range planners {
-		key := p.Region + "/" + p.Shard
-		for _, filter := range []string{model.ServingSubject(p.Region, p.Shard), model.RecordConsumerFilter(p.Region, p.Shard), ackFilter(p.Region, p.Shard)} {
-			shardOf[filter] = key
-		}
-		names := map[string]bool{durable(roleControlPlane, p.Region, p.Shard, "acks"): true}
-		for _, m := range p.Members {
-			for _, feed := range memberFeeds {
-				names[durable(m.MemberID, feed)] = true
-			}
-		}
-		expected[key] = names
-	}
-	var retired []string
-	for _, c := range consumers {
-		if len(c.FilterSubjects) == 0 || c.Waiting > 0 || now.Sub(c.LastActive) < retiredConsumerGrace {
-			continue
-		}
-		key := ""
-		for _, filter := range c.FilterSubjects {
-			k, ok := shardOf[filter]
-			if !ok || (key != "" && k != key) {
-				key = ""
-				break
-			}
-			key = k
-		}
-		if key == "" || expected[key][c.Name] {
-			continue
-		}
-		retired = append(retired, c.Name)
-	}
-	return retired
+// memberFeedFilter maps each member feed to the subject filter its durable reads.
+var memberFeedFilter = map[string]func(region, shard string) string{
+	"serving": model.ServingSubject,
+	"records": model.RecordConsumerFilter,
+	"acks":    ackFilter,
 }
 
-// pruneRetiredConsumers deletes the stream consumers left behind by members
-// removed from this control plane's configuration, so they stop reporting as
-// unread.
-func pruneRetiredConsumers(bus *transport.JetStream, stream string, planners []platform.PlannerConfig) func(context.Context) error {
+// consumerPruner deletes the durable consumers that removed members leave on
+// the stream, so they stop reporting as unread.
+type consumerPruner struct {
+	planners []platform.PlannerConfig
+	mu       sync.Mutex
+	last     time.Time
+	idle     map[string]idleConsumer
+}
+
+type idleConsumer struct {
+	since      time.Time
+	lastActive time.Time
+}
+
+func newConsumerPruner(planners []platform.PlannerConfig) *consumerPruner {
+	return &consumerPruner{planners: planners, idle: map[string]idleConsumer{}}
+}
+
+func (p *consumerPruner) step(bus *transport.JetStream, stream string) func(context.Context) error {
 	return func(ctx context.Context) error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		now := time.Now()
+		if now.Sub(p.last) < consumerPruneInterval {
+			return nil
+		}
+		// A gap means another replica led meanwhile; idleness this pruner did
+		// not watch cannot count toward the grace period.
+		if !p.last.IsZero() && now.Sub(p.last) > 2*consumerPruneInterval {
+			p.idle = map[string]idleConsumer{}
+		}
+		p.last = now
 		consumers, err := bus.ListConsumers(ctx, stream)
 		if err != nil {
 			return err
 		}
 		var errs error
-		for _, name := range retiredConsumers(planners, consumers, time.Now()) {
-			errs = errors.Join(errs, bus.DeleteConsumer(ctx, stream, name))
+		for _, name := range p.retired(consumers, now) {
+			if err := bus.DeleteConsumer(ctx, stream, name); err != nil {
+				errs = errors.Join(errs, err)
+				continue
+			}
+			delete(p.idle, name)
 		}
 		return errs
 	}
+}
+
+// retired names the durable consumers that have read a shard this control
+// plane plans, under a member feed's name and filter, for no configured member,
+// and have had no reader for the whole grace period this pruner has watched.
+func (p *consumerPruner) retired(consumers []transport.ConsumerSummary, now time.Time) []string {
+	candidates := map[string]transport.ConsumerSummary{}
+	for _, c := range consumers {
+		if p.orphaned(c) {
+			candidates[c.Name] = c
+		}
+	}
+	var retired []string
+	for name := range p.idle {
+		if _, ok := candidates[name]; !ok {
+			delete(p.idle, name)
+		}
+	}
+	for name, c := range candidates {
+		seen, ok := p.idle[name]
+		if c.Waiting > 0 || (ok && !c.LastActive.Equal(seen.lastActive)) {
+			p.idle[name] = idleConsumer{since: now, lastActive: c.LastActive}
+			continue
+		}
+		if !ok {
+			p.idle[name] = idleConsumer{since: now, lastActive: c.LastActive}
+			continue
+		}
+		if now.Sub(seen.since) >= retiredConsumerGrace && now.Sub(c.LastActive) >= retiredConsumerGrace {
+			retired = append(retired, name)
+		}
+	}
+	return retired
+}
+
+// orphaned reports a consumer named and filtered like a member feed of a shard
+// this control plane plans, whose member is not configured for that shard.
+func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
+	if len(c.FilterSubjects) != 1 {
+		return false
+	}
+	for feed, filterFor := range memberFeedFilter {
+		if !strings.HasSuffix(c.Name, "-"+feed) {
+			continue
+		}
+		for _, planner := range p.planners {
+			if c.FilterSubjects[0] != filterFor(planner.Region, planner.Shard) {
+				continue
+			}
+			if c.Name == durable(roleControlPlane, planner.Region, planner.Shard, "acks") {
+				return false
+			}
+			for _, m := range planner.Members {
+				if c.Name == durable(m.MemberID, feed) {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }

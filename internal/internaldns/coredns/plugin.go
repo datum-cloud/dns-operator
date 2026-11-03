@@ -15,6 +15,7 @@ import (
 	"github.com/coredns/coredns/plugin/file"
 	"github.com/coredns/coredns/plugin/forward"
 	"github.com/coredns/coredns/plugin/pkg/proxy"
+	"github.com/coredns/coredns/plugin/pkg/upstream"
 	"github.com/miekg/dns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
@@ -69,6 +70,7 @@ func compile(c Config) (*snapshot, error) {
 				s.close()
 				return nil, err
 			}
+			parsed.Upstream = upstream.New()
 			state.zones.Z[apex] = parsed
 			zoneApex, zoneData := apex, parsed
 			state.zoneFiles[apex] = &file.File{ZoneLookupFunc: func(string) (string, *file.Zone, bool) {

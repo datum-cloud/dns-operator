@@ -27,10 +27,11 @@ jobs:
       - name: Test harness and CI orchestration
         run: |
           python3 -m unittest discover -s hack -p 'test_*ci*.py'
+          python3 -m unittest discover -s hack/ci -p 'test_warm_foundation.py'
           python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
       - name: Retain harness timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: harness-phase-timings
           path: dev/ci-timings.jsonl
@@ -48,6 +49,7 @@ jobs:
       # remote include; go-task gates that behind this experiment flag, and
       # `--yes` (below) auto-accepts the download in this non-interactive run.
       TASK_X_REMOTE_TASKFILES: "1"
+      DNS_CI_RELEASE_TOOLS: "1"
     steps:
       - name: Clone the code
         uses: actions/checkout@v7
@@ -83,23 +85,67 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Prepare shared Kubernetes foundation
-        run: python3 hack/time-ci-phase.py foundation task --yes env:foundation-up
+      - name: Prepare a clean warm foundation
+        run: python3 hack/time-ci-phase.py foundation-prepare task --yes env:foundation:prepare-warm
 
-      - name: Install shared CRDs and tools
-        run: python3 hack/time-ci-phase.py shared-prerequisites task --yes env:shared-prerequisites
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
 
-      - name: Deploy and test private and public DNS in parallel
-        run: python3 hack/time-ci-phase.py parallel-lanes python3 hack/run-dns-lanes.py
+      - name: Restore BuildKit layers
+        id: build-cache
+        uses: actions/cache@v6
+        with:
+          path: .ci-buildkit-cache
+          key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          restore-keys: |
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore Go compilation caches for rebuilds
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v6
+        with:
+          path: .ci-go-cache
+          key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          restore-keys: |
+            dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-go-${{ runner.os }}-${{ runner.arch }}-
+
+      # BuildKit cache-to alone does not persist RUN --mount caches.
+      - name: Restore and retain Go cache mounts
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: reproducible-containers/buildkit-cache-dance@e475a9cbcb5052f85fd3830f1266fa0c91ef8595
+        with:
+          cache-map: |
+            {
+              ".ci-go-cache/modules": "/go/pkg/mod",
+              ".ci-go-cache/build": "/root/.cache/go-build"
+            }
+
+      - name: Record executor capacity
+        run: |
+          mkdir -p dev
+          { nproc; free -h; df -h; docker info; } > dev/executor.txt
+          for f in cpu.max memory.max; do
+            if test -r /sys/fs/cgroup/$f; then echo "$f: $(cat /sys/fs/cgroup/$f)" >> dev/executor.txt; fi
+          done
+
+      - name: Build images while claiming foundation, then deploy and qualify
+        env:
+          DNS_BUILD_CACHE_HIT: ${{ steps.build-cache.outputs.cache-hit }}
+        run: python3 hack/time-ci-phase.py warm-job python3 hack/ci/run-warm-job.py
 
       - name: Retain CI phase timings
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-phase-timings
           path: |
             dev/ci-timings.jsonl
             dev/ci-lanes/
+            dev/ci-setup/
+            dev/executor.txt
+            dev/repeated-claim.log
           if-no-files-found: warn
 
       - name: Collect Kubernetes bootstrap diagnostics
@@ -140,7 +186,7 @@ jobs:
 
       - name: Retain private DNS qualification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: internal-dns-kubernetes
           path: test/internaldns/results/kubernetes*

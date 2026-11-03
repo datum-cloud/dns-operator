@@ -351,6 +351,58 @@ func (j *JetStream) Consumer(ctx context.Context, c ConsumerConfig) (*Consumer, 
 	return &Consumer{c: cons, prefetch: c.Prefetch, asyncAck: c.AsyncAck}, nil
 }
 
+// ErrConsumerGone reports that a durable consumer was deleted while it was
+// being read, so the reader has to recreate it.
+var ErrConsumerGone = errors.New("durable consumer no longer exists")
+
+// ConsumerSummary is the part of a durable consumer's state that decides
+// whether it still has a reader.
+type ConsumerSummary struct {
+	Name           string
+	FilterSubjects []string
+	Waiting        int
+	LastActive     time.Time
+}
+
+// ListConsumers summarizes every consumer of a stream.
+func (j *JetStream) ListConsumers(ctx context.Context, stream string) ([]ConsumerSummary, error) {
+	s, err := j.js.Stream(ctx, stream)
+	if err != nil {
+		return nil, fmt.Errorf("look up stream %q: %w", stream, err)
+	}
+	lister := s.ListConsumers(ctx)
+	var out []ConsumerSummary
+	for info := range lister.Info() {
+		if info == nil {
+			continue
+		}
+		filters := info.Config.FilterSubjects
+		if len(filters) == 0 && info.Config.FilterSubject != "" {
+			filters = []string{info.Config.FilterSubject}
+		}
+		active := info.Created
+		for _, last := range []*time.Time{info.Delivered.Last, info.AckFloor.Last} {
+			if last != nil && last.After(active) {
+				active = *last
+			}
+		}
+		out = append(out, ConsumerSummary{Name: info.Name, FilterSubjects: filters, Waiting: info.NumWaiting, LastActive: active})
+	}
+	if err := lister.Err(); err != nil {
+		return nil, fmt.Errorf("list consumers of %q: %w", stream, err)
+	}
+	return out, nil
+}
+
+// DeleteConsumer removes a durable consumer from a stream. A consumer that is
+// already gone is not an error.
+func (j *JetStream) DeleteConsumer(ctx context.Context, stream, name string) error {
+	if err := j.js.DeleteConsumer(ctx, stream, name); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		return fmt.Errorf("delete consumer %q: %w", name, err)
+	}
+	return nil
+}
+
 func consumerConfig(c ConsumerConfig, existing *jetstream.ConsumerConfig, now time.Time) jetstream.ConsumerConfig {
 	cfg := jetstream.ConsumerConfig{Durable: c.Durable, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverAllPolicy, ReplayPolicy: jetstream.ReplayInstantPolicy, FilterSubjects: c.FilterSubjects, AckWait: defaultDuration(c.AckWait, 30*time.Second), MaxAckPending: defaultInt(c.MaxAckPending, 64)}
 	switch {
@@ -378,6 +430,9 @@ func (c *Consumer) Next(ctx context.Context) (Message, error) {
 		m, err = c.pull(ctx)
 		if errors.Is(err, nats.ErrTimeout) {
 			continue
+		}
+		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil, fmt.Errorf("%w: %w", ErrConsumerGone, err)
 		}
 		if err != nil {
 			return nil, err

@@ -1,0 +1,127 @@
+name: Publish operator and internal DNS images
+
+on:
+  workflow_call:
+    outputs:
+      tag:
+        description: Shared image tag
+        value: ${{ jobs.images.outputs.tag }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    name: Build and publish shared images
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Checkout pinned certificate filter
+        uses: actions/checkout@v7
+        with:
+          repository: datum-cloud/actions
+          ref: 95a63f871b9cd1f2b4c0224f4a23291beeeb5ef3
+          path: .root-filter
+          sparse-checkout: scripts/drop-distrusted-roots
+          persist-credentials: false
+      - name: Move certificate filter outside build context
+        run: bash hack/ci/prepare-root-filter.sh
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Name operator image
+        id: operator
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/datum-cloud/dns-operator
+          tags: |
+            type=ref,event=pr,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=pr,prefix=v0.0.0-
+            type=ref,event=branch,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=branch,prefix=v0.0.0-
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=sha,prefix=v0.0.0-
+      - name: Name runtime image
+        id: runtime
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/datum-cloud/internal-dns
+          tags: |
+            type=ref,event=pr,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=pr,prefix=v0.0.0-
+            type=ref,event=branch,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=branch,prefix=v0.0.0-
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=sha,prefix=v0.0.0-
+      - name: Name serving image
+        id: serving
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/datum-cloud/internal-dns-serving
+          tags: |
+            type=ref,event=pr,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=pr,prefix=v0.0.0-
+            type=ref,event=branch,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
+            type=ref,event=branch,prefix=v0.0.0-
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=semver,pattern=v{{major}}
+            type=sha,prefix=v0.0.0-
+      - name: Prepare shared image build
+        id: prepare
+        env:
+          OPERATOR_METADATA: ${{ steps.operator.outputs.json }}
+          RUNTIME_METADATA: ${{ steps.runtime.outputs.json }}
+          SERVING_METADATA: ${{ steps.serving.outputs.json }}
+        run: bash hack/ci/publish-images.sh prepare
+      - name: Build all images with shared compilation
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          allow: fs.write=${{ runner.temp }}
+          files: dev/publish-bake.json
+          set: '*.attest=type=provenance,mode=min'
+        id: build
+      - name: Read immutable build digests
+        id: digests
+        env:
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+        run: bash hack/ci/record-build-metadata.sh
+      - name: Filter certificates and publish operator
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/drop-distrusted-roots
+          build-contexts: app=oci-layout://${{ runner.temp }}/operator@${{ steps.digests.outputs.operator }}
+          push: true
+          tags: ${{ steps.operator.outputs.tags }}
+          labels: ${{ steps.operator.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+      - name: Filter certificates and publish runtime
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/drop-distrusted-roots
+          build-contexts: app=oci-layout://${{ runner.temp }}/runtime@${{ steps.digests.outputs.runtime }}
+          push: true
+          tags: ${{ steps.runtime.outputs.tags }}
+          labels: ${{ steps.runtime.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+      - name: Filter certificates and publish serving
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ runner.temp }}/drop-distrusted-roots
+          build-contexts: app=oci-layout://${{ runner.temp }}/serving@${{ steps.digests.outputs.serving }}
+          push: true
+          tags: ${{ steps.serving.outputs.tags }}
+          labels: ${{ steps.serving.outputs.labels }}
+          platforms: linux/amd64,linux/arm64

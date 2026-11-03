@@ -29,6 +29,10 @@ for result in failure cancelled skipped; do
     exit 1
   fi
 done
+if JOB_RESULTS='{"image":{"result":"success"}}' bash "$root/hack/ci/check-validation.sh"; then
+  echo 'Missing tests passed' >&2
+  exit 1
+fi
 if JOB_RESULTS='{}' bash "$root/hack/ci/check-validation.sh"; then
   echo 'Missing validation results passed' >&2
   exit 1

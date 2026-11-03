@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-jq -e 'length > 0 and all(.[]; .result == "success")' <<< "$JOB_RESULTS"
+jq -e '.tests.result == "success" and .image.result == "success" and all(.[]; .result == "success")' <<< "$JOB_RESULTS"

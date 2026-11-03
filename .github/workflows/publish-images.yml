@@ -14,6 +14,7 @@ permissions:
 jobs:
   images:
     name: Build and publish shared images
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.prepare.outputs.tag }}

@@ -198,6 +198,12 @@ tasks:
       - KUBEBUILDER_ASSETS="$({{.TOOL_DIR}}/setup-envtest use {{.ENVTEST_K8S_VERSION}} --bin-dir {{.TOOL_DIR}} -p path)" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
       - INTERNAL_DNS_TEST_PUBLICATION_STORE=memory go test ./internal/internaldns/platform/
 
+  test:ci:
+    desc: Verify generated files and run the full Go test suite
+    cmds:
+      - task: generate:verify
+      - task: test
+
   test:dnsdist-udp:
     desc: Test the generated DNSdist rules with the serving DNSdist image
     preconditions:

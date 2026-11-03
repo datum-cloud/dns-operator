@@ -16,19 +16,13 @@ concurrency:
 
 jobs:
   harness:
-    name: Test private DNS Kubernetes harness
+    name: Test E2E orchestration
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
       - name: Test harness and CI orchestration
-        run: |
-          python3 -m unittest discover -s hack -p 'test_*ci*.py'
-          python3 -m unittest discover -s hack/ci -p 'test_warm_foundation.py'
-          python3 hack/time-ci-phase.py harness-tests go test ./test/internaldns/kubernetes/...
+        run: python3 hack/time-ci-phase.py harness-tests bash hack/ci/test-orchestration.sh
       - name: Retain harness timings
         if: always()
         uses: actions/upload-artifact@v7

@@ -160,16 +160,32 @@ func TestQueryMetricsKeepContextSelection(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	resp, err := http.Get("http://" + metricsAddress + "/metrics")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
-	for _, family := range []string{"coredns_dns_requests_total", "coredns_dns_responses_total", "process_start_time_seconds", `internal_dns_context_queries_total{outcome="served_zone"}`} {
-		if !strings.Contains(string(body), family) {
-			t.Errorf("/metrics is missing %s", family)
+	// The DNS response can reach the client before the metrics middleware
+	// records it after the next handler returns. Wait for that observation.
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		resp, err := http.Get("http://" + metricsAddress + "/metrics")
+		if err != nil {
+			t.Fatal(err)
 		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var missing []string
+		for _, family := range []string{"coredns_dns_requests_total", "coredns_dns_responses_total", "process_start_time_seconds", `internal_dns_context_queries_total{outcome="served_zone"}`} {
+			if !strings.Contains(string(body), family) {
+				missing = append(missing, family)
+			}
+		}
+		if len(missing) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/metrics is missing %v", missing)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

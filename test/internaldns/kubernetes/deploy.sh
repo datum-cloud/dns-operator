@@ -32,10 +32,19 @@ if [[ ${DNS_E2E_SHARED_PREREQUISITES:-0} != 1 ]]; then
   done
 fi
 
-docker build -f test/internaldns/kubernetes/Dockerfile \
-  --iidfile "$work/image.id" -t internal-dns-kubernetes:e2e .
+if [[ ${DNS_E2E_PREBUILT_IMAGES:-0} == 1 ]]; then
+  docker image inspect internal-dns-kubernetes:e2e --format '{{.Id}}' > "$work/image.id"
+else
+  docker build -f test/internaldns/kubernetes/Dockerfile \
+    --iidfile "$work/image.id" -t internal-dns-kubernetes:e2e .
+fi
+render=(go run ./test/internaldns/kubernetes/render)
+if [[ ${DNS_E2E_PREBUILT_IMAGES:-0} == 1 ]]; then
+  test -x bin/dns-e2e-render
+  render=(bin/dns-e2e-render)
+fi
 kind load docker-image internal-dns-kubernetes:e2e --name dns-control
-go run ./test/internaldns/kubernetes/render --phase bootstrap --out "$work"
+"${render[@]}" --phase bootstrap --out "$work"
 "${platform[@]}" apply -f "$work/platform-bootstrap.json"
 for project in project-a project-b; do
   kubectl --kubeconfig "$work/$project.kubeconfig" apply -f "$work/$project-bootstrap.json"
@@ -46,7 +55,7 @@ done
 for pod in internal-dns-node internal-dns-regional-front internal-dns-regional-coredns-0 internal-dns-regional-coredns-1 internal-dns-probe; do
   "${platform[@]}" -n internal-dns-system wait --for=jsonpath='{.status.podIPs}' "pod/$pod" --timeout=180s
 done
-go run ./test/internaldns/kubernetes/render --phase configure --out "$work" \
+"${render[@]}" --phase configure --out "$work" \
   --platform "$work/platform.kubeconfig" \
   --source-a "$work/project-a.kubeconfig" --source-b "$work/project-b.kubeconfig" \
   --source-a-internal "$work/project-a-internal.kubeconfig" --source-b-internal "$work/project-b-internal.kubeconfig"

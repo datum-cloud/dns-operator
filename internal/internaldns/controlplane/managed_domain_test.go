@@ -390,7 +390,7 @@ func TestManagedZoneCarriesContextLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolver.Labels = map[string]string{"example.com/network-name": "vpc-a", "app.kubernetes.io/instance": "gitops", managedObjectLabel: "false"}
-	resolver.Annotations = map[string]string{managedLabelsAnnotation: "example.com/network-name, " + managedObjectLabel}
+	resolver.Annotations = map[string]string{managedLabelsAnnotation: "example.com/network-name, " + managedObjectLabel, descriptionAnnotation: "Private DNS for vpc-a"}
 	if err := c.Update(ctx, resolver); err != nil {
 		t.Fatal(err)
 	}
@@ -405,5 +405,8 @@ func TestManagedZoneCarriesContextLabels(t *testing.T) {
 	}
 	if _, ok := zone.Labels["app.kubernetes.io/instance"]; ok {
 		t.Fatalf("unlisted label copied: %v", zone.Labels)
+	}
+	if got := zone.Annotations[descriptionAnnotation]; got != "Private DNS for vpc-a" {
+		t.Fatalf("zone description = %q", got)
 	}
 }

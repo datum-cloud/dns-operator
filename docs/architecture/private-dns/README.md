@@ -529,7 +529,9 @@ publishers use these outputs. The managed zone and association carry the label
 context labels named, comma separated, in the context's
 `dns.networking.miloapis.com/managed-object-labels` annotation, so whoever
 creates the context can tag what the zone is for, such as the network it
-serves. Copied labels are added or corrected, never removed. A naming policy
+serves. The context's `kubernetes.io/description` annotation is copied too, so
+clients can show what the zone is for. Copied labels and the description are
+added or corrected, never removed. A naming policy
 adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml

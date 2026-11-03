@@ -164,6 +164,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return projectRuntime{}, fmt.Errorf("create project %q direct client: %w", p.Name, err)
 		}
 		direct = &deadlineClient{Client: direct, Timeout: p.KubeAPI.requestTimeout()}
+		if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+			direct = originUIDClient{Client: direct}
+		}
 		project := p
 		start := func(startCtx context.Context) error {
 			mgr, err := ctrl.NewManager(projectREST, ctrl.Options{
@@ -192,6 +195,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				LeaseDuration:        cfg.ownershipLease(),
 				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
+				LocalInputs:           cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,
 				CachedZoneInputs:      cfg.CachedZoneInputs,

@@ -153,6 +153,7 @@ func (r *Replicator) copy(ctx context.Context, up *unstructured.Unstructured, ke
 		annotations := copyMap(up.GetAnnotations())
 		delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
 		annotations[OriginGenerationAnnotation] = strconv.FormatInt(up.GetGeneration(), 10)
+		annotations[OriginUIDAnnotation] = string(up.GetUID())
 		hub.SetAnnotations(annotations)
 		spec, ok := up.Object["spec"]
 		if ok && !equality.Semantic.DeepEqual(hub.Object["spec"], spec) {

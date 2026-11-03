@@ -42,6 +42,10 @@ const (
 	// origin. A copy replaces another only when it is newer.
 	OriginGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
 
+	// OriginUIDAnnotation is the object's UID at its origin. References
+	// between objects carry origin UIDs, so a region reads copies by them.
+	OriginUIDAnnotation = "internal-dns.miloapis.com/origin-uid"
+
 	finalizer = "internal-dns.miloapis.com/replicate"
 )
 

@@ -27,7 +27,7 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run tests
-        run: task --yes test
+        run: task --yes test:ci
 
   dnsdist-udp:
     name: DNSdist UDP backend

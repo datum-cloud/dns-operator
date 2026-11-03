@@ -779,6 +779,7 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 
 const (
 	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	managedObjectValue = "true"
 	// managedByLabel is the Kubernetes well-known label naming the manager.
 	managedByLabel = "app.kubernetes.io/managed-by"
 	managedByValue = "dns.networking.miloapis.com"
@@ -801,7 +802,7 @@ func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
 			l[key] = v
 		}
 	}
-	l[managedObjectLabel] = "true"
+	l[managedObjectLabel] = managedObjectValue
 	l[managedByLabel] = managedByValue
 	return l
 }
@@ -827,11 +828,11 @@ func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNS
 	if !metav1.IsControlledBy(o, c) || !o.GetDeletionTimestamp().IsZero() {
 		return
 	}
-	labels, annotations := o.GetLabels(), o.GetAnnotations()
+	objLabels, annotations := o.GetLabels(), o.GetAnnotations()
 	wantLabels := managedObjectLabels(c)
 	stale := false
 	for k, v := range wantLabels {
-		if got, ok := labels[k]; !ok || got != v {
+		if got, ok := objLabels[k]; !ok || got != v {
 			stale = true
 			break
 		}
@@ -844,7 +845,7 @@ func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNS
 		return
 	}
 	base := o.DeepCopyObject().(client.Object)
-	mergedLabels := maps.Clone(labels)
+	mergedLabels := maps.Clone(objLabels)
 	if mergedLabels == nil {
 		mergedLabels = map[string]string{}
 	}
@@ -862,7 +863,7 @@ func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNS
 		listed.changed = true
 	}
 	if err := r.Patch(ctx, o, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-		o.SetLabels(labels)
+		o.SetLabels(objLabels)
 		o.SetAnnotations(annotations)
 		ctrl.LoggerFrom(ctx).Error(err, "label managed object", "kind", fmt.Sprintf("%T", o), "name", o.GetName())
 	}

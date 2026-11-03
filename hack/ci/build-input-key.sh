@@ -13,7 +13,7 @@ expected=$(cat <<'POLICY'
 !config/internal-dns/commands/**
 POLICY
 )
-if [[ $(cat hack/ci/Dockerfile.dockerignore) != "$expected" ]]; then
+if [[ $(sed '/^#/d; /^[[:space:]]*$/d' hack/ci/Dockerfile.dockerignore) != "$expected" ]]; then
   echo 'Update build-input-key.sh for the changed Docker context policy' >&2
   exit 1
 fi

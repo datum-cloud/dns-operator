@@ -5,7 +5,6 @@ import os
 import json
 import time
 from pathlib import Path
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,9 +34,15 @@ def main():
     if code:
         return code
     # Both images and all cluster prerequisites must succeed before DNS starts.
-    return subprocess.call(timer + ["parallel-lanes", sys.executable, "hack/run-dns-lanes.py"],
-                           env={**os.environ, "DNS_E2E_PREBUILT_IMAGES": "1",
-                                "DNS_E2E_WARM_FOUNDATION": "1"})
+    execution = {
+        "tests": [("parallel-lanes", [sys.executable, "hack/run-dns-lanes.py"])],
+    }
+    if os.environ.get("DNS_E2E_EXTRACT_GO_CACHE") == "true":
+        execution["cache"] = [("go-cache-extract", ["bash", "hack/ci/go-cache.sh", "extract"])]
+    return lanes.run_lanes(execution, Path("dev/ci-execution"),
+                           lambda phase, command: timer + [phase] + command,
+                           lane_env={"DNS_E2E_PREBUILT_IMAGES": "1",
+                                     "DNS_E2E_WARM_FOUNDATION": "1"})
 
 
 if __name__ == "__main__":

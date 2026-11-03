@@ -6,15 +6,18 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	coreplugin "github.com/coredns/coredns/plugin"
 	"github.com/miekg/dns"
 )
 
@@ -33,6 +36,7 @@ func fixture() Config {
 type answerWriter struct {
 	dns.ResponseWriter
 	destination string
+	network     string
 	answer      *dns.Msg
 }
 
@@ -40,6 +44,9 @@ func (w *answerWriter) LocalAddr() net.Addr {
 	return &net.UDPAddr{IP: net.ParseIP(w.destination), Port: 53}
 }
 func (w *answerWriter) RemoteAddr() net.Addr {
+	if w.network == "tcp" {
+		return &net.TCPAddr{IP: net.ParseIP("10.0.0.10"), Port: 1234}
+	}
 	return &net.UDPAddr{IP: net.ParseIP("10.0.0.10"), Port: 1234}
 }
 func (w *answerWriter) WriteMsg(m *dns.Msg) error { w.answer = m; return nil }
@@ -301,6 +308,278 @@ func proxyQuery(network, server, destination string, names ...string) (*dns.Msg,
 	}
 	answer := new(dns.Msg)
 	return answer, answer.Unpack(buffer[:n])
+}
+
+func semanticFixture() Config {
+	root := `$ORIGIN datum.internal.
+@ 60 IN SOA ns.datum.internal. hostmaster.datum.internal. 1 60 30 3600 5
+@ 60 IN NS ns.datum.internal.
+ns 60 IN A 192.0.2.53
+app 60 IN A 192.0.2.10
+alias 60 IN CNAME app.datum.internal.
+*.wild 60 IN A 192.0.2.40
+leaf.branch 60 IN A 192.0.2.41
+old 60 IN DNAME new.datum.internal.
+x.new 60 IN A 192.0.2.42
+delegated 60 IN NS ns.delegated.datum.internal.
+ns.delegated 60 IN A 192.0.2.43
+signed 60 IN A 192.0.2.44
+signed 60 IN RRSIG A 8 2 60 20300101000000 20200101000000 12345 datum.internal. AQ==
+big 60 IN TXT "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`
+	nested := `$ORIGIN apps.datum.internal.
+@ 60 IN SOA ns.apps.datum.internal. hostmaster.datum.internal. 1 60 30 3600 5
+@ 60 IN NS ns.apps.datum.internal.
+ns 60 IN A 192.0.2.54
+app 60 IN A 198.51.100.10
+`
+	other := strings.ReplaceAll(root, "192.0.2.10", "192.0.2.20")
+	return Config{ListenAddress: "127.0.0.1:5300", ProxyPeers: []string{"127.0.0.1"}, Contexts: []Context{
+		{ID: "a", Destination: "fd53::a", Zones: []Zone{
+			{Apex: "datum.internal.", Data: root},
+			{Apex: "apps.datum.internal.", Data: nested},
+			{Apex: "pending.datum.internal.", Pending: true},
+		}},
+		{ID: "b", Destination: "fd53::b", Zones: []Zone{{Apex: "datum.internal.", Data: other}}},
+	}}
+}
+
+func serveMessage(p *ContextPlugin, destination, network string, message *dns.Msg) (*dns.Msg, int, error) {
+	w := &answerWriter{destination: destination, network: network}
+	rcode, err := p.ServeDNS(context.Background(), w, message.Copy())
+	return w.answer, rcode, err
+}
+
+func responseBytes(t *testing.T, message *dns.Msg) []byte {
+	t.Helper()
+	if message == nil {
+		return nil
+	}
+	message = message.Copy()
+	message.Id = 0
+	data, err := message.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestSelectedZoneLookupMatchesFileFallback(t *testing.T) {
+	optimized := &ContextPlugin{}
+	defer optimized.Close()
+	if err := optimized.Replace(semanticFixture()); err != nil {
+		t.Fatal(err)
+	}
+	fallback := &ContextPlugin{}
+	defer fallback.Close()
+	if err := fallback.Replace(semanticFixture()); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range fallback.state.Load().contexts {
+		state.zoneFiles = nil
+	}
+	tests := []struct {
+		name, destination, qname, network string
+		qtype                             uint16
+		do                                bool
+		udpSize                           uint16
+	}{
+		{"tenant a", "fd53::a", "APP.DATUM.INTERNAL.", "udp", dns.TypeA, false, 0},
+		{"tenant b", "fd53::b", "app.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"most specific apex", "fd53::a", "app.apps.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"pending apex", "fd53::a", "name.pending.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"wildcard", "fd53::a", "x.wild.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"empty non terminal", "fd53::a", "branch.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"cname", "fd53::a", "alias.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"dname", "fd53::a", "x.old.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"delegation", "fd53::a", "host.delegated.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"nxdomain", "fd53::a", "missing.datum.internal.", "udp", dns.TypeA, false, 0},
+		{"nodata", "fd53::a", "app.datum.internal.", "udp", dns.TypeAAAA, false, 0},
+		{"dnssec do", "fd53::a", "signed.datum.internal.", "udp", dns.TypeA, true, 1232},
+		{"edns truncation", "fd53::a", "big.datum.internal.", "udp", dns.TypeTXT, false, 512},
+		{"tcp untruncated", "fd53::a", "big.datum.internal.", "tcp", dns.TypeTXT, false, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			message := new(dns.Msg)
+			message.SetQuestion(tc.qname, tc.qtype)
+			if tc.udpSize != 0 {
+				message.SetEdns0(tc.udpSize, tc.do)
+			}
+			want, wantCode, wantErr := serveMessage(fallback, tc.destination, tc.network, message)
+			got, gotCode, gotErr := serveMessage(optimized, tc.destination, tc.network, message)
+			if gotCode != wantCode || (gotErr == nil) != (wantErr == nil) || string(responseBytes(t, got)) != string(responseBytes(t, want)) {
+				t.Fatalf("optimized response differs from fallback\ncode=%s want=%s\nerror=%v want=%v\nresponse=%v\nwant=%v", dns.RcodeToString[gotCode], dns.RcodeToString[wantCode], gotErr, wantErr, got, want)
+			}
+		})
+	}
+}
+
+func TestSelectedZoneLookupDoesNotRepeatZoneMatching(t *testing.T) {
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(semanticFixture()); err != nil {
+		t.Fatal(err)
+	}
+	selected := p.state.Load().contexts["fd53::a"]
+	selected.zones.Names = nil
+	delete(selected.zones.Z, "apps.datum.internal.")
+	answer, code := query(t, p, "fd53::a", "app.apps.datum.internal.")
+	if code != dns.RcodeSuccess || address(answer) != "198.51.100.10" {
+		t.Fatalf("selected apex was looked up again: code=%s answer=%v", dns.RcodeToString[code], answer)
+	}
+}
+
+func TestConcurrentReplaceAndSelectedZoneLookup(t *testing.T) {
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(fixture()); err != nil {
+		t.Fatal(err)
+	}
+	errs := make(chan error, 16)
+	var queries sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		queries.Add(1)
+		go func() {
+			defer queries.Done()
+			for j := 0; j < 250; j++ {
+				message := new(dns.Msg)
+				message.SetQuestion("app.datum.internal.", dns.TypeA)
+				answer, code, err := serveMessage(p, "fd53::a", "udp", message)
+				got := address(answer)
+				if err != nil || code != dns.RcodeSuccess || got != "192.0.2.10" && got != "192.0.2.30" {
+					errs <- fmt.Errorf("code=%s address=%s error=%v", dns.RcodeToString[code], got, err)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 100; i++ {
+		config := fixture()
+		if i%2 != 0 {
+			config.Contexts[0].Zones[0].Data = zoneData("192.0.2.30")
+		}
+		if err := p.Replace(config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queries.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+}
+
+func TestMatchZone(t *testing.T) {
+	t.Parallel()
+	apexes := map[string]struct{}{
+		".":                  {},
+		"internal.":          {},
+		"child.internal.":    {},
+		"foo\\.bar.example.": {},
+	}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{name: "APP.CHILD.INTERNAL.", want: "child.internal."},
+		{name: "app.internal", want: "internal."},
+		{name: "host.foo\\.BAR.example.", want: "foo\\.bar.example."},
+		{name: "notinternal.", want: "."},
+		{name: ".", want: "."},
+	} {
+		query := canonicalQueryName(test.name)
+		if got := matchZone(apexes, query); got != test.want {
+			t.Errorf("matchZone(%q) = %q, want %q", query, got, test.want)
+		}
+	}
+	delete(apexes, ".")
+	if got := matchZone(apexes, canonicalQueryName("notinternal.")); got != "" {
+		t.Fatalf("unrelated name matched %q", got)
+	}
+}
+
+func TestMatchZoneMatchesCoreDNSZoneScan(t *testing.T) {
+	t.Parallel()
+	zones := []string{".", "internal.", "child.internal.", "foo\\.bar.example.", "deep.foo\\.bar.example."}
+	apexes := make(map[string]struct{}, len(zones))
+	for _, zone := range zones {
+		apexes[zone] = struct{}{}
+	}
+	for _, name := range []string{
+		".",
+		"INTERNAL.",
+		"app.internal.",
+		"APP.CHILD.INTERNAL.",
+		"host.foo\\.BAR.example.",
+		"host.deep.foo\\.bar.example.",
+		"notinternal.",
+	} {
+		query := canonicalQueryName(name)
+		want := coreplugin.Zones(zones).Matches(query)
+		if got := matchZone(apexes, query); got != want {
+			t.Errorf("matchZone(%q) = %q, CoreDNS zone scan = %q", query, got, want)
+		}
+	}
+}
+
+func BenchmarkMatchZone(b *testing.B) {
+	names := make([]string, 128)
+	apexes := make(map[string]struct{}, len(names))
+	for i := range names {
+		names[i] = fmt.Sprintf("z%d.internal.", i)
+		apexes[names[i]] = struct{}{}
+	}
+	qname := canonicalQueryName("APP.Z127.INTERNAL.")
+	b.Run("indexed", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := matchZone(apexes, qname); got != "z127.internal." {
+				b.Fatal(got)
+			}
+		}
+	})
+	b.Run("scan", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got := coreplugin.Zones(names).Matches(qname); got != "z127.internal." {
+				b.Fatal(got)
+			}
+		}
+	})
+}
+
+func benchmarkContextPlugin(b *testing.B, selected bool) {
+	zones := make([]Zone, 128)
+	for i := range zones {
+		apex := fmt.Sprintf("z%d.internal.", i)
+		zones[i] = Zone{Apex: apex, Data: fmt.Sprintf("$ORIGIN %s\n@ 60 IN SOA ns.%s hostmaster.%s 1 60 30 3600 5\n@ 60 IN NS ns.%s\nns 60 IN A 192.0.2.53\napp 60 IN A 192.0.2.10\n", apex, apex, apex, apex)}
+	}
+	config := Config{ListenAddress: "127.0.0.1:5300", ProxyPeers: []string{"127.0.0.1"}, Contexts: []Context{{ID: "a", Destination: "fd53::a", Zones: zones}}}
+	p := &ContextPlugin{}
+	if err := p.Replace(config); err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(p.Close)
+	if !selected {
+		p.state.Load().contexts["fd53::a"].zoneFiles = nil
+	}
+	message := new(dns.Msg)
+	message.SetQuestion("app.z127.internal.", dns.TypeA)
+	w := &answerWriter{destination: "fd53::a"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.answer = nil
+		if code, err := p.ServeDNS(context.Background(), w, message); err != nil || code != dns.RcodeSuccess {
+			b.Fatalf("code=%s error=%v", dns.RcodeToString[code], err)
+		}
+	}
+}
+
+func BenchmarkContextPluginZoneLookup(b *testing.B) {
+	b.Run("selected", func(b *testing.B) { benchmarkContextPlugin(b, true) })
+	b.Run("fallback", func(b *testing.B) { benchmarkContextPlugin(b, false) })
 }
 
 func TestMalformedAndWrongTransportHeadersAreRejected(t *testing.T) {

@@ -1,0 +1,47 @@
+# Owned/applied by the service's deployment, NOT the DNS deployment kustomization.
+# Replace the zone name with DNSResolverContext.status.managedNamespace.dnsZoneRef.name.
+# Use a unique registration name per managed zone and match its authorization grant.
+# Keep it while there are zero instances.
+apiVersion: dns.networking.miloapis.com/v1alpha1
+kind: DNSRegistration
+metadata:
+  name: compute-instances
+  namespace: project
+spec:
+  dnsZoneRef:
+    name: managed-replace-with-allocated-zone
+  name: instances
+  reservedDescendants: [instances]
+  recordTypes: [A, AAAA]
+  ttlSeconds: 30
+---
+# Platform/service authorization grants the owner permission for this policy.
+# Ordinary resource create/update rights are still required separately.
+# Grant only publish to endpoint writers that must not change the policy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: compute-dns-policy
+  namespace: project
+rules:
+- apiGroups: [dns.networking.miloapis.com]
+  resources: [dnsregistrations]
+  resourceNames: [compute-instances]
+  verbs: [reserve, publish]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: compute-dns-policy
+  namespace: project
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: compute-dns-policy
+subjects:
+- kind: ServiceAccount
+  name: compute-controller
+  namespace: compute-system
+# An unrelated service uses the same API: change the policy name, subject,
+# relative owner, and reservedDescendants (for example, databases). DNS code and
+# deployment configuration do not change.

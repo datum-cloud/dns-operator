@@ -33,6 +33,12 @@ tasks:
           fi
           echo "Rendered $out"
 
+  test:
+    desc: Check UDP histogram interpretation with synthetic counters
+    dir: ../../..
+    cmds:
+      - hack/test-dashboard-latency.sh
+
   clean:
     desc: Remove the rendered dashboard JSON
     dir: .

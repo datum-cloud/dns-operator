@@ -1,0 +1,38 @@
+@startuml zone-admission
+!$NEW_C4_STYLE = 1
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Dynamic.puml
+!include ../datum-theme.puml
+
+LAYOUT_LEFT_RIGHT()
+
+title Dynamic View — Admitting a zone with the verification gate off
+
+Person(user, "Platform User")
+
+System_Boundary(tenant, "Tenant Control Planes") {
+    Container(cp, "Project Control Plane", "Kubernetes API")
+}
+
+System_Boundary(replication, "Replication Control Plane") {
+    Container(replicator, "DNS Operator (replicator)", "Go / controller-runtime")
+}
+
+System_Boundary(authoritative, "Authoritative Cluster") {
+    ContainerDb(claims, "Claim Sets", "ZoneClaimSet")
+    Container(agent, "DNS Operator (downstream agent)", "Go / controller-runtime")
+    Container(pdns, "Authoritative Backend", "DNS server")
+}
+
+System_Ext(nso, "Network Services Operator")
+
+Rel(user, cp, "Creates DNSZone example.com")
+Rel(replicator, cp, "Observes the new zone", "watch")
+Rel(replicator, claims, "Gets the set for example.com, appends an entry,\nevaluates, updates at the read resourceVersion", "get / update")
+Rel(replicator, cp, "Entry is Active: creates Domain,\npublishes status.domainRef", "create / patch")
+Rel(replicator, agent, "Creates the shadow zone", "create")
+Rel(agent, pdns, "Creates the zone with the\nserving class's nameservers")
+Rel(replicator, cp, "Mirrors nameservers; sets\nAccepted=True, Programmed=True", "patch")
+Rel(nso, cp, "Sees a served zone; checks delegation\n(companion design)", "watch")
+
+SHOW_LEGEND()
+@enduml

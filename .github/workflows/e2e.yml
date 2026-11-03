@@ -7,7 +7,30 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  harness:
+    name: Test E2E orchestration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test harness and CI orchestration
+        run: python3 hack/time-ci-phase.py harness-tests bash hack/ci/test-orchestration.sh
+      - name: Retain harness timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: harness-phase-timings
+          path: dev/ci-timings.jsonl
+          if-no-files-found: warn
+
   e2e:
     name: Run Chainsaw E2E Tests
     runs-on: ubuntu-latest
@@ -20,9 +43,10 @@ jobs:
       # remote include; go-task gates that behind this experiment flag, and
       # `--yes` (below) auto-accepts the download in this non-interactive run.
       TASK_X_REMOTE_TASKFILES: "1"
+      DNS_CI_RELEASE_TOOLS: "1"
     steps:
       - name: Clone the code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Free up disk space
         # Three test-infra kind clusters (Flux/cert-manager/Kyverno/Envoy each)
@@ -37,7 +61,7 @@ jobs:
           df -h /
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -50,39 +74,81 @@ jobs:
           install_only: true
 
       - name: Setup Task
-        uses: arduino/setup-task@v2
+        uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Chainsaw
-        # env:chainsaw invokes `chainsaw` from PATH; `make chainsaw` installs
-        # the pinned version into ./bin, which we add to PATH here.
+      - name: Prepare a clean warm foundation
+        run: python3 hack/time-ci-phase.py foundation-prepare task --yes env:foundation:prepare-warm
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Fingerprint image build inputs
+        id: build-inputs
+        run: bash hack/ci/build-input-key.sh >> "$GITHUB_OUTPUT"
+
+      - name: Restore BuildKit layers
+        id: build-cache
+        uses: actions/cache@v6
+        with:
+          path: .ci-buildkit-cache
+          key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ steps.build-inputs.outputs.key }}
+          restore-keys: |
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-layers-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Restore Go compilation caches for rebuilds
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v6
+        with:
+          path: .ci-go-cache
+          key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ steps.build-inputs.outputs.key }}
+          restore-keys: |
+            dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
+            dns-go-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Fetch pinned cache mount utility
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: reproducible-containers/buildkit-cache-dance
+          ref: e475a9cbcb5052f85fd3830f1266fa0c91ef8595
+          path: .ci-cache-dance
+          persist-credentials: false
+
+      - name: Restore Go cache mounts
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: bash hack/ci/go-cache.sh inject
+
+      - name: Record executor capacity
         run: |
-          make chainsaw
-          echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"
+          mkdir -p dev
+          { nproc; free -h; df -h; docker info; } > dev/executor.txt
+          for f in cpu.max memory.max; do
+            if test -r /sys/fs/cgroup/$f; then echo "$f: $(cat /sys/fs/cgroup/$f)" >> dev/executor.txt; fi
+          done
 
-      - name: Bring up private DNS on the shared Kubernetes foundation
-        run: |
-          go test ./test/internaldns/kubernetes/...
-          task --yes env:internal-dns:up
+      - name: Build images while claiming foundation, then deploy and qualify
+        env:
+          DNS_E2E_EXTRACT_GO_CACHE: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
+          DNS_BUILD_CACHE_HIT: ${{ steps.build-cache.outputs.cache-hit }}
+        run: python3 hack/time-ci-phase.py warm-job python3 hack/ci/run-warm-job.py
 
-      - name: Bring up the full DNS environment
-        # Creates the upstream (replicator) + control (downstream agent +
-        # PowerDNS + Lightningstream + RustFS) + edge clusters and wires the
-        # whole production chain together. No sample data (env:stack-up, not
-        # env:up) so the suites own all zones on the shared control PowerDNS.
-        run: task --yes env:stack-up
-
-      - name: Qualify private DNS publication and serving
-        run: task --yes env:internal-dns:qualify
-
-      - name: Run Chainsaw tests
-        # Runs every suite under test/e2e against the environment: the
-        # upstream->control replicator suites (alias, display-annotations,
-        # zones-and-records), the control->edge Lightningstream suite
-        # (federation), and the end-to-end upstream->edge suite (full-chain).
-        run: task --yes env:chainsaw
+      - name: Retain CI phase timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-phase-timings
+          path: |
+            dev/ci-timings.jsonl
+            dev/ci-lanes/
+            dev/ci-setup/
+            dev/ci-execution/
+            dev/executor.txt
+            dev/repeated-claim.log
+          if-no-files-found: warn
 
       - name: Collect Kubernetes bootstrap diagnostics
         if: failure()
@@ -122,7 +188,7 @@ jobs:
 
       - name: Retain private DNS qualification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: internal-dns-kubernetes
           path: test/internaldns/results/kubernetes*

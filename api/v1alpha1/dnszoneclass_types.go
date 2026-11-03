@@ -93,5 +93,5 @@ type DNSZoneClassList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSZoneClass{}, &DNSZoneClassList{})
+	register(&DNSZoneClass{}, &DNSZoneClassList{})
 }

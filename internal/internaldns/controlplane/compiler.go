@@ -116,6 +116,10 @@ func compileInputs(in CompileInput, rejected map[types.UID]string) (CompileResul
 		result.Accepted[uid] = true
 	}
 
+	var scopes model.ReservedScopes
+	if model.IsManagedZone(in.Zone) {
+		scopes = model.RegistrationScopes(in.Zone.Name, in.Zone.Spec.DomainName, in.Registrations)
+	}
 	regs := map[types.UID]*dnsv1alpha1.DNSRegistration{}
 	in.Registrations = append([]dnsv1alpha1.DNSRegistration(nil), in.Registrations...)
 	sort.Slice(in.Registrations, func(i, j int) bool {
@@ -144,6 +148,14 @@ func compileInputs(in CompileInput, rejected map[types.UID]string) (CompileResul
 		}
 		if !refMatches(in.RegistrationZoneReferences[reg.UID], in.Zone.Name, in.Zone.UID, in.Zone.Generation) {
 			result.Reasons[reg.UID] = "InvalidReference"
+			continue
+		}
+		if !scopes.Owner(reg, result.Plan.ZoneApex) {
+			result.Reasons[reg.UID] = dnsValueReservedScope
+			continue
+		}
+		if model.IsManagedZone(in.Zone) && model.ValidateReservation(reg, result.Plan.ZoneApex) != nil {
+			result.Reasons[reg.UID] = "InvalidReservation"
 			continue
 		}
 		name := zoneOwner(reg.Spec.Name, result.Plan.ZoneApex)
@@ -524,9 +536,12 @@ func validatePrivateZone(zone *dnsv1alpha1.DNSZone) error {
 }
 
 func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[ownershipKey]types.UID, reasons map[types.UID]string) (map[types.UID]bool, map[ownershipKey]int32) {
+	var scopes model.ReservedScopes
+	if model.IsManagedZone(in.Zone) {
+		scopes = model.RegistrationScopes(in.Zone.Name, in.Zone.Spec.DomainName, in.Registrations)
+	}
 	validStatic := map[types.UID]bool{}
 	staticTTLs := map[ownershipKey]int32{}
-	managed := model.IsManagedZone(in.Zone)
 	records := append([]dnsv1alpha1.DNSRecordSet(nil), in.StaticRecords...)
 	sort.Slice(records, func(i, j int) bool {
 		a, b := records[i], records[j]
@@ -547,7 +562,7 @@ func collectStaticClaims(in CompileInput, apex string, claims, staticClaim map[o
 				reasons[rs.UID] = dnsValueUnsupportedPrivateRecord
 				break
 			}
-			if managed && model.InProviderScope(key.name) {
+			if scopes.Match(record.Name, in.Zone.Spec.DomainName) {
 				reasons[rs.UID] = dnsValueReservedScope
 				break
 			}

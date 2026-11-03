@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="910" viewBox="0 0 960 910" role="img" aria-labelledby="title description">
+  <title id="title">Control-plane boundaries</title>
+  <desc id="description">Each component appears once. The consumer project API holds intent and serving status. DNS controller processes run the compiler, regional exporter, and acknowledgment handler. They read and write committed snapshots, outboxes, and publication observations in the publication store, and maintain references, bindings, address claims, and status in the DNS service project API. The exporter sends committed updates through regional NATS to the shared serving fleet. Dashed arrows carry regional publication acknowledgments and node access acknowledgments back through NATS to the controllers, which record observations and report status to the consumer project.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+
+  <rect width="960" height="910" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Control-plane boundaries</text>
+  <rect x="32" y="110" width="394" height="150" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="50" y="139" class="heading" text-anchor="start">Consumer project</text>
+  <rect x="64" y="155" width="330" height="85" rx="8" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="186" class="heading" text-anchor="middle">Consumer project API</text>
+  <text x="229" y="212" class="detail" text-anchor="middle">Contexts, zones, access, contributions</text>
+  <path d="M 530 166 H 595" class="edge"/>
+  <text x="614" y="172" class="detail" text-anchor="start">Intent and updates</text>
+  <path d="M 530 211 H 595" class="edge return"/>
+  <text x="614" y="217" class="detail" text-anchor="start">Acknowledgments and status</text>
+  <rect x="32" y="345" width="896" height="300" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="374" class="heading" text-anchor="middle">DNS control plane</text>
+  <rect x="64" y="405" width="330" height="170" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="438" class="heading" text-anchor="middle">DNS controller processes</text>
+  <text x="229" y="474" class="detail" text-anchor="middle">Compiler</text>
+  <text x="229" y="498" class="detail" text-anchor="middle">Regional exporter</text>
+  <text x="229" y="522" class="detail" text-anchor="middle">Acknowledgment handler</text>
+  <rect x="600" y="385" width="300" height="100" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="416" class="heading" text-anchor="middle">Publication store</text>
+  <text x="750" y="442" class="detail" text-anchor="middle">Snapshots, outboxes,</text>
+  <text x="750" y="466" class="detail" text-anchor="middle">publication observations</text>
+  <rect x="600" y="515" width="300" height="110" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="546" class="heading" text-anchor="middle">DNS service project API</text>
+  <text x="750" y="573" class="detail" text-anchor="middle">References, resolver bindings,</text>
+  <text x="750" y="597" class="detail" text-anchor="middle">address claims and status</text>
+  <path d="M 130 240 V 405" class="edge"/>
+  <text x="148" y="310" class="message" text-anchor="start">Read intent</text>
+  <path d="M 320 405 V 240" class="edge return"/>
+  <text x="338" y="315" class="message" text-anchor="start">Report status</text>
+  <path d="M 394 435 H 600" class="edge" marker-start="url(#arrow)"/>
+  <text x="497" y="419" class="message" text-anchor="middle">Read / write</text>
+  <path d="M 394 560 H 600" class="edge"/>
+  <text x="497" y="544" class="message" text-anchor="middle">Maintain</text>
+  <rect x="32" y="715" width="896" height="155" rx="8" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="744" class="heading" text-anchor="middle">Regional delivery and serving</text>
+  <rect x="64" y="765" width="330" height="75" rx="8" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="229" y="809" class="heading" text-anchor="middle">Regional NATS</text>
+  <rect x="600" y="765" width="300" height="75" rx="8" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="750" y="809" class="heading" text-anchor="middle">Node and regional members</text>
+  <path d="M 130 575 V 765" class="edge"/>
+  <text x="148" y="681" class="message" text-anchor="start">Export committed</text>
+  <text x="148" y="705" class="message" text-anchor="start">updates</text>
+  <path d="M 320 765 V 575" class="edge return"/>
+  <text x="338" y="681" class="message" text-anchor="start">Record</text>
+  <text x="338" y="705" class="message" text-anchor="start">observations</text>
+  <path d="M 394 790 H 600" class="edge"/>
+  <text x="497" y="777" class="message" text-anchor="middle">Updates</text>
+  <path d="M 600 820 H 394" class="edge return"/>
+  <text x="497" y="849" class="message" text-anchor="middle">Member acknowledgments</text>
+</svg>

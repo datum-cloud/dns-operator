@@ -454,7 +454,8 @@ func TestRestoredCheckpointIsWithdrawnWithoutState(t *testing.T) {
 		t.Fatalf("withdrawn checkpoint was reapplied without state: err=%v gates=%d", err, gated())
 	}
 
-	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return nil, nil })); err != nil {
+	envs := bootstrapFromCheckpoint(t, restarted)
+	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
 		t.Fatal(err)
 	}
 	calls := len(runner.calls)
@@ -485,7 +486,8 @@ func TestRestoredCheckpointServesOnceStateArrives(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted.restoredAt = now
-	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return nil, nil })); err != nil {
+	envs := bootstrapFromCheckpoint(t, restarted)
+	if err := restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * restoredCheckpointLimit)

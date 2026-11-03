@@ -10,3 +10,4 @@ const dnsValueRegional = "regional"
 const dnsValueSuperseded = "Superseded"
 
 const dnsValueServing = "Serving"
+const dnsValueWithdrawn = "Withdrawn"

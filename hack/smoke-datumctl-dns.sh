@@ -448,8 +448,8 @@ group "0. Build and dispatch  [READ-ONLY]"
 # ===========================================================================
 
 step "0.1 [READ] the plugin builds"
-cap make -C "$REPO_ROOT" build-plugin
-assert_rc 0 "make build-plugin succeeds"
+cap task --yes -d "$REPO_ROOT" build-plugin
+assert_rc 0 "task build-plugin succeeds"
 if [[ -x "$PLUGIN_BIN" ]]; then
 	pass "bin/datumctl-dns exists and is executable"
 else

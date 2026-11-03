@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,23 +30,44 @@ func regionalTestConfig(t *testing.T) Config {
 }
 func installTestPublication(t *testing.T, a *Agent, now time.Time) {
 	t.Helper()
-	ctx := context.Background()
 	snapshot := testSnapshot(now)
 	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
-	if err := a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot)); err != nil {
-		t.Fatal(err)
-	}
 	chunk, manifest := testPublication(t, now)
-	if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk)); err != nil {
+	envs := []model.Envelope{
+		envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, chunk),
+		envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot),
+		envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest),
+	}
+	ctx := context.Background()
+	if err := a.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err != nil {
+	if err := a.Step(ctx); err != nil {
 		t.Fatal(err)
 	}
 }
+
+func bootstrapFromCheckpoint(t *testing.T, a *Agent) []model.Envelope {
+	t.Helper()
+	var envs []model.Envelope
+	for _, chunks := range a.state.Chunks {
+		for _, chunk := range chunks {
+			envs = append(envs, envelope(t, model.KindPublicationChunk, chunk.ZoneUID, chunk.WriterEpoch, chunk.Revision, chunk))
+		}
+	}
+	if a.state.Snapshot != nil {
+		envs = append(envs, envelope(t, model.KindServingSnapshot, "shard", a.state.Snapshot.ConfigurationEpoch, a.state.Snapshot.ConfigurationRevision, *a.state.Snapshot))
+	}
+	for uid, publication := range a.state.Publications {
+		envs = append(envs, envelope(t, model.KindPublicationManifest, uid, publication.Fence.Epoch, publication.Fence.Revision, publication.Manifest))
+	}
+	return envs
+}
 func currentZone(t *testing.T, a *Agent) string {
 	t.Helper()
-	files, err := renderPublications(a.cfg.Render, *a.state.Snapshot, map[string]bool{}, a.state.Publications)
+	render := a.cfg.Render
+	render.NodeAuthoritative = a.cfg.NodeAuthoritative
+	files, err := renderPublications(render, *a.state.Snapshot, map[string]bool{}, a.state.Publications)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +89,326 @@ func currentZone(t *testing.T, a *Agent) string {
 
 	t.Fatal("no zone")
 	return ""
+}
+
+func nodeAuthoritativeTestConfig(t *testing.T) Config {
+	t.Helper()
+	cfg := regionalTestConfig(t)
+	render, _ := renderFixture(t)
+	render.Role = RenderNode
+	runtimeDir := filepath.Join(filepath.Dir(cfg.StateDir), "node-runtime")
+	render.NodeCoreDNS.Path = filepath.Join(runtimeDir, "node-coredns.json")
+	render.NodeDNSDist.Path = filepath.Join(runtimeDir, "node-dnsdist.conf")
+	render.NodeCoreDNS.PublicUpstreams = []string{"1.1.1.1:53"}
+	cfg.Render = render
+	cfg.MemberID, cfg.ReplicaID = "node-0", "node-0"
+	cfg.NodeAuthoritative = true
+	return cfg
+}
+
+func TestNodeAuthoritativeRequiresExplicitCombinedNodeMode(t *testing.T) {
+	cfg := nodeAuthoritativeTestConfig(t)
+	cfg.PublicationDNSProbe.Server = net.JoinHostPort(cfg.Render.NodeCoreDNS.ListenAddress, fmt.Sprint(cfg.Render.NodeCoreDNS.Port))
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid node-authoritative probe rejected: %v", err)
+	}
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.Mode = ModeResolver },
+		func(c *Config) { c.Render.Role = RenderRegionalCoreDNS },
+	} {
+		candidate := cfg
+		mutate(&candidate)
+		if err := candidate.Validate(); err == nil {
+			t.Fatal("invalid node-authoritative configuration was accepted")
+		}
+	}
+	cfg.NodeAuthoritative = false
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("combined node mode was accepted without the capability opt-in")
+	}
+}
+
+func TestNodeAuthoritativeVerifierUsesConsumerPath(t *testing.T) {
+	cfg := nodeAuthoritativeTestConfig(t)
+	cfg.UnsafeAllowNoDNSVerify = false
+	cfg.PublicationDNSProbe.Server = net.JoinHostPort(cfg.Render.NodeCoreDNS.ListenAddress, fmt.Sprint(cfg.Render.NodeCoreDNS.Port))
+	agent, err := NewAgent(cfg, Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, ok := agent.deps.Verifier.(DNSVerifier)
+	if !ok || verifier.Config.UseClusterAddress {
+		t.Fatalf("node authority verifier does not target the consumer path: %#v", agent.deps.Verifier)
+	}
+	publication, ok := agent.publicationVerifier.(PublicationDNSVerifier)
+	if !ok || publication.Config.Server != cfg.PublicationDNSProbe.Server {
+		t.Fatalf("node publication verifier does not target local CoreDNS: %#v", agent.publicationVerifier)
+	}
+}
+
+func TestNodeAuthoritativePublicationActivatesWithoutRegionalAck(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	pub := &fakePublisher{}
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: pub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	config, err := os.ReadFile(cfg.Render.NodeCoreDNS.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded := decodedCoreDNS(t, config)
+	if got := decoded.Contexts[0].Upstreams; len(got) != 0 {
+		t.Fatalf("node authority retained regional upstreams: %v", got)
+	}
+	if !slices.Equal(decoded.PublicUpstreams, cfg.Render.NodeCoreDNS.PublicUpstreams) {
+		t.Fatalf("node authority changed public recursion: %v", decoded.PublicUpstreams)
+	}
+	if data := decoded.Contexts[0].Zones[0].Data; !strings.Contains(data, "192.0.2.10") {
+		t.Fatalf("node authority did not materialize the publication: %s", data)
+	}
+	views := agent.publicationViews(agent.state.Publications["zone-a"])
+	if len(views) != 1 || views[0].DestinationAddress != agent.state.Snapshot.Bindings[0].ConsumerAddress {
+		t.Fatalf("publication verification targeted the wrong node destination: %#v", views)
+	}
+	for _, env := range pub.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Kind == model.KindPublicationManifest {
+			t.Fatal("node authority emitted a regional publication acknowledgement")
+		}
+	}
+}
+
+func TestNodeAuthoritativeTombstoneFencesReplay(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	_, old := testPublication(t, now)
+	tombstone := model.PublicationManifest{ManifestUID: "deleted", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 1, Tombstone: true, GeneratedAt: now, ContentHash: model.EmptyContentHash()}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 3, 1, tombstone)); err != nil {
+		t.Fatal(err)
+	}
+	config, err := os.ReadFile(cfg.Render.NodeCoreDNS.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zone := decodedCoreDNS(t, config).Contexts[0].Zones[0]
+	if !zone.Pending || zone.Data != "" {
+		t.Fatalf("withdrawn zone remains authoritative: %#v", zone)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, old)); err != nil {
+		t.Fatal(err)
+	}
+	if !agent.state.Publications["zone-a"].Manifest.Tombstone {
+		t.Fatal("replayed publication defeated the node tombstone")
+	}
+}
+
+func TestNodeAuthoritativeCheckpointIsNotRestoredAsForwarder(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+
+	rollback := cfg
+	rollback.Mode = ModeResolver
+	rollback.NodeAuthoritative = false
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(rollback, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) == 0 || runner.calls[len(runner.calls)-1].Path != "gate" {
+		t.Fatalf("rollback restored node-authoritative files as a forwarder: %#v", runner.calls)
+	}
+}
+
+func TestNodeAuthoritativeUpgradeWaitsForCurrentDelivery(t *testing.T) {
+	now := time.Now().UTC()
+	authoritative := nodeAuthoritativeTestConfig(t)
+	resolver := authoritative
+	resolver.Mode = ModeResolver
+	resolver.NodeAuthoritative = false
+	seed, err := NewAgent(resolver, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, seed, now)
+
+	runner := &recordingRunner{}
+	upgraded, err := NewAgent(authoritative, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upgraded.Step(context.Background()); err == nil || !strings.Contains(err.Error(), "bootstrap") {
+		t.Fatalf("node authority activated before current delivery: %v", err)
+	}
+	before := len(runner.calls)
+	snapshot := *upgraded.state.Snapshot
+	if err := upgraded.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != before {
+		t.Fatal("ordinary delivery bypassed the current-bootstrap gate")
+	}
+	envs := bootstrapFromCheckpoint(t, upgraded)
+	if err := upgraded.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return envs, nil })); err != nil {
+		t.Fatal(err)
+	}
+	if err := upgraded.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) == before || !strings.Contains(currentZone(t, upgraded), "192.0.2.10") {
+		t.Fatal("validated bootstrap did not activate the persisted verified publication")
+	}
+}
+
+func TestNodeAuthoritativeBootstrapIsCompleteBeforeActivation(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	seed, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, seed, now)
+
+	runner := &recordingRunner{}
+	restarted, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.restoreActive(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := len(runner.calls)
+
+	// A valid ordinary event is not a substitute for the current, complete KV
+	// bootstrap cut and must not certify or reactivate cached authority.
+	snapshot := *restarted.state.Snapshot
+	if err := restarted.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.bootstrapComplete || len(runner.calls) != before {
+		t.Fatal("ordinary delivery bypassed bootstrap completion")
+	}
+
+	// A cut that withholds the attached zone's manifest is incomplete. Reject it
+	// before changing desired state or reconciling the still-approved snapshot.
+	incomplete := []model.Envelope{envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)}
+	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return incomplete, nil })); err == nil || !strings.Contains(err.Error(), "no current publication") {
+		t.Fatalf("incomplete bootstrap accepted: %v", err)
+	}
+	if restarted.bootstrapComplete || len(runner.calls) != before {
+		t.Fatal("incomplete bootstrap changed active serving")
+	}
+	invalid := []model.Envelope{envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)}
+	invalid[0].Payload = json.RawMessage(`{"region":"east"}`)
+	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return invalid, nil })); err == nil {
+		t.Fatal("invalid bootstrap payload certified readiness")
+	}
+	if restarted.bootstrapComplete || len(runner.calls) != before {
+		t.Fatal("invalid bootstrap changed active serving")
+	}
+
+	// The complete current cut contains a newer withdrawal. Loading the batch is
+	// atomic with respect to serving; only the following reconciliation may
+	// remove the previously approved record.
+	tombstone := model.PublicationManifest{ManifestUID: "deleted", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 1, Tombstone: true, GeneratedAt: now, ContentHash: model.EmptyContentHash()}
+	complete := []model.Envelope{
+		envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot),
+		envelope(t, model.KindPublicationManifest, "zone-a", tombstone.WriterEpoch, tombstone.Revision, tombstone),
+	}
+	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return complete, nil })); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != before {
+		t.Fatal("bootstrap reconciled before the complete batch was accepted")
+	}
+	if err := restarted.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if restarted.state.Active == nil || !restarted.state.Active.Publications["zone-a"].Manifest.Tombstone {
+		t.Fatal("newer bootstrap withdrawal was not activated")
+	}
+}
+
+func TestNodeAuthoritativeRestartWithdrawsExpiredCheckpointWithoutBootstrap(t *testing.T) {
+	for _, bootstrap := range []string{"not attempted", "load failed", "incomplete"} {
+		t.Run(bootstrap, func(t *testing.T) {
+			now := time.Now().UTC()
+			cfg := nodeAuthoritativeTestConfig(t)
+			seed, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installTestPublication(t, seed, now)
+
+			runner := &recordingRunner{}
+			restarted, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if err := restarted.restoreActive(ctx); err != nil {
+				t.Fatal(err)
+			}
+			restarted.restoredAt = now
+
+			switch bootstrap {
+			case "load failed":
+				err = restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) {
+					return nil, errors.New("delivery unavailable")
+				}))
+			case "incomplete":
+				snapshot := *restarted.state.Snapshot
+				err = restarted.loadBootstrap(ctx, bootstrapFunc(func(context.Context) ([]model.Envelope, error) {
+					return []model.Envelope{envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)}, nil
+				}))
+			}
+			if bootstrap != "not attempted" && err == nil {
+				t.Fatal("unusable bootstrap unexpectedly completed")
+			}
+			if restarted.bootstrapComplete {
+				t.Fatal("unusable bootstrap certified the restored checkpoint")
+			}
+
+			gated := func() int {
+				n := 0
+				for _, call := range runner.calls {
+					if call.Path == "gate" {
+						n++
+					}
+				}
+				return n
+			}
+			now = now.Add(restoredCheckpointLimit - time.Second)
+			if err := restarted.Step(ctx); err == nil || !strings.Contains(err.Error(), "waiting for a current bootstrap") || gated() != 0 {
+				t.Fatalf("checkpoint was not retained until its deadline: err=%v gates=%d", err, gated())
+			}
+			now = now.Add(time.Second)
+			if err := restarted.Step(ctx); err == nil || !strings.Contains(err.Error(), "no DNS state received") || gated() != 1 {
+				t.Fatalf("expired checkpoint kept serving without a valid bootstrap: err=%v gates=%d", err, gated())
+			}
+			if err := restarted.Step(ctx); err != nil || gated() != 1 {
+				t.Fatalf("withdrawn checkpoint repeated fail-closed activation: err=%v gates=%d", err, gated())
+			}
+		})
+	}
 }
 func TestCoreDNSPublicationActivatesLocalPrivateAuthority(t *testing.T) {
 	t.Parallel()

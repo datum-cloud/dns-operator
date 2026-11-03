@@ -40,10 +40,7 @@ func (b SnapshotBootstrap) Load(ctx context.Context) ([]model.Envelope, error) {
 	for attempt := 0; attempt < attempts; attempt++ {
 		envs, err := b.Store.List(ctx, model.SnapshotPrefix(b.Region, b.Shard))
 		if err == nil {
-			err = verifyBootstrap(envs, b.Region, b.Shard)
-		}
-		if err == nil {
-			envs, err = currentBootstrapEnvelopes(envs)
+			envs, err = verifyBootstrap(envs, b.Region, b.Shard)
 		}
 		if err == nil {
 			sort.SliceStable(envs, func(i, j int) bool { return bootstrapOrder(envs[i].Kind) < bootstrapOrder(envs[j].Kind) })
@@ -63,76 +60,120 @@ func (b SnapshotBootstrap) Load(ctx context.Context) ([]model.Envelope, error) {
 	return nil, fmt.Errorf("consistent internal DNS bootstrap unavailable: %w", last)
 }
 
-// currentBootstrapEnvelopes drops immutable chunk sets that are no longer
-// referenced by a stable manifest head. The KV listing may retain them for
-// replay/rollback safety, but a cold member must not checkpoint or apply them.
-func currentBootstrapEnvelopes(envs []model.Envelope) ([]model.Envelope, error) {
-	manifests := map[string]bool{}
-	for _, env := range envs {
-		if env.Kind != model.KindPublicationManifest {
-			continue
-		}
-		var manifest model.PublicationManifest
-		if err := json.Unmarshal(env.Payload, &manifest); err != nil {
-			return nil, err
-		}
-		manifests[manifest.ManifestUID] = true
-	}
-	out := make([]model.Envelope, 0, len(envs))
-	for _, env := range envs {
-		if env.Kind == model.KindPublicationChunk {
-			var chunk model.PublicationChunk
-			if err := json.Unmarshal(env.Payload, &chunk); err != nil {
-				return nil, err
-			}
-			if !manifests[chunk.ManifestUID] {
-				continue
-			}
-		}
-		out = append(out, env)
-	}
-	return out, nil
-}
-
-func verifyBootstrap(envs []model.Envelope, region, shard string) error {
+func verifyBootstrap(envs []model.Envelope, region, shard string) ([]model.Envelope, error) {
 	chunks := map[string][]model.PublicationChunk{}
 	var manifests []model.PublicationManifest
-	serving := false
+	manifestByZone := map[string]model.PublicationManifest{}
+	type servingCandidate struct {
+		snapshot model.ServingSnapshot
+		envelope model.Envelope
+	}
+	var servingCandidates []servingCandidate
 	for _, env := range envs {
 		if err := env.Validate(); err != nil {
-			return err
+			return nil, err
 		}
 		if env.Region != region || env.Shard != shard {
-			return errors.New("bootstrap contains a foreign region or shard")
+			return nil, errors.New("bootstrap contains a foreign region or shard")
 		}
 		switch env.Kind {
 		case model.KindPublicationChunk:
 			var c model.PublicationChunk
 			if err := json.Unmarshal(env.Payload, &c); err != nil {
-				return err
+				return nil, err
+			}
+			if err := c.Validate(); err != nil {
+				return nil, err
+			}
+			if c.ZoneUID != env.ResourceUID || c.WriterEpoch != env.Epoch || c.Revision != env.Revision {
+				return nil, errors.New("bootstrap chunk envelope identity does not match payload")
 			}
 			chunks[c.ManifestUID] = append(chunks[c.ManifestUID], c)
 		case model.KindPublicationManifest:
 			var m model.PublicationManifest
 			if err := json.Unmarshal(env.Payload, &m); err != nil {
-				return err
+				return nil, err
+			}
+			if err := m.Validate(); err != nil {
+				return nil, err
+			}
+			if m.ZoneUID != env.ResourceUID || m.WriterEpoch != env.Epoch || m.Revision != env.Revision {
+				return nil, errors.New("bootstrap manifest envelope identity does not match payload")
 			}
 			manifests = append(manifests, m)
+			if old, ok := manifestByZone[m.ZoneUID]; !ok || model.Compare(m.WriterEpoch, m.Revision, old.WriterEpoch, old.Revision) > 0 {
+				manifestByZone[m.ZoneUID] = m
+			}
 		case model.KindServingSnapshot:
-			serving = true
+			var snapshot model.ServingSnapshot
+			if err := json.Unmarshal(env.Payload, &snapshot); err != nil {
+				return nil, err
+			}
+			if err := snapshot.Validate(); err != nil {
+				return nil, err
+			}
+			if snapshot.Region != env.Region || snapshot.Shard != env.Shard || snapshot.ConfigurationEpoch != env.Epoch || snapshot.ConfigurationRevision != env.Revision {
+				return nil, errors.New("bootstrap serving envelope identity does not match payload")
+			}
+			servingCandidates = append(servingCandidates, servingCandidate{snapshot: snapshot, envelope: env})
 		default:
-			return fmt.Errorf("bootstrap contains unsupported kind %q", env.Kind)
+			return nil, fmt.Errorf("bootstrap contains unsupported kind %q", env.Kind)
 		}
 	}
-	if !serving {
-		return errors.New("bootstrap has no complete serving snapshot")
+	if len(servingCandidates) == 0 {
+		return nil, errors.New("bootstrap has no complete serving snapshot")
+	}
+	serving := servingCandidates[0]
+	for _, candidate := range servingCandidates[1:] {
+		if model.Compare(candidate.envelope.Epoch, candidate.envelope.Revision, serving.envelope.Epoch, serving.envelope.Revision) > 0 {
+			serving = candidate
+		}
+	}
+	for _, candidate := range servingCandidates {
+		if model.Compare(candidate.envelope.Epoch, candidate.envelope.Revision, serving.envelope.Epoch, serving.envelope.Revision) == 0 && !equalJSON(candidate.snapshot, serving.snapshot) {
+			return nil, errors.New("bootstrap has conflicting serving snapshots at the winning fence")
+		}
 	}
 	for _, m := range manifests {
 		if _, err := model.VerifyManifest(m, chunks[m.ManifestUID]); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	for _, binding := range serving.snapshot.Bindings {
+		if binding.Tombstone || binding.ConfigurationPending {
+			continue
+		}
+		for _, zone := range binding.Zones {
+			if zone.Pending {
+				continue
+			}
+			manifest, ok := manifestByZone[zone.ZoneUID]
+			if !ok || model.Compare(manifest.WriterEpoch, manifest.Revision, zone.RequiredPublicationEpoch, zone.RequiredPublicationRevision) < 0 {
+				return nil, fmt.Errorf("bootstrap has no current publication for attached zone %q", zone.ZoneUID)
+			}
+		}
+	}
+	manifestUIDs := map[string]bool{}
+	for _, manifest := range manifests {
+		manifestUIDs[manifest.ManifestUID] = true
+	}
+	filtered := make([]model.Envelope, 0, len(envs))
+	for _, env := range envs {
+		switch env.Kind {
+		case model.KindServingSnapshot:
+			continue
+		case model.KindPublicationChunk:
+			var chunk model.PublicationChunk
+			if err := json.Unmarshal(env.Payload, &chunk); err != nil {
+				return nil, err
+			}
+			if !manifestUIDs[chunk.ManifestUID] {
+				continue
+			}
+		}
+		filtered = append(filtered, env)
+	}
+	return append(filtered, serving.envelope), nil
 }
 func bootstrapOrder(k model.Kind) int {
 	switch k {

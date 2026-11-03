@@ -121,6 +121,7 @@ manifests.
 
 ## Development
 
-- **Build:** `make docker-build` (see the [`Makefile`](Makefile))
-- **Generate code / manifests:** `make generate` and `make manifests`
+- **Run every check CI runs:** `task ci` (see the [`Taskfile`](Taskfile.yaml) or `task --list-all`)
+- **Build:** `task docker-build`
+- **Generate code / manifests:** `task generate` and `task manifests`
 - **End-to-end tests:** see `test/e2e/` and the samples under `config/samples/`

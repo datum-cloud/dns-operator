@@ -17,6 +17,7 @@ import (
 	"github.com/coredns/coredns/core/dnsserver"
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/metrics"
+	"github.com/miekg/dns"
 )
 
 // CoreDNS refuses every non-IN query before the plugin chain unless a listed
@@ -30,10 +31,14 @@ func Run(ctx context.Context, path, metricsAddress string) error {
 
 type Process struct {
 	MetricsAddress  string
+	ProfileAddress  string
 	IdentityKeyFile *string
 }
 
 func (pr Process) Run(ctx context.Context, path string) error {
+	if err := ValidateProfileAddress(pr.ProfileAddress); err != nil {
+		return err
+	}
 	metricsAddress := pr.MetricsAddress
 	previous, err := os.ReadFile(path)
 	if err != nil {
@@ -56,6 +61,12 @@ func (pr Process) Run(ctx context.Context, path string) error {
 		return err
 	}
 	defer p.Close()
+	profileCtx, stopProfiling := context.WithCancel(ctx)
+	defer stopProfiling()
+	profileDone, err := serveProfiling(profileCtx, pr.ProfileAddress)
+	if err != nil {
+		log.Printf("CoreDNS serves without profiling: %v", err)
+	}
 	host, port, _ := net.SplitHostPort(cfg.ListenAddress)
 	chain := []plugin.Plugin{func(plugin.Handler) plugin.Handler { return p }}
 	var metricsDone <-chan error
@@ -87,17 +98,56 @@ func (pr Process) Run(ctx context.Context, path string) error {
 	defer func() { _ = tcp.Close() }()
 	listener := &proxyListener{Listener: tcp, peers: peers, plain: p.identityKey != nil}
 	defer func() { _ = listener.Close() }()
-	done := make(chan error, 1)
+	var udp *dns.Server
+	if p.identityKey != nil {
+		packet, err := listenUDP(cfg.ListenAddress, cfg.UDPReadBufferBytes)
+		if err != nil {
+			return fmt.Errorf("CoreDNS UDP listener: %w", err)
+		}
+		defer func() { _ = packet.Close() }()
+		if size, err := udpReadBufferSize(packet); err != nil {
+			log.Printf("CoreDNS UDP receive buffer inspection: %v", err)
+		} else if size > 0 {
+			log.Printf("CoreDNS UDP receive buffer requested=%d effective=%d bytes", cfg.UDPReadBufferBytes, size)
+		}
+		if metricsAddress != "" {
+			cleanup, err := observeUDPSocket(packet)
+			if err != nil {
+				log.Printf("CoreDNS serves without UDP socket metrics: %v", err)
+			} else {
+				defer cleanup()
+			}
+		}
+		udp = keyedUDPServer(packet, peers, server)
+	}
+	stop := func() error {
+		if udp != nil {
+			shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = udp.ShutdownContext(shutdown)
+		}
+		return server.Stop()
+	}
+	defer func() { _ = stop() }()
+	done := make(chan error, 2)
 	go func() { done <- server.Serve(listener) }()
+	if udp != nil {
+		go func() { done <- udp.ActivateAndServe() }()
+	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return server.Stop()
+			return stop()
 		case err := <-done:
-			_ = server.Stop()
+			_ = stop()
 			return fmt.Errorf("CoreDNS listener stopped: %w", errors.Join(err, errors.New("unexpected listener exit")))
+		case err := <-profileDone:
+			profileDone = nil
+			if ctx.Err() == nil {
+				log.Printf("CoreDNS serves without profiling: %v", errors.Join(err, errors.New("profiling listener stopped")))
+			}
 		case err := <-metricsDone:
 			metricsDone = nil
 			if ctx.Err() == nil {
@@ -112,9 +162,9 @@ func (pr Process) Run(ctx context.Context, path string) error {
 			if err == nil && pr.IdentityKeyFile != nil {
 				next.IdentityKeyFile = *pr.IdentityKeyFile
 			}
-			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile) {
-				_ = server.Stop()
-				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, or identity key")
+			if err == nil && (next.ListenAddress != cfg.ListenAddress || !reflect.DeepEqual(next.ProxyPeers, cfg.ProxyPeers) || next.IdentityKeyFile != cfg.IdentityKeyFile || next.UDPReadBufferBytes != cfg.UDPReadBufferBytes) {
+				_ = stop()
+				return errors.New("CoreDNS restarts to apply a new listener, proxy peers, identity key, or UDP read buffer")
 			}
 			if err == nil {
 				err = p.Replace(next)

@@ -11,11 +11,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -24,7 +28,8 @@ import (
 // DNSZoneDiscoveryReplicator performs a one-shot discovery of records for a DNSZone on the upstream cluster.
 // It does not replicate downstream; it only updates upstream status.
 type DNSZoneDiscoveryReplicator struct {
-	mgr mcmanager.Manager
+	mgr             mcmanager.Manager
+	discoverRecords func(ctx context.Context, domain string) ([]dnsv1alpha1.DiscoveredRecordSet, error)
 }
 
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszonediscoveries,verbs=get;list;watch;update;patch
@@ -113,7 +118,11 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 	}
 
 	// Perform discovery (one-shot)
-	recordSets, err := discovery.DiscoverZoneRecords(ctx, zone.Spec.DomainName)
+	discover := r.discoverRecords
+	if discover == nil {
+		discover = discovery.DiscoverZoneRecords
+	}
+	recordSets, err := discover(ctx, zone.Spec.DomainName)
 	if err != nil {
 		logger.Error(err, "discovery failed; will retry", "zone", zone.Spec.DomainName)
 		return ctrl.Result{}, err
@@ -138,11 +147,43 @@ func (r *DNSZoneDiscoveryReplicator) Reconcile(ctx context.Context, req mcreconc
 	return ctrl.Result{}, nil
 }
 
+const discoveryZoneRefIndex = "spec.dnsZoneRef.name"
+
 // SetupWithManager wires the controller with the multicluster manager.
 func (r *DNSZoneDiscoveryReplicator) SetupWithManager(mgr mcmanager.Manager) error {
 	r.mgr = mgr
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(),
+		&dnsv1alpha1.DNSZoneDiscovery{}, discoveryZoneRefIndex,
+		func(obj client.Object) []string {
+			return []string{obj.(*dnsv1alpha1.DNSZoneDiscovery).Spec.DNSZoneRef.Name}
+		},
+	); err != nil {
+		return err
+	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&dnsv1alpha1.DNSZoneDiscovery{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&dnsv1alpha1.DNSZone{}, enqueueDiscoveriesForZone, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("dnszonediscovery-replicator").
 		Complete(r)
+}
+
+func enqueueDiscoveriesForZone(clusterName multicluster.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+	return handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
+		var discoveries dnsv1alpha1.DNSZoneDiscoveryList
+		if err := cl.GetClient().List(ctx, &discoveries,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{discoveryZoneRefIndex: obj.GetName()},
+		); err != nil {
+			logf.FromContext(ctx).Error(err, "list discoveries for zone", "dnsZone", obj.GetName())
+			return nil
+		}
+		reqs := make([]mcreconcile.Request, 0, len(discoveries.Items))
+		for i := range discoveries.Items {
+			reqs = append(reqs, mcreconcile.Request{
+				ClusterName: clusterName,
+				Request:     crreconcile.Request{NamespacedName: client.ObjectKeyFromObject(&discoveries.Items[i])},
+			})
+		}
+		return reqs
+	})
 }

@@ -12,6 +12,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -254,6 +255,29 @@ func TestBindingAckCurrentRequiresVerifiedExactAuthorization(t *testing.T) {
 		t.Fatal("stale authorization ACK was accepted")
 	}
 	b.Status.MemberAcknowledgements[0].AccessSequence = 11
+}
+
+func TestFullyReplicatedWithdrawalDeletesOnlyRetiredBinding(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	withdrawn := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "withdrawn", Namespace: "platform", UID: "withdrawn-uid", Generation: 2, Labels: map[string]string{referenceProjectLabel: "project", "internal-dns.miloapis.com/source-namespace": "source", "internal-dns.miloapis.com/context-uid": "deleted-context"}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project"}, Tombstone: true, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Revision: 2}}, Status: dnsv1alpha1.DNSResolverBindingStatus{ObservedConfigurationRevision: 2, Phase: "Withdrawn"}}
+	setCondition(&withdrawn.Status.Conditions, "FullyReplicated", metav1.ConditionTrue, "ReplicaVerification", "", withdrawn.Generation, now)
+	unaffected := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "unaffected", Namespace: "platform", UID: "unaffected-uid", Labels: map[string]string{referenceProjectLabel: "project", "internal-dns.miloapis.com/source-namespace": "other", "internal-dns.miloapis.com/context-uid": "live-context"}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project"}}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(withdrawn, unaffected).WithStatusSubresource(&dnsv1alpha1.DNSResolverBinding{}, &dnsv1alpha1.DNSResolverAccessBinding{}).Build()
+	r := &Reconciler{Client: cl, APIReader: cl, Scheme: scheme, Options: ReconcilerOptions{ProjectUID: "project", PlatformNamespace: "platform", ProjectNamespace: "source"}}
+	if err := r.reconcileContextBindings(ctx, "source", nil, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(withdrawn), &dnsv1alpha1.DNSResolverBinding{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("fully replicated withdrawal was retained: %v", err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(unaffected), &dnsv1alpha1.DNSResolverBinding{}); err != nil {
+		t.Fatalf("unaffected binding was removed: %v", err)
+	}
 }
 
 func TestContextNamingPolicyResolvesMultipleZonesWithoutNetworking(t *testing.T) {

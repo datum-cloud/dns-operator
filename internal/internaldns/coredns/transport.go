@@ -21,6 +21,7 @@ type proxyListener struct {
 	net.Listener
 	peers     map[netip.Addr]bool
 	plain     bool
+	metrics   *transportMetrics
 	once      sync.Once
 	closeOnce sync.Once
 	ready     chan net.Conn
@@ -29,6 +30,9 @@ type proxyListener struct {
 
 func (l *proxyListener) start() {
 	l.once.Do(func() {
+		if l.metrics == nil {
+			l.metrics = defaultTransportMetrics
+		}
 		l.ready = make(chan net.Conn)
 		l.done = make(chan struct{})
 		go l.acceptConnections()
@@ -64,25 +68,34 @@ func (l *proxyListener) acceptConnections() {
 			return
 		}
 		if !trusted(l.peers, conn.RemoteAddr()) {
+			l.metrics.connections.WithLabelValues(transportUntrusted).Inc()
 			_ = conn.Close()
 			continue
 		}
 		select {
 		case pending <- struct{}{}:
+			l.metrics.pending.Inc()
 			go func() {
-				defer func() { <-pending }()
+				defer func() {
+					<-pending
+					l.metrics.pending.Dec()
+				}()
 				accepted, err := readProxyConnection(conn, l.plain)
 				if err != nil {
+					l.metrics.connections.WithLabelValues(transportHandshakeError).Inc()
 					_ = conn.Close()
 					return
 				}
 				select {
 				case l.ready <- accepted:
+					l.metrics.connections.WithLabelValues(transportAccepted).Inc()
 				case <-l.done:
+					l.metrics.connections.WithLabelValues(transportShutdown).Inc()
 					_ = conn.Close()
 				}
 			}()
 		default:
+			l.metrics.connections.WithLabelValues(transportSaturated).Inc()
 			_ = conn.Close()
 		}
 	}

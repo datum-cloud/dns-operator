@@ -11,6 +11,8 @@ local row = g.panel.row;
 local var = g.dashboard.variable;
 
 local ds = '${datasource}';
+local latency = import 'latency.libsonnet';
+local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
 
 {
   g: g,
@@ -71,7 +73,7 @@ local ds = '${datasource}';
     ],
 
   during(expr, run, step)::
-    '(%s) and on () max(idns_perf_run{run="%s"} offset %s)' % [expr, run, step],
+    '(%s) and on () max(idns_perf_run{run="%s"} offset %s == 1)' % [expr, run, step],
 
   // -------------------------------------------------------------------------
   // Layout and panels
@@ -128,6 +130,44 @@ local ds = '${datasource}';
     + timeSeries.options.tooltip.withMode('multi')
     + timeSeries.options.tooltip.withSort('desc'),
 
+  udpLatencyEstimate(selector, pos)::
+    self.ts(
+      'UDP answer time (estimated p50 and p99)',
+      'Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; compare the UDP band shares and counts below.',
+      [
+        self.qRange(latency.quantile(selector, '0.5', '$__rate_interval'), latencyLegend + ' estimated p50'),
+        self.qRange(latency.quantile(selector, '0.99', '$__rate_interval'), latencyLegend + ' estimated p99'),
+      ],
+      'ms', pos,
+    ),
+
+  udpLatencyShares(selector, pos)::
+    self.ts(
+      'UDP answers by latency threshold, share',
+      'Shares from measured histogram bucket counts, without quantile interpolation: under 1 ms, over 100 ms and over 1 s. Thresholds overlap: over 1 s is a subset of over 100 ms; the lines do not sum to 100%. The denominator is the same UDP histogram population, including error and background answers, not all-protocol queries. Empty when no UDP answers were observed; missing telemetry stays empty.',
+      [
+        self.qRange(latency.share(selector, '1', '$__rate_interval'), latencyLegend + ' under 1 ms'),
+        self.qRange(latency.share(selector, '100', '$__rate_interval', true), latencyLegend + ' over 100 ms'),
+        self.qRange(latency.share(selector, '1000', '$__rate_interval', true), latencyLegend + ' over 1 s'),
+      ],
+      'percentunit', pos,
+    ) + timeSeries.standardOptions.withMax(1),
+
+  udpLatencyCounts(selector, pos)::
+    self.ts(
+      'UDP answer counts in the lookback window',
+      'Rolling counts over the same Grafana rate interval as the percentile chart: all UDP histogram answers on the right axis, over 100 ms and over 1 s on the left. Slow counts subtract finite buckets from that same population. A large p99 alongside only one or two slow answers is different from sustained high-volume latency. Counts may be fractional because increase() can extrapolate between scrapes; they are not packet-level event logs. Zero means a sampled counter did not increase, while missing telemetry stays empty. Includes error responses; see Answers by response code for their separate breakdown.',
+      [
+        self.qRange(latency.count(selector, '$__rate_interval'), latencyLegend + ' all UDP answers'),
+        self.qRange(latency.over(selector, '100', '$__rate_interval'), latencyLegend + ' over 100 ms'),
+        self.qRange(latency.over(selector, '1000', '$__rate_interval'), latencyLegend + ' over 1 s'),
+      ],
+      'short', pos,
+    ) + { fieldConfig+: { overrides+: [{
+      matcher: { id: 'byRegexp', options: '.* all UDP answers$' },
+      properties: [{ id: 'custom.axisPlacement', value: 'right' }],
+    }] } },
+
   // Draws one dot per sample. Load test results are sparse events, not a
   // continuous signal, so lines between them would suggest values that were
   // never measured.
@@ -172,7 +212,7 @@ local ds = '${datasource}';
     datasource: { type: 'prometheus', uid: ds },
     enable: true,
     iconColor: 'purple',
-    expr: 'max by (run, scenario, commit) (idns_perf_run)',
+    expr: 'max by (run, scenario, commit) (idns_perf_run == 1)',
     step: '10s',
     titleFormat: 'Load test {{scenario}}',
     textFormat: 'run {{run}}, commit {{commit}}',

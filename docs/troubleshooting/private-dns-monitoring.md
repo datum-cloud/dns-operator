@@ -12,9 +12,9 @@ deployment configuration.
 
 Related documents:
 
-- [Architecture](../architecture/internal-dns/README.md) for how the parts fit
+- [Architecture](../architecture/private-dns/README.md) for how the parts fit
   together.
-- [Metrics proposal](../internal-dns-metrics-proposal/README.md) (phases 0 to
+- [Metrics proposal](../private-dns-metrics-proposal/README.md) (phases 0 to
   5) for the planned signals. Finding numbers such as F2 refer to its "What we
   found" table.
 
@@ -257,23 +257,43 @@ kubectl -n <fleet-namespace> logs deploy/<member-deployment> -c agent --since=1h
 redeliveries climbing, or an agent that stops logging reloads while the control
 plane keeps publishing.
 
-**Known failure modes.** A reload that reports errors but exits 0, and a member
-serving a restored checkpoint without reaching the control plane. Both are in
-the proposal; neither has a signal yet.
+Enable agent metrics with `--agent-metrics-bind-address`; the listener is off by
+default. Check each scrape target as well as regional totals:
 
-**Gaps.** No agent metrics (`internal_dns_agent_*`, phase 2): fail-closed state,
-fence, activations by result, checkpoint restore, transport connection. No
-liveness or startup probe on any container (F3); the `agent` container has a
-readiness probe only on the regional front.
-The reference fleet still mounts broker credentials in `serving` (F1), which
-must change before CoreDNS metrics are turned on.
+```promql
+internal_dns_agent_delivery_connected
+internal_dns_agent_publication_lagging_zones
+internal_dns_agent_publication_revision_lag
+increase(internal_dns_agent_activation_failures_total[10m])
+internal_dns_agent_last_activation_success_timestamp_seconds
+```
+
+Connected delivery should report 1. Lagging zones should return to zero after
+updates settle. Revision lag compares revisions only within the same writer
+epoch; use lagging zones for missing publications, epoch changes, withdrawals,
+and failed proof. A failed installation or DNS proof increments activation
+failures. An old activation timestamp can mean no changes were needed, so it is
+not a failure signal by itself.
+
+For authoritative nodes, regional publication status does not confirm local
+activation. Filter the agent metrics by `mode="node-authoritative"` and query
+from a consumer. A restarted agent can serve a verified checkpoint for at most
+15 minutes without a validated bootstrap; partial state does not extend this
+limit. A continuously running agent retains accepted state during delivery
+outages, so stale records can persist until updates arrive.
+
+Scrape settings, alert thresholds, and probe configuration belong to the
+deployment. The reference fleet separates broker credentials from query-serving
+containers; check that the deployed fleet preserves that separation.
 
 ### 6. Node resolvers
 
 **What it does.** Node members (`internal-dns-node` on `fd53::53`, and a
 second instance on `fd53::54` where deployed) run dnsdist in front of a local
-CoreDNS. dnsdist classifies each query to a context; CoreDNS answers private
-names and forwards the rest to the public recursor.
+CoreDNS. dnsdist classifies each query to a context. By default, node CoreDNS
+forwards queries to regional serving. With `nodeAuthoritative: true`, it answers
+private names locally and sends public queries to its configured public
+upstreams.
 
 **Healthy now.** dnsdist metrics are off by default; turn them on with the
 `metricsAddress` and `metricsACLs` render settings (#315).
@@ -300,10 +320,10 @@ or SERVFAIL rising while queries stay flat.
 - Backend flap: dnsdist marks the local CoreDNS backend down and back up, and
   while it is down the node pool has no server. Watch
   `changes(dnsdist_server_status[1h])` and `dnsdist_server_healthcheckfailures`.
-- The readiness check queries `. SOA`, which the classifier always refuses
-  (F2), so readiness never tests the real path. A steady refusal rate of about
-  one a second per dnsdist, on idle members too, is probably this and other
-  health checks (inferred, not traced); real refusals hide under it.
+- Current node readiness requires a successful protected canary through dnsdist
+  and checks CoreDNS over TCP and, for keyed members, UDP. A failed canary can
+  indicate missing state, an unavailable backend, or incompatible identity
+  settings. Older images used the root SOA probe described in finding F2.
 
 **Also check placement.** If every member in a region lands on one node, one
 node failure takes out the region's Private DNS. Nothing alerts on this:
@@ -312,10 +332,11 @@ node failure takes out the region's Private DNS. Nothing alerts on this:
 kubectl -n <fleet-namespace> get pods -o wide
 ```
 
-**Gaps.** CoreDNS metrics (#300) are opt-in and wait on F1. Until then there is
-no per-outcome counter, so a query refused for an unknown context looks the
-same as the probe. Readiness is an `exec` every 2s with `failureThreshold: 1`,
-so one slow run flips the pod.
+CoreDNS metrics are opt-in through its `metricsAddress` render setting. The
+`internal_dns_context_queries_total` counter distinguishes served zones, public
+forwarding, unknown contexts, pending zones, and canary outcomes. Verify probe
+timing in the deployment: an aggressive failure threshold can make a slow
+probe remove an otherwise healthy member.
 
 ### 7. Regional front and regional CoreDNS
 
@@ -464,3 +485,58 @@ These are gaps in what the software and its reference deployment expose.
 | 13 | No anti-affinity or placement signal for serving members | Members can all land on one node, a single point of failure for the region | Spread constraints in the reference fleet; a placement check |
 | 14 | No counter for acks dropped from unknown members | The head-of-line fix can't show it is working | Control plane |
 | 15 | Legacy `internal_dns_operations_total` still emitted | Two families for one thing | Remove once dashboards use `internal_dns_loop_*` |
+
+
+## Opt-in CoreDNS profiling
+
+CoreDNS can serve CPU and sampled memory profiles on a separate loopback-only
+listener. It is disabled by default and does not change Go's normal memory
+sampling rate or enable background CPU, mutex, block, or trace profiling.
+Set `agent.render.nodeCoreDNS.profileAddress` or
+`agent.render.clusterCoreDNS.profileAddress` in the member runtime configuration
+to `127.0.0.1:6060`. The serving helper passes it to CoreDNS as
+`-profile-address`; a standalone process accepts the same flag. Apply through
+the normal reviewed member rollout and restart the daemon supervisor to pick
+up this process argument. It is not a hot-reloaded context snapshot setting.
+
+Only literal loopback addresses and nonzero ports are accepted. The listener
+is separate from the metrics address, has no Service or public bind, and is
+reachable by containers sharing the pod network namespace. Leave it disabled
+outside a coordinated diagnostic window. A bind failure is logged and DNS
+continues without profiling; an invalid configured address is rejected.
+
+Use an HTTP client in an existing pod container against `127.0.0.1:6060`, or a
+pod-scoped tunnel from your workstation:
+
+```sh
+kubectl --context "$context" -n "$namespace" port-forward "pod/$pod" 16060:6060
+```
+
+In another terminal, collect profiles during a stable load hold:
+
+```sh
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/allocs -o allocs-before.pb.gz
+curl --fail --max-time 35 'http://127.0.0.1:16060/debug/pprof/profile?seconds=10' -o cpu.pb.gz
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/allocs -o allocs-after.pb.gz
+curl --fail --max-time 35 http://127.0.0.1:16060/debug/pprof/heap -o heap.pb.gz
+go tool pprof -top cpu.pb.gz
+go tool pprof -top -sample_index=alloc_space -base=allocs-before.pb.gz allocs-after.pb.gz
+go tool pprof -top -sample_index=alloc_objects -base=allocs-before.pb.gz allocs-after.pb.gz
+```
+
+CPU captures default to 10 seconds and accept only an integer `seconds` from
+1 through 30. Disconnecting cancels the capture and releases the CPU profiler.
+Heap and allocation captures are instantaneous sampled profiles, with no
+parameters; forced GC and text/debug dumps are rejected. Heap statistics can
+lag recent allocations until a GC cycle. Compare allocation snapshots from the
+same process, and record process start time, image, offered load, CPU quota,
+GOMAXPROCS, socket drops, and effective receive buffer. Profiling itself adds
+work: use a separate profiled replicate and compare an unprofiled hold before
+using results to explain capacity.
+
+Only these three GET routes are exposed. Concurrent captures return 429,
+invalid parameters return 400, and unsupported paths return 404. HTTP reads are
+limited to five seconds and writes to 35 seconds; CPU sampling stops at its
+requested duration even if the client stops reading. No goroutine, command
+line, mutex, block, or trace endpoint is mounted. Close the tunnel and remove
+the opt-in setting through the normal rollout when collection is complete.

@@ -289,5 +289,5 @@ type DNSPublicationOwnershipList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSResolverBinding{}, &DNSResolverBindingList{}, &DNSPublicationManifest{}, &DNSPublicationManifestList{}, &DNSPublicationChunk{}, &DNSPublicationChunkList{}, &DNSTransportOutbox{}, &DNSTransportOutboxList{}, &DNSPublicationOwnership{}, &DNSPublicationOwnershipList{})
+	register(&DNSResolverBinding{}, &DNSResolverBindingList{}, &DNSPublicationManifest{}, &DNSPublicationManifestList{}, &DNSPublicationChunk{}, &DNSPublicationChunkList{}, &DNSTransportOutbox{}, &DNSTransportOutboxList{}, &DNSPublicationOwnership{}, &DNSPublicationOwnershipList{})
 }

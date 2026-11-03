@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="720" viewBox="0 0 960 720" role="img" aria-labelledby="title description">
+  <title id="title">Publication storage in JetStream mode</title>
+  <desc id="description">Shared DNS controller processes perform planning, export, and status work for regions A and B. Each region uses its own broker for shard leases, region leases, and serving snapshots, and reads zone leases, publications, and outboxes from the shared home broker. Arrows show access to stores, not replication. A home broker outage blocks new zone publications and delivery to both regions. The home broker may also be one of the regional brokers. Queries use already-applied serving state outside this diagram.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C1D31"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Alliance No.1", "Alliance No 1", Arial, Helvetica, sans-serif; fill: #0C1D31; }
+    .title { font-size: 25px; font-weight: 700; }
+    .heading { font-size: 20px; font-weight: 700; }
+    .label { font-size: 18px; }
+    .detail { font-size: 17px; fill: #384555; }
+    .message { font-size: 17px; fill: #384555; paint-order: stroke; stroke: #F9F9F8; stroke-width: 5px; stroke-linejoin: round; }
+    .eyebrow { font-family: "DejaVu Sans Mono", monospace; font-size: 13px; letter-spacing: 1px; fill: #384555; }
+    .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 17px; }
+    .edge { fill: none; stroke: #0C1D31; stroke-width: 1.8; stroke-linejoin: round; marker-end: url(#arrow); }
+    .return { stroke-dasharray: 6 5; }
+    .lifeline { stroke: #90969C; stroke-width: 1.2; stroke-dasharray: 4 6; }
+  </style>
+  <rect width="960" height="720" fill="#F9F9F8"/>
+  <rect x="32" y="28" width="8" height="8" fill="#0C1D31"/>
+  <text x="50" y="36" class="eyebrow" text-anchor="start">PRIVATE DNS</text>
+  <text x="32" y="75" class="title" text-anchor="start">Publication storage in JetStream mode</text>
+  <rect x="320" y="120" width="320" height="98" rx="7" fill="#F3F8DD" stroke="#90969C" stroke-width="1.2"/>
+  <text x="480.0" y="151.0" class="label" text-anchor="middle">Home broker</text>
+  <text x="480.0" y="175.0" class="label" text-anchor="middle">Zone leases, publications</text>
+  <text x="480.0" y="199.0" class="label" text-anchor="middle">and outboxes</text>
+  <rect x="32" y="315" width="896" height="160" rx="9" fill="none" stroke="#90969C" stroke-width="1.2" stroke-dasharray="6 5"/>
+  <text x="480" y="342" class="heading" text-anchor="middle">Shared DNS controller processes</text>
+  <rect x="90" y="375" width="300" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="406.0" class="label" text-anchor="middle">Region A work</text>
+  <text x="240.0" y="430.0" class="label" text-anchor="middle">Planner / exporter / status</text>
+  <rect x="570" y="375" width="300" height="74" rx="7" fill="white" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="406.0" class="label" text-anchor="middle">Region B work</text>
+  <text x="720.0" y="430.0" class="label" text-anchor="middle">Planner / exporter / status</text>
+  <path d="M 240 375 V 270 H 400 V 218" class="edge"/>
+  <path d="M 720 375 V 270 H 560 V 218" class="edge"/>
+  <text x="320" y="258" class="message" text-anchor="middle">Read</text>
+  <text x="640" y="258" class="message" text-anchor="middle">Read</text>
+  <rect x="90" y="535" width="300" height="98" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="240.0" y="566.0" class="label" text-anchor="middle">Region A broker</text>
+  <text x="240.0" y="590.0" class="label" text-anchor="middle">Shard and region leases</text>
+  <text x="240.0" y="614.0" class="label" text-anchor="middle">Serving snapshots</text>
+  <rect x="570" y="535" width="300" height="98" rx="7" fill="#DDE8F2" stroke="#90969C" stroke-width="1.2"/>
+  <text x="720.0" y="566.0" class="label" text-anchor="middle">Region B broker</text>
+  <text x="720.0" y="590.0" class="label" text-anchor="middle">Shard and region leases</text>
+  <text x="720.0" y="614.0" class="label" text-anchor="middle">Serving snapshots</text>
+  <path d="M 240 449 V 535" class="edge" marker-start="url(#arrow)"/>
+  <path d="M 720 449 V 535" class="edge" marker-start="url(#arrow)"/>
+  <text x="260" y="498" class="message" text-anchor="start">Read / write</text>
+  <text x="740" y="498" class="message" text-anchor="start">Read / write</text>
+  <text x="32" y="674" class="detail" text-anchor="start">Arrows show store access, not replication.</text>
+  <text x="32" y="698" class="detail" text-anchor="start">The home broker may also host one region’s state. Queries use already-applied DNS state.</text>
+</svg>

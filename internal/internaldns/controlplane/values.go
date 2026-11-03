@@ -3,6 +3,7 @@
 package controlplane
 
 const dnsValueAccepted = "Accepted"
+const dnsValueDuplicateConsumerID = "DuplicateConsumerID"
 const dnsValueStaleRegistrationGeneration = "StaleRegistrationGeneration"
 const dnsValueUnsupportedPrivateRecord = "UnsupportedPrivateRecord"
 const dnsValueReservedScope = "ReservedScope"

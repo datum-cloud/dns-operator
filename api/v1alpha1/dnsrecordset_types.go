@@ -257,5 +257,5 @@ type DNSRecordSetList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&DNSRecordSet{}, &DNSRecordSetList{})
+	register(&DNSRecordSet{}, &DNSRecordSetList{})
 }

@@ -54,7 +54,7 @@ func TestSetupWebhooks_AreServed(t *testing.T) {
 
 	cfg, err := testEnv.Start()
 	if err != nil {
-		t.Fatalf("starting envtest: %v (run 'make setup-envtest' or set KUBEBUILDER_ASSETS)", err)
+		t.Fatalf("starting envtest: %v (run 'task setup-envtest' or set KUBEBUILDER_ASSETS)", err)
 	}
 	t.Cleanup(func() {
 		if err := testEnv.Stop(); err != nil {

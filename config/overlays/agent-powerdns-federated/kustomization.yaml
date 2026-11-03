@@ -25,4 +25,4 @@ patches:
 # clusters need different s3-credentials endpoint_url values (in-cluster
 # RustFS Service vs. a cross-cluster NodePort discovered at apply time).
 # The Taskfile applies s3-credentials with `kubectl create secret ... | apply`
-# after this kustomization and after RustFS is up.
+# before this kustomization and after RustFS is up.

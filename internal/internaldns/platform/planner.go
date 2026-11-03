@@ -55,6 +55,9 @@ type Planner struct {
 	Allocator *Allocator
 	Config    PlannerConfig
 	Now       func() time.Time
+	// Stopping, when set and true, stops the planner taking or renewing its
+	// shard lease so the process can release it before it exits.
+	Stopping func() bool
 
 	// Outboxes are immutable and named by revision, so the prior snapshot's
 	// bytes are reused until the active outbox changes.
@@ -62,10 +65,47 @@ type Planner struct {
 	priorPayload []byte
 }
 
+func (p *Planner) ownerKey() client.ObjectKey {
+	return client.ObjectKey{Namespace: p.Config.Namespace, Name: "dns-shard-owner-" + model.OpaqueToken(p.Config.Region+"/"+p.Config.Shard)}
+}
+
+// Release ends the shard lease this planner holds, so the next process plans
+// the shard at once instead of after a lease duration. It reports whether a
+// lease was released.
+func (p *Planner) Release(ctx context.Context, now time.Time) (bool, error) {
+	var owner corev1.ConfigMap
+	if err := p.Client.Get(ctx, p.ownerKey(), &owner); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	var state shardState
+	if err := json.Unmarshal([]byte(owner.Data["state"]), &state); err != nil {
+		return false, fmt.Errorf("invalid shard ownership: %w", err)
+	}
+	if state.Holder != p.Config.Identity || !state.LeaseUntil.After(now) {
+		return false, nil
+	}
+	state.LeaseUntil = now
+	b, err := json.Marshal(state)
+	if err != nil {
+		return false, err
+	}
+	owner.Data["state"] = string(b)
+	if err := p.Client.Update(ctx, &owner); err != nil {
+		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (p *Planner) Step(ctx context.Context) error {
 	c := p.Config
 	if p.Client == nil || p.Allocator == nil || c.Namespace == "" || c.Region == "" || c.Shard == "" || c.Identity == "" {
 		return fmt.Errorf("shared planner requires client, allocator, namespace, region, shard and holder identity")
+	}
+	if p.Stopping != nil && p.Stopping() {
+		return nil
 	}
 	now := time.Now().UTC()
 	if p.Now != nil {
@@ -75,7 +115,7 @@ func (p *Planner) Step(ctx context.Context) error {
 	if lease <= 0 {
 		lease = 30 * time.Second
 	}
-	key := client.ObjectKey{Namespace: c.Namespace, Name: "dns-shard-owner-" + model.OpaqueToken(c.Region+"/"+c.Shard)}
+	key := p.ownerKey()
 	var owner corev1.ConfigMap
 	if err := p.Client.Get(ctx, key, &owner); apierrors.IsNotFound(err) {
 		state := shardState{Holder: c.Identity, Epoch: model.NextWriterEpoch(0, now), NextRevision: 1, LeaseUntil: now.Add(lease)}
@@ -142,11 +182,18 @@ func (p *Planner) Step(ctx context.Context) error {
 	}
 	for _, obj := range bindings.Items {
 		b := obj.Spec
-		if b.Placement.Region != c.Region || b.Placement.Shard != c.Shard || b.Tombstone || !obj.DeletionTimestamp.IsZero() {
+		if b.Placement.Region != c.Region || b.Placement.Shard != c.Shard || !obj.DeletionTimestamp.IsZero() {
 			continue
 		}
-		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}}
+		view := model.Binding{BindingUID: string(obj.UID), ProjectUID: string(b.Source.ProjectUID), ContextUID: string(b.Source.ResolverContextRef.UID), BindingGeneration: uint64(b.Configuration.Generation), ConfigurationRevision: uint64(b.Configuration.Revision), ConsumerAddress: b.Configuration.Query.NodeAddress, ClusterAddress: b.Configuration.Query.RegionalAddress, Port: uint16(53), NodeBackends: c.NodeBackends, ClusterBackends: c.ClusterBackends, Version: model.AccessVersion{Epoch: uint64(b.Version.Epoch), Sequence: uint64(b.Version.Sequence)}, Tombstone: b.Tombstone}
 		view.Transports = []model.Transport{model.TransportUDP, model.TransportTCP}
+		// Carry withdrawals as explicit, versioned shard state. Omission still
+		// withdraws for compatibility, but it cannot be acknowledged against the
+		// binding revision and therefore cannot prove that every member removed it.
+		if b.Tombstone {
+			snapshot.Bindings = append(snapshot.Bindings, view)
+			continue
+		}
 		complete := true
 		for _, zoneRef := range b.Configuration.ZoneRefs {
 			uid := zoneRef.UID

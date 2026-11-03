@@ -51,7 +51,7 @@ Two details in there are load-bearing and easy to undo by accident. `set -o pipe
 
 ### Group 0 — build and dispatch `[READ]`
 
-That the thing under test is the thing that ships. `make build-plugin` produces `bin/datumctl-dns`; the binary answers `--plugin-manifest` **before** Cobra parses anything, which is the SDK contract that lets the host discover a plugin whose flags it does not understand; and the host dispatches to it out of `DATUMCTL_PLUGINS_DIR`, so the run never depends on what happens to be installed in `~/.datumctl`. `dns version` must work without an entitlement or a project, because a version check that needs a working control plane is useless for debugging one.
+That the thing under test is the thing that ships. `task build-plugin` produces `bin/datumctl-dns`; the binary answers `--plugin-manifest` **before** Cobra parses anything, which is the SDK contract that lets the host discover a plugin whose flags it does not understand; and the host dispatches to it out of `DATUMCTL_PLUGINS_DIR`, so the run never depends on what happens to be installed in `~/.datumctl`. `dns version` must work without an entitlement or a project, because a version check that needs a working control plane is useless for debugging one.
 
 ### Group 1 — error contract `[READ]`
 

@@ -49,7 +49,7 @@ local run as the verification.
 - For a quick local check, run single packages:
   `go test ./internal/<pkg>/ -skip '^TestPDNS_'`. The `TestPDNS_*` tests start
   PowerDNS containers and run in CI.
-- `make test` runs code generation and envtest first, so prefer CI for it.
+- `task test` runs code generation and envtest first, so prefer CI for it.
 - The one local exception is a tamper test: revert the fix and show the new
   test fails. Say plainly that it ran locally and what it proves.
 

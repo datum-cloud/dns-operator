@@ -32,6 +32,31 @@ func (stalledPublisher) Publish(ctx context.Context, _ string, _ model.Envelope)
 	return transport.PublishAck{}, ctx.Err()
 }
 
+func TestServingAckDedupDoesNotSuppressANewerWithdrawalFence(t *testing.T) {
+	now := time.Now().UTC()
+	publisher := &fakePublisher{}
+	agent := &Agent{
+		cfg:            Config{Region: "east", Shard: "shared", MemberID: "member-a", ReplicaID: "member-a", AckInterval: time.Minute},
+		deps:           Dependencies{AckPublisher: publisher, Clock: func() time.Time { return now }},
+		state:          checkpoint{ServingFence: fence{Epoch: 1, Revision: 1}},
+		lastServingAck: map[string]servingAckState{},
+	}
+	binding := model.Binding{BindingUID: "binding-a", ConfigurationRevision: 1, Version: model.AccessVersion{Epoch: 1, Sequence: 1}}
+	if err := agent.emitServingAck(context.Background(), binding, model.AckVerified); err != nil {
+		t.Fatal(err)
+	}
+	agent.state.ServingFence.Revision = 2
+	binding.ConfigurationRevision = 2
+	binding.Version.Sequence = 2
+	binding.Tombstone = true
+	if err := agent.emitServingAck(context.Background(), binding, model.AckVerified); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.envs) != 2 {
+		t.Fatalf("new exact withdrawal ACK was deduplicated with the prior active ACK: got %d envelopes", len(publisher.envs))
+	}
+}
+
 type contextIgnoringPublisher struct {
 	mu      sync.Mutex
 	calls   int

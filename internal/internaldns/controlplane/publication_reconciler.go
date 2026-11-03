@@ -109,6 +109,10 @@ func (r *Reconciler) releaseZone(z *dnsv1alpha1.DNSZone) {
 }
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
+	started := time.Now()
+	defer func() { passDuration.Observe(time.Since(started).Seconds()) }()
+	timer := newPhaseTimer("list")
+	defer timer.finish()
 	now := r.Options.Now().UTC()
 
 	var zones dnsv1alpha1.DNSZoneList
@@ -122,6 +126,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
+	timer.next("contexts")
 	listed := newListedManagedObjects(zones.Items, assocs.Items)
 	if err := r.reconcileResolverContexts(withListedManagedObjects(ctx, listed), ns, now); err != nil {
 		return ctrl.Result{}, err
@@ -133,6 +138,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			}
 		}
 	}
+	timer.next("associations")
 	zoneByName := map[string]*dnsv1alpha1.DNSZone{}
 	for i := range zones.Items {
 		z := &zones.Items[i]
@@ -144,6 +150,7 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.reconcileNamingPolicies(ctx, policies.Items, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("references")
 	var sources []client.Object
 	for i := range assocs.Items {
 		sources = append(sources, &assocs.Items[i])
@@ -154,6 +161,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	registrationZones := make(map[types.UID]dnsv1alpha1.DNSObjectReference, len(regs.Items))
 	for i := range regs.Items {
 		registration := &regs.Items[i]
+		if r.Options.PerZoneReconcile {
+			// The zone key pins its registrations right before compiling.
+			sources = append(sources, registration)
+			continue
+		}
 		ref := dnsv1alpha1.DNSObjectReference{Name: registration.Spec.DNSZoneRef.Name}
 		if zone := zoneByName[ref.Name]; zone != nil && zone.DeletionTimestamp.IsZero() && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
 			ref.UID, ref.Generation = zone.UID, zone.Generation
@@ -168,12 +180,15 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 	if err := r.collectReferenceStates(ctx, sources); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("bindings")
 	if err := r.reconcileBindings(ctx, ns, assocs.Items, zoneByName, now); err != nil {
 		return ctrl.Result{}, err
 	}
+	timer.next("ownership")
 	var earliest time.Time
 	var zoneErrors []error
 	held := map[types.UID]heldOwnership{}
+	var bindingsFingerprint string
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate || (z.DeletionTimestamp.IsZero() && !r.holdsZone(z)) {
@@ -182,6 +197,9 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 		own, retryAt, err := r.holdOwnership(ctx, z)
 		held[z.UID] = heldOwnership{own: own, retryAt: retryAt, err: err}
 	}
+	// Keep the existing phase label. In per-zone mode this loop only queues
+	// compilation; in whole-project mode it also compiles and updates status.
+	timer.next("compile")
 	for i := range zones.Items {
 		z := &zones.Items[i]
 		if z.Spec.Visibility != dnsv1alpha1.DNSZoneVisibilityPrivate {
@@ -196,6 +214,11 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			continue
 		}
 		lease := held[z.UID]
+		if r.Options.PerZoneReconcile && apierrors.IsConflict(lease.err) {
+			// The zone key renewed the lease first.
+			r.queueZone(ctx, z)
+			continue
+		}
 		if lease.err != nil {
 			zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, lease.err))
 			continue
@@ -204,6 +227,18 @@ func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Resu
 			if earliest.IsZero() || lease.retryAt.Before(earliest) {
 				earliest = lease.retryAt
 			}
+			continue
+		}
+		if r.Options.PerZoneReconcile {
+			if bindingsFingerprint == "" {
+				var bindings dnsv1alpha1.DNSResolverBindingList
+				if err := r.listProjectBindings(ctx, &bindings); err != nil {
+					zoneErrors = append(zoneErrors, fmt.Errorf("zone %s: %w", z.Name, err))
+					break
+				}
+				bindingsFingerprint = bindingInputs(bindings.Items)
+			}
+			r.queueZoneIfChanged(ctx, z, zoneProjectInputs(z, lease.own, assocs.Items, bindingsFingerprint), now)
 			continue
 		}
 		result, err := r.compileZone(ctx, z, lease.own, assocs.Items, regs.Items, registrationZones, contributions.Items, records.Items, now)
@@ -399,11 +434,21 @@ func publishedRecheckDelay(now, generatedAt time.Time) time.Duration {
 }
 
 func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, own *dnsv1alpha1.DNSPublicationOwnership, assocs []dnsv1alpha1.DNSZoneAssociation, regs []dnsv1alpha1.DNSRegistration, registrationZones map[types.UID]dnsv1alpha1.DNSObjectReference, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) (bool, error) {
+	timer := newPhaseTimer("zone load")
+	defer timer.finish()
 	previous, err := r.loadPrevious(ctx, own)
 	if err != nil {
 		return false, err
 	}
-	cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
+	if session := inputSession(ctx); session == nil || !session.cached {
+		timer.next("zone confirm")
+		cs, err = r.confirmContributions(ctx, z.Namespace, cs, previous)
+		if err != nil {
+			return false, err
+		}
+	}
+	timer.next("zone references")
+	assocs, err = r.reservationSafeAssociations(ctx, z, assocs)
 	if err != nil {
 		return false, err
 	}
@@ -416,12 +461,18 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	tombstone := !z.DeletionTimestamp.IsZero()
 	var payload []byte
 	var ownPlan PublicationPlan
+	var accepted map[types.UID]bool
 	if !tombstone {
-		compiled, err := Compile(input)
+		timer.next("zone compile")
+		compiled, used, err := r.compileCachedInputs(ctx, input)
 		if err != nil {
 			return false, err
 		}
+		regs, cs, records = used.Registrations, used.Contributions, used.StaticRecords
+		input = used
+
 		ownPlan = compiled.Plan
+		accepted = compiled.Accepted
 		wire, err := WirePlan(compiled.Plan)
 		if err != nil {
 			return false, err
@@ -430,10 +481,12 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		if err != nil {
 			return false, err
 		}
+		timer.next("zone statuses")
 		if err := r.patchInputStatuses(ctx, z, compiled, regs, cs, records, now); err != nil {
 			return false, err
 		}
 	}
+	timer.next("zone targets")
 	hash := model.Hash(payload)
 	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
@@ -494,12 +547,22 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		hash = model.EmptyContentHash()
 		stateHash = hash
 	}
-	if own.Spec.LastContentHash == stateHash {
-		return r.tombstoneAcknowledged(ctx, own), nil
+	if session := inputSession(ctx); session != nil {
+		if err := session.guard(input); err != nil {
+			return false, err
+		}
 	}
 	previousRevision, err := r.activeRevision(ctx, own)
 	if err != nil {
 		return false, err
+	}
+	// An older epoch's outbox cannot activate after ownership moves.
+	if previousRevision > 0 && own.Spec.LastContentHash == stateHash {
+		if session := inputSession(ctx); session != nil {
+			session.state.accepted = accepted
+			session.state.liveCompiled = true
+		}
+		return r.tombstoneAcknowledged(ctx, own), nil
 	}
 	revision := own.Spec.NextRevision
 	if revision <= 0 {
@@ -508,10 +571,15 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	// Reserve the identity before staging immutable artifacts. A crash after this
 	// CAS leaves a harmless gap; a retry can never reuse (epoch, revision) with
 	// different generated bytes or timestamps.
+	if r.stopping() {
+		// The process is handing its leases over; the next holder publishes.
+		return false, nil
+	}
+	timer.next("zone persist")
 	reservationBase := own.DeepCopy()
 	own.Spec.NextRevision = revision + 1
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(reservationBase, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, reservationBase); err != nil {
 		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
@@ -523,8 +591,12 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	own.Spec.LastContentHash = stateHash
 	own.Spec.ActiveManifestName = manifest.Name
 	own.Spec.LeaseUntil = metav1.NewTime(r.Options.Now().UTC().Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, base); err != nil {
 		return false, err
+	}
+	if session := inputSession(ctx); session != nil {
+		session.state.accepted = accepted
+		session.state.liveCompiled = true
 	}
 	return false, nil
 }
@@ -707,21 +779,33 @@ func (r *Reconciler) holdOwnership(ctx context.Context, z *dnsv1alpha1.DNSZone) 
 	}
 	base := own.DeepCopy()
 	own.Spec.LeaseUntil = metav1.NewTime(renewedAt.Add(r.Options.LeaseDuration))
-	if err := r.Patch(ctx, own, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := r.patchLease(ctx, own, base); err != nil {
 		return nil, time.Time{}, err
 	}
 	return own, time.Time{}, nil
 }
 
 func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZone, now time.Time) (*dnsv1alpha1.DNSPublicationOwnership, time.Time, error) {
-	name := "owner-" + model.OpaqueToken(string(z.UID))[:20]
+	if r.stopping() {
+		// The process is handing its leases over; take or renew none.
+		return nil, now.Add(r.Options.LeaseDuration), nil
+	}
+	name := ownershipName(z.UID)
 	o := &dnsv1alpha1.DNSPublicationOwnership{}
 	key := client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}
+	result := zoneLeaseResultError
+	defer func() { zoneLeaseAcquisitions.WithLabelValues(result).Inc() }()
+	zoneLeaseDuration.Set(r.Options.LeaseDuration.Seconds())
 	err := r.Get(ctx, key, o)
 	if apierrors.IsNotFound(err) {
 		o = &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: key.Namespace}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: z.UID, HolderIdentity: r.Options.Identity, WriterEpoch: int64(model.NextWriterEpoch(0, now)), NextRevision: 1, LeaseUntil: metav1.NewTime(now.Add(r.Options.LeaseDuration))}}
-		if err := r.Create(ctx, o); err != nil && !apierrors.IsAlreadyExists(err) {
+		switch err := r.Create(ctx, o); {
+		case apierrors.IsAlreadyExists(err):
+			result = zoneLeaseResultConflict
+		case err != nil:
 			return nil, time.Time{}, err
+		default:
+			result = "created"
 		}
 		return nil, now, nil
 	}
@@ -733,6 +817,7 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 	}
 	if o.Spec.HolderIdentity != r.Options.Identity {
 		if o.Spec.LeaseUntil.After(now) {
+			result = "standby"
 			return nil, o.Spec.LeaseUntil.Time, nil
 		}
 		base := o.DeepCopy()
@@ -740,15 +825,36 @@ func (r *Reconciler) acquireOwnership(ctx context.Context, z *dnsv1alpha1.DNSZon
 		o.Spec.WriterEpoch = int64(model.NextWriterEpoch(uint64(o.Spec.WriterEpoch), now))
 		o.Spec.LeaseUntil = metav1.NewTime(now.Add(r.Options.LeaseDuration))
 		if err := r.Patch(ctx, o, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			if apierrors.IsConflict(err) {
+				result = zoneLeaseResultConflict
+			}
 			return nil, time.Time{}, err
 		}
+		result = "taken_over"
+		zoneLeaseTakeovers.Inc()
+		return o, time.Time{}, nil
 	}
+	result = "held"
+	zoneLeaseRemaining.WithLabelValues("acquire").Observe(o.Spec.LeaseUntil.Sub(r.clock()).Seconds())
 	return o, time.Time{}, nil
+}
+
+type cachedPreviousPlan struct {
+	manifest string
+	plan     *PublicationPlan
 }
 
 func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublicationOwnership) (*PublicationPlan, error) {
 	if o.Spec.ActiveManifestName == "" {
 		return nil, nil
+	}
+	if r.Options.CachedZoneInputs {
+		if value, ok := r.previousPlans.Load(o.Spec.ZoneUID); ok {
+			cached := value.(cachedPreviousPlan)
+			if cached.manifest == o.Spec.ActiveManifestName {
+				return cached.plan, nil
+			}
+		}
 	}
 	var m dnsv1alpha1.DNSPublicationManifest
 	if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: o.Spec.ActiveManifestName}, &m); err != nil {
@@ -788,25 +894,54 @@ func (r *Reconciler) loadPrevious(ctx context.Context, o *dnsv1alpha1.DNSPublica
 	for _, f := range wire.ObservationFences {
 		p.Contributions = append(p.Contributions, ContributionFence{UID: types.UID(f.ContributionUID), Generation: int64(f.Generation), Sequence: int64(f.Sequence), Retired: f.Retired, SourceName: f.SourceName})
 	}
+	for _, f := range wire.Registrations {
+		p.Registrations = append(p.Registrations, RegistrationFence{UID: types.UID(f.UID), Generation: int64(f.Generation)})
+	}
+	if r.Options.CachedZoneInputs {
+		r.previousPlans.Store(o.Spec.ZoneUID, cachedPreviousPlan{manifest: o.Spec.ActiveManifestName, plan: p})
+	}
 	return p, nil
 }
 
+func (r *Reconciler) patchInputStatus(ctx context.Context, source client.Object, apply func(client.Object)) error {
+	desired := source.DeepCopyObject().(client.Object)
+	apply(desired)
+	if jsonEqual(source, desired) {
+		return nil
+	}
+	current := source.DeepCopyObject().(client.Object)
+	if err := r.sourceReader().Get(ctx, client.ObjectKeyFromObject(source), current); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if current.GetUID() != source.GetUID() || current.GetGeneration() != source.GetGeneration() || !reflect.DeepEqual(current.GetDeletionTimestamp(), source.GetDeletionTimestamp()) {
+		return cacheConflict(source.GetName())
+	}
+	base := current.DeepCopyObject().(client.Object)
+	apply(current)
+	if jsonEqual(base, current) {
+		return nil
+	}
+	return r.Status().Patch(ctx, current, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
 func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.DNSZone, result CompileResult, regs []dnsv1alpha1.DNSRegistration, cs []dnsv1alpha1.DNSRecordContribution, records []dnsv1alpha1.DNSRecordSet, now time.Time) error {
+	condition := func(uid types.UID, generation int64, conditions *[]metav1.Condition) {
+		reason := result.Reasons[uid]
+		if reason == "" {
+			reason = dnsValueAccepted
+		}
+		setCondition(conditions, dnsValueAccepted, boolCondition(result.Accepted[uid]), reason, reason, generation, now)
+	}
 	for i := range records {
 		record := &records[i]
 		if record.Spec.DNSZoneRef.Name != zone.Name || !record.DeletionTimestamp.IsZero() {
 			continue
 		}
-		base := record.DeepCopy()
-		reason := result.Reasons[record.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		setCondition(&record.Status.Conditions, dnsValueAccepted, boolCondition(result.Accepted[record.UID]), reason, reason, record.Generation, now)
-		if !reflect.DeepEqual(base.Status, record.Status) {
-			if err := r.Status().Patch(ctx, record, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
-				return err
-			}
+		if err := r.patchInputStatus(ctx, record, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRecordSet)
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
+			return err
 		}
 	}
 	relevant := map[types.UID]bool{}
@@ -816,25 +951,17 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 			continue
 		}
 		relevant[reg.UID] = true
-		accepted := result.Accepted[reg.UID]
-		reason := result.Reasons[reg.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		base := reg.DeepCopy()
-		reg.Status.CanonicalFQDN = absoluteOwner(reg.Spec.Name, result.Plan.ZoneApex)
-		if !accepted {
-			reg.Status.CanonicalFQDN = ""
-			reg.Status.PublicationWriterEpoch = 0
-			reg.Status.PublicationRevision = 0
-			projectstatus.Published(&reg.Status.Conditions, false, reg.Generation, now)
-		}
-		reg.Status.ObservedGeneration = reg.Generation
-		setCondition(&reg.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, reg.Generation, now)
-		if jsonEqual(base.Status, reg.Status) {
-			continue
-		}
-		if err := r.Status().Patch(ctx, reg, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.patchInputStatus(ctx, reg, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRegistration)
+			v.Status.CanonicalFQDN = absoluteOwner(v.Spec.Name, result.Plan.ZoneApex)
+			if !result.Accepted[v.UID] {
+				v.Status.CanonicalFQDN = ""
+				v.Status.PublicationWriterEpoch, v.Status.PublicationRevision = 0, 0
+				projectstatus.Published(&v.Status.Conditions, false, v.Generation, now)
+			}
+			v.Status.ObservedGeneration = v.Generation
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
 			return err
 		}
 	}
@@ -843,18 +970,11 @@ func (r *Reconciler) patchInputStatuses(ctx context.Context, zone *dnsv1alpha1.D
 		if !relevant[c.Spec.RegistrationRef.UID] {
 			continue
 		}
-		accepted := result.Accepted[c.UID]
-		reason := result.Reasons[c.UID]
-		if reason == "" {
-			reason = dnsValueAccepted
-		}
-		base := c.DeepCopy()
-		c.Status.ObservedGeneration = c.Generation
-		setCondition(&c.Status.Conditions, dnsValueAccepted, boolCondition(accepted), reason, reason, c.Generation, now)
-		if jsonEqual(base.Status, c.Status) {
-			continue
-		}
-		if err := r.Status().Patch(ctx, c, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.patchInputStatus(ctx, c, func(o client.Object) {
+			v := o.(*dnsv1alpha1.DNSRecordContribution)
+			v.Status.ObservedGeneration = v.Generation
+			condition(v.UID, v.Generation, &v.Status.Conditions)
+		}); err != nil {
 			return err
 		}
 	}
@@ -962,4 +1082,43 @@ func (r *Reconciler) confirmContributions(ctx context.Context, namespace string,
 		}
 	}
 	return confirmed, nil
+}
+
+func (r *Reconciler) stopping() bool {
+	return r.Options.Stopping != nil && r.Options.Stopping()
+}
+
+func ownershipName(zone types.UID) string {
+	return "owner-" + model.OpaqueToken(string(zone))[:20]
+}
+
+// ReleaseOwnership ends every zone lease identity holds in namespace, so the
+// next process can take the zones over at once instead of waiting for the
+// leases to expire. Leases another holder has taken are left alone.
+// It reports how many leases it released and how many it had to skip because
+// they changed under it.
+func ReleaseOwnership(ctx context.Context, c client.Client, namespace, identity string, now time.Time) (released, skipped int, err error) {
+	var owners dnsv1alpha1.DNSPublicationOwnershipList
+	if err := c.List(ctx, &owners, client.InNamespace(namespace)); err != nil {
+		return 0, 0, err
+	}
+	var errs []error
+	for i := range owners.Items {
+		o := &owners.Items[i]
+		if o.Spec.HolderIdentity != identity || !o.Spec.LeaseUntil.After(now) {
+			continue
+		}
+		base := o.DeepCopy()
+		o.Spec.LeaseUntil = metav1.NewTime(now)
+		if err := c.Patch(ctx, o, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+				skipped++
+			} else {
+				errs = append(errs, fmt.Errorf("release %s: %w", o.Name, err))
+			}
+			continue
+		}
+		released++
+	}
+	return released, skipped, errors.Join(errs...)
 }

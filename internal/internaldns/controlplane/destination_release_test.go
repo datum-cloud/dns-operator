@@ -72,7 +72,30 @@ func TestReplacedDestinationClaimIsReleased(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := claims()
-	if got["fd70:100::10"] || !got["fd70:100::20"] {
+	if !got["fd70:100::10"] || !got["fd70:100::20"] {
 		t.Fatalf("replaced destination claims = %v", got)
+	}
+	var bindings dnsv1alpha1.DNSResolverBindingList
+	if err := c.List(ctx, &bindings, client.InNamespace("platform")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if !binding.Spec.Tombstone || binding.Spec.Configuration.Query.NodeAddress != "fd70:100::10" {
+			continue
+		}
+		binding.Status.ObservedConfigurationRevision = binding.Spec.Configuration.Revision
+		binding.Status.Phase = "Withdrawn"
+		setCondition(&binding.Status.Conditions, "FullyReplicated", metav1.ConditionTrue, "ReplicaVerification", "", binding.Generation, now)
+		if err := c.Status().Update(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Options.AddressAllocator.ReleaseDestinations(ctx, "project-uid", nil); err != nil {
+		t.Fatal(err)
+	}
+	got = claims()
+	if got["fd70:100::10"] || !got["fd70:100::20"] {
+		t.Fatalf("fully withdrawn destination claims = %v", got)
 	}
 }

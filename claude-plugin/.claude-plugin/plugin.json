@@ -1,0 +1,23 @@
+{
+  "name": "datum-dns",
+  "description": "Create and troubleshoot DNS zones and records on Datum Cloud, and move a domain in from another provider",
+  "version": "1.0.0",
+  "author": {
+    "name": "Datum Cloud",
+    "url": "https://github.com/datum-cloud"
+  },
+  "homepage": "https://www.datum.net/docs/domain-dns/dns",
+  "repository": "https://github.com/datum-cloud/dns-operator",
+  "license": "AGPL-3.0",
+  "keywords": [
+    "dns",
+    "datum",
+    "zones",
+    "records",
+    "delegation",
+    "migration"
+  ],
+  "dependencies": [
+    "datum-cloud"
+  ]
+}

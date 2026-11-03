@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -165,6 +166,9 @@ func (r *DNSRecordSetReplicator) Reconcile(ctx context.Context, req mcreconcile.
 	}
 	// Ensure the downstream recordset object mirrors the upstream spec
 	operation, err := r.ensureDownstreamRecordSet(ctx, strategy, &upstream)
+	if errors.Is(err, errDownstreamTerminating) {
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -312,11 +316,20 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		return controllerutil.OperationResultNone, err
 	}
 
+	if err := checkDownstreamNamespace(ctx, r.DownstreamClient, md.Namespace); err != nil {
+		return controllerutil.OperationResultNone, err
+	}
+
 	shadow := dnsv1alpha1.DNSRecordSet{}
 	shadow.SetNamespace(md.Namespace)
 	shadow.SetName(md.Name)
 
 	res, cErr := controllerutil.CreateOrPatch(ctx, r.DownstreamClient, &shadow, func() error {
+		// Namespace deletion may have removed the anchor before the record's
+		// provider finalizer finishes. Do not recreate it or mutate a dying shadow.
+		if !shadow.DeletionTimestamp.IsZero() {
+			return errDownstreamTerminating
+		}
 		shadow.Annotations = md.Annotations
 		if !equality.Semantic.DeepEqual(shadow.Spec, upstream.Spec) {
 			shadow.Spec = upstream.Spec
@@ -324,7 +337,7 @@ func (r *DNSRecordSetReplicator) ensureDownstreamRecordSet(ctx context.Context, 
 		return strategy.SetControllerReference(ctx, upstream, &shadow)
 	})
 	if cErr != nil {
-		return res, cErr
+		return res, downstreamTerminationError(cErr)
 	}
 	ensuredLog := log.FromContext(ctx)
 	if res == controllerutil.OperationResultNone {

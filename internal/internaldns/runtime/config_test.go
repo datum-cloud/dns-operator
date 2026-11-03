@@ -4,7 +4,11 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +38,27 @@ func TestAgentUsesRootRegionAndDoesNotNeedKubernetes(t *testing.T) {
 	}
 	if c.Agent.Region != c.Region || c.Agent.Shard != c.Shard {
 		t.Fatalf("agent did not inherit shard: %#v", c.Agent)
+	}
+}
+
+func TestAgentDeliveryConnectionTracksDisconnectAndReconnect(t *testing.T) {
+	states := make(chan bool, 3)
+	states <- true
+	states <- false
+	states <- true
+	close(states)
+	var observed []bool
+	observeAgentDeliveryConnection(context.Background(), states, func(connected bool) {
+		observed = append(observed, connected)
+	})
+	want := []bool{true, false, true}
+	if len(observed) != len(want) {
+		t.Fatalf("observed connection states = %v, want %v", observed, want)
+	}
+	for i := range want {
+		if observed[i] != want[i] {
+			t.Fatalf("observed connection states = %v, want %v", observed, want)
+		}
 	}
 }
 
@@ -177,8 +202,16 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsAddress := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan error, 1)
-	go func() { done <- runAgent(ctx, cfg) }()
+	go func() { done <- runAgent(ctx, cfg, Options{AgentMetricsBindAddress: metricsAddress}) }()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if _, err := os.Stat(cfg.Agent.Render.NodeDNSDist.Path); err == nil {
@@ -195,6 +228,26 @@ func TestAgentRestoresCheckpointWhileBrokerUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "fd53::1") || !strings.Contains(string(data), `SetTagAction("dns-context"`) || strings.Contains(string(data), `SetTagAction("context-unready"`) {
 		t.Fatalf("persisted resolver mapping was not restored: %s", data)
+	}
+	var response *http.Response
+	metricsDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(metricsDeadline) {
+		response, err = http.Get("http://" + metricsAddress + "/metrics")
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(body), "internal_dns_agent_publication_lagging_zones") {
+		t.Fatal("agent metrics endpoint is missing publication lag")
 	}
 	cancel()
 	select {
@@ -263,6 +316,38 @@ func TestManagedDomainSuffixesValidation(t *testing.T) {
 	}
 }
 
+func TestCachedZoneInputsRequiresPerZoneReconcile(t *testing.T) {
+	cfg := Config{CachedZoneInputs: true}
+	if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "requires perZoneReconcile") {
+		t.Fatalf("invalid cache configuration accepted: %v", err)
+	}
+	cfg = Config{PerZoneReconcile: true, CachedZoneInputs: true,
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Members:  []model.Member{{MemberID: "regional-1", Role: "regional"}},
+	}
+	if err := cfg.Validate(roleControlPlane); err != nil {
+		t.Fatal(err)
+	}
+	var defaults Config
+	defaults.defaults()
+	if defaults.CachedZoneInputs {
+		t.Fatal("cache enabled by default")
+	}
+}
+
+func TestReservedScopesConfigurationMigration(t *testing.T) {
+	for _, input := range []string{`{"reservedScopes":null}`, `{"reservedScopes":[]}`, `{"reservedScopes":[{"name":"instances","publishers":["compute"]}]}`, `{"admission":{"instancePublishers":null}}`, `{"admission":{"instancePublishers":[]}}`, `{"admission":{"instancePublishers":["compute"]}}`} {
+		var cfg Config
+		if err := json.Unmarshal([]byte(input), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "service-owned DNSRegistrations") {
+			t.Fatalf("obsolete policy silently ignored: %s: %v", input, err)
+		}
+	}
+}
 func TestRegionsValidation(t *testing.T) {
 	base := Config{
 		Region: "central", Shard: "one",

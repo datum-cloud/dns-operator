@@ -313,7 +313,7 @@ func startEnvtest(t *testing.T, dirs ...string) *rest.Config {
 	}
 	cfg, err := env.Start()
 	if err != nil {
-		t.Fatalf("starting envtest: %v (run 'make setup-envtest' or set KUBEBUILDER_ASSETS)", err)
+		t.Fatalf("starting envtest: %v (run 'task setup-envtest' or set KUBEBUILDER_ASSETS)", err)
 	}
 	t.Cleanup(func() {
 		if err := env.Stop(); err != nil {

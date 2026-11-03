@@ -268,9 +268,11 @@ func probeLocalReadiness(ctx context.Context, render RenderConfig) error {
 			return fmt.Errorf("local CoreDNS readiness canary %s: %w", server, err)
 		}
 		if key != nil {
-			answer, _, err := (&dns.Client{Net: networkTCP, Timeout: coreDNSCanaryTimeout}).ExchangeContext(ctx, readinessCanaryQuery(key), server)
-			if err := readinessCanaryAnswer(answer, err); err != nil {
-				return fmt.Errorf("local CoreDNS identity transport %s: %w", server, err)
+			for _, network := range []string{networkTCP, networkUDP} {
+				answer, _, err := (&dns.Client{Net: network, Timeout: coreDNSCanaryTimeout}).ExchangeContext(ctx, readinessCanaryQuery(key), server)
+				if err := readinessCanaryAnswer(answer, err); err != nil {
+					return fmt.Errorf("local CoreDNS identity transport %s over %s: %w", server, network, err)
+				}
 			}
 		}
 	}

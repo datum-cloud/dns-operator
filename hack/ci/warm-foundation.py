@@ -114,6 +114,17 @@ def tool_pins():
 def matches_tool(binary, module, version):
     if not binary.is_file() or not os.access(binary, os.X_OK):
         return False
+    # Official release archives are checksum-verified by install-go-tool.sh.
+    # Kustomize omits module metadata and Chainsaw reports a dirty module tag.
+    # Accept only the exact release bytes for those pinned versions.
+    release_digest = {
+        ("sigs.k8s.io/kustomize/kustomize/v5", "v5.7.1"):
+            "54636edecead2af90fa980cdc6a66a5ce062a1e4d694a2e36357cd73190755bb",
+        ("github.com/kyverno/chainsaw", "v0.2.15"):
+            "593391c6daff3cc7f12a34f90b3f08b1fa0677ac4c718c101f38863681a769c0",
+    }.get((module, version))
+    if release_digest and hashlib.sha256(binary.read_bytes()).hexdigest() == release_digest:
+        return True
     metadata = run("go", "version", "-m", str(binary))
     return any(parts[:3] == ["mod", module, version]
                for parts in (line.split() for line in metadata.splitlines()))

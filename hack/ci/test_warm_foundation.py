@@ -21,6 +21,20 @@ def prepared():
 
 
 class ReceiptTests(unittest.TestCase):
+    def test_release_tool_requires_exact_bytes_and_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "chainsaw"
+            binary.write_bytes(b"release")
+            binary.chmod(0o755)
+            with patch.object(foundation.hashlib, "sha256") as digest,                     patch.object(foundation, "run", return_value="mod github.com/kyverno/chainsaw v0.2.15+dirty"):
+                digest.return_value.hexdigest.return_value = (
+                    "593391c6daff3cc7f12a34f90b3f08b1fa0677ac4c718c101f38863681a769c0")
+                self.assertTrue(foundation.matches_tool(binary, "github.com/kyverno/chainsaw", "v0.2.15"))
+                self.assertFalse(foundation.matches_tool(binary, "github.com/kyverno/chainsaw", "v0.2.16"))
+                digest.return_value.hexdigest.return_value = "different bytes"
+                self.assertFalse(foundation.matches_tool(binary, "github.com/kyverno/chainsaw", "v0.2.15"))
+
+
     def test_valid_receipt(self):
         foundation.validate_receipt(prepared(), "matching", 100)
 

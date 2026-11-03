@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
 	"reflect"
 	"sort"
@@ -776,52 +777,64 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 	return nil
 }
 
-const managedObjectLabel = "dns.networking.miloapis.com/managed"
+const (
+	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	// managedLabelsAnnotation lists, comma separated, the context labels to copy
+	// onto the zone and association the context manages. Only listed labels
+	// are copied, so labels used to track the context, such as GitOps ones,
+	// never select the managed objects.
+	managedLabelsAnnotation = "dns.networking.miloapis.com/managed-object-labels"
+)
 
 // managedObjectLabels labels the zone and association a context manages with
-// the context's own labels, so whoever creates the context can say what the
-// zone is for, and marks them as managed.
+// the context labels it lists in managedLabelsAnnotation, so whoever creates
+// the context can say what the zone is for, and marks them as managed.
 func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
-	l := make(map[string]string, len(c.Labels)+1)
-	for k, v := range c.Labels {
-		l[k] = v
+	l := map[string]string{}
+	for _, key := range strings.Split(c.Annotations[managedLabelsAnnotation], ",") {
+		key = strings.TrimSpace(key)
+		if v, ok := c.Labels[key]; ok && key != "" {
+			l[key] = v
+		}
 	}
 	l[managedObjectLabel] = "true"
 	return l
 }
 
-// syncManagedLabels adds or updates the context's labels on an object the
-// context controls, for objects created before the context had them. Labels
-// the context drops stay on the object.
-func (r *Reconciler) syncManagedLabels(ctx context.Context, c *dnsv1alpha1.DNSResolverContext, o client.Object) error {
+// syncManagedLabels adds or corrects the copied labels on a live object the
+// context controls, for objects created before the context listed them. Labels
+// are only added, never removed. Labels are informational, so a failed write
+// is logged and never stops the pass.
+func (r *Reconciler) syncManagedLabels(ctx context.Context, c *dnsv1alpha1.DNSResolverContext, o client.Object) {
 	if !metav1.IsControlledBy(o, c) || !o.GetDeletionTimestamp().IsZero() {
-		return nil
+		return
 	}
 	want := managedObjectLabels(c)
 	current := o.GetLabels()
-	missing := false
+	stale := false
 	for k, v := range want {
 		if got, ok := current[k]; !ok || got != v {
-			missing = true
+			stale = true
 			break
 		}
 	}
-	if !missing {
-		return nil
+	if !stale {
+		return
 	}
 	base := o.DeepCopyObject().(client.Object)
-	merged := make(map[string]string, len(current)+len(want))
-	for k, v := range current {
-		merged[k] = v
+	merged := maps.Clone(current)
+	if merged == nil {
+		merged = map[string]string{}
 	}
-	for k, v := range want {
-		merged[k] = v
-	}
+	maps.Copy(merged, want)
 	o.SetLabels(merged)
 	if listed, _ := ctx.Value(listedManagedObjectsKey{}).(*listedManagedObjects); listed != nil {
 		listed.changed = true
 	}
-	return client.IgnoreNotFound(r.Patch(ctx, o, client.MergeFrom(base)))
+	if err := r.Patch(ctx, o, client.MergeFrom(base)); err != nil && !apierrors.IsNotFound(err) {
+		o.SetLabels(current)
+		ctrl.LoggerFrom(ctx).Error(err, "label managed object", "kind", fmt.Sprintf("%T", o), "name", o.GetName())
+	}
 }
 
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
@@ -836,9 +849,7 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.getOrCreate(ctx, zone); err != nil {
 		return false, err
 	}
-	if err := r.syncManagedLabels(ctx, c, zone); err != nil {
-		return false, err
-	}
+	r.syncManagedLabels(ctx, c, zone)
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: managedObjectLabels(c)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
@@ -848,8 +859,9 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.getOrCreate(ctx, association); err != nil {
 		return false, err
 	}
-	if err := r.syncManagedLabels(ctx, c, association); err != nil {
-		return false, err
+	// The association webhook needs a live zone, so leave it until there is one.
+	if zone.DeletionTimestamp.IsZero() {
+		r.syncManagedLabels(ctx, c, association)
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
 	refs, err := r.readReferences(ctx, association)

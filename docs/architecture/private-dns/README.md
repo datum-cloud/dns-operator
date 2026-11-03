@@ -524,9 +524,11 @@ independent zones with the same apex. Static records have no health lease.
 The context directly owns its managed zone and association. DNS allocates the
 requested zone and exposes its reference and suffix in context status. Product
 publishers use these outputs. The managed zone and association carry the label
-`dns.networking.miloapis.com/managed: "true"` and a copy of the context's own
-labels, so whoever creates the context can tag what the zone is for, such as the
-network it serves. A naming policy
+`dns.networking.miloapis.com/managed: "true"`. They also get a copy of the
+context labels named, comma separated, in the context's
+`dns.networking.miloapis.com/managed-object-labels` annotation, so whoever
+creates the context can tag what the zone is for, such as the network it
+serves. Copied labels are added or corrected, never removed. A naming policy
 adds custom names without a zone choice on each Compute or Connect resource.
 
 ```yaml

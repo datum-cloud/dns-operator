@@ -88,7 +88,12 @@ jobs:
 
       # Preparation is outside the simulated job's critical path. This workflow
       # deliberately measures it on the same disposable executor as consumption.
+      - name: Import prewarmed foundation tools and timing evidence
+        if: inputs.runner == 'datum-linux-kind-prewarmed'
+        run: /opt/dns-prewarm/dns-foundation handoff
+
       - name: Prepare a clean warm foundation
+        if: inputs.runner != 'datum-linux-kind-prewarmed'
         run: python3 hack/time-ci-phase.py foundation-prepare task --yes env:foundation:prepare-warm
 
       - name: Set up Buildx
@@ -148,6 +153,7 @@ jobs:
             dev/ci-lanes/
             dev/ci-setup/
             dev/executor.txt
+            dev/prewarm-*
             dev/repeated-claim.log
           if-no-files-found: warn
 

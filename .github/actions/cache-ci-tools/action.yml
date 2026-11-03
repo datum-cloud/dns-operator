@@ -1,0 +1,13 @@
+name: Cache pinned CI tools
+description: Restore tool binaries and envtest assets for the current toolchain
+inputs:
+  purpose:
+    description: Tool set used by this job
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: bin
+        key: ci-tools-${{ runner.os }}-${{ runner.arch }}-${{ inputs.purpose }}-${{ hashFiles('Taskfile.yaml', 'go.mod', 'go.sum', 'hack/install-go-tool.sh', '.github/actions/cache-ci-tools/action.yml') }}

@@ -776,10 +776,58 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 	return nil
 }
 
+const managedObjectLabel = "dns.networking.miloapis.com/managed"
+
+// managedObjectLabels labels the zone and association a context manages with
+// the context's own labels, so whoever creates the context can say what the
+// zone is for, and marks them as managed.
+func managedObjectLabels(c *dnsv1alpha1.DNSResolverContext) map[string]string {
+	l := make(map[string]string, len(c.Labels)+1)
+	for k, v := range c.Labels {
+		l[k] = v
+	}
+	l[managedObjectLabel] = "true"
+	return l
+}
+
+// syncManagedLabels adds or updates the context's labels on an object the
+// context controls, for objects created before the context had them. Labels
+// the context drops stay on the object.
+func (r *Reconciler) syncManagedLabels(ctx context.Context, c *dnsv1alpha1.DNSResolverContext, o client.Object) error {
+	if !metav1.IsControlledBy(o, c) || !o.GetDeletionTimestamp().IsZero() {
+		return nil
+	}
+	want := managedObjectLabels(c)
+	current := o.GetLabels()
+	missing := false
+	for k, v := range want {
+		if got, ok := current[k]; !ok || got != v {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return nil
+	}
+	base := o.DeepCopyObject().(client.Object)
+	merged := make(map[string]string, len(current)+len(want))
+	for k, v := range current {
+		merged[k] = v
+	}
+	for k, v := range want {
+		merged[k] = v
+	}
+	o.SetLabels(merged)
+	if listed, _ := ctx.Value(listedManagedObjectsKey{}).(*listedManagedObjects); listed != nil {
+		listed.changed = true
+	}
+	return client.IgnoreNotFound(r.Patch(ctx, o, client.MergeFrom(base)))
+}
+
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
 	zoneName := managedZoneName(c)
-	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: managedObjectLabels(c)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, zone, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err
@@ -788,13 +836,19 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if err := r.getOrCreate(ctx, zone); err != nil {
 		return false, err
 	}
-	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: map[string]string{"dns.networking.miloapis.com/managed": "true"}}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
+	if err := r.syncManagedLabels(ctx, c, zone); err != nil {
+		return false, err
+	}
+	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: c.Namespace, Labels: managedObjectLabels(c)}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: c.Name}}}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(c, association, r.Scheme, controllerutil.WithBlockOwnerDeletion(false)); err != nil {
 			return false, err
 		}
 	}
 	if err := r.getOrCreate(ctx, association); err != nil {
+		return false, err
+	}
+	if err := r.syncManagedLabels(ctx, c, association); err != nil {
 		return false, err
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)

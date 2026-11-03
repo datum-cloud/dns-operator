@@ -345,3 +345,56 @@ func TestAssociationInsideReservedScopesIsNotAccepted(t *testing.T) {
 		})
 	}
 }
+
+func TestManagedZoneCarriesContextLabels(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "vpc-a", Namespace: "project", UID: "vpc-a-context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/vpc-a", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSZoneAssociation{}).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		obj.SetUID(types.UID(obj.GetName() + "-uid"))
+		obj.SetGeneration(1)
+		return cl.Create(ctx, obj, opts...)
+	}}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-uid", ManagedDomainSuffixes: []string{"internal"}}}
+	r.Options.defaults()
+	ctx := context.Background()
+	zoneKey := client.ObjectKey{Namespace: "project", Name: model.ManagedZoneName(string(resolver.UID))}
+	assocKey := client.ObjectKey{Namespace: "project", Name: zoneKey.Name + "-context"}
+	check := func(want map[string]string) {
+		t.Helper()
+		var zone dnsv1alpha1.DNSZone
+		var assoc dnsv1alpha1.DNSZoneAssociation
+		if err := c.Get(ctx, zoneKey, &zone); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Get(ctx, assocKey, &assoc); err != nil {
+			t.Fatal(err)
+		}
+		for _, got := range []map[string]string{zone.Labels, assoc.Labels} {
+			for k, v := range want {
+				if got[k] != v {
+					t.Fatalf("label %s = %q, want %q (labels %v)", k, got[k], v, got)
+				}
+			}
+		}
+	}
+
+	// A zone created before the context had labels is labelled once it does.
+	if err := r.reconcileResolverContexts(ctx, "project", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	check(map[string]string{managedObjectLabel: "true"})
+	if err := c.Get(ctx, client.ObjectKeyFromObject(resolver), resolver); err != nil {
+		t.Fatal(err)
+	}
+	resolver.Labels = map[string]string{"example.com/network-name": "vpc-a", managedObjectLabel: "false"}
+	if err := c.Update(ctx, resolver); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reconcileResolverContexts(ctx, "project", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	check(map[string]string{"example.com/network-name": "vpc-a", managedObjectLabel: "true"})
+}

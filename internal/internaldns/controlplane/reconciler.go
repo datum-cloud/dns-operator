@@ -48,6 +48,10 @@ type ReconcilerOptions struct {
 	// region, so contexts keep one shard assignment everywhere. Empty means
 	// this reconciler publishes every region.
 	Regions []string
+	// LocalInputs reads the project's objects from copies a federation hub
+	// placed in this control plane's cluster. The project API authors managed
+	// zones and associations, so this control plane only reads them.
+	LocalInputs bool
 	// PassSlots, when set, is shared by every project reconciler in a process
 	// and bounds how many project passes run at once, so a restart does not
 	// start a full pass of every project against the API server together.

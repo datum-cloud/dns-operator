@@ -770,6 +770,9 @@ func managedZoneName(c *dnsv1alpha1.DNSResolverContext) string {
 }
 
 func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) error {
+	if r.Options.LocalInputs {
+		return nil
+	}
 	zoneName := managedZoneName(c)
 	for _, obj := range []client.Object{
 		&dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName + "-context"}},
@@ -887,6 +890,9 @@ func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNS
 }
 
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
+	if r.Options.LocalInputs {
+		return r.observeManagedZone(ctx, c)
+	}
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
 	zoneName := managedZoneName(c)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: managedObjectLabels(c), Annotations: managedObjectAnnotations(c)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
@@ -923,6 +929,38 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if ready {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Suffix: suffix}
 	} else if !zoneCurrent || !known {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+	}
+	return ready, nil
+}
+
+// observeManagedZone reports a context's managed zone ready from the copies a
+// federation hub placed here. Copies carry no owner references, so it matches
+// the zone and association by name and spec instead.
+func (r *Reconciler) observeManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
+	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
+	zoneName := managedZoneName(c)
+	var zone dnsv1alpha1.DNSZone
+	var association dnsv1alpha1.DNSZoneAssociation
+	for _, obj := range []client.Object{&zone, &association} {
+		name := zoneName
+		if obj == &association {
+			name = zoneName + "-context"
+		}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: name}, obj); apierrors.IsNotFound(err) {
+			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+	}
+	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
+	ready := zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() &&
+		association.Spec.DNSZoneRef.Name == zone.Name && association.Spec.ResolverContextRef.Name == c.Name &&
+		accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation
+	if ready {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Suffix: suffix}
+	} else {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 	}
 	return ready, nil

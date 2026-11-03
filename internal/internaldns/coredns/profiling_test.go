@@ -229,7 +229,7 @@ func TestProfilingPreservesQueryService(t *testing.T) {
 					if err != nil {
 						t.Error(err)
 					}
-				case <-time.After(5 * time.Second):
+				case <-time.After(ShutdownTimeout):
 					t.Error("DNS process did not stop")
 				}
 			})

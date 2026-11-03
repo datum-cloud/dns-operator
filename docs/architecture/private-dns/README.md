@@ -812,3 +812,36 @@ the same tenant isolation and capacity requirements.
 A DNS service VPC, Galactic private connectivity, shared serving capacity,
 protected listener-address allocation, durable project storage, and
 secured NATS capacity. Review regional broker placement and failover policy.
+
+
+### Planned regional backend replacement
+
+CoreDNS enters a five-second drain phase on SIGTERM. During that phase it
+returns SERVFAIL to dnsdist's unkeyed root-SOA management health check and to
+the readiness canary, but continues answering authenticated tenant traffic.
+The generated dnsdist configuration uses three failed health checks before
+withdrawing a backend; the drain window allows those checks to converge before
+listeners close. Snapshot updates and withdrawals continue during draining.
+The serving supervisor allows up to fifteen seconds for normal shutdown instead
+of killing the child after one second. Fail-closed stops retain their one-second
+kill deadline; they must not wait for a planned drain.
+
+Replace regional CoreDNS members one at a time. Verify the surviving member is
+healthy and eligible for every affected context/zone before starting, then wait
+for the replacement's activation and backend health to recover before replacing
+the survivor. Keep the pod termination grace period at least thirty seconds.
+Do not increase dnsdist's health-check interval/failure threshold without also
+reviewing the drain duration. Old CoreDNS images do not implement this handshake.
+
+This protects planned backend replacement, not abrupt host/process failure or
+replacement of a singleton regional frontend. A `Recreate` deployment with one
+frontend address has an unavoidable gap while that address is absent. Before
+replacing that frontend, move dependent resolvers to an activated local-answer
+profile or provide an independently addressed, eligible alternate frontend and
+verify client failover. Do not use overlapping replicas sharing the same member
+identity, listener address or state PVC as a substitute for that redundancy.
+
+Run `TestDNSDistBackendDrainIntegration` with `INTERNAL_DNS_TEST_DNSDIST` set to
+the deployed dnsdist binary to verify UDP and TCP query continuity while one of
+two backends drains and exits. Validate staged rollouts with continuous queries;
+post-rollout readiness alone cannot demonstrate continuity.

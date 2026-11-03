@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	outcomeDraining               = "draining"
 	outcomeServedZone             = "served_zone"
 	outcomeForwardedNext          = "forwarded_next"
 	outcomeForwardedPublic        = "forwarded_public"
@@ -57,7 +58,7 @@ var snapshotApplied = prometheus.NewGauge(prometheus.GaugeOpts{
 
 func init() {
 	prometheus.MustRegister(contextQueries, snapshotContexts, snapshotReloads, snapshotApplied)
-	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
+	for _, outcome := range []string{outcomeDraining, outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
 		outcomeRefusedBadDestination, outcomeRefusedBadIdentity, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
 		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary, outcomeServfailCanaryIdentity} {
 		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
@@ -107,8 +108,8 @@ func serveMetrics(ctx context.Context, address string, p *ContextPlugin) (<-chan
 	mux.Handle("/metrics", promhttp.HandlerFor(tenantFreeGatherer{prometheus.DefaultGatherer}, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
-		if p.state.Load() == nil {
-			http.Error(w, "no snapshot loaded", http.StatusServiceUnavailable)
+		if p.state.Load() == nil || p.draining.Load() {
+			http.Error(w, "no snapshot loaded or draining", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)

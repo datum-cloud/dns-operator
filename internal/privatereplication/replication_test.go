@@ -42,7 +42,7 @@ func replicator(hub ctrl.Client, kind string) *Replicator {
 func TestReplicatorCopiesPrivateObjectsAndWithdrawsThem(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
-	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "default", Generation: 3, Labels: map[string]string{"team": "a"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "internal.", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "default", Generation: 3, UID: "zone-uid", Labels: map[string]string{"team": "a"}}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "internal.", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	project := fake.NewClientBuilder().WithScheme(s).WithObjects(projectNamespace(), zone).Build()
 	hub := fake.NewClientBuilder().WithScheme(s).Build()
 	r := replicator(hub, "DNSZone")
@@ -63,7 +63,7 @@ func TestReplicatorCopiesPrivateObjectsAndWithdrawsThem(t *testing.T) {
 	if err := hub.Get(ctx, ctrl.ObjectKey{Namespace: "ns-ns-uid", Name: "internal"}, &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.Spec.DomainName != "internal." || copied.Labels[OriginLabel] != OriginProject || copied.Labels["team"] != "a" || copied.Annotations[OriginGenerationAnnotation] != "3" {
+	if copied.Spec.DomainName != "internal." || copied.Labels[OriginLabel] != OriginProject || copied.Labels["team"] != "a" || copied.Annotations[OriginGenerationAnnotation] != "3" || copied.Annotations[OriginUIDAnnotation] != "zone-uid" {
 		t.Fatalf("hub copy = %#v", copied)
 	}
 

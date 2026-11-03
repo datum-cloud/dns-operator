@@ -417,6 +417,24 @@ object UIDs and generations. Reference identities and addresses below are
 illustrative. `status` examples show controller output and
 are not fields consumers submit when creating resources.
 
+
+##### Inputs through a federation hub
+
+The `private-replicator` role copies every project's private DNS objects
+(private zones and their record sets, associations, naming policies,
+registrations, contributions, resolver contexts and access bindings) into a
+federation hub such as Karmada, under the project namespace's mapped
+`ns-<uid>` namespace. The hub places them in each region's cluster, so a
+regional control plane can read its inputs from its own cluster. Status is
+never copied down; each region writes its own `status.regions` entry, and the
+role merges every region's entry, as the hub collected them, back into the
+project object.
+
+Every copied object carries its origin in `internal-dns.miloapis.com/origin`:
+`project` for the project API, or a region's name for an object that region
+wrote itself. The replicator never copies a region's object down, and the
+role's mirror copies a region's registrations and contributions from the hub
+into the project, refusing to replace an object from another origin.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS

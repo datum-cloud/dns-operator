@@ -51,8 +51,9 @@ import (
 // namespace, so with one lease between them only one of their pods would lead.
 // The agents keep the original name, so a rollout never runs two agent leaders.
 const (
-	downstreamLeaseName = "1813fe7c.datum.cloud"
-	replicatorLeaseName = "replicator.dns.networking.miloapis.com"
+	downstreamLeaseName        = "1813fe7c.datum.cloud"
+	replicatorLeaseName        = "replicator.dns.networking.miloapis.com"
+	privateReplicatorLeaseName = "private-replicator.dns.networking.miloapis.com"
 )
 
 // The lease's own client limits, apart from the manager's.
@@ -102,6 +103,7 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 
 	var role string
+	var privateHubKubeconfig string
 	var serverConfigFile string
 	var controllerClass string
 	var controllerClassType string
@@ -132,7 +134,8 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&serverConfigFile, "server-config", "", "path to the server config file")
-	flag.StringVar(&role, "role", "downstream", "Role for this binary: downstream|replicator|all")
+	flag.StringVar(&role, "role", "downstream", "Role for this binary: downstream|replicator|private-replicator|all")
+	flag.StringVar(&privateHubKubeconfig, "private-hub-kubeconfig", "", "Kubeconfig for the federation hub the private-replicator role copies private DNS objects into")
 
 	// specifies the class name (DNSZoneClass.metadata.name) which this controller should reconcile zones for
 	flag.StringVar(
@@ -308,6 +311,17 @@ func main() {
 		setupLog.Info("starting downstream manager")
 		if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 			setupLog.Error(err, "problem running manager")
+			os.Exit(1)
+		}
+		return
+
+	case "private-replicator":
+		if err := runPrivateReplicator(serverConfig, privateHubKubeconfig, withLeaderElection(ctrl.Options{
+			Scheme:                 scheme,
+			Metrics:                metricsServerOptions,
+			HealthProbeBindAddress: probeAddr,
+		}, ctrl.GetConfigOrDie(), privateReplicatorLeaseName, le)); err != nil {
+			setupLog.Error(err, "problem running private replicator")
 			os.Exit(1)
 		}
 		return

@@ -214,7 +214,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 	directory := newProjectDirectory(projects)
 	var discovery *projectDiscovery
-	if cfg.ProjectDiscovery != nil {
+	if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+		localClient, clientErr := client.New(platformREST, client.Options{Scheme: scheme})
+		if clientErr != nil {
+			return fmt.Errorf("create local project discovery client: %w", clientErr)
+		}
+		discovery = &projectDiscovery{local: true, client: &deadlineClient{Client: localClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}, directory: directory, rest: platformREST, kubeAPI: cfg.ProjectDiscovery.KubeAPI, makeProject: makeProject}
+	} else if cfg.ProjectDiscovery != nil {
 		discoveryREST, loadErr := restConfig(cfg.ProjectDiscovery.Kubeconfig)
 		if loadErr != nil {
 			return fmt.Errorf("load project discovery kubeconfig: %w", loadErr)

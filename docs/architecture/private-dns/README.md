@@ -435,6 +435,13 @@ Every copied object carries its origin in `internal-dns.miloapis.com/origin`:
 wrote itself. The replicator never copies a region's object down, and the
 role's mirror copies a region's registrations and contributions from the hub
 into the project, refusing to replace an object from another origin.
+
+With `projectDiscovery.local`, a regional control plane runs a project source
+for every namespace the hub placed in its own cluster, identified by the
+project UID the replicator recorded on it. Every input, status write and
+platform record is then in the region's own cluster. Region entries report
+the object's generation at its origin, so entries from every region compare
+against the same project object.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS

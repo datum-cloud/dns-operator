@@ -12,6 +12,7 @@
 package privatereplication
 
 import (
+	"go.miloapis.com/dns-operator/internal/internaldns/projectstatus"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -40,7 +41,7 @@ const (
 
 	// OriginGenerationAnnotation is the generation of the object at its
 	// origin. A copy replaces another only when it is newer.
-	OriginGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
+	OriginGenerationAnnotation = projectstatus.OriginGenerationAnnotation
 
 	finalizer = "internal-dns.miloapis.com/replicate"
 )

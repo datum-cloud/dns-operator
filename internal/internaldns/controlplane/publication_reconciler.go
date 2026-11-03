@@ -336,8 +336,8 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 				return
 			}
 			reg.Status.PublicationWriterEpoch, reg.Status.PublicationRevision = 0, 0
-			r.setRegions(&reg.Status.Regions, &manifest, reg.Generation, func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
-			projectstatus.PublishedForRegions(&reg.Status.Conditions, reg.Status.Regions, manifest.Spec.ExpectedRegions, published, reg.Generation, now)
+			r.setRegions(&reg.Status.Regions, &manifest, projectstatus.OriginGeneration(reg), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			projectstatus.PublishedForRegions(&reg.Status.Conditions, reg.Status.Regions, manifest.Spec.ExpectedRegions, published, projectstatus.OriginGeneration(reg), reg.Generation, now)
 		}
 		listed := reg.DeepCopy()
 		apply(listed)
@@ -392,8 +392,8 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		everywhere := published
 		if r.Options.regional() {
 			c.Status.PublishedRevision = 0
-			r.setRegions(&c.Status.Regions, &manifest, c.Generation, func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
-			if pending := projectstatus.PendingRegions(c.Status.Regions, manifest.Spec.ExpectedRegions, c.Generation); len(manifest.Spec.ExpectedRegions) > 0 {
+			r.setRegions(&c.Status.Regions, &manifest, projectstatus.OriginGeneration(c), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			if pending := projectstatus.PendingRegions(c.Status.Regions, manifest.Spec.ExpectedRegions, projectstatus.OriginGeneration(c)); len(manifest.Spec.ExpectedRegions) > 0 {
 				everywhere = len(pending) == 0
 				if !everywhere {
 					msg += " in " + strings.Join(pending, ", ")

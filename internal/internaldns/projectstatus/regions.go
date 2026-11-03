@@ -3,6 +3,7 @@
 package projectstatus
 
 import (
+	"strconv"
 	"slices"
 	"sort"
 	"strings"
@@ -117,11 +118,29 @@ func RecordRegions(entries *[]dnsv1alpha1.DNSRegionPublicationStatus, local, exp
 	}
 }
 
-// PublishedForRegions sets Published from every expected region's entry. With
-// no expected region the zone is served nowhere, so only published counts.
-func PublishedForRegions(conditions *[]metav1.Condition, entries []dnsv1alpha1.DNSRegionPublicationStatus, expected []string, published bool, generation int64, now time.Time) bool {
+// PublishedForRegions sets Published from every expected region's entry for
+// entryGeneration (see OriginGeneration), on a condition for the object's own
+// generation. With no expected region the zone is served nowhere, so only
+// published counts.
+func PublishedForRegions(conditions *[]metav1.Condition, entries []dnsv1alpha1.DNSRegionPublicationStatus, expected []string, published bool, entryGeneration, generation int64, now time.Time) bool {
 	if len(expected) == 0 {
 		return Published(conditions, published, generation, now)
 	}
-	return PublishedInRegions(conditions, PendingRegions(entries, expected, generation), generation, now)
+	return PublishedInRegions(conditions, PendingRegions(entries, expected, entryGeneration), generation, now)
+}
+
+// OriginGenerationAnnotation is the generation an object had where it was
+// written, set on copies a federation hub places in a region.
+const OriginGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
+
+// OriginGeneration is the generation region entries report for obj: the
+// generation at its origin when obj is a copy, so entries from every region
+// compare against the same object, or obj's own generation otherwise.
+func OriginGeneration(obj metav1.Object) int64 {
+	if v, ok := obj.GetAnnotations()[OriginGenerationAnnotation]; ok {
+		if g, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return g
+		}
+	}
+	return obj.GetGeneration()
 }

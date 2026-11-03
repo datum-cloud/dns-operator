@@ -91,12 +91,16 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
+      - name: Fingerprint image build inputs
+        id: build-inputs
+        run: bash hack/ci/build-input-key.sh >> "$GITHUB_OUTPUT"
+
       - name: Restore BuildKit layers
         id: build-cache
         uses: actions/cache@v6
         with:
           path: .ci-buildkit-cache
-          key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          key: dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ steps.build-inputs.outputs.key }}
           restore-keys: |
             dns-layers-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
             dns-layers-${{ runner.os }}-${{ runner.arch }}-
@@ -106,21 +110,23 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .ci-go-cache
-          key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ github.sha }}
+          key: dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-${{ steps.build-inputs.outputs.key }}
           restore-keys: |
             dns-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'hack/ci/Dockerfile') }}-
             dns-go-${{ runner.os }}-${{ runner.arch }}-
 
-      # BuildKit cache-to alone does not persist RUN --mount caches.
-      - name: Restore and retain Go cache mounts
+      - name: Fetch pinned cache mount utility
         if: steps.build-cache.outputs.cache-hit != 'true'
-        uses: reproducible-containers/buildkit-cache-dance@e475a9cbcb5052f85fd3830f1266fa0c91ef8595
+        uses: actions/checkout@v7
         with:
-          cache-map: |
-            {
-              ".ci-go-cache/modules": "/go/pkg/mod",
-              ".ci-go-cache/build": "/root/.cache/go-build"
-            }
+          repository: reproducible-containers/buildkit-cache-dance
+          ref: e475a9cbcb5052f85fd3830f1266fa0c91ef8595
+          path: .ci-cache-dance
+          persist-credentials: false
+
+      - name: Restore Go cache mounts
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: bash hack/ci/go-cache.sh inject
 
       - name: Record executor capacity
         run: |
@@ -132,6 +138,7 @@ jobs:
 
       - name: Build images while claiming foundation, then deploy and qualify
         env:
+          DNS_E2E_EXTRACT_GO_CACHE: ${{ steps.build-cache.outputs.cache-hit != 'true' }}
           DNS_BUILD_CACHE_HIT: ${{ steps.build-cache.outputs.cache-hit }}
         run: python3 hack/time-ci-phase.py warm-job python3 hack/ci/run-warm-job.py
 
@@ -144,6 +151,7 @@ jobs:
             dev/ci-timings.jsonl
             dev/ci-lanes/
             dev/ci-setup/
+            dev/ci-execution/
             dev/executor.txt
             dev/repeated-claim.log
           if-no-files-found: warn

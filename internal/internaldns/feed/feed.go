@@ -34,6 +34,9 @@ const (
 	// OriginGenerationAnnotation is the object's generation in the region
 	// that wrote it.
 	OriginGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
+	// OriginUIDAnnotation is the object's UID in the region that wrote it,
+	// which every copy keeps so references to it resolve in every region.
+	OriginUIDAnnotation = "internal-dns.miloapis.com/origin-uid"
 )
 
 // Kinds are the inputs a region may write itself.
@@ -95,6 +98,9 @@ func entryOf(obj *unstructured.Unstructured) (Entry, error) {
 		if k != "kubectl.kubernetes.io/last-applied-configuration" {
 			annotations[k] = v
 		}
+	}
+	if annotations[OriginUIDAnnotation] == "" {
+		annotations[OriginUIDAnnotation] = string(obj.GetUID())
 	}
 	return Entry{Kind: obj.GetKind(), Namespace: obj.GetNamespace(), Name: obj.GetName(), Generation: obj.GetGeneration(), Labels: obj.GetLabels(), Annotations: annotations, Spec: spec}, nil
 }

@@ -26,7 +26,7 @@ func scheme(t *testing.T) *runtime.Scheme {
 }
 
 func contribution(origin string) *dnsv1alpha1.DNSRecordContribution {
-	return &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "instance-a", Namespace: "ns-uid", Generation: 4, Labels: map[string]string{OriginLabel: origin, "app": "web"}}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "web"}}}
+	return &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "instance-a", Namespace: "ns-uid", Generation: 4, UID: "writer-uid", Labels: map[string]string{OriginLabel: origin, "app": "web"}}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "web"}}}
 }
 
 // replay applies every key the bucket holds, as a mirror's watch would.
@@ -69,7 +69,7 @@ func TestARegionsWriteReachesTheOtherRegionAndTheHub(t *testing.T) {
 	if err := central.Get(ctx, key, &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.Labels[OriginLabel] != "us-east-1" || copied.Labels["app"] != "web" || copied.Annotations[OriginGenerationAnnotation] != "4" || copied.Spec.RegistrationRef.Name != "web" {
+	if copied.Labels[OriginLabel] != "us-east-1" || copied.Labels["app"] != "web" || copied.Annotations[OriginGenerationAnnotation] != "4" || copied.Annotations[OriginUIDAnnotation] != "writer-uid" || copied.Spec.RegistrationRef.Name != "web" {
 		t.Fatalf("central copy = %#v", copied)
 	}
 	var inHub dnsv1alpha1.DNSRecordContribution

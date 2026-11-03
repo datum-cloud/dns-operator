@@ -117,6 +117,9 @@ func (p *Publisher) copyToHub(ctx context.Context, gvk schema.GroupVersionKind, 
 			annotations[k] = v
 		}
 		annotations[OriginGenerationAnnotation] = strconv.FormatInt(obj.GetGeneration(), 10)
+		if annotations[OriginUIDAnnotation] == "" {
+			annotations[OriginUIDAnnotation] = string(obj.GetUID())
+		}
 		hub.SetAnnotations(annotations)
 		hub.Object["spec"] = obj.DeepCopy().Object["spec"]
 		return nil

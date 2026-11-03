@@ -17,15 +17,15 @@ func TestCopiesReadWithTheirOriginUID(t *testing.T) {
 	if err := dnsv1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	copied := &dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "ns-a", UID: "local-uid", Annotations: map[string]string{originUIDAnnotation: "project-uid"}}}
+	copied := &dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "ns-a", UID: "local-uid", Generation: 1, Annotations: map[string]string{originUIDAnnotation: "project-uid", originGenerationAnnotation: "9"}}}
 	own := &dnsv1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "local", Namespace: "ns-a", UID: "own-uid"}}
 	c := originUIDClient{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(copied, own).Build()}
 	var got dnsv1.DNSRegistration
 	if err := c.Get(t.Context(), client.ObjectKeyFromObject(copied), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.UID != "project-uid" {
-		t.Fatalf("Get UID = %s, want the origin's", got.UID)
+	if got.UID != "project-uid" || got.Generation != 9 {
+		t.Fatalf("Get UID, generation = %s, %d, want the origin's", got.UID, got.Generation)
 	}
 	var list dnsv1.DNSRegistrationList
 	if err := c.List(t.Context(), &list); err != nil {

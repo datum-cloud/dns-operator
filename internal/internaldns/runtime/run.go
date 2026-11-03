@@ -321,6 +321,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
 	}
+	if cfg.Feed != nil {
+		go runFeed(ctx, cfg, scheme, platformREST, live, errCh)
+	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
 		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, regionLeases[region])
 	}, errCh)

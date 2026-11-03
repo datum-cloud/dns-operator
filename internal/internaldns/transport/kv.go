@@ -53,6 +53,26 @@ func (j *JetStream) KeyValueBucket(ctx context.Context, bucket string, replicas 
 	return &KVBucket{kv: kv, filter: filter}, nil
 }
 
+// MirrorKeyValueBucket opens a read-only copy of another broker's bucket,
+// kept current by the broker over a JetStream domain link, creating it when
+// missing. A mirror keeps the source's keys and deletes.
+func (j *JetStream) MirrorKeyValueBucket(ctx context.Context, bucket, source, domain string, replicas int) (*KVBucket, error) {
+	if bucket == "" || source == "" {
+		return nil, errors.New("mirror and source bucket are required")
+	}
+	kv, err := j.js.KeyValue(ctx, bucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		kv, err = j.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Description: "internal DNS inputs another region wrote", History: 1, Storage: jetstream.FileStorage, Replicas: replicas, Mirror: &jetstream.StreamSource{Name: source, Domain: domain}})
+		if errors.Is(err, jetstream.ErrBucketExists) {
+			kv, err = j.js.KeyValue(ctx, bucket)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open mirror bucket %q: %w", bucket, err)
+	}
+	return &KVBucket{kv: kv}, nil
+}
+
 func (b *KVBucket) Get(ctx context.Context, key string) ([]byte, uint64, error) {
 	entry, err := b.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {

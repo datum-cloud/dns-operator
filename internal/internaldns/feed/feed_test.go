@@ -1,0 +1,162 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package feed
+
+import (
+	"context"
+	"testing"
+
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/pubstore"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+)
+
+func scheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func contribution(origin string) *dnsv1alpha1.DNSRecordContribution {
+	return &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "instance-a", Namespace: "ns-uid", Generation: 4, Labels: map[string]string{OriginLabel: origin, "app": "web"}}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "web"}}}
+}
+
+// replay applies every key the bucket holds, as a mirror's watch would.
+func replay(t *testing.T, kv *pubstore.MemoryKV, a *Applier) map[string]bool {
+	t.Helper()
+	keys, err := snapshot(t.Context(), kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key := range keys {
+		value, _, err := kv.Get(t.Context(), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Apply(t.Context(), key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return keys
+}
+
+func TestARegionsWriteReachesTheOtherRegionAndTheHub(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	written := contribution("us-east-1")
+	east := fake.NewClientBuilder().WithScheme(s).WithObjects(written).Build()
+	hub := fake.NewClientBuilder().WithScheme(s).Build()
+	central := fake.NewClientBuilder().WithScheme(s).Build()
+	kv := pubstore.NewMemoryKV()
+	p := &Publisher{Region: "us-east-1", Local: east, KV: kv, Hub: hub}
+	a := &Applier{Region: "us-east-1", Local: central, Mirror: kv}
+	key := types.NamespacedName{Namespace: "ns-uid", Name: "instance-a"}
+	gvk := Kinds[1]
+
+	if err := p.Sync(ctx, gvk, key); err != nil {
+		t.Fatal(err)
+	}
+	replay(t, kv, a)
+	var copied dnsv1alpha1.DNSRecordContribution
+	if err := central.Get(ctx, key, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if copied.Labels[OriginLabel] != "us-east-1" || copied.Labels["app"] != "web" || copied.Annotations[OriginGenerationAnnotation] != "4" || copied.Spec.RegistrationRef.Name != "web" {
+		t.Fatalf("central copy = %#v", copied)
+	}
+	var inHub dnsv1alpha1.DNSRecordContribution
+	if err := hub.Get(ctx, key, &inHub); err != nil {
+		t.Fatal(err)
+	}
+	if inHub.Labels[OriginLabel] != "us-east-1" || inHub.Labels["internal-dns.miloapis.com/replicated"] != "" {
+		t.Fatalf("hub copy = %#v", inHub)
+	}
+
+	if err := east.Delete(ctx, written); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Sync(ctx, gvk, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply(ctx, Key(gvk.Kind, key.Namespace, key.Name), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := central.Get(ctx, key, &copied); !apierrors.IsNotFound(err) {
+		t.Fatalf("central copy outlived the writer's delete: %v", err)
+	}
+	if err := hub.Get(ctx, key, &inHub); !apierrors.IsNotFound(err) {
+		t.Fatalf("hub copy outlived the writer's delete: %v", err)
+	}
+	if _, _, err := kv.Get(ctx, Key(gvk.Kind, key.Namespace, key.Name)); err == nil {
+		t.Fatal("the feed kept a deleted object's key")
+	}
+}
+
+func TestOnlyTheWritingRegionsObjectsArePublishedOrReplaced(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	fromProject := contribution("project")
+	east := fake.NewClientBuilder().WithScheme(s).WithObjects(fromProject).Build()
+	kv := pubstore.NewMemoryKV()
+	p := &Publisher{Region: "us-east-1", Local: east, KV: kv}
+	key := types.NamespacedName{Namespace: "ns-uid", Name: "instance-a"}
+	if err := p.Sync(ctx, Kinds[1], key); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := snapshot(ctx, kv); len(keys) != 0 {
+		t.Fatalf("published an object the region did not write: %v", keys)
+	}
+
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution("project")).Build()
+	other := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution("us-east-1")).Build()
+	otherKV := pubstore.NewMemoryKV()
+	if err := (&Publisher{Region: "us-east-1", Local: other, KV: otherKV}).Sync(ctx, Kinds[1], key); err != nil {
+		t.Fatal(err)
+	}
+	value, _, _ := otherKV.Get(ctx, Key("DNSRecordContribution", "ns-uid", "instance-a"))
+	if err := (&Applier{Region: "us-east-1", Local: central, Mirror: otherKV}).Apply(ctx, Key("DNSRecordContribution", "ns-uid", "instance-a"), value); err == nil {
+		t.Fatal("another region's write replaced an object the project owns")
+	}
+}
+
+func TestApplierRemovesCopiesTheWriterNoLongerHolds(t *testing.T) {
+	s := scheme(t)
+	stale := contribution("us-east-1")
+	mine := contribution("project")
+	mine.Name = "project-owned"
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(stale, mine).Build()
+	a := &Applier{Region: "us-east-1", Local: central}
+	if err := a.prune(t.Context(), map[string]bool{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := central.Get(t.Context(), client.ObjectKeyFromObject(stale), stale); !apierrors.IsNotFound(err) {
+		t.Fatalf("a copy the writer withdrew survived resync: %v", err)
+	}
+	if err := central.Get(t.Context(), client.ObjectKeyFromObject(mine), mine); err != nil {
+		t.Fatalf("resync removed an object of another origin: %v", err)
+	}
+}
+
+func TestResyncWithdrawsKeysWhoseObjectIsGone(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	east := fake.NewClientBuilder().WithScheme(s).Build()
+	kv := pubstore.NewMemoryKV()
+	if _, err := kv.Create(ctx, Key("DNSRecordContribution", "ns-uid", "gone"), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Publisher{Region: "us-east-1", Local: east, KV: kv}).Resync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := snapshot(ctx, kv); len(keys) != 0 {
+		t.Fatalf("keys after resync = %v", keys)
+	}
+}

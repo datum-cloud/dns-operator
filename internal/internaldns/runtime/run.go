@@ -506,9 +506,10 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
 		const ackWorkers = 4
-		localDone := make(chan error, len(consumers)*ackWorkers+1)
+		localDone := make(chan error, len(consumers)*ackWorkers+2)
 		outbox := &platform.Outbox{Client: platformClient, Namespace: cfg.PlatformNamespace, Region: region, Publisher: route.publisher, Bootstrap: route.bootstrap, PendingOnly: true}
 		go retryLoop(workerCtx, 500*time.Millisecond, loopID{Loop: "outbox", Region: region}, live, whileLeading(outbox.Step, lease), localDone)
+		go retryLoop(workerCtx, consumerPruneInterval, loopID{Loop: "consumer prune", Region: region}, live, whileLeading(pruneRetiredConsumers(route.bus, route.stream.Name, planners), lease), localDone)
 		for key, consumer := range consumers {
 			for range ackWorkers {
 				go consumeAcks(workerCtx, consumer, sinks[key], localDone)

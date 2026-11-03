@@ -104,7 +104,9 @@ jobs:
         id: digests
         env:
           IMAGE_GROUP: ${{ inputs.group }}
-          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+          OPERATOR_DIGEST: ${{ fromJSON(steps.build.outputs.metadata).operator['containerimage.digest'] }}
+          RUNTIME_DIGEST: ${{ fromJSON(steps.build.outputs.metadata).runtime['containerimage.digest'] }}
+          SERVING_DIGEST: ${{ fromJSON(steps.build.outputs.metadata).serving['containerimage.digest'] }}
         run: bash hack/ci/record-build-metadata.sh
       - name: Filter certificates and publish operator
         if: inputs.group == 'operator'

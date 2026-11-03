@@ -29,6 +29,14 @@ if bash "$root/hack/ci/publish-images.sh" digests; then
   echo 'Missing build digests passed' >&2
   exit 1
 fi
+export RUNTIME_DIGEST="sha256:$(printf '%064d' 1)" SERVING_DIGEST="sha256:$(printf '%064d' 2)"
+bash "$root/hack/ci/record-build-metadata.sh"
+grep -qx "runtime=$RUNTIME_DIGEST" "$GITHUB_OUTPUT"
+grep -qx "serving=$SERVING_DIGEST" "$GITHUB_OUTPUT"
+if SERVING_DIGEST='' bash "$root/hack/ci/record-build-metadata.sh"; then
+  echo 'Missing serving digest passed' >&2
+  exit 1
+fi
 JOB_RESULTS='{"tests":{"result":"success"},"image":{"result":"success"}}' bash "$root/hack/ci/check-validation.sh"
 for result in failure cancelled skipped; do
   if JOB_RESULTS="{\"tests\":{\"result\":\"$result\"},\"image\":{\"result\":\"success\"}}" bash "$root/hack/ci/check-validation.sh"; then

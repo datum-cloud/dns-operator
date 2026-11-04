@@ -17,6 +17,7 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -126,6 +127,10 @@ type PublicationStore struct {
 
 	scope []string
 
+	// regionsOnly, when set, holds the region tokens this store's control
+	// plane publishes while every other region runs its own; see OnlyRegions.
+	regionsOnly map[string]bool
+
 	mu      *sync.RWMutex
 	index   map[string]indexed
 	pending map[string]bool
@@ -146,6 +151,46 @@ func New(api client.Client, kv KV) *PublicationStore {
 // a broker name the same one.
 func NewRegional(api client.Client, home string, buckets map[string]KV, regions map[string]string) *PublicationStore {
 	return &PublicationStore{Client: api, home: home, buckets: buckets, regions: regions, now: time.Now, mu: &sync.RWMutex{}, index: map[string]indexed{}, pending: map[string]bool{}, synced: make(chan struct{})}
+}
+
+// regionsKey records which regions' control plane owns a bucket. It matches no
+// record prefix, so the index never follows it.
+const regionsKey = "regions"
+
+// OnlyRegions marks this store as one region's own: its control plane
+// publishes only regions, and serving outboxes for any other region, left by
+// a control plane that once published every region, are collected because
+// nothing here exports them. Call it before Start.
+func (s *PublicationStore) OnlyRegions(regions []string) {
+	s.regionsOnly = map[string]bool{}
+	for _, region := range regions {
+		s.regionsOnly[model.SafeToken(region)] = true
+	}
+}
+
+// ClaimRegions records regions as the owners of the home bucket, and refuses
+// a bucket another region's control plane owns: two regions sharing a bucket
+// would compete for the same zone leases with different serving targets.
+// Moving a bucket to other regions means deleting its regions key first.
+func (s *PublicationStore) ClaimRegions(ctx context.Context, regions []string) error {
+	sorted := append([]string(nil), regions...)
+	sort.Strings(sorted)
+	want := []byte(strings.Join(sorted, ","))
+	kv := s.buckets[s.home]
+	current, _, err := kv.Get(ctx, regionsKey)
+	if errors.Is(err, transport.ErrKVNotFound) {
+		if _, err := kv.Create(ctx, regionsKey, want); err == nil || !errors.Is(err, transport.ErrKVExists) {
+			return err
+		}
+		current, _, err = kv.Get(ctx, regionsKey)
+	}
+	if err != nil {
+		return fmt.Errorf("read the bucket's region claim: %w", err)
+	}
+	if bytes.Equal(current, want) {
+		return nil
+	}
+	return fmt.Errorf("publication bucket belongs to the control plane for regions %q, not %q; give each region its own bucket, or, with every control plane on it stopped, delete the bucket's %q key to hand it to other regions", current, want, regionsKey)
 }
 
 // View is the store as one region's loops use it: a record not yet in the

@@ -189,6 +189,55 @@ spec:
                 description: RecordCount is the total number of DNS records in this
                   zone.
                 type: integer
+              regions:
+                description: |-
+                  Regions reports each serving region's publication of a private zone when
+                  a control plane runs in each region.
+                items:
+                  description: |-
+                    DNSRegionPublicationStatus is one serving region's view of a private
+                    publication, written by that region's control plane.
+                  properties:
+                    available:
+                      description: |-
+                        Available is true when the region's publication holds an eligible
+                        endpoint for this registration.
+                      type: boolean
+                    observedGeneration:
+                      description: ObservedGeneration is the object generation this
+                        entry reports on.
+                      format: int64
+                      type: integer
+                    programmed:
+                      description: |-
+                        Programmed is true once at least one of the region's serving replicas
+                        applied the publication.
+                      type: boolean
+                    published:
+                      description: |-
+                        Published is true once the region's required serving replicas verified
+                        the publication.
+                      type: boolean
+                    region:
+                      minLength: 1
+                      type: string
+                    revision:
+                      format: int64
+                      type: integer
+                    writerEpoch:
+                      description: |-
+                        WriterEpoch and Revision identify the region's publication. They are
+                        ordered only within one region.
+                      format: int64
+                      type: integer
+                  required:
+                  - published
+                  - region
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - region
+                x-kubernetes-list-type: map
             type: object
         required:
         - spec

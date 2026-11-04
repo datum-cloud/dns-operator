@@ -133,6 +133,11 @@ type DNSPublicationManifestSpec struct {
 	ContributionFences []DNSContributionFence `json:"contributionFences,omitempty"`
 	RegistrationFences []DNSRegistrationFence `json:"registrationFences,omitempty"`
 	ServingTargets     []DNSPublicationTarget `json:"servingTargets,omitempty"`
+	// ExpectedRegions names every region the zone is served in, including
+	// regions another control plane publishes. Set only when a control plane
+	// runs in each region; ServingTargets then lists only this one's targets.
+	// +listType=set
+	ExpectedRegions []string `json:"expectedRegions,omitempty"`
 }
 
 type DNSPublicationTarget struct {

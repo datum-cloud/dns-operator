@@ -25,7 +25,9 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 	if len(cfg.RegionalTransports) > 0 {
 		regions = regions[:0]
 		for _, regional := range cfg.RegionalTransports {
-			regions = append(regions, regional.Region)
+			if cfg.publishes(regional.Region) {
+				regions = append(regions, regional.Region)
+			}
 		}
 	}
 	home, _, _, err := cfg.transportForRegion(cfg.PublicationStore.Region)
@@ -75,6 +77,13 @@ func openPublicationStore(ctx context.Context, cfg Config, api client.Client) (*
 		}
 	}
 	store := pubstore.NewRegional(api, byURL[homeURL], buckets, byRegion)
+	if len(cfg.Regions) > 0 {
+		store.OnlyRegions(cfg.Regions)
+		if err := store.ClaimRegions(ctx, cfg.Regions); err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+	}
 	if err := store.Start(storeCtx); err != nil {
 		closeAll()
 		return nil, nil, fmt.Errorf("load publication store: %w", err)

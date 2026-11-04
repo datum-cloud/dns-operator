@@ -183,11 +183,43 @@ type DNSRegistrationSpec struct {
 }
 
 type DNSRegistrationStatus struct {
-	CanonicalFQDN          string             `json:"canonicalFQDN,omitempty"`
-	ObservedGeneration     int64              `json:"observedGeneration,omitempty"`
-	PublicationWriterEpoch int64              `json:"publicationWriterEpoch,omitempty"`
-	PublicationRevision    int64              `json:"publicationRevision,omitempty"`
-	Conditions             []metav1.Condition `json:"conditions,omitempty"`
+	CanonicalFQDN      string `json:"canonicalFQDN,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	// PublicationWriterEpoch and PublicationRevision name the publication when
+	// one control plane publishes every region. With a control plane per
+	// region they are left empty and Regions reports each region instead.
+	PublicationWriterEpoch int64 `json:"publicationWriterEpoch,omitempty"`
+	PublicationRevision    int64 `json:"publicationRevision,omitempty"`
+	// Regions reports each serving region's publication when a control plane
+	// runs in each region. Published is true once every region the zone is
+	// served in has published this generation.
+	// +listType=map
+	// +listMapKey=region
+	// +optional
+	Regions    []DNSRegionPublicationStatus `json:"regions,omitempty"`
+	Conditions []metav1.Condition           `json:"conditions,omitempty"`
+}
+
+// DNSRegionPublicationStatus is one serving region's view of a private
+// publication, written by that region's control plane.
+type DNSRegionPublicationStatus struct {
+	// +kubebuilder:validation:MinLength=1
+	Region string `json:"region"`
+	// ObservedGeneration is the object generation this entry reports on.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// WriterEpoch and Revision identify the region's publication. They are
+	// ordered only within one region.
+	WriterEpoch int64 `json:"writerEpoch,omitempty"`
+	Revision    int64 `json:"revision,omitempty"`
+	// Published is true once the region's required serving replicas verified
+	// the publication.
+	Published bool `json:"published"`
+	// Programmed is true once at least one of the region's serving replicas
+	// applied the publication.
+	Programmed bool `json:"programmed,omitempty"`
+	// Available is true when the region's publication holds an eligible
+	// endpoint for this registration.
+	Available bool `json:"available,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -227,9 +259,17 @@ type DNSRecordContributionSpec struct {
 }
 
 type DNSRecordContributionStatus struct {
-	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-	PublishedRevision  int64              `json:"publishedRevision,omitempty"`
-	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// PublishedRevision is set when one control plane publishes every region.
+	// With a control plane per region it is left empty; see Regions.
+	PublishedRevision int64 `json:"publishedRevision,omitempty"`
+	// Regions reports each serving region's publication when a control plane
+	// runs in each region.
+	// +listType=map
+	// +listMapKey=region
+	// +optional
+	Regions    []DNSRegionPublicationStatus `json:"regions,omitempty"`
+	Conditions []metav1.Condition           `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -133,6 +133,9 @@ type DNSPublicationManifestSpec struct {
 	ContributionFences []DNSContributionFence `json:"contributionFences,omitempty"`
 	RegistrationFences []DNSRegistrationFence `json:"registrationFences,omitempty"`
 	ServingTargets     []DNSPublicationTarget `json:"servingTargets,omitempty"`
+	// WithdrawnTargets lists shards that served an earlier revision and are not
+	// serving targets now. Each receives this revision as a withdrawal.
+	WithdrawnTargets []DNSPublicationTarget `json:"withdrawnTargets,omitempty"`
 }
 
 type DNSPublicationTarget struct {

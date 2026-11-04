@@ -131,7 +131,7 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: owner.Spec.ActiveManifestName}, &m); err != nil {
 		return err
 	}
-	if uint64(m.Spec.WriterEpoch) != a.Epoch || uint64(m.Spec.Revision) != a.Revision {
+	if uint64(m.Spec.WriterEpoch) != a.Epoch || uint64(m.Spec.Revision) != a.Revision || !servedBy(&m, s.Region, s.Shard) {
 		return nil
 	}
 	row.WriterEpoch = int64(a.Epoch)
@@ -403,6 +403,18 @@ func condition(rows *[]metav1.Condition, name string, value bool, reason string,
 		status = metav1.ConditionTrue
 	}
 	apimeta.SetStatusCondition(rows, metav1.Condition{Type: name, Status: status, Reason: reason, Message: reason, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
+}
+
+// servedBy reports whether a shard serves the manifest. A shard the manifest
+// withdraws from acknowledges the withdrawal, which says nothing about the
+// shards that serve it.
+func servedBy(m *dnsv1alpha1.DNSPublicationManifest, region, shard string) bool {
+	for _, target := range m.Spec.ServingTargets {
+		if target.Region == region && target.Shard == shard {
+			return true
+		}
+	}
+	return false
 }
 
 func hasApplied(rows []dnsv1alpha1.DNSApplyAcknowledgement, epoch, revision int64) bool {

@@ -25,6 +25,8 @@ import (
 
 const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publication"
 
+const outboxAcknowledged = "Acknowledged"
+
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	started := time.Now()
 	defer func() { passDuration.Observe(time.Since(started).Seconds()) }()
@@ -376,7 +378,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 	}
 	timer.next("zone targets")
 	hash := model.Hash(payload)
-	servingTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
+	servingTargets, withdrawnTargets, err := r.publicationTargets(ctx, own, ownPlan.ContextUIDs, tombstone)
 	if err != nil {
 		return false, err
 	}
@@ -427,7 +429,7 @@ func (r *Reconciler) compileZone(ctx context.Context, z *dnsv1alpha1.DNSZone, ow
 		return false, err
 	}
 	manifestName := artifactName("pub", z.UID, own.Spec.WriterEpoch, revision)
-	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, now)
+	manifest, err := r.persistPublication(ctx, z, manifestName, own.Spec.WriterEpoch, revision, previousRevision, tombstone, payload, hash, ownPlan.ContextUIDs, ownPlan.Contributions, ownPlan.Registrations, servingTargets, withdrawnTargets, now)
 	if err != nil {
 		return false, err
 	}
@@ -479,10 +481,15 @@ func (r *Reconciler) boundTargets(resolverContextUID types.UID, bindings []dnsv1
 	return bound
 }
 
-func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, includePrevious bool) ([]ServingRegion, error) {
+// publicationTargets returns the shards a revision serves and the shards it
+// withdraws from. A shard an earlier revision served keeps receiving each
+// revision as a withdrawal until one reaches its broker, because only the
+// active manifest's outboxes are ever exported. A withdrawal keeps every
+// earlier serving shard as a serving target.
+func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DNSPublicationOwnership, contextsByUID []types.UID, tombstone bool) ([]ServingRegion, []ServingRegion, error) {
 	var bindings dnsv1alpha1.DNSResolverBindingList
 	if err := r.listProjectBindings(ctx, &bindings); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// A zone publishes to the shards where any of its contexts is bound. A zone
 	// none of whose contexts is bound anywhere yet keeps every assigned shard, so
@@ -490,26 +497,60 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 	byKey := map[string]ServingRegion{}
 	for _, resolverContextUID := range contextsByUID {
 		for _, target := range r.boundTargets(resolverContextUID, bindings.Items) {
-			byKey[target.Region+"\x00"+target.Shard] = target
+			byKey[target.key()] = target
 		}
 	}
 	if len(byKey) == 0 {
 		for _, resolverContextUID := range contextsByUID {
 			for _, target := range r.selectServingTargets(resolverContextUID, bindings.Items) {
-				byKey[target.Region+"\x00"+target.Shard] = target
+				byKey[target.key()] = target
 			}
 		}
 	}
-	if includePrevious && own.Spec.ActiveManifestName != "" {
+	withdrawn := map[string]ServingRegion{}
+	if own.Spec.ActiveManifestName != "" {
 		var previous dnsv1alpha1.DNSPublicationManifest
 		if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: own.Spec.ActiveManifestName}, &previous); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, target := range previous.Spec.ServingTargets {
 			v := ServingRegion{Region: target.Region, Shard: target.Shard}
-			byKey[v.Region+"\x00"+v.Shard] = v
+			if tombstone {
+				byKey[v.key()] = v
+			} else if _, ok := byKey[v.key()]; !ok {
+				withdrawn[v.key()] = v
+			}
+		}
+		for _, target := range previous.Spec.WithdrawnTargets {
+			v := ServingRegion{Region: target.Region, Shard: target.Shard}
+			if _, ok := byKey[v.key()]; ok {
+				continue
+			}
+			delivered, err := r.withdrawalDelivered(ctx, previous.Name, v)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !delivered {
+				withdrawn[v.key()] = v
+			}
 		}
 	}
+	return sortedTargets(byKey), sortedTargets(withdrawn), nil
+}
+
+func (r *Reconciler) withdrawalDelivered(ctx context.Context, manifest string, target ServingRegion) (bool, error) {
+	var out dnsv1alpha1.DNSTransportOutbox
+	err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: model.PublicationActivationName(manifest, target.Region, target.Shard)}, &out)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return out.Status.State == outboxAcknowledged, nil
+}
+
+func sortedTargets(byKey map[string]ServingRegion) []ServingRegion {
 	result := make([]ServingRegion, 0, len(byKey))
 	for _, target := range byKey {
 		result = append(result, target)
@@ -520,10 +561,10 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 		}
 		return result[i].Region < result[j].Region
 	})
-	return result, nil
+	return result
 }
 
-func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, contextUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
+func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZone, name string, epoch, revision, previous int64, tombstone bool, payload []byte, hash string, contextUIDs []types.UID, fences []ContributionFence, registrations []RegistrationFence, servingTargets, withdrawnTargets []ServingRegion, now time.Time) (*dnsv1alpha1.DNSPublicationManifest, error) {
 	contextUIDs = append([]types.UID{}, contextUIDs...)
 	refs := []dnsv1alpha1.DNSPublicationChunkReference{}
 	depsByRegion := map[string][]string{}
@@ -567,7 +608,11 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	for _, target := range servingTargets {
 		apiTargets = append(apiTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets}}
+	var apiWithdrawn []dnsv1alpha1.DNSPublicationTarget
+	for _, target := range withdrawnTargets {
+		apiWithdrawn = append(apiWithdrawn, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
+	}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets, WithdrawnTargets: apiWithdrawn}}
 	if err := r.createImmutable(ctx, m); err != nil {
 		return nil, err
 	}
@@ -584,6 +629,19 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 		}
 		b, _ := json.Marshal(env)
 		out := r.outbox(model.PublicationActivationName(name, target.Region, target.Shard), target.Region, target.Shard, model.RecordManifestSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, true, depsByRegion[token])
+		if err := r.createImmutable(ctx, out); err != nil {
+			return nil, err
+		}
+	}
+	withdrawal := wmanifest
+	withdrawal.Tombstone, withdrawal.Chunks, withdrawal.ContentHash = true, []model.ChunkRef{}, model.EmptyContentHash()
+	for _, target := range withdrawnTargets {
+		env, err := model.NewEnvelope(model.KindPublicationManifest, regionToken(target)+":"+name, target.Region, target.Shard, string(z.UID), uint64(epoch), uint64(revision), now, withdrawal)
+		if err != nil {
+			return nil, err
+		}
+		b, _ := json.Marshal(env)
+		out := r.outbox(model.PublicationActivationName(name, target.Region, target.Shard), target.Region, target.Shard, model.RecordManifestSubject(target.Region, target.Shard, string(z.UID)), z.UID, epoch, revision, name, b, true, nil)
 		if err := r.createImmutable(ctx, out); err != nil {
 			return nil, err
 		}

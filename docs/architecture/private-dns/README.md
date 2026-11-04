@@ -459,6 +459,13 @@ object, marked with the writing region as its origin. A mirror carries deletes
 as well as writes, the applier removes copies whose key is gone after each
 replay, and it never replaces an object of another origin. Regions exchange
 their own writes this way without the project API or the hub in between.
+
+A region accepts another region's object only in a project namespace whose
+project has resolver access in the writing region, and only when no other
+object of the same kind in the namespace already holds its origin UID. When
+a copy from another region and an object from the project API or this region
+end up sharing a UID anyway, the control plane reads only the latter; when
+only copies from other regions share one, it reads none of them.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS

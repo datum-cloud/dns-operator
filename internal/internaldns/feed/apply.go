@@ -25,7 +25,12 @@ import (
 
 var errWatchEnded = errors.New("feed watch ended")
 
-const replicatedLabel = "internal-dns.miloapis.com/replicated"
+const (
+	replicatedLabel      = "internal-dns.miloapis.com/replicated"
+	projectUIDAnnotation = "internal-dns.miloapis.com/project-uid"
+)
+
+var accessBindingList = schema.GroupVersionKind{Group: group, Version: version, Kind: "DNSResolverAccessBindingList"}
 
 // Applier keeps a local copy of every object another region wrote, as that
 // region's mirrored input bucket holds them. Copies carry the writer's region
@@ -41,6 +46,9 @@ type Applier struct {
 	CaughtUp func(context.Context) (bool, error)
 	// Interval paces retries of failed keys and the caught-up check.
 	Interval time.Duration
+
+	served   map[string]bool
+	servedAt time.Time
 }
 
 // Run applies the mirror until ctx ends. Keys that fail are retried, and once
@@ -235,17 +243,64 @@ func (a *Applier) uniqueIdentity(ctx context.Context, gvk schema.GroupVersionKin
 	return nil
 }
 
-// mapped accepts only namespaces the hub placed here for a project, so a
-// peer cannot write anywhere else in this cluster.
+// mapped accepts only namespaces the hub placed here for a project that the
+// writing region serves, so a peer cannot write anywhere else in this
+// cluster, nor into a project it has no network in. A project the region
+// does not serve yet is retried: its access may still be on its way here.
 func (a *Applier) mapped(ctx context.Context, namespace string) error {
 	var ns corev1.Namespace
 	if err := a.Local.Get(ctx, client.ObjectKey{Name: namespace}, &ns); err != nil {
 		return fmt.Errorf("namespace %s: %w", namespace, err)
 	}
-	if ns.Labels[replicatedLabel] != "true" || !ns.DeletionTimestamp.IsZero() {
+	project := ns.Annotations[projectUIDAnnotation]
+	if ns.Labels[replicatedLabel] != "true" || !ns.DeletionTimestamp.IsZero() || project == "" {
 		return fmt.Errorf("namespace %s is not a live project namespace", namespace)
 	}
+	served, err := a.servedProjects(ctx)
+	if err != nil {
+		return err
+	}
+	if !served[project] {
+		return fmt.Errorf("region %s has no resolver access in project %s; not accepting its inputs for namespace %s", a.Region, project, namespace)
+	}
 	return nil
+}
+
+// servedProjects are the projects with resolver access in the writing
+// region, by project UID. They are read again at most once per interval.
+func (a *Applier) servedProjects(ctx context.Context) (map[string]bool, error) {
+	interval := a.Interval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	if a.served != nil && time.Since(a.servedAt) < interval {
+		return a.served, nil
+	}
+	var namespaces corev1.NamespaceList
+	if err := a.Local.List(ctx, &namespaces, client.MatchingLabels{replicatedLabel: "true"}); err != nil {
+		return nil, err
+	}
+	projectOf := map[string]string{}
+	for _, ns := range namespaces.Items {
+		if uid := ns.Annotations[projectUIDAnnotation]; uid != "" && ns.DeletionTimestamp.IsZero() {
+			projectOf[ns.Name] = uid
+		}
+	}
+	bindings := &unstructured.UnstructuredList{}
+	bindings.SetGroupVersionKind(accessBindingList)
+	if err := a.Local.List(ctx, bindings); err != nil {
+		return nil, err
+	}
+	served := map[string]bool{}
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		region, _, _ := unstructured.NestedString(b.Object, "spec", "region")
+		if project := projectOf[b.GetNamespace()]; region == a.Region && project != "" {
+			served[project] = true
+		}
+	}
+	a.served, a.servedAt = served, time.Now()
+	return served, nil
 }
 
 // reserved keys are the ones replication and the hub act on. A peer's entry

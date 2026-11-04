@@ -34,7 +34,12 @@ func scheme(t *testing.T) *runtime.Scheme {
 
 // mappedNamespace is a project namespace the hub placed in a region.
 func mappedNamespace() *corev1.Namespace {
-	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-uid", Labels: map[string]string{replicatedLabel: "true"}}}
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-uid", Labels: map[string]string{replicatedLabel: "true"}, Annotations: map[string]string{projectUIDAnnotation: "project-a"}}}
+}
+
+// servedBy is resolver access that places the project in a region.
+func servedBy(region string) *dnsv1alpha1.DNSResolverAccessBinding {
+	return &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "access-" + region, Namespace: "ns-uid"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{Region: region, DestinationAddress: "10.0.0.1"}}
 }
 
 func contribution(origin string) *dnsv1alpha1.DNSRecordContribution {
@@ -66,7 +71,7 @@ func TestARegionsWriteReachesTheOtherRegionAndTheHub(t *testing.T) {
 	written := contribution("us-east-1")
 	east := fake.NewClientBuilder().WithScheme(s).WithObjects(written).Build()
 	hub := fake.NewClientBuilder().WithScheme(s).Build()
-	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace()).Build()
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-east-1")).Build()
 	kv := pubstore.NewMemoryKV()
 	p := &Publisher{Region: "us-east-1", Local: east, KV: kv, Hub: hub}
 	a := &Applier{Region: "us-east-1", Local: central, Mirror: kv}
@@ -127,7 +132,7 @@ func TestOnlyTheWritingRegionsObjectsArePublishedOrReplaced(t *testing.T) {
 		t.Fatalf("published an object the region did not write: %v", keys)
 	}
 
-	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), contribution("project")).Build()
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-east-1"), contribution("project")).Build()
 	other := fake.NewClientBuilder().WithScheme(s).WithObjects(contribution("us-east-1")).Build()
 	otherKV := pubstore.NewMemoryKV()
 	if err := (&Publisher{Region: "us-east-1", Local: other, KV: otherKV}).Sync(ctx, Kinds[1], key); err != nil {
@@ -191,12 +196,40 @@ func TestAPeerCannotWriteOutsideProjectNamespaces(t *testing.T) {
 	}
 }
 
+func TestAPeerWritesOnlyIntoProjectsItServes(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	east := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), contribution("us-east-1")).Build()
+	kv := pubstore.NewMemoryKV()
+	key := types.NamespacedName{Namespace: "ns-uid", Name: "instance-a"}
+	if err := (&Publisher{Region: "us-east-1", Local: east, KV: kv}).Sync(ctx, Kinds[1], key); err != nil {
+		t.Fatal(err)
+	}
+	feedKey := Key("DNSRecordContribution", key.Namespace, key.Name)
+	value, _, _ := kv.Get(ctx, feedKey)
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-west-1")).Build()
+	a := &Applier{Region: "us-east-1", Local: central, Interval: time.Nanosecond}
+	if err := a.Apply(ctx, feedKey, value); err == nil {
+		t.Fatal("a peer wrote into a project it has no resolver access in")
+	}
+	var copied dnsv1alpha1.DNSRecordContribution
+	if err := central.Get(ctx, key, &copied); !apierrors.IsNotFound(err) {
+		t.Fatalf("refused entry was written: %v", err)
+	}
+	if err := central.Create(ctx, servedBy("us-east-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Apply(ctx, feedKey, value); err != nil {
+		t.Fatalf("the entry was not accepted once the project was served in the region: %v", err)
+	}
+}
+
 func TestARecreatedWriterObjectReplacesTheStaleCopy(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 	stale := contribution("us-east-1")
 	stale.Annotations = map[string]string{OriginUIDAnnotation: "33333333-3333-3333-3333-333333333333", OriginGenerationAnnotation: "9"}
-	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), stale).Build()
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-east-1"), stale).Build()
 	recreated := contribution("us-east-1")
 	recreated.Generation = 1
 	recreated.UID = "22222222-2222-2222-2222-222222222222"
@@ -226,7 +259,7 @@ func TestARecreatedWriterObjectReplacesTheStaleCopy(t *testing.T) {
 
 func TestApplierPrunesOnlyOnceTheMirrorIsCaughtUp(t *testing.T) {
 	s := scheme(t)
-	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), contribution("us-east-1")).Build()
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-east-1"), contribution("us-east-1")).Build()
 	var caughtUp atomic.Bool
 	a := &Applier{Region: "us-east-1", Local: central, Mirror: pubstore.NewMemoryKV(), Interval: 10 * time.Millisecond, CaughtUp: func(context.Context) (bool, error) { return caughtUp.Load(), nil }}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -259,7 +292,7 @@ func TestAPeerCannotClaimAnotherObjectsUID(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 	victim := &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "victim", Namespace: "ns-uid", UID: "44444444-4444-4444-4444-444444444444"}}
-	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), victim).Build()
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), servedBy("us-east-1"), victim).Build()
 	impostor := contribution("us-east-1")
 	impostor.Annotations = map[string]string{OriginUIDAnnotation: "44444444-4444-4444-4444-444444444444"}
 	east := fake.NewClientBuilder().WithScheme(s).WithObjects(impostor).Build()

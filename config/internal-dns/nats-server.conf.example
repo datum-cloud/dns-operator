@@ -21,15 +21,18 @@ authorization {
         publish: { allow: [
           "dns.private.serving.>", "dns.private.records.>",
           "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$KV.DNS_PRIVATE_PUBLICATIONS.>", "$JS.API.>",
-          # With feed set, the region writes only its own input bucket.
+          # With feed set, the region writes only its own input bucket. This
+          # allow entry is the pin: writes to the mirrors of other regions'
+          # buckets match no allow entry, so they are denied.
           "$KV.DNS_PRIVATE_INPUTS.>",
           # Match the control-plane ACK durable for this region and shard.
           "$JS.ACK.DNS_PRIVATE.control-plane-us-central1-shared-0-acks.>",
           "_INBOX.>"
         ], deny: [
-          # Other regions' inputs arrive only through the broker's mirrors of
-          # their buckets; nothing in this region writes them.
-          "$KV.DNS_PRIVATE_INPUTS_*.>"
+          # The control plane creates and updates its streams, buckets and
+          # mirrors, but never deletes or purges a stream or removes a stored
+          # message, so it cannot erase another region's mirrored inputs.
+          "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.PURGE.>", "$JS.API.STREAM.MSG.DELETE.>"
         ] }
         subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
       }

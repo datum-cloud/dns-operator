@@ -48,3 +48,9 @@ patches:
               - key: kubernetes.io/metadata.name
                 operator: NotIn
                 values: [project-e2e]
+        - name: vinternaldnszones.kb.io
+          namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: NotIn
+                values: [project-e2e]

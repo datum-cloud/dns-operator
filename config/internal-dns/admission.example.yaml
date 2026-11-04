@@ -31,9 +31,10 @@ webhooks:
     - dnsnamingpolicies
     - dnsresolveraccessbindings
     scope: Namespaced
-# A managed zone is kept, and kept under its resolver context, while the
-# context uses it. The selector matches the old object too, so removing the
-# label doesn't skip the check, and other zones never reach the webhook.
+# A managed zone, its owner references, and its managed label are kept while
+# its resolver context exists. Only managed zones reach the webhook. The
+# selector matches the old object too, and the handler refuses removing the
+# label, so a zone can't drop out of the selector before it is deleted.
 - name: managed-zones.internal-dns.miloapis.com
   admissionReviewVersions: [v1]
   sideEffects: None

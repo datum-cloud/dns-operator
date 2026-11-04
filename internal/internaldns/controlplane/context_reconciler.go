@@ -796,7 +796,7 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 }
 
 const (
-	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	managedObjectLabel = model.ManagedObjectLabel
 	managedObjectValue = "true"
 	// managedByLabel is the Kubernetes well-known label naming the manager.
 	managedByLabel = "app.kubernetes.io/managed-by"

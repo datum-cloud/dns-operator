@@ -64,7 +64,7 @@ delete the resource and create a new one.
 | `DNSZone` | `spec.domainName` | Creator | Immutable |
 | `DNSZone` | `spec.visibility` | Creator | Immutable. Defaults to `Public` |
 | `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones. Managed zones may carry one |
-| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. Can't be deleted, or released from the context, while the context uses it. Deleted with the context. Becomes deletable when the context turns off its managed namespace |
+| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. While the context exists, the zone can't be deleted and its owner references and managed label can't change. Deleted with the context, or withdrawn when the service refuses the context's managed domain |
 | `DNSZone` (managed) | labels and `kubernetes.io/description` | DNS service | Copied from the context. Added or corrected, never removed |
 | `DNSRecordSet` | `spec` | Creator | Mutable |
 | `DNSZoneAssociation` | `spec.dnsZoneRef`, `spec.resolverContextRef` | Creator | Immutable |
@@ -151,7 +151,7 @@ Project roles grant these permissions:
 | Role | Grants |
 | --- | --- |
 | DNS Viewer | Read every customer-visible Private DNS resource and its status |
-| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, associations, and zone discoveries. A network's managed zone can't be deleted. Registrations and naming policies stay read-only |
+| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, associations, and zone discoveries. A network's managed zone can't be deleted while the network exists. Registrations and naming policies stay read-only |
 
 Network integrations and publishing services get their own service roles.
 Publishing needs two extra permissions on a named `DNSRegistration`:
@@ -291,6 +291,9 @@ These keep the contract from being fully enforced. Each needs its own change.
   association can't take a domain from an existing one.
 - **Naming policies have no effect.** No service applies `DNSNamingPolicy`
   rules yet.
+- **Managed zone protection needs its admission entry.** Admission keeps a
+  managed zone only where the deployment sends managed zone updates and deletes
+  to it, as the example admission configuration does.
 - **The 256-zone limit isn't enforced on associations.** A 257th association
   is accepted, and the network's serving configuration then fails to update.
   Admission or status should refuse it.

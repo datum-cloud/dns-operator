@@ -57,6 +57,8 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 	refused.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: model.InvalidManagedDomainReason, ObservedGeneration: 2}}
 	staleRefusal := refused.DeepCopy()
 	staleRefusal.Generation = 3
+	readyRefusal := refused.DeepCopy()
+	readyRefusal.Status.Conditions[0].Status = metav1.ConditionTrue
 
 	for _, tc := range []struct {
 		name    string
@@ -67,12 +69,13 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 		{"context uses the zone", live(), zoneFor(contextUID), false},
 		{"context is gone", nil, zoneFor(contextUID), true},
 		{"context is being deleted", terminating, zoneFor(contextUID), true},
-		{"context stopped using a managed namespace", disabled, zoneFor(contextUID), true},
+		{"context turned off its managed namespace", disabled, zoneFor(contextUID), false},
 		{"context was replaced", replaced, zoneFor(contextUID), true},
 		{"zone is already being deleted", live(), deletingZone, true},
 		{"zone is not a managed zone", live(), tenantZone, true},
 		{"service refused the managed domain", refused, zoneFor(contextUID), true},
 		{"refusal is for an older generation", staleRefusal, zoneFor(contextUID), false},
+		{"refusal reason on a ready context", readyRefusal, zoneFor(contextUID), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			objects := []client.Object{}
@@ -115,12 +118,19 @@ func TestManagedZoneKeepsItsController(t *testing.T) {
 		}}},
 		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate},
 	}
+	old.Labels = map[string]string{model.ManagedObjectLabel: "true"}
 	released := old.DeepCopy()
 	released.OwnerReferences[0].Controller = ptr.To(false)
 	orphaned := old.DeepCopy()
 	orphaned.OwnerReferences = nil
 	relabelled := old.DeepCopy()
-	relabelled.Labels = map[string]string{"team": "network"}
+	relabelled.Labels["team"] = "network"
+	unlabelled := old.DeepCopy()
+	delete(unlabelled.Labels, model.ManagedObjectLabel)
+	renamedOwner := old.DeepCopy()
+	renamedOwner.OwnerReferences[0].Name = "bogus"
+	extraOwner := old.DeepCopy()
+	extraOwner.OwnerReferences = append(extraOwner.OwnerReferences, metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"})
 	for _, tc := range []struct {
 		name    string
 		context *dnsv1alpha1.DNSResolverContext
@@ -130,6 +140,9 @@ func TestManagedZoneKeepsItsController(t *testing.T) {
 		{"metadata change", resolver, relabelled, true},
 		{"controller released", resolver, released, false},
 		{"owner removed", resolver, orphaned, false},
+		{"owner renamed", resolver, renamedOwner, false},
+		{"owner added", resolver, extraOwner, false},
+		{"managed label removed", resolver, unlabelled, false},
 		{"owner removed after the context is gone", nil, orphaned, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

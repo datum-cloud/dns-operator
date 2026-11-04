@@ -130,9 +130,9 @@ func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) 
 	return cl, nil
 }
 
-// managedZone keeps a managed zone while its resolver context uses it, and
-// keeps the context as the zone's controller, so the zone can't be released
-// for deletion first. Associations and registrations pin the zone's UID, so a
+// managedZone keeps a managed zone, its owner references, and its managed
+// label while its resolver context exists, so the zone can't be released for
+// an unguarded delete first. Associations and registrations pin the zone's UID, so a
 // recreated zone would never serve the network's names again.
 func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) kubeadmission.Response {
 	var old dnsv1alpha1.DNSZone
@@ -150,7 +150,7 @@ func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) ku
 		if err := decode(req, &zone); err != nil {
 			return kubeadmission.Denied(err.Error())
 		}
-		if model.IsManagedZone(&zone) && metav1.GetControllerOf(&zone).UID == metav1.GetControllerOf(&old).UID {
+		if equality.Semantic.DeepEqual(zone.OwnerReferences, old.OwnerReferences) && (old.Labels[model.ManagedObjectLabel] != "true" || zone.Labels[model.ManagedObjectLabel] == "true") {
 			return kubeadmission.Allowed("the managed zone keeps its resolver context")
 		}
 	}
@@ -167,7 +167,7 @@ func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) ku
 	if err != nil {
 		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("resolver context lookup: %w", err))
 	}
-	if resolverContext.UID != owner.UID || !resolverContext.DeletionTimestamp.IsZero() || !resolverContext.Spec.ManagedNamespace.Enabled || managedDomainRefused(&resolverContext) {
+	if resolverContext.UID != owner.UID || !resolverContext.DeletionTimestamp.IsZero() || managedDomainRefused(&resolverContext) {
 		return kubeadmission.Allowed("the managed zone's resolver context no longer uses it")
 	}
 	return kubeadmission.Denied(fmt.Sprintf("zone %s is the managed zone of resolver context %s and is removed with it", old.Name, resolverContext.Name))
@@ -177,7 +177,7 @@ func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) ku
 // managed domain and is withdrawing its zone.
 func managedDomainRefused(c *dnsv1alpha1.DNSResolverContext) bool {
 	ready := apimeta.FindStatusCondition(c.Status.Conditions, "Ready")
-	return ready != nil && ready.Reason == model.InvalidManagedDomainReason && ready.ObservedGeneration == c.Generation
+	return ready != nil && ready.Status == metav1.ConditionFalse && ready.Reason == model.InvalidManagedDomainReason && ready.ObservedGeneration == c.Generation
 }
 
 func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kubeadmission.Request) error {

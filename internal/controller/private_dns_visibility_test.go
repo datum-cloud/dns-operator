@@ -11,6 +11,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -66,6 +67,15 @@ func TestDNSZoneVisibilityAdmission(t *testing.T) {
 			if err := cl.Create(ctx, zone); !apierrors.IsInvalid(err) {
 				t.Fatalf("visibility %q without a class: expected validation error, got %v", visibility, err)
 			}
+		}
+		explicit := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": dnsv1alpha1.GroupVersion.String(),
+			"kind":       "DNSZone",
+			"metadata":   map[string]any{"name": "public-empty-class", "namespace": "default"},
+			"spec":       map[string]any{"domainName": "prod.example.com", "dnsZoneClassName": ""},
+		}}
+		if err := cl.Create(ctx, explicit); !apierrors.IsInvalid(err) {
+			t.Fatalf("public zone with an empty class: expected validation error, got %v", err)
 		}
 		zone := newZone("public-class-removed", dnsv1alpha1.DNSZoneVisibilityPublic)
 		if err := cl.Create(ctx, zone); err != nil {

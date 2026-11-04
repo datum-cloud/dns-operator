@@ -478,8 +478,6 @@ spec:
   visibility: Private
   # Different contexts can associate separate zones with this same apex.
   domainName: prod.internal
-  # Select private backend policy; users do not choose fleet instances.
-  dnsZoneClassName: datum-internal-dns
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSZoneAssociation

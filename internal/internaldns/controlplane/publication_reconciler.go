@@ -25,7 +25,12 @@ import (
 
 const privateZoneFinalizer = "internal-dns.dns.networking.miloapis.com/publication"
 
-const outboxAcknowledged = "Acknowledged"
+const (
+	outboxAcknowledged = "Acknowledged"
+	// withdrawalsTrackedLabel marks a manifest whose withdrawnTargets list
+	// every shard the zone has left and not yet been told about.
+	withdrawalsTrackedLabel = "internal-dns.miloapis.com/withdrawals-tracked"
+)
 
 func (r *Reconciler) reconcileProject(ctx context.Context, ns string) (ctrl.Result, error) {
 	started := time.Now()
@@ -513,17 +518,34 @@ func (r *Reconciler) publicationTargets(ctx context.Context, own *dnsv1alpha1.DN
 		if err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: own.Spec.ActiveManifestName}, &previous); err != nil {
 			return nil, nil, err
 		}
+		// A shard no longer configured has no exporter, so it is never withdrawn.
+		configured := map[string]bool{}
+		for _, target := range r.Options.servingRegions() {
+			configured[target.key()] = true
+		}
 		for _, target := range previous.Spec.ServingTargets {
 			v := ServingRegion{Region: target.Region, Shard: target.Shard}
 			if tombstone {
 				byKey[v.key()] = v
-			} else if _, ok := byKey[v.key()]; !ok {
+			} else if _, ok := byKey[v.key()]; !ok && configured[v.key()] {
 				withdrawn[v.key()] = v
 			}
 		}
-		for _, target := range previous.Spec.WithdrawnTargets {
+		prior := previous.Spec.WithdrawnTargets
+		if previous.Labels[withdrawalsTrackedLabel] != "true" {
+			// A manifest written before withdrawals were tracked cannot say which
+			// shards a zone already left, so every other configured shard is
+			// withdrawn once.
+			for _, target := range r.Options.servingRegions() {
+				prior = append(prior, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
+			}
+		}
+		for _, target := range prior {
 			v := ServingRegion{Region: target.Region, Shard: target.Shard}
-			if _, ok := byKey[v.key()]; ok {
+			if _, ok := byKey[v.key()]; ok || !configured[v.key()] {
+				continue
+			}
+			if _, ok := withdrawn[v.key()]; ok {
 				continue
 			}
 			delivered, err := r.withdrawalDelivered(ctx, previous.Name, v)
@@ -612,7 +634,7 @@ func (r *Reconciler) persistPublication(ctx context.Context, z *dnsv1alpha1.DNSZ
 	for _, target := range withdrawnTargets {
 		apiWithdrawn = append(apiWithdrawn, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID)}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets, WithdrawnTargets: apiWithdrawn}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{"internal-dns.miloapis.com/zone-uid": string(z.UID), "internal-dns.miloapis.com/project-uid": string(r.Options.ProjectUID), withdrawalsTrackedLabel: "true"}}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{Name: z.Name, UID: z.UID}, ZoneApex: z.Spec.DomainName, ContextUIDs: contextUIDs, WriterEpoch: epoch, Revision: revision, PreviousRevision: previous, Tombstone: tombstone, Chunks: refs, ContentHash: hash, GeneratedAt: metav1.NewTime(now), ContributionFences: apiFences, RegistrationFences: apiRegistrations, ServingTargets: apiTargets, WithdrawnTargets: apiWithdrawn}}
 	if err := r.createImmutable(ctx, m); err != nil {
 		return nil, err
 	}

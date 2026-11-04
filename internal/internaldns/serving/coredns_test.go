@@ -1051,3 +1051,33 @@ func TestCoreDNSTombstoneAckFailureDoesNotGateDurableWithdrawal(t *testing.T) {
 	}
 	assertAppliedCheckpoint(t, a)
 }
+
+func TestWithdrawalReachesShardThatNeverHadTheZone(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	cfg := regionalTestConfig(t)
+	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := testSnapshot(now)
+	snapshot.Bindings[0].Zones = nil
+	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := model.PublicationManifest{ManifestUID: "live-elsewhere", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 2, Revision: 7, PreviousRevision: 6, ContentHash: model.EmptyContentHash(), GeneratedAt: now, Tombstone: true}
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 7, withdrawal)); err != nil {
+		t.Fatalf("a shard that never had the zone rejected its withdrawal: %v", err)
+	}
+	p := a.state.Publications["zone-a"]
+	if !p.Verified || !p.Manifest.Tombstone || p.Fence.Revision != 7 {
+		t.Fatalf("withdrawal not recorded: %#v", p)
+	}
+	_, old := testPublication(t, now)
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, old)); err != nil {
+		t.Fatal(err)
+	}
+	if !a.state.Publications["zone-a"].Manifest.Tombstone {
+		t.Fatal("a delayed older revision replaced the withdrawal")
+	}
+}

@@ -42,7 +42,7 @@ func targetReconciler(t *testing.T, objects ...client.Object) *Reconciler {
 }
 
 func activeManifest(name string, serving, withdrawn []ServingRegion) (*dnsv1alpha1.DNSPublicationOwnership, *dnsv1alpha1.DNSPublicationManifest) {
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "internal-dns-system"}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "internal-dns-system", Labels: map[string]string{withdrawalsTrackedLabel: "true"}}}
 	for _, target := range serving {
 		m.Spec.ServingTargets = append(m.Spec.ServingTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
@@ -169,5 +169,42 @@ func TestDeleteAfterLeavingReachesEveryEarlierRegion(t *testing.T) {
 	}
 	if !sameTargets(targets, []ServingRegion{eastS1}) || !sameTargets(withdrawn, []ServingRegion{westS2}) {
 		t.Fatalf("a deletion must reach serving and undelivered withdrawn regions, got serving %#v withdrawn %#v", targets, withdrawn)
+	}
+}
+
+func TestZoneThatLeftARegionBeforeTrackingIsWithdrawnOnce(t *testing.T) {
+	ctx := context.Background()
+	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1}, nil)
+	previous.Labels = nil
+	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+
+	_, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameTargets(withdrawn, []ServingRegion{westS2}) {
+		t.Fatalf("an untracked manifest must withdraw every other configured shard, got %#v", withdrawn)
+	}
+	_, withdrawn, err = r.publicationTargets(ctx, own, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameTargets(withdrawn, []ServingRegion{westS2}) {
+		t.Fatalf("deleting a zone with an untracked manifest must reach every other configured shard, got %#v", withdrawn)
+	}
+}
+
+func TestRemovedShardIsNotWithdrawnForever(t *testing.T) {
+	ctx := context.Background()
+	gone := ServingRegion{Region: "retired", Shard: "s9"}
+	own, previous := activeManifest("pub-r2", []ServingRegion{eastS1, gone}, []ServingRegion{gone})
+	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+
+	_, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withdrawn) != 0 {
+		t.Fatalf("a shard no longer configured has no exporter and must not be withdrawn, got %#v", withdrawn)
 	}
 }

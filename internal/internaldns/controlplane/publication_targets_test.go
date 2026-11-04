@@ -20,11 +20,11 @@ var (
 	westS2 = ServingRegion{Region: "west", Shard: "s2"}
 )
 
-func targetBinding(name string, contextUID types.UID, region, shard string) *dnsv1alpha1.DNSResolverBinding {
+func targetBinding(name, region, shard string) *dnsv1alpha1.DNSResolverBinding {
 	return &dnsv1alpha1.DNSResolverBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "internal-dns-system", Labels: map[string]string{referenceProjectLabel: "project-a"}},
 		Spec: dnsv1alpha1.DNSResolverBindingSpec{
-			Source:    dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project-a", ResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: contextUID}},
+			Source:    dnsv1alpha1.DNSResolverBindingSource{ProjectUID: "project-a", ResolverContextRef: dnsv1alpha1.DNSObjectReference{UID: "vpc-a"}},
 			Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: shard},
 		},
 	}
@@ -42,7 +42,7 @@ func targetReconciler(t *testing.T, objects ...client.Object) *Reconciler {
 }
 
 func activeManifest(name string, serving, withdrawn []ServingRegion) (*dnsv1alpha1.DNSPublicationOwnership, *dnsv1alpha1.DNSPublicationManifest) {
-	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "internal-dns-system", Labels: map[string]string{withdrawalsTrackedLabel: "true"}}}
+	m := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "internal-dns-system", Labels: map[string]string{withdrawalsTrackedLabel: managedObjectValue}}}
 	for _, target := range serving {
 		m.Spec.ServingTargets = append(m.Spec.ServingTargets, dnsv1alpha1.DNSPublicationTarget{Region: target.Region, Shard: target.Shard})
 	}
@@ -66,7 +66,7 @@ func sameTargets(got, want []ServingRegion) bool {
 
 func TestZonePublishesToRegionsAnyContextIsBoundIn(t *testing.T) {
 	ctx := context.Background()
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"))
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"))
 	own := &dnsv1alpha1.DNSPublicationOwnership{}
 
 	targets, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a", "vpc-b"}, false)
@@ -92,7 +92,7 @@ func TestZonePublishesToRegionsAnyContextIsBoundIn(t *testing.T) {
 func TestZoneWithdrawsFromRegionItLeaves(t *testing.T) {
 	ctx := context.Background()
 	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1, westS2}, nil)
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), previous)
 
 	targets, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
 	if err != nil {
@@ -106,7 +106,7 @@ func TestZoneWithdrawsFromRegionItLeaves(t *testing.T) {
 func TestZoneWithNoAssociationsWithdrawsEverywhere(t *testing.T) {
 	ctx := context.Background()
 	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1, westS2}, nil)
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), previous)
 
 	targets, withdrawn, err := r.publicationTargets(ctx, own, nil, false)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestWithdrawalRepeatsUntilDelivered(t *testing.T) {
 	ctx := context.Background()
 	own, previous := activeManifest("pub-r2", []ServingRegion{eastS1}, []ServingRegion{westS2})
 	pending := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: model.PublicationActivationName("pub-r2", "west", "s2"), Namespace: "internal-dns-system"}}
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous, pending)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), previous, pending)
 
 	_, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestWithdrawalRepeatsUntilDelivered(t *testing.T) {
 func TestRegionThatReturnsIsServedNotWithdrawn(t *testing.T) {
 	ctx := context.Background()
 	own, previous := activeManifest("pub-r2", []ServingRegion{eastS1}, []ServingRegion{westS2})
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), targetBinding("vpc-a-west", "vpc-a", "west", "s2"), previous)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), targetBinding("vpc-a-west", "west", "s2"), previous)
 
 	targets, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
 	if err != nil {
@@ -176,7 +176,7 @@ func TestZoneThatLeftARegionBeforeTrackingIsWithdrawnOnce(t *testing.T) {
 	ctx := context.Background()
 	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1}, nil)
 	previous.Labels = nil
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), previous)
 
 	_, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestRemovedShardIsNotWithdrawnForever(t *testing.T) {
 	ctx := context.Background()
 	gone := ServingRegion{Region: "retired", Shard: "s9"}
 	own, previous := activeManifest("pub-r2", []ServingRegion{eastS1, gone}, []ServingRegion{gone})
-	r := targetReconciler(t, targetBinding("vpc-a-east", "vpc-a", "east", "s1"), previous)
+	r := targetReconciler(t, targetBinding("vpc-a-east", "east", "s1"), previous)
 
 	_, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
 	if err != nil {

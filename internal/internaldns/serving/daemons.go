@@ -85,6 +85,16 @@ func approvedConfigurationInstalled(stateDir string) bool {
 // RunDaemons owns query processes independently of the configuration agent.
 // Only incomplete or abandoned activation blocks their lifecycle.
 func RunDaemons(ctx context.Context, config Config) error {
+	return runDaemons(ctx, config, func(ctx context.Context) error { return Readiness(ctx, config) })
+}
+
+// On shutdown the health port closes first, then the daemons keep answering
+// for the drain time before they stop.
+func runDaemons(ctx context.Context, config Config, ready func(context.Context) error) error {
+	healthAddress, err := config.HealthCheck.listenAddress()
+	if err != nil {
+		return fmt.Errorf("health check address %q: %w", config.HealthCheck.Address, err)
+	}
 	if err := os.MkdirAll(config.StateDir, 0o750); err != nil {
 		return err
 	}
@@ -121,6 +131,13 @@ func RunDaemons(ctx context.Context, config Config) error {
 	if err := restoreDaemonPermissions(config.StateDir, daemonRuntimeDir, names); err != nil {
 		fmt.Fprintf(os.Stderr, "restore approved DNS process permission: %v\n", err)
 	}
+	var health *healthPort
+	if healthAddress != "" {
+		health = startHealthPort(healthAddress, healthCheckInterval, ready)
+	}
+	defer health.Close()
+	stopping := ctx.Done()
+	var drained <-chan time.Time
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -156,7 +173,16 @@ func RunDaemons(ctx context.Context, config Config) error {
 		}
 		release()
 		select {
-		case <-ctx.Done():
+		case <-stopping:
+			stopping = nil
+			health.Close()
+			drain := config.HealthCheck.drain()
+			if drain == 0 {
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "draining for %s before stopping DNS processes\n", drain)
+			drained = time.After(drain)
+		case <-drained:
 			return nil
 		case <-ticker.C:
 		}
@@ -192,7 +218,7 @@ func metricsListenAddress(address string) (string, error) {
 	ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(address[:i], "["), "]"))
 	ip = ip.Unmap()
 	if err != nil || ip.IsUnspecified() {
-		return "", fmt.Errorf("%q must name the pod's IP address", address)
+		return "", fmt.Errorf("%q must name a specific IP address", address)
 	}
 	if port, err := strconv.ParseUint(address[i+1:], 10, 16); err != nil || port == 0 {
 		return "", fmt.Errorf("%q has an invalid port", address)

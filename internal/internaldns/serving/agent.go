@@ -46,6 +46,7 @@ type Config struct {
 	ResolverDNSProbe          DNSVerifierConfig            `json:"resolverDNSProbe,omitempty"`
 	ResolverVerifyConcurrency int                          `json:"resolverVerifyConcurrency,omitempty"`
 	UnsafeAllowNoDNSVerify    bool                         `json:"unsafeAllowNoDNSVerify,omitempty"`
+	HealthCheck               HealthCheckConfig            `json:"healthCheck,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -76,6 +77,13 @@ func (c Config) Validate() error {
 	}
 	if c.AckPublishTimeout < 0 || c.AckPublishTimeout > 2*time.Second {
 		return errors.New("ACK publish timeout must be between zero and two seconds")
+	}
+
+	if err := c.HealthCheck.validate(); err != nil {
+		return err
+	}
+	if c.HealthCheck.Address != "" && c.UnsafeAllowNoDNSVerify {
+		return errors.New("healthCheck.address requires live DNS verification")
 	}
 
 	if c.MaxBindings < 0 {

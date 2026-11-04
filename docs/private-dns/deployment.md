@@ -423,6 +423,57 @@ contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
 
+### Draining a member before it stops
+
+A member that runs `--role=serving` can expose a TCP health port for a network
+load balancer and keep answering for a drain time after it is told to stop, so
+the load balancer moves lookups to other members first. Both are off by
+default.
+
+```json
+"agent": {
+  "healthCheck": {"address": "${LISTENER_ADDRESS}:8053", "drainSeconds": 15}
+}
+```
+
+- `healthCheck.address`: where the health port listens. The serving process
+  expands environment references, so set the variable on the serving
+  container. The host must be a specific IP address, usually the member's
+  interface address, not a wildcard. Omitted means no health port.
+- `healthCheck.drainSeconds`: how long the DNS processes keep answering after
+  shutdown begins. Between 0 and 300; the default 0 stops them at once.
+
+The serving process runs the same checks as `--role=readiness` once a second.
+The port is open only while they pass and closes as soon as one fails. It also
+stays closed until the address is present on the interface, because it cannot
+bind before then. The port accepts connections and closes them without
+sending data, so a probe passes when the TCP handshake completes. Readiness
+must use live DNS verification: `healthCheck.address` with
+`unsafeAllowNoDNSVerify` is rejected.
+
+On SIGTERM the serving process closes the health port, keeps CoreDNS and its
+supervision running for `drainSeconds`, then stops CoreDNS and exits. The
+agent may exit meanwhile; the running processes keep their installed
+configuration.
+
+To deploy it:
+
+- Set `terminationGracePeriodSeconds` above `drainSeconds`, with a few seconds
+  to spare for the processes to stop. Otherwise Kubernetes kills the member
+  mid-drain.
+- dnsdist runs in its own container and gets SIGTERM at the same time as the
+  serving container. Delay it by at least `drainSeconds`, for example with
+  `lifecycle: {preStop: {sleep: {seconds: 15}}}` on the dnsdist container.
+- Allow TCP to the health port from the load balancer's probe source. If
+  probes come from the host's link-local address and a traffic policy is
+  enforced on the member interface, allow `fe80::/10` to the health port.
+- Configure the load balancer to remove a member after a few failed probes,
+  and keep `drainSeconds` longer than the time that takes.
+- Draining only moves lookups when another member serving the same address is
+  ready to take them.
+- Roll out an image that knows the field before setting it: older processes
+  reject unknown configuration fields.
+
 ### Control-plane and agent monitoring
 
 The control plane serves `/metrics` on `--metrics-bind-address` (default

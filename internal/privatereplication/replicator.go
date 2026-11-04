@@ -212,14 +212,6 @@ func reserved(key string) bool {
 	return ok && (prefix == "internal-dns.miloapis.com" || prefix == "kubectl.kubernetes.io" || prefix == "karmada.io" || strings.HasSuffix(prefix, ".karmada.io"))
 }
 
-func copyMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in)+2)
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
 func runtimeDeepCopy(v any) any {
 	return (&unstructured.Unstructured{Object: map[string]any{"v": v}}).DeepCopy().Object["v"]
 }

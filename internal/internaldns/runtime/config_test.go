@@ -278,6 +278,16 @@ func TestControlPlaneProjectDiscoveryValidation(t *testing.T) {
 	if err := relative.Validate(roleControlPlane); err == nil {
 		t.Fatal("relative discovery credential accepted")
 	}
+	local := base
+	local.ProjectDiscovery = &ProjectDiscoveryConfig{Local: true}
+	if err := local.Validate(roleControlPlane); err != nil {
+		t.Fatalf("local discovery rejected: %v", err)
+	}
+	both := base
+	both.ProjectDiscovery = &ProjectDiscoveryConfig{Local: true, Kubeconfig: "/var/run/discovery/kubeconfig"}
+	if err := both.Validate(roleControlPlane); err == nil {
+		t.Fatal("local discovery accepted a project API credential too")
+	}
 }
 
 func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {

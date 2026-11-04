@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,7 +49,30 @@ type AckSink struct {
 	// while every other region runs its own. Project status then records each
 	// region's verdict separately.
 	Regions []string
-	Now     func() time.Time
+	// LocalInputs marks project objects as hub copies: entries report the
+	// origin's generation, and conditions wait only for this sink's regions.
+	LocalInputs bool
+	Now         func() time.Time
+}
+
+func (s *AckSink) entryGeneration(obj metav1.Object) int64 {
+	if s.LocalInputs {
+		return projectstatus.OriginGeneration(obj)
+	}
+	return obj.GetGeneration()
+}
+
+func (s *AckSink) conditionRegions(expected []string) []string {
+	if !s.LocalInputs {
+		return expected
+	}
+	var local []string
+	for _, region := range expected {
+		if slices.Contains(s.Regions, region) {
+			local = append(local, region)
+		}
+	}
+	return local
 }
 
 func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope) error {
@@ -262,13 +286,13 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				projectstatus.Published(&z.Status.Conditions, complete, z.Generation, now)
 				projectstatus.Programmed(&z.Status.Conditions, applied, z.Generation, now)
 			} else {
-				projectstatus.RecordRegions(&z.Status.Regions, s.Regions, m.Spec.ExpectedRegions, z.Generation, m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+				projectstatus.RecordRegions(&z.Status.Regions, s.Regions, m.Spec.ExpectedRegions, s.entryGeneration(z), m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
 					e.Published, e.Programmed = complete, applied
 				})
-				projectstatus.PublishedForRegions(&z.Status.Conditions, z.Status.Regions, m.Spec.ExpectedRegions, complete, z.Generation, now)
+				projectstatus.PublishedForRegions(&z.Status.Conditions, z.Status.Regions, s.conditionRegions(m.Spec.ExpectedRegions), complete, s.entryGeneration(z), z.Generation, now)
 				programmed := applied
 				if len(m.Spec.ExpectedRegions) > 0 {
-					programmed = projectstatus.AnyRegion(z.Status.Regions, m.Spec.ExpectedRegions, z.Generation, func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Programmed })
+					programmed = projectstatus.AnyRegion(z.Status.Regions, m.Spec.ExpectedRegions, s.entryGeneration(z), func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Programmed })
 				}
 				projectstatus.Programmed(&z.Status.Conditions, programmed, z.Generation, now)
 			}
@@ -342,12 +366,12 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
 				} else {
 					r.Status.PublicationWriterEpoch, r.Status.PublicationRevision = 0, 0
-					projectstatus.RecordRegions(&r.Status.Regions, s.Regions, m.Spec.ExpectedRegions, r.Generation, m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+					projectstatus.RecordRegions(&r.Status.Regions, s.Regions, m.Spec.ExpectedRegions, s.entryGeneration(r), m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
 						e.Published, e.Available = complete, available
 					})
-					projectstatus.PublishedForRegions(&r.Status.Conditions, r.Status.Regions, m.Spec.ExpectedRegions, complete, r.Generation, now)
+					projectstatus.PublishedForRegions(&r.Status.Conditions, r.Status.Regions, s.conditionRegions(m.Spec.ExpectedRegions), complete, s.entryGeneration(r), r.Generation, now)
 					if len(m.Spec.ExpectedRegions) > 0 {
-						available = projectstatus.AnyRegion(r.Status.Regions, m.Spec.ExpectedRegions, r.Generation, func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Available })
+						available = projectstatus.AnyRegion(r.Status.Regions, m.Spec.ExpectedRegions, s.entryGeneration(r), func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Available })
 					}
 					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
 				}

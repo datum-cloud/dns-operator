@@ -164,6 +164,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return projectRuntime{}, fmt.Errorf("create project %q direct client: %w", p.Name, err)
 		}
 		direct = &deadlineClient{Client: direct, Timeout: p.KubeAPI.requestTimeout()}
+		if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+			direct = originUIDClient{Client: direct}
+		}
 		project := p
 		start := func(startCtx context.Context) error {
 			mgr, err := ctrl.NewManager(projectREST, ctrl.Options{
@@ -192,6 +195,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				LeaseDuration:        cfg.ownershipLease(),
 				AddressAllocator:     allocator,
 				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
+				LocalInputs:           cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,
 				CachedZoneInputs:      cfg.CachedZoneInputs,
@@ -214,7 +218,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 	directory := newProjectDirectory(projects)
 	var discovery *projectDiscovery
-	if cfg.ProjectDiscovery != nil {
+	if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+		localClient, clientErr := client.New(platformREST, client.Options{Scheme: scheme})
+		if clientErr != nil {
+			return fmt.Errorf("create local project discovery client: %w", clientErr)
+		}
+		discovery = &projectDiscovery{local: true, client: &deadlineClient{Client: localClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}, directory: directory, rest: platformREST, kubeAPI: cfg.ProjectDiscovery.KubeAPI, makeProject: makeProject}
+	} else if cfg.ProjectDiscovery != nil {
 		discoveryREST, loadErr := restConfig(cfg.ProjectDiscovery.Kubeconfig)
 		if loadErr != nil {
 			return fmt.Errorf("load project discovery kubeconfig: %w", loadErr)
@@ -311,7 +321,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
-			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, Regions: cfg.Regions}
+			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, Regions: cfg.Regions,
+			LocalInputs: cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
 	}

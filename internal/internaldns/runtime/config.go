@@ -42,7 +42,13 @@ type ProjectConfig struct {
 }
 
 type ProjectDiscoveryConfig struct {
-	Kubeconfig      string              `json:"kubeconfig"`
+	// Kubeconfig reaches the project API whose projects are discovered.
+	// Empty with Local set.
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Local discovers projects from the namespaces a federation hub placed in
+	// this control plane's own cluster, so the control plane reads every input
+	// from its own cluster and needs no connection to the project API.
+	Local           bool                `json:"local,omitempty"`
 	IntervalSeconds int64               `json:"intervalSeconds,omitempty"`
 	KubeAPI         KubeAPIClientConfig `json:"kubeAPI,omitempty"`
 }
@@ -285,8 +291,14 @@ func (c *Config) Validate(role string) error {
 		if len(c.Projects) != 0 {
 			return errors.New("projectDiscovery and projects are mutually exclusive")
 		}
-		if !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
+		if c.ProjectDiscovery.Local != (c.ProjectDiscovery.Kubeconfig == "") {
+			return errors.New("projectDiscovery needs exactly one of kubeconfig and local")
+		}
+		if !c.ProjectDiscovery.Local && !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
 			return errors.New("projectDiscovery.kubeconfig must be absolute")
+		}
+		if c.ProjectDiscovery.Local && (c.Admission.Enabled || c.CachedZoneInputs) {
+			return errors.New("projectDiscovery.local supports neither admission nor cachedZoneInputs yet")
 		}
 		if c.ProjectDiscovery.IntervalSeconds < 1 || c.ProjectDiscovery.IntervalSeconds > 300 {
 			return errors.New("projectDiscovery.intervalSeconds must be between 1 and 300")

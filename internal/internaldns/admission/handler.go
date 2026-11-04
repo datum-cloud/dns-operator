@@ -114,25 +114,27 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	return kubeadmission.Allowed("DNS references are valid")
 }
 
-// ErrProjectDeleting is returned by Handler.ClientForRequest when the
-// request's project is being deleted.
+// ErrProjectDeleting is what a Handler.ClientForRequest returns when the
+// request's project is being deleted. A selector that can't tell returns
+// another error, and managed zone deletes then wait for the context lookup.
 var ErrProjectDeleting = errors.New("authenticated project is being deleted")
 
 func (h *Handler) requestClient(ctx context.Context, req kubeadmission.Request) (client.Client, error) {
+	cl := h.Client
 	if h.ClientForRequest != nil {
-		return h.ClientForRequest(ctx, req)
+		var err error
+		if cl, err = h.ClientForRequest(ctx, req); err != nil {
+			return nil, err
+		}
 	}
-	if h.Client == nil {
+	if cl == nil {
 		return nil, fmt.Errorf("project API client unavailable")
 	}
-	return h.Client, nil
+	return cl, nil
 }
 
 func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) (client.Client, *kubeadmission.Response) {
 	cl, err := h.requestClient(ctx, req)
-	if err == nil && cl == nil {
-		err = fmt.Errorf("project API client unavailable")
-	}
 	if err != nil {
 		res := kubeadmission.Errored(http.StatusServiceUnavailable, err)
 		return nil, &res
@@ -168,9 +170,6 @@ func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) ku
 	// Teardown removes every zone in a deleting project, contexts included.
 	if errors.Is(err, ErrProjectDeleting) {
 		return kubeadmission.Allowed("the project is being deleted")
-	}
-	if err == nil && cl == nil {
-		err = fmt.Errorf("project API client unavailable")
 	}
 	if err != nil {
 		return kubeadmission.Errored(http.StatusServiceUnavailable, err)

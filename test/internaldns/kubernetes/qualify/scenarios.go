@@ -86,11 +86,21 @@ func (s *suite) scenarios(a, b *project) error {
 	unknown := *a
 	unknown.ConsumerAddress = "fd53::dead"
 	for _, tcp := range []bool{false, true} {
-		answer, err := s.query(&unknown, "common.prod.internal", "A", tcp)
-		if err != nil {
+		var answer probeResult
+		// A dropped packet is retried; only a received answer proves refusal.
+		if err := s.wait("unbound destination answer", 30*time.Second, func() (bool, error) {
+			var err error
+			if answer, err = s.query(&unknown, "common.prod.internal", "A", tcp); err != nil {
+				return false, err
+			}
+			if answer.Error != "" {
+				return false, fmt.Errorf("DNS transport: %s", answer.Error)
+			}
+			return true, nil
+		}); err != nil {
 			return err
 		}
-		if answer.Error != "" || (answer.Rcode != dns.RcodeRefused && answer.Rcode != dns.RcodeServerFailure) {
+		if answer.Rcode != dns.RcodeRefused && answer.Rcode != dns.RcodeServerFailure {
 			return fmt.Errorf("unknown destination must answer REFUSED or SERVFAIL: %+v", answer)
 		}
 	}

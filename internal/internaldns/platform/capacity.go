@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"slices"
 	"sort"
 	"time"
 
@@ -16,6 +14,10 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// envelopeSizingTime encodes at the widest RFC 3339 timestamp, so a sized
+// envelope is never shorter than the one published.
+var envelopeSizingTime = time.Date(2000, 1, 1, 0, 0, 0, 999999999, time.UTC)
 
 func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, maxBindings, maxBytes int) (model.ServingSnapshot, map[string]bool, error) {
 	previous := map[string]model.Binding{}
@@ -33,7 +35,7 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 	})
 	snapshot.Bindings = []model.Binding{}
 	rejected := map[string]bool{}
-	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken(snapshot.Region+"/"+snapshot.Shard)+"-e18446744073709551615-r18446744073709551615", snapshot.Region, snapshot.Shard, "00000000-0000-0000-0000-000000000000", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, time.Now(), snapshot)
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken(snapshot.Region+"/"+snapshot.Shard)+"-e18446744073709551615-r18446744073709551615", snapshot.Region, snapshot.Shard, "00000000-0000-0000-0000-000000000000", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, envelopeSizingTime, snapshot)
 	if err != nil {
 		return snapshot, rejected, err
 	}
@@ -42,9 +44,13 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		return snapshot, rejected, err
 	}
 	used := len(payload)
-	// Each bound zone later adds a publication requirement to the snapshot, so
-	// it counts here at its largest encoding.
-	required := map[string]bool{}
+	// Each bound zone later adds its highest publication requirement to the
+	// snapshot, so fitting charges for it as it will be encoded.
+	required := map[string]model.PublicationRequirement{}
+	encoded := func(r model.PublicationRequirement) int {
+		data, _ := json.Marshal(r)
+		return len(data)
+	}
 	fits := func(binding model.Binding) bool {
 		if len(snapshot.Bindings) >= maxBindings {
 			return false
@@ -57,29 +63,39 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		if len(snapshot.Bindings) > 0 {
 			size++
 		}
-		var zones []string
+		next := map[string]model.PublicationRequirement{}
 		for _, zone := range binding.Zones {
-			if zone.Pending || required[zone.ZoneUID] || slices.Contains(zones, zone.ZoneUID) {
+			if zone.Pending {
 				continue
 			}
-			requirement, err := json.Marshal(model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: math.MaxUint64, Revision: math.MaxUint64})
-			if err != nil {
-				return false
+			requirement := model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: zone.RequiredPublicationEpoch, Revision: zone.RequiredPublicationRevision}
+			old, ok := next[zone.ZoneUID]
+			if !ok {
+				old, ok = required[zone.ZoneUID]
 			}
-			if len(required) == 0 && len(zones) == 0 {
-				size += len(`,"requiredPublications":[]`)
-			} else {
-				size++
+			switch {
+			case !ok:
+				if len(required) == 0 && len(next) == 0 {
+					size += len(`,"requiredPublications":[]`)
+				} else {
+					size++
+				}
+				size += encoded(requirement)
+			case model.Compare(requirement.Epoch, requirement.Revision, old.Epoch, old.Revision) > 0:
+				if grown := encoded(requirement) - encoded(old); grown > 0 {
+					size += grown
+				}
+			default:
+				continue
 			}
-			size += len(requirement)
-			zones = append(zones, zone.ZoneUID)
+			next[zone.ZoneUID] = requirement
 		}
 		if used+size > maxBytes {
 			return false
 		}
 		used += size
-		for _, uid := range zones {
-			required[uid] = true
+		for uid, requirement := range next {
+			required[uid] = requirement
 		}
 		return true
 	}
@@ -93,6 +109,11 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 			if safeExpansion(old, binding) && fits(old) {
 				snapshot.Bindings = append(snapshot.Bindings, old)
 				continue
+			}
+			for _, candidate := range candidates {
+				if _, established := previous[candidate.BindingUID]; !established {
+					rejected[candidate.BindingUID] = true
+				}
 			}
 			return prior, rejected, fmt.Errorf("capacity cannot preserve established binding %s", binding.BindingUID)
 		}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -49,32 +50,53 @@ func TestRestartAfterInterruptedPublishPublishesAtANewRevision(t *testing.T) {
 			}
 			return c.Create(ctx, obj, opts...)
 		}}).Build()
-	newWriter := func() *Reconciler {
-		return &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
+	newWriter := func(at time.Time) *Reconciler {
+		return &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return at }}}
 	}
-	reconcile := func(r *Reconciler) {
-		for i := 0; i < 8; i++ {
-			_, _ = r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}})
-		}
-	}
-	ownership := func() dnsv1alpha1.DNSPublicationOwnership {
+	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}
+	ownership := func() (dnsv1alpha1.DNSPublicationOwnership, bool) {
 		t.Helper()
 		var own dnsv1alpha1.DNSPublicationOwnership
-		if err := c.Get(ctx, client.ObjectKey{Namespace: "internal-dns-system", Name: ownershipName(zone.UID)}, &own); err != nil {
+		err := c.Get(ctx, client.ObjectKey{Namespace: "internal-dns-system", Name: ownershipName(zone.UID)}, &own)
+		if apierrors.IsNotFound(err) {
+			return own, false
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
-		return own
+		return own, true
 	}
 
-	reconcile(newWriter())
-	interrupted := ownership()
-	if interrupted.Spec.ActiveManifestName != "" || interrupted.Spec.NextRevision < 2 {
-		t.Fatalf("the interrupted pass must have reserved a revision without activating one: %#v", interrupted.Spec)
+	// Run passes until one reserves a revision and then stops before writing
+	// its manifest.
+	first := newWriter(now)
+	var interrupted dnsv1alpha1.DNSPublicationOwnership
+	for i := 0; ; i++ {
+		if i == 8 {
+			t.Fatal("no pass reserved a revision")
+		}
+		_, _ = first.Reconcile(ctx, request)
+		if own, ok := ownership(); ok && own.Spec.NextRevision > 1 {
+			interrupted = own
+			break
+		}
+	}
+	if interrupted.Spec.ActiveManifestName != "" {
+		t.Fatalf("the interrupted pass must not activate a revision: %#v", interrupted.Spec)
 	}
 
+	// The restarted writer's clock has moved on, so a reused revision would
+	// carry different bytes than anything staged before the interruption.
 	crash = false
-	reconcile(newWriter())
-	recovered := ownership()
+	restarted := newWriter(now.Add(time.Minute))
+	var err error
+	for i := 0; i < 8; i++ {
+		_, err = restarted.Reconcile(ctx, request)
+	}
+	if err != nil {
+		t.Fatalf("restarted writer did not settle: %v", err)
+	}
+	recovered, _ := ownership()
 	if recovered.Spec.ActiveManifestName == "" {
 		t.Fatal("restart did not publish the interrupted update")
 	}

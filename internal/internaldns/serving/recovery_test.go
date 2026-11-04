@@ -56,7 +56,21 @@ func TestRestartKeepsNewerUpdateAndRejectsDelayedOlderOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return bootstrapFromCheckpoint(t, a), nil })); err != nil {
+	if p := restarted.state.Publications["zone-a"]; p.Fence.Revision != 5 {
+		t.Fatalf("restart did not reload the newer update from its checkpoint: %#v", p.Fence)
+	}
+	if f := restarted.state.ContributionFences["contrib-a"]; f.Generation != 2 {
+		t.Fatalf("restart did not reload the contribution fence: %#v", f)
+	}
+	// The store the restarted member bootstraps from still holds the older
+	// revision, as a lagging broker would.
+	snapshot := testSnapshot(now)
+	stale := []model.Envelope{
+		envelope(t, model.KindPublicationChunk, "zone-a", 2, 4, oldChunk),
+		envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot),
+		envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, oldManifest),
+	}
+	if err := restarted.loadBootstrap(context.Background(), bootstrapFunc(func(context.Context) ([]model.Envelope, error) { return stale, nil })); err != nil {
 		t.Fatal(err)
 	}
 	if err := restarted.Step(context.Background()); err != nil {
@@ -72,8 +86,8 @@ func TestRestartKeepsNewerUpdateAndRejectsDelayedOlderOne(t *testing.T) {
 	}
 	// A newer revision compiled from the older observation must not apply either.
 	staleChunk, staleManifest := revisedPublication(t, now, 6, 1, "192.0.2.10")
-	if err := deliverPublication(t, restarted, staleChunk, staleManifest); err == nil {
-		t.Fatal("a revision built from an older observation was accepted")
+	if err := deliverPublication(t, restarted, staleChunk, staleManifest); err == nil || !strings.Contains(err.Error(), "regressed") {
+		t.Fatalf("a revision built from an older observation must be rejected as a regression, got %v", err)
 	}
 	if err := restarted.Step(context.Background()); err != nil {
 		t.Fatal(err)

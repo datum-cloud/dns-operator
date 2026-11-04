@@ -385,9 +385,9 @@ History is retained as follows:
 
 | Where | Kept | Removed |
 | --- | --- | --- |
-| Member checkpoint | The latest publication or withdrawal of each zone, and every contribution fence | Chunks of superseded publications |
-| Publication store | Ownership records, which hold each zone's epoch, and the active manifest with its chunks and outboxes | Superseded manifests, chunks and outboxes ten minutes after a newer manifest is active, unless a pending outbox depends on them; serving outboxes older than a shard's active one |
-| Broker streams | Events up to the configured stream age | Older events; consumers of removed members after six hours idle |
+| Member checkpoint | The latest publication or withdrawal of each zone, and every contribution fence, without limit | Chunks of superseded publications |
+| Publication store | Ownership records, which hold each zone's epoch; the active manifest with its chunks and outboxes; chunks and outboxes staged by a publish that stopped before writing its manifest | A superseded manifest with its chunks and outboxes ten minutes after a newer one was first exported, unless a pending outbox depends on them; settled serving outboxes older than a shard's active one, after ten minutes |
+| Broker streams | Events within the configured stream age and size | Older events; consumers of removed members after six hours idle |
 
 A withdrawal or deletion stays in the member checkpoint as the zone's fence, so
 a delayed copy of the zone cannot return.

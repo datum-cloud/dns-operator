@@ -249,5 +249,7 @@ func TestApplierPrunesOnlyOnceTheMirrorIsCaughtUp(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

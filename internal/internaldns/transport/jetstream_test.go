@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -182,5 +184,52 @@ func TestNewDurableStartsWithinReplayWindow(t *testing.T) {
 	c.NewDurableReplay = 0
 	if full := consumerConfig(c, nil, now); full.DeliverPolicy != jetstream.DeliverAllPolicy || full.OptStartTime != nil {
 		t.Fatalf("durable without a replay window does not replay the stream: %v %v", full.DeliverPolicy, full.OptStartTime)
+	}
+}
+
+func TestPasswordFileIsReadAgainOnEachConnect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "password")
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("first\n")
+	userInfo, err := passwordFileUserInfo("member", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user, password := userInfo(); user != "member" || password != "first" {
+		t.Fatalf("userInfo() = %q, %q", user, password)
+	}
+	write("rotated")
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("rotated password not used: %q", password)
+	}
+	// A Secret update briefly empties or removes the file; keep the last good one.
+	write("")
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("empty file replaced the password with %q", password)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("missing file replaced the password with %q", password)
+	}
+}
+
+func TestPasswordFileMustBeReadableAtStart(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := passwordFileUserInfo("member", filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing password file accepted")
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := passwordFileUserInfo("member", empty); err == nil {
+		t.Fatal("empty password file accepted")
 	}
 }

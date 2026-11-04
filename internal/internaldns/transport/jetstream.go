@@ -105,18 +105,15 @@ func Connect(c Config) (*JetStream, error) {
 		opts = append(opts, nats.Token(c.Token))
 	}
 	if c.Username != "" {
-		password := c.Password
 		if c.PasswordFile != "" {
-			value, err := os.ReadFile(c.PasswordFile)
+			userInfo, err := passwordFileUserInfo(c.Username, c.PasswordFile)
 			if err != nil {
-				return nil, fmt.Errorf("read NATS password: %w", err)
+				return nil, err
 			}
-			password = strings.TrimSpace(string(value))
-			if password == "" {
-				return nil, errors.New("NATS password file is empty")
-			}
+			opts = append(opts, nats.UserInfoHandler(userInfo))
+		} else {
+			opts = append(opts, nats.UserInfo(c.Username, c.Password))
 		}
-		opts = append(opts, nats.UserInfo(c.Username, password))
 	}
 	if c.TLS != nil {
 		tlsConfig, err := loadTLS(*c.TLS)
@@ -729,4 +726,35 @@ func defaultInt(v, d int) int {
 		return d
 	}
 	return v
+}
+
+// passwordFileUserInfo reads the password file again on every connect and
+// reconnect, so a rotated password takes effect when the broker drops the old
+// one, without restarting the process. A file that cannot be read later keeps
+// the last password that could; only the first read must succeed.
+func passwordFileUserInfo(username, path string) (nats.UserInfoCB, error) {
+	read := func() (string, error) {
+		value, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read NATS password: %w", err)
+		}
+		password := strings.TrimSpace(string(value))
+		if password == "" {
+			return "", errors.New("NATS password file is empty")
+		}
+		return password, nil
+	}
+	password, err := read()
+	if err != nil {
+		return nil, err
+	}
+	var mu sync.Mutex
+	return func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if current, err := read(); err == nil {
+			password = current
+		}
+		return username, password
+	}, nil
 }

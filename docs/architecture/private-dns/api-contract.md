@@ -119,8 +119,9 @@ Private zones accept `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`, `CAA`, `NS`,
 - A customer record set always wins a name over a service registration that
   doesn't reserve it, whatever their ages. Services protect names with
   `reservedDescendants`.
-- A `CNAME` target in another zone, or in public DNS, is followed only by
-  resolvers that include the fix listed in [Known gaps](#known-gaps).
+- Over UDP with keyed identity, a `CNAME` target in another zone or in public
+  DNS is followed only by resolvers that include the fix listed in
+  [Known gaps](#known-gaps).
 - A record set is accepted or rejected as a whole. One invalid name keeps
   every name in it from being published.
 
@@ -302,5 +303,6 @@ These keep the contract from being fully enforced. Each needs its own change.
 - **Cross-zone `CNAME`s can fail over UDP until the fix is deployed.** When a
   resolver follows a `CNAME` to another zone, or to a public name, over UDP
   with keyed identity, older resolvers lose the context identity on the
-  follow-up lookup, and clients get only the `CNAME`. The fix is on main and
-  takes effect when the serving fleet runs a release that includes it.
+  follow-up lookup, and clients get only the `CNAME`. Lookups over TCP, and
+  `CNAME`s within one zone, work. The fix is merged and takes effect when the
+  serving fleet runs a release that includes it.

@@ -392,9 +392,82 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 		},
 	}
 
+	fixtures = append(fixtures,
+		fixture{
+			name:     "rejected delete",
+			wantRule: "",
+			audit: map[string]any{
+				"user":           map[string]any{"username": "jsmith@datum.net"},
+				"verb":           "delete",
+				"responseStatus": map[string]any{"code": 403},
+				"responseObject": map[string]any{"kind": "Status", "status": "Failure", "code": 403},
+			},
+		},
+		fixture{
+			name:     "rejected create",
+			wantRule: "",
+			audit: map[string]any{
+				"user":           map[string]any{"username": "jsmith@datum.net"},
+				"verb":           "create",
+				"responseStatus": map[string]any{"code": 422},
+				"requestObject": map[string]any{
+					"spec": map[string]any{"recordType": "TXT", "records": []any{map[string]any{"name": "_dmarc"}}},
+				},
+				"responseObject": map[string]any{"kind": "Status", "status": "Failure", "code": 422},
+			},
+		},
+		fixture{
+			name:     "dry-run create",
+			wantRule: "",
+			audit: map[string]any{
+				"user":       map[string]any{"username": "jsmith@datum.net"},
+				"verb":       "create",
+				"requestURI": "/apis/dns.networking.miloapis.com/v1alpha1/namespaces/default/dnsrecordsets?dryRun=All",
+				"requestObject": map[string]any{
+					"spec": map[string]any{"recordType": "TXT", "records": []any{map[string]any{"name": "_dmarc"}}},
+				},
+				"responseObject": map[string]any{
+					"metadata": map[string]any{"annotations": displayAnns},
+					"spec":     map[string]any{"recordType": "TXT", "records": []any{map[string]any{"name": "_dmarc"}}},
+				},
+			},
+		},
+		fixture{
+			name:     "successful delete returning Status",
+			wantRule: "delete-fallback",
+			audit: map[string]any{
+				"user":           map[string]any{"username": "jsmith@datum.net"},
+				"verb":           "delete",
+				"responseObject": map[string]any{"kind": "Status", "status": "Success", "details": map[string]any{"name": "rs-1"}},
+			},
+		},
+		fixture{
+			name:     "JSON Patch without annotations",
+			wantRule: "update-from-response",
+			audit: map[string]any{
+				"user":          map[string]any{"username": "jsmith@datum.net"},
+				"verb":          "patch",
+				"objectRef":     map[string]any{"name": "rs-1"},
+				"requestObject": []any{map[string]any{"op": "replace", "path": "/spec/records/0/a/content", "value": "192.0.2.10"}},
+				"responseObject": map[string]any{
+					"metadata": map[string]any{"name": "rs-1"},
+					"spec":     map[string]any{"recordType": "A", "records": []any{map[string]any{"name": "www"}}},
+				},
+			},
+		},
+	)
+
 	for _, fx := range fixtures {
 		t.Run(fx.name, func(t *testing.T) {
 			t.Parallel()
+			// Fixtures describe successful requests unless they set responseStatus.
+			if _, ok := fx.audit["responseStatus"]; !ok {
+				code := 200
+				if fx.audit["verb"] == "create" {
+					code = 201
+				}
+				fx.audit["responseStatus"] = map[string]any{"code": code}
+			}
 			matched := ""
 			for _, rule := range pol.Spec.AuditRules {
 				ast, issues := env.Compile(rule.Match)
@@ -405,10 +478,11 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 				if err != nil {
 					t.Fatalf("program %s: %v", rule.Name, err)
 				}
-				out, _, err := prg.Eval(map[string]any{"audit": fx.audit})
+				out, _, err := prg.Eval(map[string]any{"audit": withDefaults(fx.audit)})
 				if err != nil {
-					// CEL may error on missing keys depending on expression; treat as non-match
-					continue
+					// The activity processor stops at the first rule that errors and
+					// sends the event to the DLQ, so an error is a failure here too.
+					t.Fatalf("eval %s: %v", rule.Name, err)
 				}
 				if isCELTrue(out) {
 					matched = rule.Name
@@ -425,4 +499,19 @@ func TestDNSRecordSetPolicy_CELMatchFixtures(t *testing.T) {
 func isCELTrue(v ref.Val) bool {
 	b, ok := v.(types.Bool)
 	return ok && bool(b)
+}
+
+// withDefaults mirrors the processor's BuildAuditVars, which sets absent
+// top-level objects to empty maps before evaluating a rule.
+func withDefaults(audit map[string]any) map[string]any {
+	out := make(map[string]any, len(audit))
+	for k, v := range audit {
+		out[k] = v
+	}
+	for _, field := range []string{"objectRef", "user", "responseStatus", "responseObject", "requestObject"} {
+		if _, ok := out[field]; !ok {
+			out[field] = map[string]any{}
+		}
+	}
+	return out
 }

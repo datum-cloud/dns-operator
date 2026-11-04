@@ -296,12 +296,24 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 		} else {
 			owners[apexKey{contextPin.UID, canonicalName(z.Spec.DomainName)}] = z.UID
 			candidates[contextPin.UID] = append(candidates[contextPin.UID], zoneCandidate{index: i, zone: z.UID, managed: metav1.IsControlledBy(a, &resolverContext)})
+			// Written once the zone limit is known, so a refused association
+			// doesn't flip to accepted and back, restamping its condition.
+			continue
 		}
 		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
 	}
 	for _, list := range candidates {
+		refused := map[int]bool{}
 		for _, i := range overZoneLimit(items, bases, list) {
-			setCondition(&items[i].Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "ZoneLimitExceeded", fmt.Sprintf("a resolver context can have at most %d zones; remove an association to make room", maxZonesPerResolverContext), items[i].Generation, now)
+			refused[i] = true
+		}
+		for _, c := range list {
+			a := &items[c.index]
+			if refused[c.index] {
+				setCondition(&a.Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "ZoneLimitExceeded", fmt.Sprintf("a resolver context can have at most %d zones; remove an association to make room", maxZonesPerResolverContext), a.Generation, now)
+			} else {
+				setCondition(&a.Status.Conditions, dnsValueAccepted, metav1.ConditionTrue, dnsValueAccepted, "association accepted", a.Generation, now)
+			}
 		}
 	}
 	for i := range items {

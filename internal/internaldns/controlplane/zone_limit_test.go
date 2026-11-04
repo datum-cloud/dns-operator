@@ -98,6 +98,19 @@ func TestAssociationsRefusedPastZoneLimit(t *testing.T) {
 	if c := conditions["aaa"]; c == nil || c.Status != metav1.ConditionFalse || c.Reason != "ZoneLimitExceeded" {
 		t.Fatalf("association past the limit was not refused: %v", c)
 	}
+	// Reconciling a full network again leaves the refused association alone.
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(extraAssociation), extraAssociation); err != nil {
+		t.Fatal(err)
+	}
+	version := extraAssociation.ResourceVersion
+	now = now.Add(time.Minute)
+	reconcile()
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(extraAssociation), extraAssociation); err != nil {
+		t.Fatal(err)
+	}
+	if extraAssociation.ResourceVersion != version {
+		t.Fatal("refused association was rewritten on a pass that changed nothing")
+	}
 
 	// Removing an accepted association makes room for the refused one.
 	if err := cl.Delete(ctx, &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "zone-000", Namespace: "project"}}); err != nil {

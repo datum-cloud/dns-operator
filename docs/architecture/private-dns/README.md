@@ -179,6 +179,12 @@ Regional compilation and update delivery still apply.
 If a private zone is pending, the node returns SERVFAIL for that zone instead
 of falling back to regional serving or public recursion.
 
+Each binding names the oldest publication of each zone it may serve. A new
+binding generation, a first attachment or an apex change raises that
+requirement to the zone's current publication on purpose. Until a member has
+verified a publication at least that new, the zone answers SERVFAIL rather
+than older records, so a brief pause in serving that zone may follow.
+
 ![Node-local private answers and a separate public query path](diagrams/node-authority-query-path.svg)
 
 | Behavior | Forwarding node (default) | Authoritative node (opt-in) |

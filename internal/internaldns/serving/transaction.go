@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type Command struct {
@@ -50,7 +52,29 @@ func (ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	if c.Path == "" {
 		return nil, errors.New("command path is required")
 	}
-	return exec.CommandContext(ctx, c.Path, c.Args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
+	// A helper may start children of its own. Run it in its own process group
+	// and kill the whole group when it is cancelled and again once it has
+	// exited, so no part of a session keeps talking to the daemon while the
+	// next one starts. Helpers keep their console clients in this group
+	// (timeout --foreground).
+	cmd.SysProcAttr = &unix.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return killProcessGroup(cmd.Process.Pid) }
+	cmd.WaitDelay = time.Second
+	out, err := cmd.CombinedOutput()
+	if cmd.Process != nil {
+		_ = killProcessGroup(cmd.Process.Pid)
+	}
+	return out, err
+}
+
+// killProcessGroup kills every process in the group led by pid. A group that
+// is already gone counts as done.
+func killProcessGroup(pid int) error {
+	if err := unix.Kill(-pid, unix.SIGKILL); err != nil && !errors.Is(err, unix.ESRCH) {
+		return err
+	}
+	return os.ErrProcessDone
 }
 
 type TransactionConfig struct {

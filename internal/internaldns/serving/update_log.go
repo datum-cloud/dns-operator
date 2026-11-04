@@ -48,6 +48,8 @@ func logDaemonUpdate(ctx context.Context, c Command, payload map[string][]byte) 
 	started := time.Now()
 	return func(err error) {
 		if err != nil {
+			// Logged here as well as returned: several callers, such as the
+			// fail-closed gate, discard the error.
 			log.Error(err, "daemon update failed", "duration", time.Since(started).String())
 			return
 		}
@@ -66,8 +68,20 @@ func summarizeUpdate(path string, data []byte) updateFileSummary {
 		Bytes:  len(data),
 		SHA256: hex.EncodeToString(sum[:8]),
 		Lines:  bytes.Count(data, []byte("\n")),
-		Rules:  bytes.Count(data, []byte("appendRule(")) - bytes.Count(data, []byte("function appendRule(")),
+		Rules:  countRules(data),
 	}
+}
+
+// countRules counts statements that add a dnsdist rule, ignoring comments and
+// the helper's own definition.
+func countRules(data []byte) int {
+	n := 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("appendRule(")) {
+			n++
+		}
+	}
+	return n
 }
 
 func oldPayload(old map[string]oldFile) map[string][]byte {

@@ -189,3 +189,40 @@ func TestObjectMirrorNeverOverwritesAnotherOrigin(t *testing.T) {
 		t.Fatal("a region's write replaced an object the project owns")
 	}
 }
+
+func TestPublishedWaitsForRegionsThatHaveNotReported(t *testing.T) {
+	reg := &unstructured.Unstructured{Object: map[string]any{}}
+	reg.SetGeneration(2)
+	entries := []dnsv1alpha1.DNSRegionPublicationStatus{{Region: "us-east-1", ObservedGeneration: 2, Published: true}}
+	if !applyRegions(reg, entries, 2, metav1.Now().Time) {
+		t.Fatal("no change applied")
+	}
+	conditions, _, _ := unstructured.NestedSlice(reg.Object, "status", "conditions")
+	if len(conditions) != 1 || conditions[0].(map[string]any)["status"] != "False" {
+		t.Fatalf("one of two placed regions reported, but Published = %#v", conditions)
+	}
+}
+
+func TestReplicatorNeverClaimsARegionsHubObject(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	reg := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", Labels: map[string]string{"work.karmada.io/conflict-resolution": "overwrite", OriginLabel: OriginProject}}}
+	regionWrite := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "ns-ns-uid", Labels: map[string]string{OriginLabel: "us-east-1"}}}
+	project := fake.NewClientBuilder().WithScheme(s).WithObjects(projectNamespace(), reg).Build()
+	hub := fake.NewClientBuilder().WithScheme(s).WithObjects(regionWrite).Build()
+	if err := replicator(hub, "DNSRegistration").replicate(ctx, project, "p", types.NamespacedName{Namespace: "default", Name: "web"}); err == nil {
+		t.Fatal("the project's object replaced a region's write in the hub")
+	}
+
+	other := fake.NewClientBuilder().WithScheme(s).Build()
+	if err := replicator(other, "DNSRegistration").replicate(ctx, project, "p", types.NamespacedName{Namespace: "default", Name: "web"}); err != nil {
+		t.Fatal(err)
+	}
+	var copied dnsv1alpha1.DNSRegistration
+	if err := other.Get(ctx, ctrl.ObjectKey{Namespace: "ns-ns-uid", Name: "web"}, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := copied.Labels["work.karmada.io/conflict-resolution"]; ok {
+		t.Fatal("a customer label steered the hub's placement")
+	}
+}

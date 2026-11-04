@@ -176,10 +176,15 @@ func (d *projectDiscovery) localStep(ctx context.Context) error {
 	for i := range namespaces.Items {
 		ns := &namespaces.Items[i]
 		uid := types.UID(ns.Annotations[projectUIDAnnotation])
-		if uid == "" || !ns.DeletionTimestamp.IsZero() {
+		if uid == "" {
 			continue
 		}
 		seen[ns.Name] = true
+		// A terminating namespace keeps its source, which withdraws its zones
+		// and releases their finalizers, but a new one does not start.
+		if !ns.DeletionTimestamp.IsZero() {
+			continue
+		}
 		d.directory.mu.RLock()
 		existing, exists := d.directory.projects[ns.Name]
 		d.directory.mu.RUnlock()

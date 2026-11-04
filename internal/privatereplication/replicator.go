@@ -141,17 +141,19 @@ func (r *Replicator) copy(ctx context.Context, up *unstructured.Unstructured, ke
 	hub.SetNamespace(key.Namespace)
 	hub.SetName(key.Name)
 	_, err := controllerutil.CreateOrPatch(ctx, r.Hub, hub, func() error {
-		if stored, ok := hub.GetAnnotations()[OriginGenerationAnnotation]; ok {
+		if origin := hub.GetLabels()[OriginLabel]; hub.GetResourceVersion() != "" && origin != OriginProject {
+			return fmt.Errorf("hub object %s belongs to origin %q; not replacing it with the project's", key, origin)
+		}
+		if stored, ok := hub.GetAnnotations()[OriginGenerationAnnotation]; ok && hub.GetAnnotations()[OriginUIDAnnotation] == string(up.GetUID()) {
 			if g, err := strconv.ParseInt(stored, 10, 64); err == nil && g > up.GetGeneration() {
 				return nil
 			}
 		}
-		labels := copyMap(up.GetLabels())
+		labels := withoutReserved(up.GetLabels())
 		labels[OriginLabel] = OriginProject
 		labels[ReplicatedLabel] = "true"
 		hub.SetLabels(labels)
-		annotations := copyMap(up.GetAnnotations())
-		delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		annotations := withoutReserved(up.GetAnnotations())
 		annotations[OriginGenerationAnnotation] = strconv.FormatInt(up.GetGeneration(), 10)
 		annotations[OriginUIDAnnotation] = string(up.GetUID())
 		hub.SetAnnotations(annotations)
@@ -185,6 +187,25 @@ func (r *Replicator) withdraw(ctx context.Context, project ctrl.Client, up *unst
 	base := up.DeepCopy()
 	controllerutil.RemoveFinalizer(up, finalizer)
 	return project.Patch(ctx, up, ctrl.MergeFromWithOptions(base, ctrl.MergeFromWithOptimisticLock{}))
+}
+
+// withoutReserved copies labels or annotations without the keys this
+// replication and the hub act on, so a customer cannot set an origin or steer
+// the hub's placement.
+func withoutReserved(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in)+2)
+	for k, v := range in {
+		if reserved(k) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+func reserved(key string) bool {
+	prefix, _, ok := strings.Cut(key, "/")
+	return ok && (prefix == "internal-dns.miloapis.com" || prefix == "kubectl.kubernetes.io" || prefix == "karmada.io" || strings.HasSuffix(prefix, ".karmada.io"))
 }
 
 func copyMap(in map[string]string) map[string]string {

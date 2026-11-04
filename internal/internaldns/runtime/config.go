@@ -290,10 +290,13 @@ func (c *Config) Validate(role string) error {
 			return errors.New("projectDiscovery and projects are mutually exclusive")
 		}
 		if c.ProjectDiscovery.Local != (c.ProjectDiscovery.Kubeconfig == "") {
-			return errors.New("projectDiscovery needs either kubeconfig or local, not both")
+			return errors.New("projectDiscovery needs exactly one of kubeconfig and local")
 		}
 		if !c.ProjectDiscovery.Local && !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
 			return errors.New("projectDiscovery.kubeconfig must be absolute")
+		}
+		if c.ProjectDiscovery.Local && (c.Admission.Enabled || c.CachedZoneInputs) {
+			return errors.New("projectDiscovery.local supports neither admission nor cachedZoneInputs yet")
 		}
 		if c.ProjectDiscovery.IntervalSeconds < 1 || c.ProjectDiscovery.IntervalSeconds > 300 {
 			return errors.New("projectDiscovery.intervalSeconds must be between 1 and 300")

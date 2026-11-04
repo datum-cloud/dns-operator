@@ -335,8 +335,10 @@ local phaseP90 = ts(
 
 local passDuration = lib.heatmap(
   'Project pass time',
-  'How long whole project passes took. Each column is one interval of at least a minute, each row a histogram bucket, and the colour is how many passes landed there. Every pass reads the source project API directly, so a band well above the rest usually follows project API latency. Hover a cell for its count. Empty on builds without internal_dns_project_pass_seconds.',
-  'sum by (le) (increase(internal_dns_project_pass_seconds_bucket{%s}[$__interval]))' % controlPlane,
+  'How long whole project passes took. Each column is one interval of at least a minute, each row a histogram bucket, and the colour is how many passes landed there. Every pass reads the source project API directly, so a band well above the rest usually follows project API latency. Hover a cell for its count. On builds without internal_dns_project_pass_seconds it falls back to the controller-runtime reconcile histogram, whose top bucket is 60 s.',
+  local pass = 'sum by (le) (increase(internal_dns_project_pass_seconds_bucket{%s}[$__interval]))' % controlPlane;
+  local reconcile = 'sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{%s}[$__interval]))' % controllers;
+  '%s or (%s unless on () %s)' % [pass, reconcile, pass],
   's',
   grid(8, 8, 8, 52),
 );

@@ -91,7 +91,8 @@ separately, since a query can pass through both. Each cell is the number of
 answers in one bucket over one interval, so those two tail answers appear as
 two answers rather than as a quantile. The colour scale is steeply compressed
 so a single slow answer stays visible beside thousands of fast ones; hover a
-cell for its count.
+cell for its count. Columns are back-to-back `increase()` windows, which count
+each answer once only because VictoriaMetrics does not extrapolate them.
 
 Query fixtures import the same expressions as the dashboards:
 

@@ -156,7 +156,7 @@ local answersByRcode = ts(
 );
 
 local answerTime = lib.udpLatencyEstimate(dnsdist, grid(8, 8, 16, 5));
-local udpAnswerHeatmaps = lib.udpLatencyHeatmaps('container="dnsdist",cluster="$cluster"', 13, 'cluster');
+local udpAnswerHeatmaps = lib.udpLatencyHeatmaps('container="dnsdist",cluster=~"$cluster"', 13, 'cluster');
 
 local failedQueries = ts(
   'Unanswered and dropped queries',
@@ -414,7 +414,7 @@ local statRecordSetsNotProgrammed = statPanel(
 
 local zonesTable =
   table.new('Private zones not programmed')
-  + table.panelOptions.withGridPos(8, 12, 0, 84)
+  + table.panelOptions.withGridPos(8, 12, 0, 93)
   + table.panelOptions.withDescription('Every private zone whose Programmed condition is not true, with its reason.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([qInstant(privateZoneCondition('Programmed') + ' != 1') + prometheus.withFormat('table')])
@@ -452,7 +452,7 @@ local statNetworksNotReady = statPanel(
 
 local networksTable =
   table.new('Networks not DNS-ready')
-  + table.panelOptions.withGridPos(8, 12, 12, 84)
+  + table.panelOptions.withGridPos(8, 12, 12, 93)
   + table.panelOptions.withDescription('Every network in a region whose DNSReady condition is a fault, with its reason. Networks with nothing attached, with DNS turned off, or being deleted are left out.')
   + table.queryOptions.withDatasource('prometheus', ds)
   + table.queryOptions.withTargets([qInstant(networksNotDnsReady) + prometheus.withFormat('table')])

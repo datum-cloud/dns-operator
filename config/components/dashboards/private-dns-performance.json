@@ -1407,7 +1407,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "How long whole project passes took. Each column is one interval of at least a minute, each row a histogram bucket, and the colour is how many passes landed there. Every pass reads the source project API directly, so a band well above the rest usually follows project API latency. Hover a cell for its count. Empty on builds without internal_dns_project_pass_seconds.",
+         "description": "How long whole project passes took. Each column is one interval of at least a minute, each row a histogram bucket, and the colour is how many passes landed there. Every pass reads the source project API directly, so a band well above the rest usually follows project API latency. Hover a cell for its count. On builds without internal_dns_project_pass_seconds it falls back to the controller-runtime reconcile histogram, whose top bucket is 60 s.",
          "gridPos": {
             "h": 8,
             "w": 8,
@@ -1424,10 +1424,10 @@
             },
             "color": {
                "exponent": 0.10000000000000001,
+               "fill": "orange",
                "min": 0,
-               "mode": "scheme",
+               "mode": "opacity",
                "scale": "exponential",
-               "scheme": "Oranges",
                "steps": 64
             },
             "filterValues": {
@@ -1456,7 +1456,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__interval]))",
+               "expr": "sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__interval])) or (sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{namespace=\"internal-dns-system\",controller=~\"internal-dns-control-plane-.*\"}[$__interval])) unless on () sum by (le) (increase(internal_dns_project_pass_seconds_bucket{namespace=\"internal-dns-system\"}[$__interval])))",
                "format": "heatmap",
                "legendFormat": "{{le}}"
             }
@@ -2379,10 +2379,10 @@
             },
             "color": {
                "exponent": 0.10000000000000001,
+               "fill": "orange",
                "min": 0,
-               "mode": "scheme",
+               "mode": "opacity",
                "scale": "exponential",
-               "scheme": "Oranges",
                "steps": 64
             },
             "filterValues": {
@@ -2444,10 +2444,10 @@
             },
             "color": {
                "exponent": 0.10000000000000001,
+               "fill": "orange",
                "min": 0,
-               "mode": "scheme",
+               "mode": "opacity",
                "scale": "exponential",
-               "scheme": "Oranges",
                "steps": 64
             },
             "filterValues": {

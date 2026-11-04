@@ -164,10 +164,11 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
     + heatmap.options.rowsFrame.withLayout('le')
     + heatmap.options.yAxis.withUnit(unit)
     + heatmap.options.yAxis.withAxisPlacement('left')
-    + heatmap.options.color.withMode('scheme')
-    + heatmap.options.color.withScheme('Oranges')
+    + heatmap.options.color.withMode('opacity')
+    + heatmap.options.color.withFill('orange')
     + heatmap.options.color.withScale('exponential')
-    // A low exponent keeps one slow answer visible next to thousands of fast ones.
+    // Grafana applies the exponent only in opacity mode; 0.1 keeps one slow
+    // answer visible next to thousands of fast ones.
     + heatmap.options.color.withExponent(0.1)
     + heatmap.options.color.withMin(0)
     + heatmap.options.color.withSteps(64)

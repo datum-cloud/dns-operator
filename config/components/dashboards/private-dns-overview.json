@@ -2464,7 +2464,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 84
+            "y": 93
          },
          "id": 41,
          "options": {
@@ -2534,7 +2534,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 84
+            "y": 93
          },
          "id": 42,
          "options": {
@@ -3055,10 +3055,10 @@
             },
             "color": {
                "exponent": 0.10000000000000001,
+               "fill": "orange",
                "min": 0,
-               "mode": "scheme",
+               "mode": "opacity",
                "scale": "exponential",
-               "scheme": "Oranges",
                "steps": 64
             },
             "filterValues": {
@@ -3089,7 +3089,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=\"$cluster\",internal_dns_datum_net_tier=~\"node|node-b\"}[$__interval]))",
+               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=~\"node|node-b\"}[$__interval]))",
                "format": "heatmap",
                "legendFormat": "{{le}}"
             }
@@ -3120,10 +3120,10 @@
             },
             "color": {
                "exponent": 0.10000000000000001,
+               "fill": "orange",
                "min": 0,
-               "mode": "scheme",
+               "mode": "opacity",
                "scale": "exponential",
-               "scheme": "Oranges",
                "steps": 64
             },
             "filterValues": {
@@ -3154,7 +3154,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=\"$cluster\",internal_dns_datum_net_tier=\"regional-dnsdist\"}[$__interval]))",
+               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=\"regional-dnsdist\"}[$__interval]))",
                "format": "heatmap",
                "legendFormat": "{{le}}"
             }

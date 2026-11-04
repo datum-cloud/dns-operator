@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type Command struct {
@@ -50,7 +52,14 @@ func (ExecRunner) Run(ctx context.Context, c Command) ([]byte, error) {
 	if c.Path == "" {
 		return nil, errors.New("command path is required")
 	}
-	return exec.CommandContext(ctx, c.Path, c.Args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, c.Path, c.Args...)
+	// A helper may start children of its own. On cancellation kill its whole
+	// process group, and wait for it, so no part of an abandoned session keeps
+	// talking to the daemon while the next one starts.
+	cmd.SysProcAttr = &unix.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return unix.Kill(-cmd.Process.Pid, unix.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	return cmd.CombinedOutput()
 }
 
 type TransactionConfig struct {

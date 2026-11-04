@@ -299,14 +299,14 @@ func TestManagedDomainSuffixesValidation(t *testing.T) {
 		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
 		Members:  []model.Member{{MemberID: "regional-1", Role: "regional"}},
 	}
-	for _, suffixes := range [][]string{nil, {"internal"}, {"internal", "corp.example"}} {
+	for _, suffixes := range [][]string{nil, {"internal"}, {"internal", "corp.example"}, {"test", "example", "corp.example.com"}} {
 		valid := base
 		valid.ManagedDomainSuffixes = suffixes
 		if err := valid.Validate(roleControlPlane); err != nil {
 			t.Fatalf("suffixes %q rejected: %v", suffixes, err)
 		}
 	}
-	for _, suffix := range []string{"", ".internal", "Internal", "bad..internal", "*.internal"} {
+	for _, suffix := range []string{"", ".internal", "Internal", "bad..internal", "*.internal", "com", "net", "io", "local"} {
 		invalid := base
 		invalid.ManagedDomainSuffixes = []string{suffix}
 		if err := invalid.Validate(roleControlPlane); err == nil {

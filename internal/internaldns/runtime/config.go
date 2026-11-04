@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -189,6 +190,10 @@ func validateKubeAPI(name string, c KubeAPIClientConfig) error {
 	return nil
 }
 
+// privateUseTopLevelDomains are the single-label names reserved from public
+// DNS that may serve as a managed domain suffix on their own.
+var privateUseTopLevelDomains = map[string]bool{"internal": true, "test": true, "example": true}
+
 func (c *Config) Validate(role string) error {
 	c.defaults()
 	if c.CachedZoneInputs && !c.PerZoneReconcile {
@@ -259,6 +264,9 @@ func (c *Config) Validate(role string) error {
 	for i, suffix := range c.ManagedDomainSuffixes {
 		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
 			return fmt.Errorf("managedDomainSuffixes[%d] must be a lowercase DNS subdomain: %q", i, suffix)
+		}
+		if !strings.Contains(suffix, ".") && !privateUseTopLevelDomains[suffix] {
+			return fmt.Errorf("managedDomainSuffixes[%d] %q is a single label; only private-use names such as \"internal\" may be one label, so a managed zone cannot shadow a public top-level domain", i, suffix)
 		}
 	}
 	if c.ProjectDiscovery != nil {

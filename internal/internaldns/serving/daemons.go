@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -40,8 +41,31 @@ func (p *daemonProcess) start() error {
 	return nil
 }
 
-func (p *daemonProcess) stop() error {
+// daemonLog receives unexpected exits so a crash loop leaves a reason behind.
+var daemonLog io.Writer = os.Stderr
+
+// reap clears a process that has exited on its own and logs how it exited.
+// It reports whether the process had exited.
+func (p *daemonProcess) reap() bool {
 	if p.cmd == nil {
+		return false
+	}
+	select {
+	case err := <-p.done:
+		status := "exit status 0"
+		if err != nil {
+			status = err.Error()
+		}
+		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", p.name, status)
+		p.cmd, p.done = nil, nil
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *daemonProcess) stop() error {
+	if p.cmd == nil || p.reap() {
 		return nil
 	}
 	_ = p.cmd.Process.Signal(unix.SIGTERM)
@@ -126,13 +150,7 @@ func RunDaemons(ctx context.Context, config Config) error {
 	for {
 		start, retain, release := daemonPermission(config.StateDir)
 		for _, p := range processes {
-			if p.cmd != nil {
-				select {
-				case <-p.done:
-					p.cmd, p.done = nil, nil
-				default:
-				}
-			}
+			p.reap()
 			if !retain {
 				if err := p.stop(); err != nil {
 					release()

@@ -11,6 +11,7 @@ import (
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
@@ -50,6 +51,39 @@ func TestDNSZoneVisibilityAdmission(t *testing.T) {
 		zone.Spec.Visibility = ""
 		if err := cl.Update(ctx, zone); err != nil {
 			t.Fatalf("omitted public visibility must remain compatible: %v", err)
+		}
+	})
+	t.Run("private zones do not need a class", func(t *testing.T) {
+		zone := newZone("private-classless", dnsv1alpha1.DNSZoneVisibilityPrivate)
+		zone.Spec.DNSZoneClassName = ""
+		if err := cl.Create(ctx, zone); err != nil {
+			t.Fatalf("private zone without a class: %v", err)
+		}
+	})
+	t.Run("public zones need a class", func(t *testing.T) {
+		for _, visibility := range []dnsv1alpha1.DNSZoneVisibility{"", dnsv1alpha1.DNSZoneVisibilityPublic} {
+			zone := newZone("public-classless", visibility)
+			zone.Spec.DNSZoneClassName = ""
+			if err := cl.Create(ctx, zone); !apierrors.IsInvalid(err) {
+				t.Fatalf("visibility %q without a class: expected validation error, got %v", visibility, err)
+			}
+		}
+		explicit := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": dnsv1alpha1.GroupVersion.String(),
+			"kind":       "DNSZone",
+			"metadata":   map[string]any{"name": "public-empty-class", "namespace": "default"},
+			"spec":       map[string]any{"domainName": "prod.example.com", "dnsZoneClassName": ""},
+		}}
+		if err := cl.Create(ctx, explicit); !apierrors.IsInvalid(err) {
+			t.Fatalf("public zone with an empty class: expected validation error, got %v", err)
+		}
+		zone := newZone("public-class-removed", dnsv1alpha1.DNSZoneVisibilityPublic)
+		if err := cl.Create(ctx, zone); err != nil {
+			t.Fatal(err)
+		}
+		zone.Spec.DNSZoneClassName = ""
+		if err := cl.Update(ctx, zone); !apierrors.IsInvalid(err) {
+			t.Fatalf("removing a public zone's class: expected validation error, got %v", err)
 		}
 	})
 	t.Run("invalid visibility is rejected", func(t *testing.T) {

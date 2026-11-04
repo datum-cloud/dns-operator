@@ -34,10 +34,11 @@ tasks:
           echo "Rendered $out"
 
   test:
-    desc: Check UDP histogram interpretation with synthetic counters
+    desc: Check UDP histogram interpretation and panel layout
     dir: ../../..
     cmds:
       - hack/test-dashboard-latency.sh
+      - hack/check-dashboard-layout.sh
 
   clean:
     desc: Remove the rendered dashboard JSON

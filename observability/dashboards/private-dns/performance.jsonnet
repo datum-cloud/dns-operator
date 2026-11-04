@@ -333,17 +333,12 @@ local phaseP90 = ts(
   calcs=['mean', 'max'],
 );
 
-local passBuckets(m) = 'sum by (le) (rate(%s[$__rate_interval]))' % m;
-
-local passDuration = ts(
+local passDuration = lib.heatmap(
   'Project pass time',
-  'Whole project pass time across every project, and the slowest pass as the upper bound of its histogram bucket. On builds without internal_dns_project_pass_seconds the lines stop at 60 s.',
-  [
-    qRange(lib.passQuantile('0.5', passBuckets), 'p50'),
-    qRange(lib.passQuantile('0.9', passBuckets), 'p90'),
-    qRange(lib.passQuantile('0.99', passBuckets), 'p99'),
-    qRange(lib.passQuantile('1', passBuckets), 'slowest'),
-  ],
+  'How long whole project passes took. Each column is one interval of at least a minute, each row a histogram bucket, and the colour is how many passes landed there. Every pass reads the source project API directly, so a band well above the rest usually follows project API latency. Hover a cell for its count. On builds without internal_dns_project_pass_seconds it falls back to the controller-runtime reconcile histogram, whose top bucket is 60 s.',
+  local pass = 'sum by (le) (increase(internal_dns_project_pass_seconds_bucket{%s}[$__interval]))' % controlPlane;
+  local reconcile = 'sum by (le) (increase(controller_runtime_reconcile_time_seconds_bucket{%s}[$__interval]))' % controllers;
+  '%s or (%s unless on () %s)' % [pass, reconcile, pass],
   's',
   grid(8, 8, 8, 52),
 );
@@ -459,8 +454,7 @@ local answersByRcode = ts(
 );
 
 local resolverLatency = lib.udpLatencyEstimate(dnsdist, grid(8, 8, 0, 86));
-local udpAnswerShares = lib.udpLatencyShares(dnsdist, grid(7, 12, 0, 94));
-local udpAnswerCounts = lib.udpLatencyCounts(dnsdist, grid(7, 12, 12, 94));
+local udpAnswerHeatmaps = lib.udpLatencyHeatmaps(dnsdist, 94, 'cluster');
 local fleetCpu = ts(
   'Serving CPU by container, cores',
   'CPU each serving pod used, by container: dnsdist (the resolver front), serving (CoreDNS), agent (receives and activates configuration) and recursor (public recursion).',
@@ -535,6 +529,4 @@ lib.dashboard(
   resolverLatency,
   fleetCpu,
   fleetMemory,
-  udpAnswerShares,
-  udpAnswerCounts,
-])
+] + udpAnswerHeatmaps)

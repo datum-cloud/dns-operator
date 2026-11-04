@@ -60,8 +60,10 @@ spec:
                 x-kubernetes-validations:
                 - message: domainSuffix is required when the managed namespace is
                     enabled
-                  rule: '!has(self.enabled) || !self.enabled || (has(self.domainSuffix)
-                    && self.domainSuffix.size() > 0)'
+                  optionalOldSelf: true
+                  rule: (oldSelf.hasValue() && oldSelf.value() == self) || !has(self.enabled)
+                    || !self.enabled || (has(self.domainSuffix) && self.domainSuffix.size()
+                    > 0)
             required:
             - consumerID
             type: object

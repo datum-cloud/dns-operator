@@ -65,7 +65,7 @@ func recordSetZones(t *testing.T, h *harness) []string {
 	if err := h.client.List(context.Background(), &list); err != nil {
 		t.Fatalf("listing record sets: %v", err)
 	}
-	var zones []string
+	zones := make([]string, 0, len(list.Items))
 	for i := range list.Items {
 		zones = append(zones, list.Items[i].Spec.DNSZoneRef.Name)
 	}
@@ -99,7 +99,7 @@ func TestVPCPicksItsOwnZone(t *testing.T) {
 func TestVPCFollowsAssociations(t *testing.T) {
 	h := newHarness(t, twoVPCFixture()...)
 
-	requireExit(t, h.run("record", "list", "prod.internal", "--vpc", "app-a"), util.ExitNotFound)
+	_ = requireExit(t, h.run("record", "list", "prod.internal", "--vpc", "app-a"), util.ExitNotFound)
 	requireNoError(t, h.run("record", "list", "prod.internal", "--vpc", "app-b"))
 }
 

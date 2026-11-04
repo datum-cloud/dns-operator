@@ -52,7 +52,7 @@ type DNSResolverContextSpec struct {
 	ManagedNamespace DNSResolverContextManagedNamespace `json:"managedNamespace,omitempty"`
 }
 
-// +kubebuilder:validation:XValidation:rule="!has(self.enabled) || !self.enabled || (has(self.domainSuffix) && self.domainSuffix.size() > 0)",message="domainSuffix is required when the managed namespace is enabled"
+// +kubebuilder:validation:XValidation:rule="(oldSelf.hasValue() && oldSelf.value() == self) || !has(self.enabled) || !self.enabled || (has(self.domainSuffix) && self.domainSuffix.size() > 0)",message="domainSuffix is required when the managed namespace is enabled",optionalOldSelf=true
 type DNSResolverContextManagedNamespace struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// DomainSuffix is the zone apex requested by the trusted consumer integration.

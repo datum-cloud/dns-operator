@@ -147,8 +147,9 @@ func TestZoneLimitAlwaysAdmitsManagedZone(t *testing.T) {
 	}
 	resolver := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "network", Namespace: "project", UID: "context", Generation: 1}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer"}}
 	setCondition(&resolver.Status.Conditions, "Ready", metav1.ConditionTrue, "Ready", "", resolver.Generation, now)
-	objects := []client.Object{resolver}
-	var associations []client.Object
+	objects := make([]client.Object, 0, 1+2*maxZonesPerResolverContext)
+	objects = append(objects, resolver)
+	associations := make([]client.Object, 0, maxZonesPerResolverContext)
 	created := now.Add(-time.Hour)
 	for i := range maxZonesPerResolverContext {
 		name := fmt.Sprintf("zone-%03d", i)

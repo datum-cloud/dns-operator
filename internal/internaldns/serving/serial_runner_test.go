@@ -377,3 +377,27 @@ func TestUpdateSummaryCountsOnlyRuleStatements(t *testing.T) {
 		t.Fatalf("Rules = %d, want 2", got)
 	}
 }
+
+func TestExecRunnerKillsChildrenLeftByACompletedCommand(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(t.TempDir(), "child")
+	out, err := ExecRunner{}.Run(context.Background(), Command{Path: "/bin/sh", Args: []string{"-c", `sleep 30 >/dev/null 2>&1 & echo $! > "$0"; echo applied`, pidFile}})
+	if err != nil || strings.TrimSpace(string(out)) != "applied" {
+		t.Fatalf("Run() = %q, %v", out, err)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for unix.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d outlived its completed command", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

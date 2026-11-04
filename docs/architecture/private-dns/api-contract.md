@@ -83,8 +83,9 @@ reference. To attach a replacement zone or context, recreate the association.
 
 ## Naming rules
 
-- **Zone domains:** lowercase letters, digits, and hyphens, in at least two
-  labels and at most 253 characters. A private zone can use any such domain, including one that also
+- **Zone domains:** lowercase letters, digits, and hyphens, where each label
+  starts and ends with a letter or digit, in at least two labels and at most
+  253 characters. A private zone can use any such domain, including one that also
   exists publicly. On an associated network, the private zone answers for that
   domain and its public records aren't visible.
 - **Managed zone domains:** chosen by the network integration, and must end in
@@ -110,8 +111,8 @@ Private zones accept `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`, `CAA`, `NS`,
 - The zone apex can't be a `CNAME`.
 - A `CNAME` can't share a name with another record type.
 - An `SRV` target must be a name with `A` or `AAAA` records in the same zone.
-- A static record without a TTL is served with 300 seconds. The API stores no
-  default, so the record set shows no TTL. Records a service publishes
+- A static record entry without a TTL is served with a 300-second TTL. The API
+  stores no default, so the entry shows no TTL. Records a service publishes
   have a TTL of at most 30 seconds.
 - If two record sets claim the same name and type, the older record set keeps
   it. The newer one isn't accepted.

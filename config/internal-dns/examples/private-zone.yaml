@@ -6,7 +6,6 @@ metadata:
 spec:
   visibility: Private
   domainName: prod.internal
-  dnsZoneClassName: datum-internal-dns
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSZoneAssociation

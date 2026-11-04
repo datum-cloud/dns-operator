@@ -174,11 +174,6 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
-		if invalidDomain {
-			if err := r.withdrawManagedZone(ctx, c); err != nil {
-				return err
-			}
-		}
 		if !c.Spec.ManagedNamespace.Enabled || invalidDomain {
 			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		}
@@ -196,7 +191,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 				reason, msg = dnsValueDuplicateConsumerID, "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
-				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
+				reason, msg = model.InvalidManagedDomainReason, "an enabled managed namespace requires a domainSuffix below a permitted suffix"
 			}
 		}
 		if valid && !ready {
@@ -205,6 +200,12 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		setCondition(&c.Status.Conditions, "Ready", status, reason, msg, c.Generation, now)
 		if !jsonEqual(base.Status, c.Status) {
 			if err := r.Status().Patch(ctx, c, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+		// Admission releases the zone only once the context reports the refusal.
+		if invalidDomain {
+			if err := r.withdrawManagedZone(ctx, c); err != nil {
 				return err
 			}
 		}
@@ -576,7 +577,7 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return false, nil
 	}
 	if ready.Status != metav1.ConditionTrue {
-		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == "InvalidManagedDomain", nil
+		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == model.InvalidManagedDomainReason, nil
 	}
 	if access.Generation < binding.Spec.Source.AccessBindingRef.Generation {
 		return false, nil

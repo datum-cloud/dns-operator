@@ -22,7 +22,7 @@ import (
 // the handler and fail closed.
 func TestInternalDNSWebhookIsRegisteredFailClosed(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "webhook", "manifests.yaml")
-	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path)
+	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path, "vinternaldns.kb.io")
 	if !ok {
 		t.Fatalf("%s registers no validating webhook for %s", path, internaldnsadmission.Path)
 	}
@@ -47,26 +47,29 @@ func TestInternalDNSWebhookIsRegisteredFailClosed(t *testing.T) {
 	}
 }
 
-// Deleting a managed zone while its resolver context uses it would break the
-// network's names for good, so zone deletes reach the handler and fail closed.
-func TestInternalDNSWebhookGuardsManagedZoneDeletes(t *testing.T) {
+// Deleting a managed zone, or releasing it from its resolver context, while
+// the context uses it would break the network's names for good, so those
+// writes reach the handler and fail closed.
+func TestInternalDNSWebhookGuardsManagedZones(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "webhook", "manifests.yaml")
-	hooks := validatingWebhooks(t, path, internaldnsadmission.Path)
-	for _, hook := range hooks {
-		for _, rule := range hook.Rules {
-			if !slices.Contains(rule.Resources, "dnszones") {
-				continue
-			}
-			if hook.FailurePolicy == nil || *hook.FailurePolicy != admissionregistrationv1.Fail {
-				t.Errorf("failurePolicy = %v, want Fail", hook.FailurePolicy)
-			}
-			if !slices.Equal(rule.Operations, []admissionregistrationv1.OperationType{admissionregistrationv1.Delete}) {
-				t.Errorf("operations = %v, want only DELETE", rule.Operations)
-			}
-			return
-		}
+	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path, "vinternaldnszones.kb.io")
+	if !ok {
+		t.Fatalf("%s registers no managed zone webhook for %s", path, internaldnsadmission.Path)
 	}
-	t.Fatalf("%s sends no zone deletes to %s", path, internaldnsadmission.Path)
+	if hook.FailurePolicy == nil || *hook.FailurePolicy != admissionregistrationv1.Fail {
+		t.Errorf("failurePolicy = %v, want Fail", hook.FailurePolicy)
+	}
+	if len(hook.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(hook.Rules))
+	}
+	rule := hook.Rules[0]
+	if !slices.Equal(rule.APIGroups, []string{dnsv1alpha1.GroupVersion.Group}) || !slices.Equal(rule.Resources, []string{"dnszones"}) {
+		t.Errorf("rule = %v %v, want dnszones", rule.APIGroups, rule.Resources)
+	}
+	ops := []admissionregistrationv1.OperationType{admissionregistrationv1.Update, admissionregistrationv1.Delete}
+	if !slices.Equal(rule.Operations, ops) {
+		t.Errorf("operations = %v, want %v", rule.Operations, ops)
+	}
 }
 
 // In deployed environments the internal-dns control plane registers the
@@ -80,12 +83,10 @@ func TestDeployedComponentLeavesInternalDNSWebhookToControlPlane(t *testing.T) {
 	}
 }
 
-func findValidatingWebhook(t *testing.T, path, servicePath string) (admissionregistrationv1.ValidatingWebhook, bool) {
+func findValidatingWebhook(t *testing.T, path, servicePath, name string) (admissionregistrationv1.ValidatingWebhook, bool) {
 	t.Helper()
 	for _, hook := range validatingWebhooks(t, path, servicePath) {
-		if !slices.ContainsFunc(hook.Rules, func(rule admissionregistrationv1.RuleWithOperations) bool {
-			return slices.Contains(rule.Resources, "dnszones")
-		}) {
+		if hook.Name == name {
 			return hook, true
 		}
 	}

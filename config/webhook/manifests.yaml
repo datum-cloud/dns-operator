@@ -91,6 +91,7 @@ webhooks:
     apiVersions:
     - v1alpha1
     operations:
+    - UPDATE
     - DELETE
     resources:
     - dnszones

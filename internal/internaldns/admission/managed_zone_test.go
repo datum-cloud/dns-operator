@@ -52,6 +52,11 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 	deletingZone.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 	tenantZone := zoneFor(contextUID)
 	tenantZone.Name = "corp"
+	refused := live()
+	refused.Generation = 2
+	refused.Status.Conditions = []metav1.Condition{{Type: "Ready", Status: metav1.ConditionFalse, Reason: model.InvalidManagedDomainReason, ObservedGeneration: 2}}
+	staleRefusal := refused.DeepCopy()
+	staleRefusal.Generation = 3
 
 	for _, tc := range []struct {
 		name    string
@@ -66,6 +71,8 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 		{"context was replaced", replaced, zoneFor(contextUID), true},
 		{"zone is already being deleted", live(), deletingZone, true},
 		{"zone is not a managed zone", live(), tenantZone, true},
+		{"service refused the managed domain", refused, zoneFor(contextUID), true},
+		{"refusal is for an older generation", staleRefusal, zoneFor(contextUID), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			objects := []client.Object{}
@@ -89,6 +96,62 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 	t.Run("tenant zone needs no project lookup", func(t *testing.T) {
 		if res := (&Handler{}).Handle(context.Background(), zoneDelete(t, tenantZone)); !res.Allowed {
 			t.Fatalf("tenant zone delete was refused: %#v", res.Result)
+		}
+	})
+}
+
+func TestManagedZoneKeepsItsController(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	resolver := &dnsv1alpha1.DNSResolverContext{
+		ObjectMeta: metav1.ObjectMeta{Name: "vpc", Namespace: "project", UID: "context-uid"},
+		Spec:       dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/vpc", ManagedNamespace: dnsv1alpha1.DNSResolverContextManagedNamespace{Enabled: true, DomainSuffix: "datum.internal"}},
+	}
+	old := &dnsv1alpha1.DNSZone{
+		ObjectMeta: metav1.ObjectMeta{Name: model.ManagedZoneName("context-uid"), Namespace: "project", OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: dnsv1alpha1.GroupVersion.String(), Kind: "DNSResolverContext", Name: "vpc", UID: "context-uid", Controller: ptr.To(true),
+		}}},
+		Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "datum.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate},
+	}
+	released := old.DeepCopy()
+	released.OwnerReferences[0].Controller = ptr.To(false)
+	orphaned := old.DeepCopy()
+	orphaned.OwnerReferences = nil
+	relabelled := old.DeepCopy()
+	relabelled.Labels = map[string]string{"team": "network"}
+	for _, tc := range []struct {
+		name    string
+		context *dnsv1alpha1.DNSResolverContext
+		zone    *dnsv1alpha1.DNSZone
+		allowed bool
+	}{
+		{"metadata change", resolver, relabelled, true},
+		{"controller released", resolver, released, false},
+		{"owner removed", resolver, orphaned, false},
+		{"owner removed after the context is gone", nil, orphaned, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := []client.Object{}
+			if tc.context != nil {
+				objects = append(objects, tc.context)
+			}
+			h := Handler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()}
+			req := zoneDelete(t, old)
+			req.Operation = admissionv1.Update
+			req.Object.Raw, _ = json.Marshal(tc.zone)
+			if res := h.Handle(context.Background(), req); res.Allowed != tc.allowed {
+				t.Fatalf("allowed = %v, want %v: %#v", res.Allowed, tc.allowed, res.Result)
+			}
+		})
+	}
+	t.Run("metadata change needs no project lookup", func(t *testing.T) {
+		req := zoneDelete(t, old)
+		req.Operation = admissionv1.Update
+		req.Object.Raw, _ = json.Marshal(relabelled)
+		if res := (&Handler{}).Handle(context.Background(), req); !res.Allowed {
+			t.Fatalf("metadata change was refused: %#v", res.Result)
 		}
 	})
 }

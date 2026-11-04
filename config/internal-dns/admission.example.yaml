@@ -31,10 +31,28 @@ webhooks:
     - dnsnamingpolicies
     - dnsresolveraccessbindings
     scope: Namespaced
-  # A managed zone is kept while its resolver context uses it.
+# A managed zone is kept, and kept under its resolver context, while the
+# context uses it. The selector matches the old object too, so removing the
+# label doesn't skip the check, and other zones never reach the webhook.
+- name: managed-zones.internal-dns.miloapis.com
+  admissionReviewVersions: [v1]
+  sideEffects: None
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  timeoutSeconds: 5
+  objectSelector:
+    matchLabels:
+      dns.networking.miloapis.com/managed: "true"
+  clientConfig:
+    service:
+      namespace: internal-dns-system
+      name: internal-dns-admission
+      path: /validate-internal-dns
+      port: 443
+  rules:
   - apiGroups: [dns.networking.miloapis.com]
     apiVersions: [v1alpha1]
-    operations: [DELETE]
+    operations: [UPDATE, DELETE]
     resources:
     - dnszones
     scope: Namespaced

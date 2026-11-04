@@ -4,12 +4,15 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	"go.miloapis.com/dns-operator/internal/internaldns/admission"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	admissionv1 "k8s.io/api/admission/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	kubeadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
 func TestManagedDomainIsSharedWithSeparateContextZones(t *testing.T) {
@@ -262,7 +266,14 @@ func TestRefusedManagedDomainWithdrawsExistingZone(t *testing.T) {
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: "project", UID: "zone-uid", OwnerReferences: owner}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.example", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
 	association := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: zoneName + "-context", Namespace: "project", UID: "association-uid", OwnerReferences: owner}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zoneName}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
 	foreign := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "managed-other", Namespace: "project", UID: "other-uid"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "corp.example"}}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, zone, association, foreign).WithStatusSubresource(resolver).Build()
+	var guard *admission.Handler
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(resolver, zone, association, foreign).WithStatusSubresource(resolver).WithInterceptorFuncs(interceptor.Funcs{Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+		if res := guard.Handle(ctx, zoneDeleteRequest(t, cl, obj)); !res.Allowed {
+			return fmt.Errorf("admission refused the delete: %s", res.Result.Message)
+		}
+		return cl.Delete(ctx, obj, opts...)
+	}}).Build()
+	guard = &admission.Handler{Client: c}
 	r := &Reconciler{Client: c, Scheme: s}
 	if err := r.reconcileResolverContexts(context.Background(), "project", time.Now()); err != nil {
 		t.Fatal(err)
@@ -278,6 +289,29 @@ func TestRefusedManagedDomainWithdrawsExistingZone(t *testing.T) {
 	if len(associations.Items) != 0 || len(zones.Items) != 1 || zones.Items[0].Name != foreign.Name {
 		t.Fatalf("refused domain kept publishing: zones=%v associations=%d", zones.Items, len(associations.Items))
 	}
+}
+
+// zoneDeleteRequest builds the admission request the API server sends for a
+// delete of obj, so the reconciler's deletes meet the same guard as a user's.
+func zoneDeleteRequest(t *testing.T, cl client.Client, obj client.Object) kubeadmission.Request {
+	t.Helper()
+	resource := "dnszoneassociations"
+	if _, ok := obj.(*dnsv1alpha1.DNSZone); ok {
+		resource = "dnszones"
+	}
+	current := obj.DeepCopyObject().(client.Object)
+	if err := cl.Get(context.Background(), client.ObjectKeyFromObject(obj), current); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		Namespace: obj.GetNamespace(), Name: obj.GetName(), Operation: admissionv1.Delete,
+		Resource:  metav1.GroupVersionResource{Group: dnsv1alpha1.GroupVersion.Group, Version: "v1alpha1", Resource: resource},
+		OldObject: runtime.RawExtension{Raw: raw},
+	}}
 }
 
 func TestAssociationInsideReservedScopesIsNotAccepted(t *testing.T) {

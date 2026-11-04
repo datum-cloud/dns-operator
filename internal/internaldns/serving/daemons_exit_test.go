@@ -4,6 +4,8 @@ package serving
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +91,51 @@ func TestStopAfterCrashLogsTheCrash(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "exited unexpectedly (exit status 7)") {
 		t.Fatalf("log = %q, want the crash recorded", log.String())
+	}
+}
+
+func TestGateStopIsNotLoggedAsACrash(t *testing.T) {
+	log := captureDaemonLog(t)
+	allow := filepath.Join(t.TempDir(), "allow-sh")
+	if err := os.WriteFile(allow, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &daemonProcess{name: "sh", args: []string{"-c", "sleep 60"}, allowFile: allow}
+	if err := p.start(); err != nil {
+		t.Fatal(err)
+	}
+	// The gate removes the start permission, then kills the process.
+	if err := os.Remove(allow); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	waitExited(t, p)
+	if log.Len() != 0 {
+		t.Fatalf("gate stop logged %q", log.String())
+	}
+}
+
+func TestRepeatedIdenticalExitsAreSummarized(t *testing.T) {
+	log := captureDaemonLog(t)
+	var exits exitLog
+	start := time.Unix(1000, 0)
+	for i := range 20 {
+		exits.record("coredns", "exit status 1", start.Add(time.Duration(i)*50*time.Millisecond))
+	}
+	exits.record("coredns", "signal: killed", start.Add(2*time.Second))
+	for i := range 3 {
+		exits.record("coredns", "signal: killed", start.Add(3*time.Second+time.Duration(i)*time.Second))
+	}
+	exits.record("coredns", "signal: killed", start.Add(2*time.Minute))
+	want := []string{
+		"DNS process coredns exited unexpectedly (exit status 1)",
+		"DNS process coredns exited unexpectedly (exit status 1) 19 more times before this",
+		"DNS process coredns exited unexpectedly (signal: killed)",
+		"DNS process coredns exited unexpectedly (signal: killed); 3 more times since the last report",
+	}
+	if got := strings.Split(strings.TrimSpace(log.String()), "\n"); strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("log =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }

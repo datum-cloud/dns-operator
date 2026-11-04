@@ -27,6 +27,35 @@ type daemonProcess struct {
 	args   []string
 	cmd    *exec.Cmd
 	done   chan error
+	// allowFile is the start permission the fail-closed gate removes before
+	// it stops the process; an exit without it is planned.
+	allowFile string
+	exits     exitLog
+}
+
+// exitLog writes one line per unexpected exit, but a process that keeps
+// exiting the same way is summarized once a minute instead of every restart.
+type exitLog struct {
+	status     string
+	logged     time.Time
+	suppressed int
+}
+
+func (l *exitLog) record(name, status string, now time.Time) {
+	if status == l.status && now.Sub(l.logged) < time.Minute {
+		l.suppressed++
+		return
+	}
+	if l.suppressed > 0 && status != l.status {
+		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s) %d more times before this\n", name, l.status, l.suppressed)
+		l.suppressed = 0
+	}
+	if l.suppressed > 0 {
+		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s); %d more times since the last report\n", name, status, l.suppressed)
+	} else {
+		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", name, status)
+	}
+	*l = exitLog{status: status, logged: now}
 }
 
 func (p *daemonProcess) start() error {
@@ -44,19 +73,21 @@ func (p *daemonProcess) start() error {
 // daemonLog receives unexpected exits so a crash loop leaves a reason behind.
 var daemonLog io.Writer = os.Stderr
 
-// reap clears a process that has exited on its own and logs how it exited.
-// It reports whether the process had exited.
+// reap clears a process that has exited and logs how it exited, unless the
+// fail-closed gate stopped it. It reports whether the process had exited.
 func (p *daemonProcess) reap() bool {
 	if p.cmd == nil {
 		return false
 	}
 	select {
 	case err := <-p.done:
-		status := "exit status 0"
-		if err != nil {
-			status = err.Error()
+		if p.allowFile == "" || fileExists(p.allowFile) {
+			status := "exit status 0"
+			if err != nil {
+				status = err.Error()
+			}
+			p.exits.record(p.name, status, time.Now())
 		}
-		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", p.name, status)
 		p.cmd, p.done = nil, nil
 		return true
 	default:
@@ -84,6 +115,11 @@ func (p *daemonProcess) stop() error {
 }
 
 const daemonRuntimeDir = "/run/internal-dns"
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
 
 // A gate persists as an activation marker, so only an approved, fully
 // installed configuration with no activation pending regains start permission.
@@ -117,7 +153,7 @@ func RunDaemons(ctx context.Context, config Config) error {
 	addBind := func(bind CoreDNSRenderConfig) {
 		args, err := coreDNSArgs(bind)
 		bindErr = err
-		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args})
+		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args, allowFile: filepath.Join(daemonRuntimeDir, "allow-coredns")})
 	}
 
 	switch config.Render.Role {

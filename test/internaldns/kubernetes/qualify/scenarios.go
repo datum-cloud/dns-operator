@@ -90,8 +90,8 @@ func (s *suite) scenarios(a, b *project) error {
 		if err != nil {
 			return err
 		}
-		if answer.Error == "" && answer.Rcode != dns.RcodeRefused && answer.Rcode != dns.RcodeServerFailure {
-			return fmt.Errorf("unknown destination must not resolve a tenant's record: %+v", answer)
+		if answer.Error != "" || (answer.Rcode != dns.RcodeRefused && answer.Rcode != dns.RcodeServerFailure) {
+			return fmt.Errorf("unknown destination must answer REFUSED or SERVFAIL: %+v", answer)
 		}
 	}
 	if err := s.expect(b, "common.prod.internal", "A", false, dns.RcodeSuccess, "10.42.0.20"); err != nil {
@@ -114,6 +114,11 @@ func (s *suite) scenarios(a, b *project) error {
 	}
 	managedName := "web." + a.resolverContext.Status.ManagedNamespace.Suffix
 	managedNameB := "web." + b.resolverContext.Status.ManagedNamespace.Suffix
+	// The owner must resolve first, or b's NXDOMAIN could be a publication
+	// that has not arrived yet.
+	if err := s.expect(a, managedName, "A", false, dns.RcodeSuccess, "10.42.0.11"); err != nil {
+		return err
+	}
 	for _, tcp := range []bool{false, true} {
 		if err := s.expect(b, managedName, "A", tcp, dns.RcodeNameError); err != nil {
 			return err

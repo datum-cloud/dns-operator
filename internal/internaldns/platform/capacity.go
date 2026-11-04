@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -40,6 +42,9 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		return snapshot, rejected, err
 	}
 	used := len(payload)
+	// Each bound zone later adds a publication requirement to the snapshot, so
+	// it counts here at its largest encoding.
+	required := map[string]bool{}
 	fits := func(binding model.Binding) bool {
 		if len(snapshot.Bindings) >= maxBindings {
 			return false
@@ -52,10 +57,30 @@ func fitSnapshot(snapshot model.ServingSnapshot, prior model.ServingSnapshot, ma
 		if len(snapshot.Bindings) > 0 {
 			size++
 		}
+		var zones []string
+		for _, zone := range binding.Zones {
+			if zone.Pending || required[zone.ZoneUID] || slices.Contains(zones, zone.ZoneUID) {
+				continue
+			}
+			requirement, err := json.Marshal(model.PublicationRequirement{ZoneUID: zone.ZoneUID, Epoch: math.MaxUint64, Revision: math.MaxUint64})
+			if err != nil {
+				return false
+			}
+			if len(required) == 0 && len(zones) == 0 {
+				size += len(`,"requiredPublications":[]`)
+			} else {
+				size++
+			}
+			size += len(requirement)
+			zones = append(zones, zone.ZoneUID)
+		}
 		if used+size > maxBytes {
 			return false
 		}
 		used += size
+		for _, uid := range zones {
+			required[uid] = true
+		}
 		return true
 	}
 	for _, binding := range candidates {

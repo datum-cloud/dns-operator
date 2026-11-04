@@ -4,7 +4,9 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,5 +74,35 @@ func TestCapacityReportDoesNotOverwriteAnotherShard(t *testing.T) {
 	}
 	if len(updated.Status.Conditions) != 1 || updated.Status.Conditions[0].Status != metav1.ConditionFalse {
 		t.Fatal("capacity from another shard was overwritten")
+	}
+}
+
+func TestFittedSnapshotStaysWithinBudgetAfterPublicationRequirements(t *testing.T) {
+	var bindings []model.Binding
+	activations := map[string]string{}
+	for i := 1; i <= 8; i++ {
+		b := capacityBinding(i)
+		zone := fmt.Sprintf("zone-%d-%s", i, strings.Repeat("z", 30))
+		b.Zones = []model.ZoneAttachment{{ZoneUID: zone, Apex: fmt.Sprintf("z%d.internal", i), RequiredPublicationEpoch: 1700000000, RequiredPublicationRevision: 123456}}
+		activations[zone] = "activation-" + zone
+		bindings = append(bindings, b)
+	}
+	candidate := model.ServingSnapshot{Region: "east", Shard: "a", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: time.Now(), Bindings: bindings}
+	for budget := 1500; budget <= 6000; budget += 50 {
+		fitted, _, err := fitSnapshot(candidate, model.ServingSnapshot{}, 256, budget)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := publicationDependencies(&fitted, activations); err != nil {
+			t.Fatal(err)
+		}
+		env, err := model.NewEnvelope(model.KindServingSnapshot, "dns-serving-"+model.OpaqueToken("east/a")+"-e18446744073709551615-r18446744073709551615", "east", "a", "00000000-0000-0000-0000-000000000000", 1, 1, time.Now(), fitted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := json.Marshal(env)
+		if len(payload) > budget {
+			t.Fatalf("budget %d: fitted %d bindings into %d bytes once requirements were added", budget, len(fitted.Bindings), len(payload))
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 )
 
 // DNSZoneSpec defines the desired state of DNSZone
+// +kubebuilder:validation:XValidation:rule="(has(self.visibility) && self.visibility == 'Private') || (has(self.dnsZoneClassName) && self.dnsZoneClassName.size() > 0)",message="dnsZoneClassName is required for public zones"
 type DNSZoneSpec struct {
 	// DomainName is the FQDN of the zone (e.g., "example.com").
 	//
@@ -19,9 +20,10 @@ type DNSZoneSpec struct {
 	// +kubebuilder:validation:XValidation:message="Must have at least two segments separated by dots",rule="self.indexOf('.') != -1"
 	DomainName string `json:"domainName"`
 
-	// DNSZoneClassName references the DNSZoneClass used to provision this zone.
-	// +kubebuilder:validation:Required
-	DNSZoneClassName string `json:"dnsZoneClassName"`
+	// DNSZoneClassName references the DNSZoneClass used to provision a public
+	// zone. Private zones are served by Private DNS and ignore it.
+	// +optional
+	DNSZoneClassName string `json:"dnsZoneClassName,omitempty"`
 
 	// Visibility selects public publication or private resolver context serving.
 	// Existing zones default to Public. Changing visibility requires a new zone.

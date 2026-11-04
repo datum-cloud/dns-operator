@@ -53,7 +53,7 @@ a private resolver or connect a zone to a VPC.
 | Field | Type | Description |
 |-------|------|-------------|
 | `spec.domainName` | string | Required FQDN (e.g. `example.com`). Immutable once set. |
-| `spec.dnsZoneClassName` | string | Reference to a `DNSZoneClass`. |
+| `spec.dnsZoneClassName` | string | Reference to a `DNSZoneClass`. Required for public zones. Private zones ignore it and may omit it. |
 | `status.nameservers` | []string | Authoritative nameservers, derived from the class policy. |
 | `status.recordCount` | int | Number of record sets in the zone. |
 | `status.conditions` | []Condition | `Accepted`, `Programmed`. |

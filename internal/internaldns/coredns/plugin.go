@@ -144,26 +144,9 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	if len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET {
 		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
 	}
-	destination := w.LocalAddr()
-	if addr, ok := w.RemoteAddr().(interface{ OriginalDestination() net.Addr }); ok {
-		destination = addr.OriginalDestination()
-	}
-	host, _, err := net.SplitHostPort(destination.String())
-	if err != nil {
-		return outcomeRefusedBadDestination, dns.RcodeRefused, nil
-	}
-	if p.identityKey != nil {
-		asserted, present := identityDestination(r, p.identityKey)
-		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp && !present {
-			return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
-		}
-		if present {
-			if !asserted.IsValid() {
-				return outcomeRefusedBadIdentity, dns.RcodeRefused, nil
-			}
-			host = asserted.String()
-			destination = &net.TCPAddr{IP: asserted.AsSlice(), Port: 53}
-		}
+	host, destination, outcome := p.destination(ctx, w, r)
+	if outcome != "" {
+		return outcome, dns.RcodeRefused, nil
 	}
 	selected := state.contexts[host]
 	if selected == nil {
@@ -179,6 +162,7 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		return outcomeRefusedTransfer, dns.RcodeRefused, nil
 	}
 	w = contextWriter{ResponseWriter: w, destination: destination, request: r, recursionAvailable: selected.next != nil || selected.public != nil}
+	ctx = context.WithValue(ctx, selectedDestinationKey{}, selectedDestination{host: host, destination: destination})
 	apex := matchZone(selected.zoneApexes, canonicalQueryName(r.Question[0].Name))
 	if apex != "" {
 		if selected.pendingZones[apex] {
@@ -204,6 +188,46 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 	rcode, err := selected.public.ServeDNS(ctx, w, r)
 	return outcomeForwardedPublic, rcode, err
+}
+
+// CoreDNS follows a CNAME that leaves its zone by running a copy of the query
+// through the server again with the same context. The copy has no identity
+// option of its own, since the original was stripped, so the follow-up keeps
+// the destination the original query selected. Only this plugin sets the
+// value, so a client cannot supply it.
+type selectedDestinationKey struct{}
+
+type selectedDestination struct {
+	host        string
+	destination net.Addr
+}
+
+func (p *ContextPlugin) destination(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (string, net.Addr, string) {
+	if selected, ok := ctx.Value(selectedDestinationKey{}).(selectedDestination); ok {
+		return selected.host, selected.destination, ""
+	}
+	destination := w.LocalAddr()
+	if addr, ok := w.RemoteAddr().(interface{ OriginalDestination() net.Addr }); ok {
+		destination = addr.OriginalDestination()
+	}
+	host, _, err := net.SplitHostPort(destination.String())
+	if err != nil {
+		return "", nil, outcomeRefusedBadDestination
+	}
+	if p.identityKey != nil {
+		asserted, present := identityDestination(r, p.identityKey)
+		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp && !present {
+			return "", nil, outcomeRefusedBadIdentity
+		}
+		if present {
+			if !asserted.IsValid() {
+				return "", nil, outcomeRefusedBadIdentity
+			}
+			host = asserted.String()
+			destination = &net.TCPAddr{IP: asserted.AsSlice(), Port: 53}
+		}
+	}
+	return host, destination, ""
 }
 
 func canonicalQueryName(name string) string {

@@ -206,3 +206,53 @@ func TestUDPRequiresKeyAndBindFailureClosesTCP(t *testing.T) {
 	}
 	_ = l.Close()
 }
+
+// A CNAME into another zone is followed inside CoreDNS by re-running the
+// query. Over UDP that follow-up carries no identity option of its own, so it
+// must keep the context the original keyed query selected.
+func TestUDPKeyedCNAMEFollowsIntoOtherZonesInTheSameContext(t *testing.T) {
+	t.Parallel()
+	public, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &dns.Server{PacketConn: public, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.RecursionAvailable = true
+		if r.Question[0].Name == "public.example." && r.Question[0].Qtype == dns.TypeA {
+			answer.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.IPv4(198, 51, 100, 7)}}
+		}
+		_ = w.WriteMsg(answer)
+	})}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown(); _ = public.Close() })
+	c, key, path := keyedFixture(t)
+	c.IdentityKeyFile = key
+	c.PublicUpstreams = []string{public.LocalAddr().String()}
+	for i := range c.Contexts {
+		c.Contexts[i].Zones[0].Data += "alias 2 IN CNAME target.apps.internal.\nexternal 2 IN CNAME public.example.\n"
+		address := []string{"192.0.2.10", "192.0.2.20"}[i]
+		c.Contexts[i].Zones = append(c.Contexts[i].Zones, Zone{Apex: "apps.internal.", Data: "$ORIGIN apps.internal.\n@ 2 IN SOA ns.internal. hostmaster.internal. 1 60 30 3600 2\n@ 2 IN NS ns.internal.\ntarget 2 IN A " + address + "\n"})
+	}
+	startUDPTestProcess(t, c, path)
+	for _, network := range []string{"udp", "tcp"} {
+		client := &dns.Client{Net: network, Timeout: time.Second}
+		for _, tc := range []struct{ destination, name, want string }{
+			{"fd53::a", "alias.datum.internal.", "192.0.2.10"},
+			{"fd53::b", "alias.datum.internal.", "192.0.2.20"},
+			{"fd53::a", "external.datum.internal.", "198.51.100.7"},
+			{"fd53::b", "external.datum.internal.", "198.51.100.7"},
+		} {
+			q := identityQuery(testIdentityKey + tc.destination)
+			q.Question[0].Name = tc.name
+			m, _, err := client.Exchange(q, c.ListenAddress)
+			if err != nil || m.Rcode != dns.RcodeSuccess || address(m) != tc.want {
+				t.Fatalf("%s %s %s: %v %v", network, tc.destination, tc.name, m, err)
+			}
+			if _, ok := m.Answer[0].(*dns.CNAME); !ok || len(m.Answer) != 2 {
+				t.Fatalf("%s %s %s: CNAME chain incomplete: %v", network, tc.destination, tc.name, m.Answer)
+			}
+		}
+	}
+}

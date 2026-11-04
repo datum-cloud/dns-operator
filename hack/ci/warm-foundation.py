@@ -328,10 +328,12 @@ def bootstrap_clusters():
     for cluster in CLUSTERS:
         config(cluster).write_text("")
         config(cluster).chmod(0o600)
-    with ThreadPoolExecutor(max_workers=len(CLUSTERS)) as creators, ThreadPoolExecutor(max_workers=2) as installers:
+    # Each create task includes waiting for Flux. Overlap two clusters while
+    # retaining separate processes and kubeconfigs for every bootstrap.
+    with ThreadPoolExecutor(max_workers=2) as creators, ThreadPoolExecutor(max_workers=2) as installers:
         creates = {creators.submit(cluster_task, cluster, "env:warm-create-kind"): cluster
                    for cluster in CLUSTERS}
-        installs = []
+        installs = [installers.submit(install_tools)]
         for created in as_completed(creates):
             created.result()
             cluster = creates[created]
@@ -360,7 +362,6 @@ def prepare(ttl):
     key = fingerprint()
     export_configs()
     identities = health_and_identity()
-    install_tools()
     tools = tool_inventory()
     rustfs = rustfs_inventory()
     now = time.time()

@@ -224,3 +224,17 @@ func TestRegionalControlPlaneWithdrawsOnlyItsOwnShards(t *testing.T) {
 		t.Fatalf("a regional control plane must withdraw only its own shards, got %#v", withdrawn)
 	}
 }
+
+func TestEmptyBindingListDoesNotWithdrawAZoneStillWanted(t *testing.T) {
+	ctx := context.Background()
+	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1, westS2}, nil)
+	r := targetReconciler(t, previous)
+
+	targets, withdrawn, err := r.publicationTargets(ctx, own, []types.UID{"vpc-a"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withdrawn) != 0 || len(targets) != 2 {
+		t.Fatalf("a binding list that is briefly empty must not withdraw a zone whose networks are still associated, got serving %#v withdrawn %#v", targets, withdrawn)
+	}
+}

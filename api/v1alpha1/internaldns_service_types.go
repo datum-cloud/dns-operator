@@ -136,6 +136,11 @@ type DNSPublicationManifestSpec struct {
 	// WithdrawnTargets lists shards that served an earlier revision and are not
 	// serving targets now. Each receives this revision as a withdrawal.
 	WithdrawnTargets []DNSPublicationTarget `json:"withdrawnTargets,omitempty"`
+	// ExpectedRegions names every region the zone is served in, including
+	// regions another control plane publishes. Set only when a control plane
+	// runs in each region; ServingTargets then lists only this one's targets.
+	// +listType=set
+	ExpectedRegions []string `json:"expectedRegions,omitempty"`
 }
 
 type DNSPublicationTarget struct {

@@ -208,3 +208,19 @@ func TestRemovedShardIsNotWithdrawnForever(t *testing.T) {
 		t.Fatalf("a shard no longer configured has no exporter and must not be withdrawn, got %#v", withdrawn)
 	}
 }
+
+func TestRegionalControlPlaneWithdrawsOnlyItsOwnShards(t *testing.T) {
+	ctx := context.Background()
+	own, previous := activeManifest("pub-r1", []ServingRegion{eastS1, westS2}, nil)
+	previous.Labels = nil
+	r := targetReconciler(t, previous)
+	r.Options.Regions = []string{"east"}
+
+	_, withdrawn, err := r.publicationTargets(ctx, own, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameTargets(withdrawn, []ServingRegion{eastS1}) {
+		t.Fatalf("a regional control plane must withdraw only its own shards, got %#v", withdrawn)
+	}
+}

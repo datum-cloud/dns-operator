@@ -31,7 +31,7 @@ project namespace.
 | `DNSResolverAccessBinding` | The network integration only | Connects a network's resolver address in one region to the serving fleet |
 | `DNSRegistration` | Approved services only | Reserves a name, or a subtree of names, that a service publishes in a managed zone |
 | `DNSRecordContribution` | Approved services only | Publishes one resource's addresses under a registration |
-| `DNSNamingPolicy` | Not supported yet | Accepted by the API, but no service applies its rules. See [Known gaps](#known-gaps) |
+| `DNSNamingPolicy` | Services only, not supported yet | Accepted by the API, but no service applies its rules yet. Outside the customer contract |
 
 Customers read every resource in the table, including the ones they can't
 write. The `DNSResolverBinding`, `DNSPublicationManifest`, `DNSPublicationChunk`,
@@ -63,7 +63,7 @@ delete the resource and create a new one.
 | --- | --- | --- | --- |
 | `DNSZone` | `spec.domainName` | Creator | Immutable |
 | `DNSZone` | `spec.visibility` | Creator | Immutable. Defaults to `Public` |
-| `DNSZone` | `spec.dnsZoneClassName` | Creator | Required by the schema, but not used to serve private zones. See [Known gaps](#known-gaps) |
+| `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones |
 | `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. The service recreates a deleted managed zone |
 | `DNSZone` (managed) | labels and `kubernetes.io/description` | DNS service | Copied from the context. Added or corrected, never removed |
 | `DNSRecordSet` | `spec` | Creator | Mutable |
@@ -149,7 +149,7 @@ Project roles grant these permissions:
 | Role | Grants |
 | --- | --- |
 | DNS Viewer | Read every customer-visible Private DNS resource and its status |
-| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, and associations |
+| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, and associations. Registrations and naming policies stay read-only |
 
 Network integrations and publishing services get their own service roles.
 Publishing needs two extra permissions on a named `DNSRegistration`:
@@ -280,19 +280,12 @@ These keep the contract from being fully enforced. Each needs its own change.
 - **Unsupported records fail late.** `ALIAS`, `SOA`, an apex `CNAME`, and an
   `SRV` without a local target pass admission and are rejected only in status.
   Admission should reject them.
-- **`dnsZoneClassName` has no effect on private zones.** The field is required,
-  but private zones are served the same way whatever it says. It should be
-  optional for private zones.
 - **An unassociated private zone reports nothing.** It should report that it
   isn't associated with any network.
 - **Apex conflicts are settled by name.** When two associations attach zones
   with the same domain to one network, the association whose name sorts first
   wins. Record sets use creation order. Associations should too, so a new
   association can't take a domain from an existing one.
-- **The DNS Admin role can write registrations and naming policies.** Neither
-  has a customer use, and a customer registration can reserve a name in the
-  managed zone that no service publishes. These permissions should move to
-  service roles.
 - **Naming policies have no effect.** No service applies `DNSNamingPolicy`
   rules yet.
 - **Deleting a managed zone breaks the network's names.** The service

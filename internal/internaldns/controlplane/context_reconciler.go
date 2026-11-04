@@ -243,9 +243,14 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 	owners := map[apexKey]types.UID{}
 	reservations := map[string][]dnsv1alpha1.DNSRegistration{}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	bases := make([]*dnsv1alpha1.DNSZoneAssociation, len(items))
+	// Associations that pass every other check, by context, so the zone
+	// limit can be applied once all of them are known.
+	candidates := map[types.UID][]zoneCandidate{}
 	for i := range items {
 		a := &items[i]
 		base := a.DeepCopy()
+		bases[i] = base
 		if _, ok := reservations[a.Namespace]; !ok {
 			var regs dnsv1alpha1.DNSRegistrationList
 			if err := r.sourceReader().List(ctx, &regs, client.InNamespace(a.Namespace)); err != nil {
@@ -290,15 +295,107 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 			msg = "another zone owns this apex in the DNS context"
 		} else {
 			owners[apexKey{contextPin.UID, canonicalName(z.Spec.DomainName)}] = z.UID
+			candidates[contextPin.UID] = append(candidates[contextPin.UID], zoneCandidate{index: i, zone: z.UID, managed: metav1.IsControlledBy(a, &resolverContext)})
 		}
 		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
-		if !jsonEqual(base.Status, a.Status) {
-			if err := r.Status().Patch(ctx, a, client.MergeFrom(base)); err != nil {
+	}
+	for _, list := range candidates {
+		for _, i := range overZoneLimit(items, bases, list) {
+			setCondition(&items[i].Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "ZoneLimitExceeded", fmt.Sprintf("a resolver context can have at most %d zones; remove an association to make room", maxZonesPerResolverContext), items[i].Generation, now)
+		}
+	}
+	for i := range items {
+		if !jsonEqual(bases[i].Status, items[i].Status) {
+			if err := r.Status().Patch(ctx, &items[i], client.MergeFrom(bases[i])); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// maxZonesPerResolverContext matches the MaxItems limit on
+// DNSResolverBindingConfiguration.ZoneRefs.
+const maxZonesPerResolverContext = 256
+
+type zoneCandidate struct {
+	index   int
+	zone    types.UID
+	managed bool
+}
+
+// overZoneLimit returns the associations, out of one context's candidates,
+// whose zones do not fit within maxZonesPerResolverContext. The context's own
+// managed zone always fits, because the context is not ready without it.
+// Zones that were already accepted keep their place, earliest accepted first,
+// so a new association never displaces a working one. The rest are admitted
+// oldest first.
+func overZoneLimit(items []dnsv1alpha1.DNSZoneAssociation, bases []*dnsv1alpha1.DNSZoneAssociation, list []zoneCandidate) []int {
+	type zoneRank struct {
+		uid      types.UID
+		managed  bool
+		accepted bool
+		since    time.Time
+		created  time.Time
+		name     string
+	}
+	ranks := map[types.UID]*zoneRank{}
+	byZone := map[types.UID][]int{}
+	for _, c := range list {
+		i, zone := c.index, c.zone
+		byZone[zone] = append(byZone[zone], i)
+		rank := ranks[zone]
+		if rank == nil {
+			rank = &zoneRank{uid: zone, created: items[i].CreationTimestamp.Time, name: items[i].Name}
+			ranks[zone] = rank
+		}
+		rank.managed = rank.managed || c.managed
+		if associationAccepted(bases[i]) {
+			since := apimeta.FindStatusCondition(bases[i].Status.Conditions, dnsValueAccepted).LastTransitionTime.Time
+			if !rank.accepted || since.Before(rank.since) {
+				rank.since = since
+			}
+			rank.accepted = true
+		}
+		if items[i].CreationTimestamp.Time.Before(rank.created) {
+			rank.created = items[i].CreationTimestamp.Time
+		}
+		if items[i].Name < rank.name {
+			rank.name = items[i].Name
+		}
+	}
+	if len(ranks) <= maxZonesPerResolverContext {
+		return nil
+	}
+	ordered := make([]*zoneRank, 0, len(ranks))
+	for _, rank := range ranks {
+		ordered = append(ordered, rank)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.managed != b.managed {
+			return a.managed
+		}
+		if a.accepted != b.accepted {
+			return a.accepted
+		}
+		if a.accepted && !a.since.Equal(b.since) {
+			return a.since.Before(b.since)
+		}
+		if !a.created.Equal(b.created) {
+			return a.created.Before(b.created)
+		}
+		if a.name != b.name {
+			return a.name < b.name
+		}
+		return a.uid < b.uid
+	})
+	var refused []int
+	for _, rank := range ordered[maxZonesPerResolverContext:] {
+		refused = append(refused, byZone[rank.uid]...)
+	}
+	sort.Ints(refused)
+	return refused
 }
 
 func (r *Reconciler) reconcileBindings(ctx context.Context, ns string, assocs []dnsv1alpha1.DNSZoneAssociation, zones map[string]*dnsv1alpha1.DNSZone, now time.Time) error {
@@ -322,7 +419,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	for _, a := range assocs {
 		z := zones[a.Spec.DNSZoneRef.Name]
 		refs := associationPins[a.UID]
-		if associationMatchesZone(&a, z, refs) {
+		if associationMatchesZone(&a, z, refs) && !slices.Contains(zonesByContext[refs.Context.UID], z.UID) {
 			zonesByContext[refs.Context.UID] = append(zonesByContext[refs.Context.UID], z.UID)
 		}
 	}

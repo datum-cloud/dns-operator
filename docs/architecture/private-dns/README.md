@@ -575,6 +575,13 @@ DNS pins each association's resolved zone and context lifetimes. A replacement
 with the same name does not inherit the association; recreate the association
 to attach it. Customers cannot change the resolved identities in status.
 
+A zone is published to the regions where any of its contexts has access. A
+region the zone leaves, because access there or an association was removed,
+receives a withdrawal and stops serving the zone, and a later deletion reaches
+that region too. A zone whose contexts have no access anywhere yet waits in the
+regions assigned to those contexts. A zone with no associations is published
+nowhere.
+
 A context can use several zones. Reject duplicate apexes within a context and
 conflicts between static records and reserved names. Select parent and child
 zones by longest suffix. Separate contexts can explicitly share a zone or use

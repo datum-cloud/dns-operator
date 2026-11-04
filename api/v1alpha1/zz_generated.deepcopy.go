@@ -491,6 +491,11 @@ func (in *DNSPublicationManifestSpec) DeepCopyInto(out *DNSPublicationManifestSp
 		*out = make([]DNSPublicationTarget, len(*in))
 		copy(*out, *in)
 	}
+	if in.WithdrawnTargets != nil {
+		in, out := &in.WithdrawnTargets, &out.WithdrawnTargets
+		*out = make([]DNSPublicationTarget, len(*in))
+		copy(*out, *in)
+	}
 	if in.ExpectedRegions != nil {
 		in, out := &in.ExpectedRegions, &out.ExpectedRegions
 		*out = make([]string, len(*in))

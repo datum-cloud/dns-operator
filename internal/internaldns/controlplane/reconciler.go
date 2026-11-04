@@ -71,6 +71,8 @@ type ServingRegion struct {
 	Shard  string
 }
 
+func (s ServingRegion) key() string { return s.Region + "\x00" + s.Shard }
+
 // AddressAllocator durably leases globally unique listener destinations. A
 // pure hash is only a candidate and is never sufficient proof of uniqueness.
 // ReleaseDestinations frees the project's destination claims outside held

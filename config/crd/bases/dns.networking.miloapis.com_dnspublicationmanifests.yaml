@@ -144,6 +144,21 @@ spec:
                 type: array
               tombstone:
                 type: boolean
+              withdrawnTargets:
+                description: |-
+                  WithdrawnTargets lists shards that served an earlier revision and are not
+                  serving targets now. Each receives this revision as a withdrawal.
+                items:
+                  properties:
+                    region:
+                      type: string
+                    shard:
+                      type: string
+                  required:
+                  - region
+                  - shard
+                  type: object
+                type: array
               writerEpoch:
                 format: int64
                 minimum: 1

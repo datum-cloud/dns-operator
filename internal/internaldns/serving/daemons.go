@@ -47,13 +47,13 @@ func (l *exitLog) record(name, status string, now time.Time) {
 		return
 	}
 	if l.suppressed > 0 && status != l.status {
-		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s) %d more times before this\n", name, l.status, l.suppressed)
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s) %d more times before this\n", name, l.status, l.suppressed)
 		l.suppressed = 0
 	}
 	if l.suppressed > 0 {
-		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s); %d more times since the last report\n", name, status, l.suppressed)
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s); %d more times since the last report\n", name, status, l.suppressed)
 	} else {
-		fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", name, status)
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", name, status)
 	}
 	*l = exitLog{status: status, logged: now}
 }

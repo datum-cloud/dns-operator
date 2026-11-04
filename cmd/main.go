@@ -669,7 +669,8 @@ func runPrivateReplicator(serverConfig config.DNSOperator, hubKubeconfig string,
 		return project.GetUID(), nil
 	}
 	for _, kind := range privatereplication.Kinds {
-		if err := (&privatereplication.Replicator{GVK: kind, Hub: hub.GetClient(), ProjectUID: projectUID}).SetupWithManager(mcmgr); err != nil {
+		replicator := &privatereplication.Replicator{GVK: kind, Hub: hub.GetClient(), ProjectUID: projectUID}
+		if err := replicator.SetupWithManager(mcmgr); err != nil {
 			return fmt.Errorf("set up %s replicator: %w", kind.Kind, err)
 		}
 	}
@@ -677,7 +678,8 @@ func runPrivateReplicator(serverConfig config.DNSOperator, hubKubeconfig string,
 		return fmt.Errorf("set up status mirror: %w", err)
 	}
 	for _, kind := range privatereplication.RegionWritable {
-		if err := (&privatereplication.ObjectMirror{GVK: kind, Hub: hub.GetClient()}).SetupWithManager(mcmgr, hub); err != nil {
+		mirror := &privatereplication.ObjectMirror{GVK: kind, Hub: hub.GetClient()}
+		if err := mirror.SetupWithManager(mcmgr, hub); err != nil {
 			return fmt.Errorf("set up %s mirror: %w", kind.Kind, err)
 		}
 	}

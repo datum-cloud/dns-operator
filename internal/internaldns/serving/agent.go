@@ -82,6 +82,9 @@ func (c Config) Validate() error {
 	if err := c.HealthCheck.validate(); err != nil {
 		return err
 	}
+	if c.HealthCheck != (HealthCheckConfig{}) && c.Render.Role != RenderNode && c.Render.Role != RenderCluster && c.Render.Role != RenderRegionalCoreDNS {
+		return fmt.Errorf("healthCheck requires a member that runs the serving role, not render role %q", c.Render.Role)
+	}
 	if c.HealthCheck.Address != "" && c.UnsafeAllowNoDNSVerify {
 		return errors.New("healthCheck.address requires live DNS verification")
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,7 +83,10 @@ func TestRunDaemonsClosesHealthPortThenDrains(t *testing.T) {
 	select {
 	case err := <-result:
 		t.Fatalf("runDaemons returned %v before the drain time", err)
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(700 * time.Millisecond):
+	}
+	if portOpen(address) {
+		t.Fatal("health port reopened during the drain")
 	}
 	select {
 	case err := <-result:
@@ -116,12 +118,25 @@ func TestRunDaemonsWithoutDrainStopsPromptly(t *testing.T) {
 	}
 }
 
-func TestRunDaemonsRejectsInvalidHealthAddress(t *testing.T) {
+func TestRunDaemonsKeepsServingWithUnusableHealthAddress(t *testing.T) {
 	cfg := regionalTestConfig(t)
-	cfg.HealthCheck.Address = "${UNSET_HEALTH_ADDRESS}:8053"
-	err := runDaemons(context.Background(), cfg, func(context.Context) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "health check address") {
-		t.Fatalf("runDaemons() = %v, want a health check address error", err)
+	cfg.HealthCheck = HealthCheckConfig{Address: "${UNSET_HEALTH_ADDRESS}:8053", DrainSeconds: 30}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() { result <- runDaemons(ctx, cfg, func(context.Context) error { return nil }) }()
+	select {
+	case err := <-result:
+		t.Fatalf("runDaemons returned %v with an unusable health address", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runDaemons drained although its health port never opened")
 	}
 }
 
@@ -151,6 +166,7 @@ func TestHealthCheckValidation(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		health  HealthCheckConfig
+		role    RenderRole
 		noDNS   bool
 		invalid bool
 	}{
@@ -160,9 +176,16 @@ func TestHealthCheckValidation(t *testing.T) {
 		{name: "negative drain", health: HealthCheckConfig{DrainSeconds: -1}, invalid: true},
 		{name: "drain above limit", health: HealthCheckConfig{DrainSeconds: maxDrainSeconds + 1}, invalid: true},
 		{name: "address without DNS verification", health: HealthCheckConfig{Address: "${LISTENER_ADDRESS}:8053"}, noDNS: true, invalid: true},
+		{name: "wildcard address", health: HealthCheckConfig{Address: "[::]:8053"}, invalid: true},
+		{name: "address without port", health: HealthCheckConfig{Address: "192.0.2.1"}, invalid: true},
+		{name: "regional dnsdist has no serving role", health: HealthCheckConfig{DrainSeconds: 15}, role: RenderRegionalDNSDist, invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := regionalTestConfig(t)
+			if tc.role != "" {
+				cfg.Render.Role = tc.role
+				cfg.Mode = ModeResolver
+			}
 			cfg.UnsafeAllowNoDNSVerify = tc.noDNS
 			cfg.HealthCheck = tc.health
 			if err := cfg.Validate(); (err != nil) != tc.invalid {

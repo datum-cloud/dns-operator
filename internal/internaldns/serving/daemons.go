@@ -93,7 +93,7 @@ func RunDaemons(ctx context.Context, config Config) error {
 func runDaemons(ctx context.Context, config Config, ready func(context.Context) error) error {
 	healthAddress, err := config.HealthCheck.listenAddress()
 	if err != nil {
-		return fmt.Errorf("health check address %q: %w", config.HealthCheck.Address, err)
+		fmt.Fprintf(os.Stderr, "health check address %q: %v; the health port stays closed\n", config.HealthCheck.Address, err)
 	}
 	if err := os.MkdirAll(config.StateDir, 0o750); err != nil {
 		return err
@@ -177,7 +177,7 @@ func runDaemons(ctx context.Context, config Config, ready func(context.Context) 
 			stopping = nil
 			health.Close()
 			drain := config.HealthCheck.drain()
-			if drain == 0 {
+			if drain == 0 || config.HealthCheck.Address != "" && !health.everOpen() {
 				return nil
 			}
 			fmt.Fprintf(os.Stderr, "draining for %s before stopping DNS processes\n", drain)

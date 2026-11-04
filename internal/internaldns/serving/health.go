@@ -5,9 +5,12 @@ package serving
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +29,11 @@ const healthCheckInterval = time.Second
 func (c HealthCheckConfig) validate() error {
 	if c.DrainSeconds < 0 || c.DrainSeconds > maxDrainSeconds {
 		return errors.New("healthCheck.drainSeconds must be between zero and 300")
+	}
+	if c.Address != "" && !strings.Contains(c.Address, "$") {
+		if _, err := c.listenAddress(); err != nil {
+			return fmt.Errorf("healthCheck.address: %w", err)
+		}
 	}
 	return nil
 }
@@ -51,6 +59,7 @@ type healthPort struct {
 	ready    func(context.Context) error
 	stop     context.CancelFunc
 	done     chan struct{}
+	opened   atomic.Bool
 }
 
 func startHealthPort(address string, interval time.Duration, ready func(context.Context) error) *healthPort {
@@ -58,6 +67,10 @@ func startHealthPort(address string, interval time.Duration, ready func(context.
 	h := &healthPort{address: address, interval: interval, ready: ready, stop: cancel, done: make(chan struct{})}
 	go h.run(ctx)
 	return h
+}
+
+func (h *healthPort) everOpen() bool {
+	return h != nil && h.opened.Load()
 }
 
 // Close stops checking and closes the port before it returns.
@@ -79,6 +92,8 @@ func (h *healthPort) run(ctx context.Context) {
 		}
 	}()
 	var lastErr string
+	ticker := time.NewTicker(h.interval)
+	defer ticker.Stop()
 	for {
 		err := h.ready(ctx)
 		if ctx.Err() != nil {
@@ -87,6 +102,7 @@ func (h *healthPort) run(ctx context.Context) {
 		if err == nil && listener == nil {
 			listener, err = net.Listen("tcp", h.address)
 			if err == nil {
+				h.opened.Store(true)
 				go acceptAndClose(listener)
 				log.Printf("health port %s open", h.address)
 			}
@@ -106,7 +122,7 @@ func (h *healthPort) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(h.interval):
+		case <-ticker.C:
 		}
 	}
 }

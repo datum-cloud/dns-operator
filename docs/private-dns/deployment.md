@@ -425,50 +425,57 @@ publication targets, and context status use the same stable shard assignment.
 
 ### Draining a member before it stops
 
-A member that runs `--role=serving` can expose a TCP health port for a network
-load balancer and keep answering for a drain time after it is told to stop, so
-the load balancer moves lookups to other members first. Both are off by
-default.
+A member that runs `--role=serving` (node and regional CoreDNS members) can
+expose a TCP health port for a network load balancer and keep answering for a
+drain time after it is told to stop, so the load balancer moves lookups to
+other members first. Both are off by default. Regional dnsdist fronts have no
+serving container, so their configuration rejects `healthCheck`.
 
 ```json
 "agent": {
-  "healthCheck": {"address": "${LISTENER_ADDRESS}:8053", "drainSeconds": 15}
+  "healthCheck": {"address": "[${LISTENER_ADDRESS}]:8053", "drainSeconds": 15}
 }
 ```
 
 - `healthCheck.address`: where the health port listens. The serving process
   expands environment references, so set the variable on the serving
   container. The host must be a specific IP address, usually the member's
-  interface address, not a wildcard. Omitted means no health port.
+  interface address, not a wildcard. Bracket an IPv6 host. Omitted means no
+  health port. If the expanded address is unusable, the serving process logs
+  it, keeps the port closed, and keeps serving DNS.
 - `healthCheck.drainSeconds`: how long the DNS processes keep answering after
   shutdown begins. Between 0 and 300; the default 0 stops them at once.
 
-The serving process runs the same checks as `--role=readiness` once a second.
-The port is open only while they pass and closes as soon as one fails. It also
-stays closed until the address is present on the interface, because it cannot
-bind before then. The port accepts connections and closes them without
-sending data, so a probe passes when the TCP handshake completes. Readiness
-must use live DNS verification: `healthCheck.address` with
-`unsafeAllowNoDNSVerify` is rejected.
+The serving process runs the same checks as `--role=readiness` about once a
+second. The port opens when a check passes and closes when one fails, within
+about two seconds of the change. It also stays closed until the address is
+present on the interface, because it cannot bind before then. The port accepts
+connections and closes them without sending data, so a probe passes when the
+TCP handshake completes. Set the load balancer's failure and success
+thresholds to absorb a single slow check. Readiness must use live DNS
+verification: `healthCheck.address` with `unsafeAllowNoDNSVerify` is rejected.
 
 On SIGTERM the serving process closes the health port, keeps CoreDNS and its
-supervision running for `drainSeconds`, then stops CoreDNS and exits. The
-agent may exit meanwhile; the running processes keep their installed
-configuration.
+supervision running for `drainSeconds`, then stops CoreDNS and exits. A member
+whose health port never opened has nothing to drain and stops at once.
 
 To deploy it:
 
+- Delay SIGTERM to the agent and dnsdist containers by `drainSeconds`, for
+  example with `lifecycle: {preStop: {sleep: {seconds: 15}}}` on each
+  (Kubernetes 1.30 or later). dnsdist runs in its own container and would
+  otherwise stop at once. An agent interrupted mid-installation fails closed,
+  which gates the draining member's DNS processes.
 - Set `terminationGracePeriodSeconds` above `drainSeconds`, with a few seconds
-  to spare for the processes to stop. Otherwise Kubernetes kills the member
-  mid-drain.
-- dnsdist runs in its own container and gets SIGTERM at the same time as the
-  serving container. Delay it by at least `drainSeconds`, for example with
-  `lifecycle: {preStop: {sleep: {seconds: 15}}}` on the dnsdist container.
+  to spare. The grace period covers the preStop sleep and each process's
+  shutdown; Kubernetes kills whatever is still running when it ends.
 - Allow TCP to the health port from the load balancer's probe source. If
   probes come from the host's link-local address and a traffic policy is
   enforced on the member interface, allow `fe80::/10` to the health port.
-- Configure the load balancer to remove a member after a few failed probes,
-  and keep `drainSeconds` longer than the time that takes.
+- Make `drainSeconds` longer than the load balancer's probe interval times its
+  failure threshold, plus its idle timeout for existing flows. A load balancer
+  stops sending new flows after failed probes, but UDP flows that reuse a
+  source port and open TCP connections keep arriving until they go idle.
 - Draining only moves lookups when another member serving the same address is
   ready to take them.
 - Roll out an image that knows the field before setting it: older processes

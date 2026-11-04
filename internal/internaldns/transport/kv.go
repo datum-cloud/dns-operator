@@ -73,6 +73,22 @@ func (j *JetStream) MirrorKeyValueBucket(ctx context.Context, bucket, source, do
 	return &KVBucket{kv: kv}, nil
 }
 
+// MirrorCaughtUp reports whether a mirror bucket holds everything its source
+// did when the broker last heard from it: no lag, and a link active within
+// the last minute.
+func (b *KVBucket) MirrorCaughtUp(ctx context.Context) (bool, error) {
+	status, err := b.kv.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	s, ok := status.(*jetstream.KeyValueBucketStatus)
+	if !ok {
+		return false, nil
+	}
+	mirror := s.StreamInfo().Mirror
+	return mirror != nil && mirror.Lag == 0 && mirror.Active >= 0 && mirror.Active < time.Minute, nil
+}
+
 func (b *KVBucket) Get(ctx context.Context, key string) ([]byte, uint64, error) {
 	entry, err := b.kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {

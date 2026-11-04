@@ -58,11 +58,13 @@ func (c Config) validateFeed() error {
 		return errors.New("feed requires a bucket name of letters, digits, - and _, and non-negative replicas")
 	}
 	seen := map[string]bool{}
+	mirrors := map[string]bool{f.Bucket: true}
 	for i, p := range f.Peers {
-		if p.Region == "" || p.Region == c.Regions[0] || seen[p.Region] || !validBucketName(p.Bucket) || !validBucketName(p.Mirror) || p.Mirror == f.Bucket {
-			return fmt.Errorf("feed.peers[%d] needs another region listed once, its bucket and a distinct local mirror bucket", i)
+		if p.Region == "" || p.Region == c.Regions[0] || seen[p.Region] || p.Domain == "" || !validBucketName(p.Bucket) || !validBucketName(p.Mirror) || mirrors[p.Mirror] {
+			return fmt.Errorf("feed.peers[%d] needs another region listed once, its JetStream domain, its bucket and a local mirror bucket of its own", i)
 		}
 		seen[p.Region] = true
+		mirrors[p.Mirror] = true
 	}
 	return nil
 }
@@ -109,10 +111,12 @@ func runFeed(ctx context.Context, cfg Config, scheme *k8sruntime.Scheme, local *
 			errCh <- fmt.Errorf("load feed hub kubeconfig: %w", err)
 			return
 		}
-		if hub, err = client.New(hubConfig, client.Options{Scheme: scheme}); err != nil {
+		direct, err := client.New(hubConfig, client.Options{Scheme: scheme})
+		if err != nil {
 			errCh <- fmt.Errorf("create feed hub client: %w", err)
 			return
 		}
+		hub = &deadlineClient{Client: direct, Timeout: 10 * time.Second}
 	}
 	localClient, err := client.New(local, client.Options{Scheme: scheme})
 	if err != nil {
@@ -130,7 +134,7 @@ func runFeed(ctx context.Context, cfg Config, scheme *k8sruntime.Scheme, local *
 			for ctx.Err() == nil {
 				mirror, err := bus.MirrorKeyValueBucket(ctx, peer.Mirror, peer.Bucket, peer.Domain, cfg.Feed.Replicas)
 				if err == nil {
-					applier := &feed.Applier{Region: peer.Region, Local: localClient, Mirror: mirror}
+					applier := &feed.Applier{Region: peer.Region, Local: localClient, Mirror: mirror, CaughtUp: mirror.MirrorCaughtUp}
 					err = applier.Run(ctx)
 				}
 				if err != nil && ctx.Err() == nil {

@@ -8,6 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
+
+	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	corev1 "k8s.io/api/core/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,6 +24,8 @@ import (
 
 var errWatchEnded = errors.New("feed watch ended")
 
+const replicatedLabel = "internal-dns.miloapis.com/replicated"
+
 // Applier keeps a local copy of every object another region wrote, as that
 // region's mirrored input bucket holds them. Copies carry the writer's region
 // as their origin, and the applier never replaces an object of another origin.
@@ -27,38 +34,83 @@ type Applier struct {
 	Region string
 	Local  client.Client
 	Mirror KV
+	// CaughtUp reports whether the mirror holds everything its source does.
+	// Copies whose key is missing are removed only then, so a new or
+	// lagging mirror never withdraws what the writer still holds.
+	CaughtUp func(context.Context) (bool, error)
+	// Interval paces retries of failed keys and the caught-up check.
+	Interval time.Duration
 }
 
-// Run applies the mirror until ctx ends. Once the mirror's current keys have
-// replayed, copies whose key is gone are removed.
+// Run applies the mirror until ctx ends. Keys that fail are retried, and once
+// the mirror has replayed and caught up, copies whose key is gone are removed.
 func (a *Applier) Run(ctx context.Context) error {
 	events, err := a.Mirror.Watch(ctx)
 	if err != nil {
 		return err
 	}
-	seen := map[string]bool{}
-	synced := false
-	for event := range events {
-		if event.Synced {
-			if !synced {
-				if err := a.prune(ctx, seen); err != nil {
-					log.FromContext(ctx).Error(err, "remove copies the writing region withdrew", "region", a.Region)
+	interval := a.Interval
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	present := map[string]bool{}
+	failed := map[string]bool{}
+	synced, pruned := false, false
+	apply := func(key string, value []byte) {
+		if err := a.Apply(ctx, key, value); err != nil {
+			failed[key] = true
+			log.FromContext(ctx).Error(err, "apply another region's input; retrying", "region", a.Region, "key", key)
+			return
+		}
+		delete(failed, key)
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, ok := <-events:
+			if !ok {
+				if ctx.Err() != nil {
+					return nil
 				}
-				synced = true
+				return errWatchEnded
 			}
-			continue
-		}
-		if !synced {
-			seen[event.Key] = event.Value != nil
-		}
-		if err := a.Apply(ctx, event.Key, event.Value); err != nil {
-			log.FromContext(ctx).Error(err, "apply another region's input", "region", a.Region, "key", event.Key)
+			if event.Synced {
+				synced = true
+				continue
+			}
+			if event.Value == nil {
+				delete(present, event.Key)
+			} else {
+				present[event.Key] = true
+			}
+			apply(event.Key, event.Value)
+		case <-ticker.C:
+			for key := range failed {
+				value, _, err := a.Mirror.Get(ctx, key)
+				if errors.Is(err, transport.ErrKVNotFound) {
+					value, err = nil, nil
+				}
+				if err != nil {
+					continue
+				}
+				apply(key, value)
+			}
+			if synced && !pruned && a.CaughtUp != nil {
+				ready, err := a.CaughtUp(ctx)
+				if err != nil || !ready {
+					continue
+				}
+				if err := a.prune(ctx, present); err != nil {
+					log.FromContext(ctx).Error(err, "remove copies the writing region withdrew", "region", a.Region)
+					continue
+				}
+				pruned = true
+			}
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return nil
-	}
-	return errWatchEnded
 }
 
 // Apply writes or removes the local copy for one key. A nil value is a
@@ -89,6 +141,20 @@ func (a *Applier) Apply(ctx context.Context, key string, value []byte) error {
 	if err := json.Unmarshal(value, &entry); err != nil {
 		return fmt.Errorf("decode %s: %w", key, err)
 	}
+	if entry.Namespace != namespace || entry.Name != name {
+		return fmt.Errorf("%s names %s/%s", key, entry.Namespace, entry.Name)
+	}
+	if err := a.mapped(ctx, namespace); err != nil {
+		return err
+	}
+	if exists && local.GetAnnotations()[OriginUIDAnnotation] != entry.Annotations[OriginUIDAnnotation] {
+		// The writer deleted and recreated the object: replace the copy so it
+		// carries the new identity.
+		if err := a.Local.Delete(ctx, local); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return fmt.Errorf("replaced %s/%s %s after the writer recreated it; applying again", namespace, name, kind)
+	}
 	if exists {
 		if g, err := strconv.ParseInt(local.GetAnnotations()[OriginGenerationAnnotation], 10, 64); err == nil && g > entry.Generation {
 			return nil
@@ -103,20 +169,45 @@ func (a *Applier) Apply(ctx context.Context, key string, value []byte) error {
 	_, err = controllerutil.CreateOrPatch(ctx, a.Local, local, func() error {
 		labels := map[string]string{}
 		for k, v := range entry.Labels {
-			labels[k] = v
+			if !reserved(k) {
+				labels[k] = v
+			}
 		}
 		labels[OriginLabel] = a.Region
 		local.SetLabels(labels)
 		annotations := map[string]string{}
 		for k, v := range entry.Annotations {
-			annotations[k] = v
+			if !reserved(k) {
+				annotations[k] = v
+			}
 		}
 		annotations[OriginGenerationAnnotation] = strconv.FormatInt(entry.Generation, 10)
+		annotations[OriginUIDAnnotation] = entry.Annotations[OriginUIDAnnotation]
 		local.SetAnnotations(annotations)
 		local.Object["spec"] = spec
 		return nil
 	})
 	return err
+}
+
+// mapped accepts only namespaces the hub placed here for a project, so a
+// peer cannot write anywhere else in this cluster.
+func (a *Applier) mapped(ctx context.Context, namespace string) error {
+	var ns corev1.Namespace
+	if err := a.Local.Get(ctx, client.ObjectKey{Name: namespace}, &ns); err != nil {
+		return fmt.Errorf("namespace %s: %w", namespace, err)
+	}
+	if ns.Labels[replicatedLabel] != "true" || !ns.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("namespace %s is not a live project namespace", namespace)
+	}
+	return nil
+}
+
+// reserved keys are the ones replication and the hub act on. A peer's entry
+// cannot set them; the applier writes its own.
+func reserved(key string) bool {
+	prefix, _, ok := strings.Cut(key, "/")
+	return ok && (prefix == "internal-dns.miloapis.com" || prefix == "kubectl.kubernetes.io" || prefix == "karmada.io" || strings.HasSuffix(prefix, ".karmada.io"))
 }
 
 func (a *Applier) prune(ctx context.Context, seen map[string]bool) error {

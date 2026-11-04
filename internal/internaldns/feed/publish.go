@@ -5,6 +5,7 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -53,6 +54,8 @@ func (p *Publisher) Sync(ctx context.Context, gvk schema.GroupVersionKind, key t
 	if err := put(ctx, p.KV, feedKey, value); err != nil {
 		return err
 	}
+	// The feed is written first: the other regions get the object even
+	// while the hub is unreachable.
 	return p.copyToHub(ctx, gvk, obj)
 }
 
@@ -60,6 +63,7 @@ func (p *Publisher) Sync(ctx context.Context, gvk schema.GroupVersionKind, key t
 // local-origin object, for events missed while the publisher was down.
 func (p *Publisher) Resync(ctx context.Context) error {
 	present := map[string]bool{}
+	var errs error
 	for _, gvk := range Kinds {
 		list := &unstructured.UnstructuredList{}
 		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
@@ -70,7 +74,7 @@ func (p *Publisher) Resync(ctx context.Context) error {
 			o := &list.Items[i]
 			present[Key(gvk.Kind, o.GetNamespace(), o.GetName())] = true
 			if err := p.Sync(ctx, gvk, types.NamespacedName{Namespace: o.GetNamespace(), Name: o.GetName()}); err != nil {
-				return err
+				errs = errors.Join(errs, err)
 			}
 		}
 	}
@@ -88,10 +92,10 @@ func (p *Publisher) Resync(ctx context.Context) error {
 			continue
 		}
 		if err := p.Sync(ctx, gvk, types.NamespacedName{Namespace: namespace, Name: name}); err != nil {
-			return err
+			errs = errors.Join(errs, err)
 		}
 	}
-	return nil
+	return errs
 }
 
 func (p *Publisher) copyToHub(ctx context.Context, gvk schema.GroupVersionKind, obj *unstructured.Unstructured) error {
@@ -111,6 +115,9 @@ func (p *Publisher) copyToHub(ctx context.Context, gvk schema.GroupVersionKind, 
 			labels[k] = v
 		}
 		labels[OriginLabel] = p.Region
+		// The hub places only what carries this label; a region's write is
+		// never placed, because the regions exchange those themselves.
+		delete(labels, "internal-dns.miloapis.com/replicated")
 		hub.SetLabels(labels)
 		annotations := map[string]string{}
 		for k, v := range obj.GetAnnotations() {

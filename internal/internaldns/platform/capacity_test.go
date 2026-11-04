@@ -88,13 +88,21 @@ func requirementBindings() ([]model.Binding, map[string]string) {
 		activations[zone] = "activation-" + zone
 		b.Zones = []model.ZoneAttachment{
 			{ZoneUID: zone, Apex: fmt.Sprintf("z%d.internal", i), RequiredPublicationEpoch: 1700000000, RequiredPublicationRevision: 9},
-			// Later bindings require a newer revision of the shared zone.
-			{ZoneUID: shared, Apex: "shared.internal", RequiredPublicationEpoch: 1700000000, RequiredPublicationRevision: uint64(i * 1000)},
+			// Later bindings require a newer, wider revision of the shared zone.
+			{ZoneUID: shared, Apex: "shared.internal", RequiredPublicationEpoch: 1700000000, RequiredPublicationRevision: revisionOfWidth(i)},
 			{Pending: true, ZoneUID: fmt.Sprintf("pending-%d", i), Apex: fmt.Sprintf("p%d.internal", i), RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1},
 		}
 		bindings = append(bindings, b)
 	}
 	return bindings, activations
+}
+
+func revisionOfWidth(digits int) uint64 {
+	revision := uint64(0)
+	for range digits {
+		revision = revision*10 + 9
+	}
+	return revision
 }
 
 func finalEnvelopeSize(t *testing.T, fitted model.ServingSnapshot, activations map[string]string) int {
@@ -113,7 +121,7 @@ func finalEnvelopeSize(t *testing.T, fitted model.ServingSnapshot, activations m
 func TestFittedSnapshotStaysWithinBudgetAfterPublicationRequirements(t *testing.T) {
 	bindings, activations := requirementBindings()
 	candidate := model.ServingSnapshot{Region: "east", Shard: "a", ConfigurationEpoch: 1, ConfigurationRevision: 1, GeneratedAt: time.Now(), Bindings: bindings}
-	for budget := 1500; budget <= 8000; budget += 25 {
+	for budget := 1500; budget <= 8000; budget++ {
 		fitted, _, err := fitSnapshot(candidate, model.ServingSnapshot{}, 256, budget)
 		if err != nil {
 			t.Fatal(err)

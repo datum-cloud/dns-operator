@@ -60,6 +60,9 @@ done
   --source-a "$work/project-a.kubeconfig" --source-b "$work/project-b.kubeconfig" \
   --source-a-internal "$work/project-a-internal.kubeconfig" --source-b-internal "$work/project-b-internal.kubeconfig"
 "${platform[@]}" apply -f "$work/platform-configure.json"
+front=internal-dns-regional-front
+version=$("${platform[@]}" -n internal-dns-system get configmap "$front-config" -o jsonpath='{.metadata.resourceVersion}')
+"${platform[@]}" -n internal-dns-system annotate "pod/$front" "internal-dns.datum.net/config-version=$version" --overwrite
 "${platform[@]}" -n internal-dns-system wait pod/internal-dns-network-fixture --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s
 "${platform[@]}" -n internal-dns-system rollout status statefulset/internal-dns-nats --timeout=180s
 for controller in control-a control-b; do
@@ -81,6 +84,9 @@ done
 
 evidence="$root/test/internaldns/results/kubernetes-artifacts"
 mkdir -p "$evidence"
+for pod in internal-dns-node internal-dns-regional-front; do
+  "${platform[@]}" -n internal-dns-system logs "$pod" -c dnsdist-config --timestamps > "$evidence/$pod-config-init.log"
+done
 cp "$work/crds.yaml" "$evidence/crds.yaml"
 cp "$work/environment.json" "$evidence/environment.json"
 cp "$work/image.id" "$evidence/image.id"

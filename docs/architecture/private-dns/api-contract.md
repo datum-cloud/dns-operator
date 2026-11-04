@@ -64,7 +64,7 @@ delete the resource and create a new one.
 | `DNSZone` | `spec.domainName` | Creator | Immutable |
 | `DNSZone` | `spec.visibility` | Creator | Immutable. Defaults to `Public` |
 | `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones. Managed zones may carry one |
-| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. While the context exists, even with its managed namespace turned off, the zone can't be deleted and its owner references and managed label can't change. Deleted with the context, or withdrawn when the service refuses the context's managed domain |
+| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. While the context exists, even with its managed namespace turned off, the zone can't be deleted and its owner references and managed label can't change. Deleted with the context or its project, or withdrawn when the service refuses the context's managed domain |
 | `DNSZone` (managed) | labels and `kubernetes.io/description` | DNS service | Copied from the context. Added or corrected, never removed |
 | `DNSRecordSet` | `spec` | Creator | Mutable |
 | `DNSZoneAssociation` | `spec.dnsZoneRef`, `spec.resolverContextRef` | Creator | Immutable |

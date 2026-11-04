@@ -6,6 +6,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -113,18 +114,27 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	return kubeadmission.Allowed("DNS references are valid")
 }
 
-func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) (client.Client, *kubeadmission.Response) {
-	cl := h.Client
+// ErrProjectDeleting is returned by Handler.ClientForRequest when the
+// request's project is being deleted.
+var ErrProjectDeleting = errors.New("authenticated project is being deleted")
+
+func (h *Handler) requestClient(ctx context.Context, req kubeadmission.Request) (client.Client, error) {
 	if h.ClientForRequest != nil {
-		var err error
-		cl, err = h.ClientForRequest(ctx, req)
-		if err != nil {
-			res := kubeadmission.Errored(http.StatusServiceUnavailable, err)
-			return nil, &res
-		}
+		return h.ClientForRequest(ctx, req)
 	}
-	if cl == nil {
-		res := kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
+	if h.Client == nil {
+		return nil, fmt.Errorf("project API client unavailable")
+	}
+	return h.Client, nil
+}
+
+func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) (client.Client, *kubeadmission.Response) {
+	cl, err := h.requestClient(ctx, req)
+	if err == nil && cl == nil {
+		err = fmt.Errorf("project API client unavailable")
+	}
+	if err != nil {
+		res := kubeadmission.Errored(http.StatusServiceUnavailable, err)
 		return nil, &res
 	}
 	return cl, nil
@@ -154,13 +164,20 @@ func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) ku
 			return kubeadmission.Allowed("the managed zone keeps its resolver context")
 		}
 	}
-	cl, unavailable := h.projectClient(ctx, req)
-	if unavailable != nil {
-		return *unavailable
+	cl, err := h.requestClient(ctx, req)
+	// Teardown removes every zone in a deleting project, contexts included.
+	if errors.Is(err, ErrProjectDeleting) {
+		return kubeadmission.Allowed("the project is being deleted")
+	}
+	if err == nil && cl == nil {
+		err = fmt.Errorf("project API client unavailable")
+	}
+	if err != nil {
+		return kubeadmission.Errored(http.StatusServiceUnavailable, err)
 	}
 	owner := metav1.GetControllerOf(&old)
 	var resolverContext dnsv1alpha1.DNSResolverContext
-	err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: owner.Name}, &resolverContext)
+	err = cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: owner.Name}, &resolverContext)
 	if apierrors.IsNotFound(err) {
 		return kubeadmission.Allowed("the managed zone's resolver context is gone")
 	}

@@ -5,6 +5,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -93,6 +94,22 @@ func TestManagedZoneIsKeptWhileItsContextUsesIt(t *testing.T) {
 	t.Run("project unavailable", func(t *testing.T) {
 		res := (&Handler{}).Handle(context.Background(), zoneDelete(t, zoneFor(contextUID)))
 		if res.Allowed || res.Result == nil || res.Result.Code != 503 {
+			t.Fatalf("must fail closed: %#v", res)
+		}
+	})
+	t.Run("project is being deleted", func(t *testing.T) {
+		h := &Handler{ClientForRequest: func(context.Context, kubeadmission.Request) (client.Client, error) {
+			return nil, ErrProjectDeleting
+		}}
+		if res := h.Handle(context.Background(), zoneDelete(t, zoneFor(contextUID))); !res.Allowed {
+			t.Fatalf("teardown delete was refused: %#v", res.Result)
+		}
+	})
+	t.Run("project is not ready", func(t *testing.T) {
+		h := &Handler{ClientForRequest: func(context.Context, kubeadmission.Request) (client.Client, error) {
+			return nil, errors.New("authenticated project is unavailable")
+		}}
+		if res := h.Handle(context.Background(), zoneDelete(t, zoneFor(contextUID))); res.Allowed || res.Result == nil || res.Result.Code != 503 {
 			t.Fatalf("must fail closed: %#v", res)
 		}
 	})

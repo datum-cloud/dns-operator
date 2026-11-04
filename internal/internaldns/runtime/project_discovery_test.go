@@ -8,6 +8,7 @@ import (
 	"time"
 
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -254,5 +255,31 @@ func TestLocalDiscoveryRunsAProjectPerMappedNamespace(t *testing.T) {
 	}
 	if _, ok := directory.projects["ns-b"]; ok || len(started) != 2 {
 		t.Fatalf("a removed namespace kept its project, or a running one restarted: %v", directory.projects)
+	}
+}
+
+func TestDeletingProjectIsReportedToAdmission(t *testing.T) {
+	scheme, err := newScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting := readyDiscoveryProject("deleting", "deleting-uid")
+	deleting.Finalizers = []string{"example.com/hold"}
+	notReady := readyDiscoveryProject("not-ready", "not-ready-uid")
+	notReady.Status.Conditions[0].Status = metav1.ConditionFalse
+	core := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deleting, notReady).Build()
+	if err := core.Delete(context.Background(), deleting); err != nil {
+		t.Fatal(err)
+	}
+	directory := newProjectDirectory(nil)
+	directory.discover = core
+	request := func(project string) kubeadmission.Request {
+		return kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Namespace: "default", UserInfo: authenticationv1.UserInfo{Extra: map[string]authenticationv1.ExtraValue{parentNameExtra: {project}}}}}
+	}
+	if _, err := directory.selectProject(context.Background(), request(deleting.Name)); !errors.Is(err, dnsadmission.ErrProjectDeleting) {
+		t.Fatalf("deleting project error = %v, want ErrProjectDeleting", err)
+	}
+	if _, err := directory.selectProject(context.Background(), request(notReady.Name)); err == nil || errors.Is(err, dnsadmission.ErrProjectDeleting) {
+		t.Fatalf("not ready project error = %v, want unavailable", err)
 	}
 }

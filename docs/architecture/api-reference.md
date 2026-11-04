@@ -13,6 +13,9 @@ group/version **`dns.networking.miloapis.com/v1alpha1`**. Generated CRDs live in
 | [`DNSRecordSet`](#dnsrecordset) | Namespaced | Records of one type, for one or more owner names |
 | [`DNSZoneDiscovery`](#dnszonediscovery) | Namespaced | One-shot snapshot of live records |
 
+Private DNS resources and the rules for private zones are in the
+[Private DNS API contract](private-dns/api-contract.md).
+
 ## DNSZoneClass
 
 Cluster-scoped policy, analogous to a `StorageClass`. Every `DNSZone` references

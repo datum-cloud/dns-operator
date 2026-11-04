@@ -19,20 +19,3 @@ spec:
     name: production
   resolverContextRef:
     name: application-network
----
-apiVersion: dns.networking.miloapis.com/v1alpha1
-kind: DNSNamingPolicy
-metadata:
-  name: application-production-names
-  namespace: project
-spec:
-  resolverContextRef:
-    name: application-network
-  additionalNames:
-    # Match registration labels supplied by any authorized publisher.
-    - selector:
-        matchLabels:
-          app: storefront
-      dnsZoneRef:
-        name: production
-      namePrefix: storefront

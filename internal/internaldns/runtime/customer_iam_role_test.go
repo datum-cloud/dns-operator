@@ -12,21 +12,31 @@ import (
 )
 
 func TestDNSAdminCannotWriteServiceOwnedResources(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "iam", "roles", "dns-admin.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var role struct {
-		Spec struct {
-			IncludedPermissions []string `json:"includedPermissions"`
-		} `json:"spec"`
-	}
-	if err := yaml.Unmarshal(data, &role); err != nil {
-		t.Fatal(err)
-	}
 	granted := map[string]bool{}
-	for _, permission := range role.Spec.IncludedPermissions {
-		granted[permission] = true
+	for _, file := range []string{"dns-admin.yaml", "dns-viewer.yaml"} {
+		data, err := os.ReadFile(filepath.Join("..", "..", "..", "config", "iam", "roles", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var role struct {
+			Spec struct {
+				InheritedRoles []struct {
+					Name string `json:"name"`
+				} `json:"inheritedRoles"`
+				IncludedPermissions []string `json:"includedPermissions"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal(data, &role); err != nil {
+			t.Fatal(err)
+		}
+		for _, inherited := range role.Spec.InheritedRoles {
+			if inherited.Name != "dns.networking.miloapis.com-dns-viewer" {
+				t.Fatalf("%s inherits %s, which this test does not check", file, inherited.Name)
+			}
+		}
+		for _, permission := range role.Spec.IncludedPermissions {
+			granted[permission] = true
+		}
 	}
 	if len(granted) == 0 {
 		t.Fatal("dns-admin role grants no permissions")

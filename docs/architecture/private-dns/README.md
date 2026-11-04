@@ -792,7 +792,8 @@ Their storage schemas can be reviewed with the implementation.
 Schemas, transport, and checkpoints must preserve object lifetimes and ordered
 configuration versions. Review naming conflicts, record withdrawal, field
 ownership, outage recovery, regional readiness, and snapshot limits before
-stabilizing the APIs.
+stabilizing the APIs. The [API contract](api-contract.md) states the
+supported rules and the gaps that remain.
 
 ### Integration boundaries
 

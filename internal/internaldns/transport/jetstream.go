@@ -97,6 +97,10 @@ func Connect(c Config) (*JetStream, error) {
 		// A regional partition must not permanently close a long-running agent.
 		// Callers retry delivery while local health checks govern serving.
 		nats.MaxReconnects(-1),
+		// A credential rotation reaches the broker and this process at
+		// different times, so the same authorization error can repeat for a
+		// while. Keep retrying instead of closing the connection for good.
+		nats.IgnoreAuthErrorAbort(),
 	}
 	if c.CredentialsFile != "" {
 		opts = append(opts, nats.UserCredentials(c.CredentialsFile))
@@ -158,7 +162,17 @@ func loadTLS(c TLSConfig) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load NATS client certificate: %w", err)
 		}
-		t.Certificates = []tls.Certificate{cert}
+		// Load the pair again on each handshake so a renewed certificate is
+		// used on the next reconnect, keeping the last pair that loaded.
+		var mu sync.Mutex
+		t.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if renewed, err := tls.LoadX509KeyPair(c.CertificateFile, c.KeyFile); err == nil {
+				cert = renewed
+			}
+			return &cert, nil
+		}
 	}
 	return t, nil
 }

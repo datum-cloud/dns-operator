@@ -63,7 +63,7 @@ delete the resource and create a new one.
 | --- | --- | --- | --- |
 | `DNSZone` | `spec.domainName` | Creator | Immutable |
 | `DNSZone` | `spec.visibility` | Creator | Immutable. Defaults to `Public` |
-| `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones |
+| `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones. Managed zones may carry one |
 | `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. The service recreates a deleted managed zone |
 | `DNSZone` (managed) | labels and `kubernetes.io/description` | DNS service | Copied from the context. Added or corrected, never removed |
 | `DNSRecordSet` | `spec` | Creator | Mutable |
@@ -149,7 +149,7 @@ Project roles grant these permissions:
 | Role | Grants |
 | --- | --- |
 | DNS Viewer | Read every customer-visible Private DNS resource and its status |
-| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, and associations. Registrations and naming policies stay read-only |
+| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, associations, and zone discoveries. Registrations and naming policies stay read-only |
 
 Network integrations and publishing services get their own service roles.
 Publishing needs two extra permissions on a named `DNSRegistration`:

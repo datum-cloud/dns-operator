@@ -123,7 +123,7 @@ func runApply(cmd *cobra.Command, domain, file string, prune, dryRun bool) error
 		return err
 	}
 
-	zone, err := resolveZone(ctx, c, domain)
+	zone, err := resolveZone(ctx, c, domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}

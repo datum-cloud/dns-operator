@@ -103,6 +103,7 @@ func importCommand() *cobra.Command {
 		"Validate against the API server without writing anything")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute,
 		"How long to wait for --discover to finish")
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -149,7 +150,7 @@ func runImport(cmd *cobra.Command, domain string, opts importOptions) error {
 		return err
 	}
 
-	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain)
+	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}

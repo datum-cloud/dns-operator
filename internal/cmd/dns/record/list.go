@@ -144,7 +144,7 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 	if err != nil {
 		return err
 	}
-	zone, err := resolveZone(ctx, c, domain)
+	zone, err := resolveZone(ctx, c, domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}

@@ -352,6 +352,7 @@ Add `--verbose` to see the underlying cause.
 | DNS is not enabled for the project | Run `datumctl services enable dns.networking.miloapis.com --wait`. |
 | The domain doesn't resolve | Run `datumctl dns zone nameservers <domain> --check`. If delegation is `Incomplete` or `Partial`, fix it at your registrar. |
 | A record is stuck at `Pending` | This is normal right after a write. If it lasts, run `datumctl dns record describe <domain> <name>` for the server's message. |
+| `N zones in this project serve "<domain>"` | Several zones share the domain, as private zones can: every VPC's default zone is `datum.internal`. Pass `--vpc <name>` to use the zone that VPC resolves, or pass the zone's object name, which the error lists. |
 | `Conflict` | Another record occupies that name. Usually the name isn't inside the zone — check for `www.example.com` where `www` was meant. Otherwise see [DNS record conflict troubleshooting](../troubleshooting/dnsrecordset-downstream-orphan.md). |
 | `Not owner` | Another record set owns that name; `describe` names it. Edit the record through that set, or delete the set first. Records Datum manages, such as a Gateway's, revert if you edit them. |
 

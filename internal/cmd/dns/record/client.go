@@ -33,7 +33,7 @@ var clientFactory = util.NewClient
 // resolveZone finds the DNSZone serving a domain. Users type the domain name,
 // which is a selectable field; the object name is accepted as a fallback so a
 // name copied out of `kubectl get dnszones` also works.
-func resolveZone(ctx context.Context, c client.Client, domain string) (*dnsv1alpha1.DNSZone, error) {
+func resolveZone(ctx context.Context, c client.Client, domain, vpc string) (*dnsv1alpha1.DNSZone, error) {
 	name := normalizeDomain(domain)
 	if name == "" {
 		return nil, util.UsageErrorf("a zone domain is required").
@@ -49,15 +49,14 @@ func resolveZone(ctx context.Context, c client.Client, domain string) (*dnsv1alp
 	}
 
 	if len(list.Items) > 0 {
-		sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
-		return &list.Items[0], nil
+		return util.PickZone(ctx, c, list.Items, name, vpc)
 	}
 
 	var byName dnsv1alpha1.DNSZone
 	err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: name}, &byName)
 	switch {
 	case err == nil:
-		return &byName, nil
+		return util.PickZone(ctx, c, []dnsv1alpha1.DNSZone{byName}, name, vpc)
 	case apierrors.IsNotFound(err):
 		return nil, util.NewCLIError(util.ExitNotFound, fmt.Sprintf("zone %q not found", name)).
 			WithFix("run `datumctl dns zone list` to see the zones in this project.").

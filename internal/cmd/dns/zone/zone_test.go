@@ -318,7 +318,7 @@ func TestValidateDomain(t *testing.T) {
 func TestGetZoneNotFound(t *testing.T) {
 	c := newFakeClient(t, newZone("example-com-abc123", "example.com"))
 
-	_, err := getZone(t.Context(), c, testProject, "missing.com")
+	_, err := getZone(t.Context(), c, testProject, "missing.com", "")
 	if err == nil {
 		t.Fatal("expected an error for a zone that does not exist")
 	}
@@ -336,7 +336,7 @@ func TestGetZoneNotFound(t *testing.T) {
 func TestGetZoneMatchesCaseInsensitively(t *testing.T) {
 	c := newFakeClient(t, newZone("example-com-abc123", "example.com"))
 
-	z, err := getZone(t.Context(), c, testProject, "Example.COM.")
+	z, err := getZone(t.Context(), c, testProject, "Example.COM.", "")
 	if err != nil {
 		t.Fatalf("getZone: %v", err)
 	}
@@ -371,4 +371,28 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestGetZoneRefusesSharedDomainWithoutVPC(t *testing.T) {
+	rc := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{
+		Name: "ctx-b", Namespace: util.ResourceNamespace,
+		Labels: map[string]string{util.NetworkLabel: "app-b"},
+	}}
+	rc.Status.ManagedNamespace.DNSZoneRef.Name = "managed-b"
+	c := newFakeClient(t,
+		newZone("managed-a", "datum.internal"),
+		newZone("managed-b", "datum.internal"),
+		rc,
+	)
+
+	_, err := getZone(t.Context(), c, testProject, "datum.internal", "")
+	assertExitCode(t, err, util.ExitUsage)
+
+	z, err := getZone(t.Context(), c, testProject, "datum.internal", "app-b")
+	if err != nil {
+		t.Fatalf("getZone --vpc app-b: %v", err)
+	}
+	if z.Name != "managed-b" {
+		t.Errorf("zone = %q, want managed-b", z.Name)
+	}
 }

@@ -37,6 +37,7 @@ the assigned nameservers, and what it contains.`,
 	cmd.Flags().StringP("output", "o", "wide", "Output format: wide, json, yaml, name")
 	_ = cmd.RegisterFlagCompletionFunc("output", util.CompleteEnum("wide", "json", "yaml", "name"))
 
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -56,7 +57,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	z, err := getZone(ctx, c, project, args[0])
+	z, err := getZone(ctx, c, project, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return util.ClassifyError(err)
 	}

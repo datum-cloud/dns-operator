@@ -31,6 +31,7 @@ actually working" rather than "is the control plane happy".`,
 	cmd.Flags().Bool("check", false, "Resolve the zone live against its assigned nameservers")
 	cmd.Flags().Duration("timeout", defaultCheckTimeout, "Per-query timeout for --check")
 
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -46,7 +47,7 @@ func runNameservers(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	z, err := getZone(ctx, c, project, args[0])
+	z, err := getZone(ctx, c, project, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return util.ClassifyError(err)
 	}

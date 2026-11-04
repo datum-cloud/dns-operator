@@ -44,6 +44,7 @@ func exportCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&file, "file", "f", "", "Write to this path instead of standard output")
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -55,7 +56,7 @@ func runExport(cmd *cobra.Command, domain, file string) error {
 		return err
 	}
 
-	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain)
+	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}

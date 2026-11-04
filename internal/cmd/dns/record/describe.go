@@ -70,7 +70,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	zone, err := resolveZone(ctx, c, args[0])
+	zone, err := resolveZone(ctx, c, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}

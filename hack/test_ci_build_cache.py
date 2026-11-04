@@ -39,6 +39,12 @@ class BuildInputKeyTests(unittest.TestCase):
         self.write('.github/workflows/e2e.yml', 'changed workflow')
         self.assertEqual(before, self.key())
 
+    def test_ci_cache_sources_preserve_key(self):
+        before = self.key()
+        self.write('.ci-go-cache/modules/example/module.go', 'package dependency')
+        self.write('.ci-cache-dance/cmd/main.go', 'package main')
+        self.assertEqual(before, self.key())
+
     def test_all_input_classes_invalidate_key(self):
         for name in ['cmd/main.go', 'go.mod', 'go.sum', 'docs/agent/llms-full.txt',
                      'docs/agent/skills/example.md', 'config/internal-dns/commands/start',

@@ -64,7 +64,7 @@ delete the resource and create a new one.
 | `DNSZone` | `spec.domainName` | Creator | Immutable |
 | `DNSZone` | `spec.visibility` | Creator | Immutable. Defaults to `Public` |
 | `DNSZone` | `spec.dnsZoneClassName` | Creator | Required for public zones. Optional and ignored for private zones. Managed zones may carry one |
-| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. The service recreates a deleted managed zone |
+| `DNSZone` (managed) | `spec`, owner reference | DNS service | Created from the context. While the context exists, even with its managed namespace turned off, the zone can't be deleted and its owner references and managed label can't change. Deleted with the context, or withdrawn when the service refuses the context's managed domain |
 | `DNSZone` (managed) | labels and `kubernetes.io/description` | DNS service | Copied from the context. Added or corrected, never removed |
 | `DNSRecordSet` | `spec` | Creator | Mutable |
 | `DNSZoneAssociation` | `spec.dnsZoneRef`, `spec.resolverContextRef` | Creator | Immutable |
@@ -151,7 +151,7 @@ Project roles grant these permissions:
 | Role | Grants |
 | --- | --- |
 | DNS Viewer | Read every customer-visible Private DNS resource and its status |
-| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, associations, and zone discoveries. Registrations and naming policies stay read-only |
+| DNS Admin | DNS Viewer, plus create, update, and delete zones, record sets, associations, and zone discoveries. A network's managed zone can't be deleted while its resolver context exists. Registrations and naming policies stay read-only |
 
 Network integrations and publishing services get their own service roles.
 Publishing needs two extra permissions on a named `DNSRegistration`:
@@ -268,7 +268,7 @@ Service integrations can also rely on these rules:
 | Live references and admission | `TestCustomerNamedReferencesValidateLiveResources`, `TestAssociationRequiresCurrentResolverContext`, `TestRegistrationRequiresCurrentZone`, `TestUnavailableProjectContextFailsClosed` |
 | Reserved names | `TestRecordSetReservedScopes`, `TestAssociationCannotShadowReservedScopes`, `TestAssociationInsideReservedScopesIsNotAccepted`, `TestShadowingWithoutManagedZoneOrRecords` |
 | Permissions | `TestServiceReservationAuthorization`, `TestReservationAuthorizationPreservesIdentity`, `TestContributionValidatesReferencesForRBACAuthorizedCallers` |
-| Managed zones | `TestManagedDomainRequiresPermittedSuffix`, `TestManagedNamespaceRequiresRequestedDomain`, `TestManagedZoneCarriesContextLabels` |
+| Managed zones | `TestManagedDomainRequiresPermittedSuffix`, `TestManagedNamespaceRequiresRequestedDomain`, `TestManagedZoneCarriesContextLabels`, `TestManagedZoneIsKeptWhileItsContextUsesIt`, `TestManagedZoneKeepsItsController` |
 | Public and private isolation | `TestPublicControllersSkipPrivateZones`, `TestPrivateReferenceRemovesPublicShadow` |
 | Reference lifetimes | `TestNamedReferencesPreserveLifetimesAcrossReplacement` |
 
@@ -291,11 +291,9 @@ These keep the contract from being fully enforced. Each needs its own change.
   association can't take a domain from an existing one.
 - **Naming policies have no effect.** No service applies `DNSNamingPolicy`
   rules yet.
-- **Deleting a managed zone breaks the network's names.** The service
-  recreates the zone, but keeps the managed association, which still points at
-  the deleted zone. The association reports `InvalidReference` and the context
-  stays `Preparing`. DNS Admin can delete the zone. The service should replace
-  a stale managed association, or refuse deletes of managed zones.
+- **Managed zone protection needs its admission entry.** Admission keeps a
+  managed zone only where the deployment sends managed zone updates and deletes
+  to it, as the example admission configuration does.
 - **The 256-zone limit isn't enforced on associations.** A 257th association
   is accepted, and the network's serving configuration then fails to update.
   Admission or status should refuse it.

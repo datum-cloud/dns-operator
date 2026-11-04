@@ -21,6 +21,7 @@ import (
 // registers them for kind and e2e only; in deployed environments the
 // internal-dns control plane registers the same path.
 // +kubebuilder:webhook:path=/validate-internal-dns,mutating=false,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnsrecordsets;dnszoneassociations;dnsregistrations;dnsrecordcontributions;dnsnamingpolicies;dnsresolveraccessbindings,verbs=create;update;delete,versions=v1alpha1,name=vinternaldns.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-internal-dns,mutating=false,failurePolicy=fail,sideEffects=None,groups=dns.networking.miloapis.com,resources=dnszones,verbs=update;delete,versions=v1alpha1,name=vinternaldnszones.kb.io,admissionReviewVersions=v1
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnszones;dnsregistrations;dnsresolvercontexts,verbs=get
 // +kubebuilder:rbac:groups=dns.networking.miloapis.com,resources=dnsregistrations;dnsresolvercontexts,verbs=list
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create

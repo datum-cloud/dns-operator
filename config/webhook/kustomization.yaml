@@ -6,3 +6,20 @@ resources:
 
 configurations:
 - kustomizeconfig.yaml
+
+# Only managed zones reach the managed zone guard, so other zone writes never
+# wait on the webhook. The selector matches the old object too, and the handler
+# refuses removing the label while the zone's resolver context exists.
+patches:
+- target:
+    kind: ValidatingWebhookConfiguration
+  patch: |-
+    apiVersion: admissionregistration.k8s.io/v1
+    kind: ValidatingWebhookConfiguration
+    metadata:
+      name: validating-webhook-configuration
+    webhooks:
+      - name: vinternaldnszones.kb.io
+        objectSelector:
+          matchLabels:
+            dns.networking.miloapis.com/managed: "true"

@@ -24,3 +24,21 @@ webhooks:
           - dnsrecordcontributions
           - dnsnamingpolicies
           - dnsresolveraccessbindings
+  - name: managed-zones.internal-dns.dns.networking.miloapis.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    matchPolicy: Equivalent
+    objectSelector:
+      matchLabels:
+        dns.networking.miloapis.com/managed: "true"
+    clientConfig:
+      url: https://host.docker.internal:9443/validate-internal-dns
+      caBundle: ${CA_BUNDLE}
+    rules:
+      - operations: [UPDATE, DELETE]
+        apiGroups: [dns.networking.miloapis.com]
+        apiVersions: [v1alpha1]
+        resources:
+          - dnszones

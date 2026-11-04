@@ -43,6 +43,13 @@ func ZoneRelativeOwner(owner, apex string) string {
 	return strings.TrimSuffix(n, "."+a)
 }
 
+// InvalidManagedDomainReason is the resolver context Ready reason for a managed
+// domain the service refuses. The context's managed zone is withdrawn.
+const InvalidManagedDomainReason = "InvalidManagedDomain"
+
+// ManagedObjectLabel marks the zone and association a resolver context manages.
+const ManagedObjectLabel = "dns.networking.miloapis.com/managed"
+
 // ManagedZoneName names the managed zone a resolver context owns.
 func ManagedZoneName(contextUID string) string {
 	return "managed-" + OpaqueToken(contextUID)[:12]

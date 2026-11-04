@@ -336,8 +336,8 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 				return
 			}
 			reg.Status.PublicationWriterEpoch, reg.Status.PublicationRevision = 0, 0
-			r.setRegions(&reg.Status.Regions, &manifest, projectstatus.OriginGeneration(reg), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
-			projectstatus.PublishedForRegions(&reg.Status.Conditions, reg.Status.Regions, manifest.Spec.ExpectedRegions, published, projectstatus.OriginGeneration(reg), reg.Generation, now)
+			r.setRegions(&reg.Status.Regions, &manifest, r.entryGeneration(reg), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			projectstatus.PublishedForRegions(&reg.Status.Conditions, reg.Status.Regions, r.conditionRegions(manifest.Spec.ExpectedRegions), published, r.entryGeneration(reg), reg.Generation, now)
 		}
 		listed := reg.DeepCopy()
 		apply(listed)
@@ -392,8 +392,8 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		everywhere := published
 		if r.Options.regional() {
 			c.Status.PublishedRevision = 0
-			r.setRegions(&c.Status.Regions, &manifest, projectstatus.OriginGeneration(c), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
-			if pending := projectstatus.PendingRegions(c.Status.Regions, manifest.Spec.ExpectedRegions, projectstatus.OriginGeneration(c)); len(manifest.Spec.ExpectedRegions) > 0 {
+			r.setRegions(&c.Status.Regions, &manifest, r.entryGeneration(c), func(e *dnsv1alpha1.DNSRegionPublicationStatus) { e.Published = published })
+			if pending := projectstatus.PendingRegions(c.Status.Regions, r.conditionRegions(manifest.Spec.ExpectedRegions), r.entryGeneration(c)); len(manifest.Spec.ExpectedRegions) > 0 {
 				everywhere = len(pending) == 0
 				if !everywhere {
 					msg += " in " + strings.Join(pending, ", ")
@@ -416,6 +416,31 @@ func (r *Reconciler) aggregatePublicationStatus(ctx context.Context, z *dnsv1alp
 		}
 	}
 	return recheck, nil
+}
+
+// entryGeneration is the generation an object's region entries report: its
+// origin's when it is a hub copy.
+func (r *Reconciler) entryGeneration(obj metav1.Object) int64 {
+	if r.Options.LocalInputs {
+		return projectstatus.OriginGeneration(obj)
+	}
+	return obj.GetGeneration()
+}
+
+// conditionRegions are the regions an object's own conditions wait for. A
+// local copy holds only this control plane's entries, so it waits only for
+// its own regions; the project merges every region's.
+func (r *Reconciler) conditionRegions(expected []string) []string {
+	if !r.Options.LocalInputs {
+		return expected
+	}
+	var local []string
+	for _, region := range expected {
+		if r.Options.local(region) {
+			local = append(local, region)
+		}
+	}
+	return local
 }
 
 func (r *Reconciler) setRegions(entries *[]dnsv1alpha1.DNSRegionPublicationStatus, m *dnsv1alpha1.DNSPublicationManifest, generation int64, change func(*dnsv1alpha1.DNSRegionPublicationStatus)) {

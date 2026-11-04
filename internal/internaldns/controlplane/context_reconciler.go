@@ -538,6 +538,11 @@ func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
+	// A local source covers one namespace of the project, and release works
+	// across the project's claims, so it would free another namespace's.
+	if r.Options.LocalInputs {
+		return nil
+	}
 	if r.Options.AddressAllocator == nil {
 		return nil
 	}
@@ -955,7 +960,8 @@ func (r *Reconciler) observeManagedZone(ctx context.Context, c *dnsv1alpha1.DNSR
 		}
 	}
 	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
-	ready := zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() &&
+	managed := zone.Labels[managedObjectLabel] == managedObjectValue && association.Labels[managedObjectLabel] == managedObjectValue
+	ready := managed && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() &&
 		association.Spec.DNSZoneRef.Name == zone.Name && association.Spec.ResolverContextRef.Name == c.Name &&
 		accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation
 	if ready {

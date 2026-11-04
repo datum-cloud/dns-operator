@@ -194,7 +194,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	enqueue := handler.EnqueueRequestsFromMapFunc(projectRequest)
-	controllerName := "internal-dns-control-plane-" + model.OpaqueToken(string(r.Options.ProjectUID))[:12]
+	// A project can have a source per namespace, and controller names are
+	// unique per process.
+	controllerName := "internal-dns-control-plane-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + r.Options.ProjectNamespace)[:12]
 	// Every pass reconciles the whole project, so every event shares one key:
 	// the queue then holds at most one pending pass per project. Contribution
 	// status is written by this controller and never needs another pass.

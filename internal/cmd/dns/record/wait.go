@@ -64,12 +64,12 @@ func waitForProgrammed(
 				_, _ = fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
 				return util.NewCLIError(util.ExitConflict, detail).
 					WithFix(fmt.Sprintf("inspect it with: datumctl dns record describe %s %s %s",
-						zone.Spec.DomainName, displayName(ownerName), t))
+						util.ZoneArg(zone), displayName(ownerName), t))
 			case util.StatusError, util.StatusRejected:
 				_, _ = fmt.Fprintf(out, "  %s %s  %s\n", who, t, word)
 				return util.NewCLIError(util.ExitError, detail).
 					WithFix(fmt.Sprintf("inspect it with: datumctl dns record describe %s %s %s",
-						zone.Spec.DomainName, displayName(ownerName), t))
+						util.ZoneArg(zone), displayName(ownerName), t))
 			}
 		}
 
@@ -89,7 +89,7 @@ func waitForProgrammed(
 		msg = fmt.Sprintf("%s — last status was %s", msg, lastWord)
 	}
 	fix := fmt.Sprintf("the record was written; check on it with: datumctl dns record describe %s %s %s",
-		zone.Spec.DomainName, displayName(ownerName), t)
+		util.ZoneArg(zone), displayName(ownerName), t)
 	if lastDetail != "" {
 		fix = lastDetail + "\n       " + fix
 	}

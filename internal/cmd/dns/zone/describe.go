@@ -125,7 +125,7 @@ func printZoneDetail(out io.Writer, z *dnsv1alpha1.DNSZone, project string, sets
 		printDelegationInstructions(out, domain, d)
 	}
 
-	printZoneNextSteps(out, domain, word)
+	printZoneNextSteps(out, util.ZoneArg(z), word)
 }
 
 // printZoneNextSteps offers what is worth doing next, which depends on whether

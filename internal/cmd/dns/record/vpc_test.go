@@ -121,3 +121,35 @@ func TestObjectNameStillSelectsAZone(t *testing.T) {
 		t.Fatalf("record sets landed in %v, want [managed-a]", zones)
 	}
 }
+
+func TestTerminatingZoneDoesNotMakeADomainAmbiguous(t *testing.T) {
+	gone := privateZone("managed-old", "datum.internal")
+	now := metav1.Now()
+	gone.DeletionTimestamp = &now
+	gone.Finalizers = []string{"test"}
+	h := newHarness(t, privateZone("managed-a", "datum.internal"), gone)
+
+	requireNoError(t, h.run("record", "create", "datum.internal", "db", "A", "10.0.0.5"))
+	zones := recordSetZones(t, h)
+	if len(zones) != 1 || zones[0] != "managed-a" {
+		t.Fatalf("record sets landed in %v, want [managed-a]", zones)
+	}
+}
+
+func TestVPCOnAPublicZone(t *testing.T) {
+	h := newHarness(t, append(zoneFixture(), twoVPCFixture()...)...)
+
+	ce := requireExit(t, h.run("record", "list", testDomain, "--vpc", "app-a"), util.ExitUsage)
+	if !strings.Contains(ce.Error(), "public zone") {
+		t.Fatalf("error does not say the zone is public: %v", ce)
+	}
+}
+
+func TestHintsNameAPrivateZoneByObject(t *testing.T) {
+	h := newHarness(t, twoVPCFixture()...)
+
+	requireNoError(t, h.run("record", "list", "datum.internal", "--vpc", "app-b"))
+	if !strings.Contains(h.stdout(), "datumctl dns record create managed-b ") {
+		t.Fatalf("next steps do not name the zone by object:\n%s", h.stdout())
+	}
+}

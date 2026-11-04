@@ -396,3 +396,16 @@ func TestGetZoneRefusesSharedDomainWithoutVPC(t *testing.T) {
 		t.Errorf("zone = %q, want managed-b", z.Name)
 	}
 }
+
+func TestZoneLookupCommandsTakeVPC(t *testing.T) {
+	root := Command()
+	for _, name := range []string{"describe", "delete", "nameservers", "import", "export"} {
+		sub, _, err := root.Find([]string{name})
+		if err != nil || sub.Name() != name {
+			t.Fatalf("finding %s: %v", name, err)
+		}
+		if sub.Flags().Lookup(util.VPCFlag) == nil {
+			t.Errorf("zone %s has no --%s flag", name, util.VPCFlag)
+		}
+	}
+}

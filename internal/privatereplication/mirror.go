@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +83,7 @@ func (m *StatusMirror) mirror(ctx context.Context, key types.NamespacedName, res
 	if err != nil {
 		return err
 	}
+	placed, _, _ := unstructured.NestedSlice(rb.Object, "spec", "clusters")
 	if len(entries) == 0 {
 		return nil
 	}
@@ -95,7 +97,7 @@ func (m *StatusMirror) mirror(ctx context.Context, key types.NamespacedName, res
 		return ctrl.IgnoreNotFound(err)
 	}
 	base := up.DeepCopy()
-	if !applyRegions(up, entries, time.Now().UTC()) {
+	if !applyRegions(up, entries, len(placed), time.Now().UTC()) {
 		return nil
 	}
 	return project.Status().Patch(ctx, up, ctrl.MergeFromWithOptions(base, ctrl.MergeFromWithOptimisticLock{}))
@@ -144,10 +146,12 @@ func newer(a, b dnsv1alpha1.DNSRegionPublicationStatus) bool {
 	return a.Revision >= b.Revision
 }
 
-// applyRegions sets the object's status.regions and its Published condition.
-// Every region that serves the object writes an entry, so the entries are
-// also the regions it waits for.
-func applyRegions(up *unstructured.Unstructured, entries []dnsv1alpha1.DNSRegionPublicationStatus, now time.Time) bool {
+// applyRegions merges the members' entries into the object's status.regions,
+// replacing each reporting region's entry and keeping the others, which a
+// control plane reading the project API may have written itself. Published
+// waits for every region with an entry and, while fewer members have
+// reported than the hub placed the object in, for the rest.
+func applyRegions(up *unstructured.Unstructured, entries []dnsv1alpha1.DNSRegionPublicationStatus, placed int, now time.Time) bool {
 	var status struct {
 		Regions    []dnsv1alpha1.DNSRegionPublicationStatus `json:"regions,omitempty"`
 		Conditions []metav1.Condition                       `json:"conditions,omitempty"`
@@ -157,12 +161,18 @@ func applyRegions(up *unstructured.Unstructured, entries []dnsv1alpha1.DNSRegion
 		_ = json.Unmarshal(b, &status)
 	}
 	before, _ := json.Marshal(status)
-	status.Regions = entries
-	expected := make([]string, 0, len(entries))
 	for _, e := range entries {
+		projectstatus.SetRegion(&status.Regions, e)
+	}
+	expected := make([]string, 0, len(status.Regions))
+	for _, e := range status.Regions {
 		expected = append(expected, e.Region)
 	}
-	projectstatus.PublishedInRegions(&status.Conditions, projectstatus.PendingRegions(entries, expected, up.GetGeneration()), up.GetGeneration(), now)
+	pending := projectstatus.PendingRegions(status.Regions, expected, up.GetGeneration())
+	if missing := placed - len(entries); missing > 0 {
+		pending = append(pending, fmt.Sprintf("%d more", missing))
+	}
+	projectstatus.PublishedInRegions(&status.Conditions, pending, up.GetGeneration(), now)
 	after, _ := json.Marshal(status)
 	if string(before) == string(after) {
 		return false
@@ -214,6 +224,13 @@ func (m *ObjectMirror) mirror(ctx context.Context, hubKey types.NamespacedName, 
 	}
 	origin := hub.GetLabels()[OriginLabel]
 	if origin == "" || origin == OriginProject {
+		// Not a region's write, or no longer one: release it if this mirror
+		// held it, so it can finish deleting.
+		if controllerutil.ContainsFinalizer(hub, mirrorFinalizer) {
+			base := hub.DeepCopy()
+			controllerutil.RemoveFinalizer(hub, mirrorFinalizer)
+			return m.Hub.Patch(ctx, hub, ctrl.MergeFromWithOptions(base, ctrl.MergeFromWithOptimisticLock{}))
+		}
 		return nil
 	}
 	project, upstreamNamespace, err := resolve(hubKey.Namespace)
@@ -241,10 +258,11 @@ func (m *ObjectMirror) mirror(ctx context.Context, hubKey types.NamespacedName, 
 		return err
 	}
 	_, err = controllerutil.CreateOrPatch(ctx, project, up, func() error {
-		labels := copyMap(hub.GetLabels())
-		delete(labels, ReplicatedLabel)
+		labels := withoutReserved(hub.GetLabels())
+		labels[OriginLabel] = origin
 		up.SetLabels(labels)
-		annotations := copyMap(hub.GetAnnotations())
+		annotations := withoutReserved(hub.GetAnnotations())
+		annotations[OriginGenerationAnnotation] = strconv.FormatInt(hub.GetGeneration(), 10)
 		up.SetAnnotations(annotations)
 		up.Object["spec"] = runtimeDeepCopy(hub.Object["spec"])
 		return nil

@@ -72,7 +72,7 @@ delete the resource and create a new one.
 | `DNSResolverContext` | `spec.managedNamespace.domainSuffix` | Network integration | Immutable once set. Must end in a permitted private suffix, `internal` by default |
 | `DNSResolverAccessBinding` | `spec.contextRef`, `spec.region`, `spec.destinationAddress` | Network integration | Immutable |
 | `DNSRegistration` | `spec.dnsZoneRef`, `spec.name` | Service | Immutable |
-| `DNSRegistration` | `spec.recordTypes`, `spec.ttlSeconds`, `spec.reservedDescendants` | Service | Mutable. Changing `reservedDescendants` needs the `reserve` permission |
+| `DNSRegistration` | `spec.recordTypes`, `spec.ttlSeconds`, `spec.reservedDescendants` | Service | Mutable. In a managed zone, any change to a registration that declares `reservedDescendants` needs the `reserve` permission |
 | `DNSRecordContribution` | `spec.registrationRef` name and UID | Service | Immutable |
 | `DNSRecordContribution` | `spec.registrationRef.generation`, `spec.recordSets`, `spec.eligible`, `spec.reason` | Service | Mutable. Records and eligibility change together in one update |
 | Every resource | `status` | DNS service | Callers never write status |
@@ -114,6 +114,11 @@ Private zones accept `A`, `AAAA`, `CNAME`, `TXT`, `MX`, `SRV`, `CAA`, `NS`,
   have a TTL of at most 30 seconds.
 - If two record sets claim the same name and type, the older record set keeps
   it. The newer one isn't accepted.
+- A customer record set always wins a name over a service registration that
+  doesn't reserve it, whatever their ages. Services protect names with
+  `reservedDescendants`.
+- A `CNAME` target in another zone, or in public DNS, may not be followed. See
+  [Known gaps](#known-gaps).
 - A record set is accepted or rejected as a whole. One invalid name keeps
   every name in it from being published.
 
@@ -149,9 +154,12 @@ Project roles grant these permissions:
 Network integrations and publishing services get their own service roles.
 Publishing needs two extra permissions on a named `DNSRegistration`:
 
-- `reserve` to create, change, or delete a registration that declares
-  `reservedDescendants`.
-- `publish` to write a contribution that references the registration.
+- `reserve` to create, change, or delete a registration in a managed zone that
+  declares `reservedDescendants`.
+- `publish` to write a contribution that references such a registration.
+
+A registration without `reservedDescendants`, or outside a managed zone, needs
+only the ordinary create and update permissions.
 
 Admission checks both with the caller's own identity. Neither is part of a
 customer role.
@@ -187,10 +195,10 @@ publication holds at least one eligible address for it.
 | `DNSResolverContext` | `Ready` | The context and its managed zone are active | `Preparing`, `InvalidIdentity`, `DuplicateConsumerID`, `InvalidManagedDomain` |
 | `DNSResolverAccessBinding` | `Accepted` | The access request is valid | `InvalidOrStaleAccess` |
 | `DNSResolverAccessBinding` | `Ready` | Resolvers in the region applied this access | `PendingReplicaVerification`, `ObservationUnavailable` (status `Unknown`), `AccessRejected` |
-| `DNSRegistration` | `Accepted` | The name is reserved for this service | `ReservedScope`, `NameConflict`, `UnsupportedPrivateRecord`, `InvalidTTL`, `InvalidReservation`, `InvalidReference`, `Terminating` |
+| `DNSRegistration` | `Accepted` | The name is reserved for this service | `ReservedScope`, `NameConflict`, `UnsupportedPrivateRecord`, `InvalidTTL`, `InvalidReservation`, `InvalidReference`, `MissingUID`, `Terminating` |
 | `DNSRegistration` | `Published` | Every required resolver confirmed the publication | `PendingReplicaVerification` |
 | `DNSRegistration` | `Available` | The name has at least one eligible address | `NoEligibleEndpoints` |
-| `DNSRecordContribution` | `Accepted` | Included in the zone's publication | `Ineligible` (withdrawn on purpose), `StaleRegistrationGeneration`, `RetiredContribution`, `NameOrTypeOutsideRegistration`, `MissingSRVTargetAddress`, `Terminating` |
+| `DNSRecordContribution` | `Accepted` | Included in the zone's publication | `Ineligible` (withdrawn on purpose), `StaleRegistrationGeneration`, `RetiredContribution`, `NameOrTypeOutsideRegistration`, `MissingSRVTargetAddress`, `InvalidContributionGeneration`, `Terminating` |
 | `DNSRecordContribution` | `Published` | Every required resolver confirmed the revision in `status.publishedRevision` | `PendingReplicaVerification` |
 
 `Pending*`, `Preparing`, `Terminating`, and `ObservationUnavailable` clear on
@@ -213,7 +221,7 @@ conditions rather than fixed delays.
 
 | Limit | Value |
 | --- | --- |
-| Private zones associated with one network, including the managed zone | 256 |
+| Private zones associated with one network, including the managed zone | 256, not yet enforced. See [Known gaps](#known-gaps) |
 | Record types per registration | 14 |
 | Reserved subtrees per registration | 64 |
 | Values per record type in one contribution | 256 |
@@ -232,9 +240,11 @@ conditions rather than fixed delays.
 - Immutability rules aren't loosened silently. A field that becomes mutable is
   announced in the release notes.
 - Schema validation can become stricter only to reject values the service
-  never served. A resource that serves today keeps serving after an upgrade.
+  never served.
+- Closing a gap listed in [Known gaps](#known-gaps) can change which resource
+  wins a conflict. Such a change is announced in the release notes.
 - A later version, such as `v1beta1`, will be served alongside `v1alpha1` for at
-  least one minor release, with conversion between them.
+  least one minor release.
 
 Service integrations can also rely on these rules:
 
@@ -285,6 +295,16 @@ These keep the contract from being fully enforced. Each needs its own change.
   service roles.
 - **Naming policies have no effect.** No service applies `DNSNamingPolicy`
   rules yet.
-- **Deleting a managed zone isn't tested.** The service recreates the zone,
-  but the managed association still points at the deleted zone's identity. A
-  test should prove that the network's names return.
+- **Deleting a managed zone breaks the network's names.** The service
+  recreates the zone, but keeps the managed association, which still points at
+  the deleted zone. The association reports `InvalidReference` and the context
+  stays `Preparing`. DNS Admin can delete the zone. The service should replace
+  a stale managed association, or refuse deletes of managed zones.
+- **The 256-zone limit isn't enforced on associations.** A 257th association
+  is accepted, and the network's serving configuration then fails to update.
+  Admission or status should refuse it.
+- **Cross-zone `CNAME`s can fail over UDP.** When a resolver follows a `CNAME`
+  to another zone over UDP with keyed identity, the follow-up lookup loses the
+  context identity and is refused. Clients get only the `CNAME`. Lookups over
+  TCP, and `CNAME`s within one zone, work. The resolver should keep the
+  identity when it follows a `CNAME`.

@@ -17,3 +17,7 @@
 !docs/agent/skills/*.md
 
 !config/internal-dns/commands/**
+
+# Restored dependencies and CI utilities are not application source.
+.ci-*/**
+.ci-*

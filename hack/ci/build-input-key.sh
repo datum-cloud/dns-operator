@@ -11,6 +11,8 @@ expected=$(cat <<'POLICY'
 !docs/agent/llms-full.txt
 !docs/agent/skills/*.md
 !config/internal-dns/commands/**
+.ci-*/**
+.ci-*
 POLICY
 )
 if [[ $(sed '/^#/d; /^[[:space:]]*$/d' hack/ci/Dockerfile.dockerignore) != "$expected" ]]; then
@@ -29,6 +31,7 @@ while IFS= read -r -d '' path; do
   count=$((count + 1))
 done < <(git ls-files --cached --others --exclude-standard -z -- '*.go' go.mod go.sum \
   docs/agent/llms-full.txt 'docs/agent/skills/*.md' 'config/internal-dns/commands/**' \
-  hack/ci/Dockerfile hack/ci/Dockerfile.dockerignore hack/ci/images.hcl hack/ci/build-images.sh | sort -zu)
+  hack/ci/Dockerfile hack/ci/Dockerfile.dockerignore hack/ci/images.hcl hack/ci/build-images.sh \
+  ':(exclude,glob).ci-*/**' | sort -zu)
 (( count > 0 )) || { echo 'No build inputs found' >&2; exit 1; }
 printf 'key=%s\n' "$(sha256sum < "$manifest" | cut -d ' ' -f 1)"

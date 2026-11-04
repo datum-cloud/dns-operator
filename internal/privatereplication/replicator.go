@@ -125,6 +125,10 @@ func (r *Replicator) ensureNamespace(ctx context.Context, name, cluster, upstrea
 			ns.Annotations = map[string]string{}
 		}
 		ns.Labels[ReplicatedLabel] = "true"
+		// The label form of the upstream namespace is what the networking
+		// projection's placement selects, so the namespace reaches every
+		// region that serves the project's networks.
+		ns.Labels[UpstreamNamespaceAnnotation] = upstreamNamespace
 		ns.Annotations[UpstreamClusterAnnotation] = cluster
 		ns.Annotations[UpstreamNamespaceAnnotation] = upstreamNamespace
 		ns.Annotations[ProjectUIDAnnotation] = string(projectUID)

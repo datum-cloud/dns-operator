@@ -371,6 +371,27 @@ outages delay updates and withdrawals; DNS TTLs limit client caching, not how
 long a running member retains records. After restart, a saved checkpoint can
 serve for up to 15 minutes without a validated bootstrap.
 
+#### Recovery and history
+
+Each zone's writer stamps every publication with a writer epoch and a revision.
+A takeover starts a higher epoch, and a revision is reserved before anything is
+written, so a restarted or replaced writer never reuses an identity and an
+interrupted publish is retried at a new revision. Members persist each accepted
+publication and contribution fence before applying it. After a restart or a
+broker replay, a member ignores any publication older than the one it applied
+and rejects one built from an older record observation.
+
+History is retained as follows:
+
+| Where | Kept | Removed |
+| --- | --- | --- |
+| Member checkpoint | The latest publication or withdrawal of each zone, and every contribution fence | Chunks of superseded publications |
+| Publication store | Ownership records, which hold each zone's epoch, and the active manifest with its chunks and outboxes | Superseded manifests, chunks and outboxes ten minutes after a newer manifest is active, unless a pending outbox depends on them; serving outboxes older than a shard's active one |
+| Broker streams | Events up to the configured stream age | Older events; consumers of removed members after six hours idle |
+
+A withdrawal or deletion stays in the member checkpoint as the zone's fence, so
+a delayed copy of the zone cannot return.
+
 See the deployment guide for [store configuration and ownership](../../private-dns/deployment.md#publication-storage)
 and [activation and outage recovery](../../private-dns/deployment.md#transactions-health-and-outage-recovery).
 

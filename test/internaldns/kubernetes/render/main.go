@@ -34,6 +34,7 @@ type object = map[string]any
 const ns = "internal-dns-system"
 const projectNS = "project-e2e"
 const image = "internal-dns-kubernetes:e2e"
+const nodeLoopback = "127.0.0.1"
 const nodeRole = string(serving.RenderNode)
 const regionalDNSDistRole = string(serving.RenderRegionalDNSDist)
 
@@ -412,7 +413,7 @@ func configMap(name string, cfg runtime.Config) object {
 }
 
 func nodeBackends() []model.Backend {
-	return []model.Backend{{MemberID: "node-coredns-0", Address: "127.0.0.1", Port: 5300}}
+	return []model.Backend{{MemberID: "node-coredns-0", Address: nodeLoopback, Port: 5300}}
 }
 
 func nodeConfigMap() object {
@@ -421,8 +422,8 @@ func nodeConfigMap() object {
 	c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
 	c.Agent.Render.NodeDNSDist.MetricsAddress = dnsdistMetricsAddress
 	c.Agent.Render.NodeDNSDist.MetricsACLs = dnsdistMetricsACLs
-	c.Agent.Render.NodeCoreDNS.ListenAddress = "127.0.0.1"
-	c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{"127.0.0.1"}
+	c.Agent.Render.NodeCoreDNS.ListenAddress = nodeLoopback
+	c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{nodeLoopback}
 	must(c.Validate("agent"))
 	must(c.Validate("readiness"))
 	return configMap(podNames[0]+"-config", c)

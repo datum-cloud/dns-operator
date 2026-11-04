@@ -136,7 +136,7 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 			// member still reports a local verification failure, which is worth
 			// a log line, but retrying it can never succeed: the broker would
 			// redeliver it forever.
-			log.FromContext(ctx).Info("ignoring a publication acknowledgement from a member that does not verify publications",
+			log.FromContext(ctx).V(1).Info("ignoring a publication acknowledgement from a member that does not verify publications",
 				"member", a.MemberID, "role", member.Role, "zone", a.ResourceUID, "epoch", a.Epoch, "revision", a.Revision, "phase", a.Phase, "detail", a.Error)
 			return nil
 		}

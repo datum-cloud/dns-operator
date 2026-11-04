@@ -848,8 +848,6 @@ func TestNodePublicationAckIsDroppedNotRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "node-a", ReplicaID: "node-a", Role: "node"}}}
-	// An error here makes the consumer retry, and the broker would redeliver
-	// the acknowledgement forever.
 	if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", "node-a"), env); err != nil {
 		t.Fatalf("a node member's publication acknowledgement must be settled, not retried: %v", err)
 	}

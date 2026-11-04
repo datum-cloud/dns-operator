@@ -1112,3 +1112,39 @@ func TestWithdrawalReachesShardThatNeverHadTheZone(t *testing.T) {
 		t.Fatal("a delayed older revision replaced the withdrawal")
 	}
 }
+
+func TestNodeAuthoritativeVerificationFailureSendsNoPublicationAck(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	pub := &fakePublisher{}
+	fail := false
+	verifier := publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+		if fail {
+			return errors.New("local verification failed")
+		}
+		return nil
+	})
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: pub, PublicationVerifier: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	if !agent.state.Publications["zone-a"].Verified {
+		t.Fatal("publication was not verified")
+	}
+	fail = true
+	pub.envs = nil
+	_, manifest := testPublication(t, now)
+	if err := agent.handleManifest(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err == nil {
+		t.Fatal("a failed local verification must be reported")
+	}
+	for _, env := range pub.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Kind == model.KindPublicationManifest {
+			t.Fatalf("node authority sent a publication acknowledgement: %#v", ack)
+		}
+	}
+}

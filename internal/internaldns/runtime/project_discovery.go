@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	corev1 "k8s.io/api/core/v1"
 	"net/url"
 	"path"
 	"sort"
 	"sync"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"

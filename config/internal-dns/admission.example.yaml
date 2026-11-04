@@ -31,3 +31,10 @@ webhooks:
     - dnsnamingpolicies
     - dnsresolveraccessbindings
     scope: Namespaced
+  # A managed zone is kept while its resolver context uses it.
+  - apiGroups: [dns.networking.miloapis.com]
+    apiVersions: [v1alpha1]
+    operations: [DELETE]
+    resources:
+    - dnszones
+    scope: Namespaced

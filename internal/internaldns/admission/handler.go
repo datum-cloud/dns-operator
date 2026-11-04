@@ -15,6 +15,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +30,7 @@ const namingPolicyResource = "dnsnamingpolicies"
 const resolverAccessResource = "dnsresolveraccessbindings"
 const recordSetResource = "dnsrecordsets"
 const associationResource = "dnszoneassociations"
+const zoneResource = "dnszones"
 
 // Path is where the dns-operator webhook server serves this handler.
 const Path = "/validate-internal-dns"
@@ -50,6 +52,9 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Resource.Group != dnsv1alpha1.GroupVersion.Group {
 		return kubeadmission.Denied("unexpected API group")
 	}
+	if req.Operation == admissionv1.Delete && req.Resource.Resource == zoneResource && req.SubResource == "" {
+		return h.zoneDeletion(ctx, req)
+	}
 	// The API server authorizes resource and status access through RBAC.
 	if req.Operation == admissionv1.Delete && req.Resource.Resource != registrationResource {
 		return kubeadmission.Allowed("API server authorization applies")
@@ -69,16 +74,9 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 			return kubeadmission.Allowed("resource finalization does not require live references")
 		}
 	}
-	cl := h.Client
-	if h.ClientForRequest != nil {
-		var err error
-		cl, err = h.ClientForRequest(ctx, req)
-		if err != nil {
-			return kubeadmission.Errored(http.StatusServiceUnavailable, err)
-		}
-	}
-	if cl == nil {
-		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
+	cl, unavailable := h.projectClient(ctx, req)
+	if unavailable != nil {
+		return *unavailable
 	}
 	if req.Resource.Resource == registrationResource {
 		if err := authorizeReservationMutation(ctx, cl, req); err != nil {
@@ -113,6 +111,53 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		return kubeadmission.Denied(err.Error())
 	}
 	return kubeadmission.Allowed("DNS references are valid")
+}
+
+func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) (client.Client, *kubeadmission.Response) {
+	cl := h.Client
+	if h.ClientForRequest != nil {
+		var err error
+		cl, err = h.ClientForRequest(ctx, req)
+		if err != nil {
+			res := kubeadmission.Errored(http.StatusServiceUnavailable, err)
+			return nil, &res
+		}
+	}
+	if cl == nil {
+		res := kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
+		return nil, &res
+	}
+	return cl, nil
+}
+
+// zoneDeletion keeps a managed zone while its resolver context uses it.
+// Associations and registrations pin the zone's UID, so a recreated zone would
+// never serve the network's names again.
+func (h *Handler) zoneDeletion(ctx context.Context, req kubeadmission.Request) kubeadmission.Response {
+	var zone dnsv1alpha1.DNSZone
+	if err := decode(req, &zone); err != nil {
+		return kubeadmission.Denied(err.Error())
+	}
+	if !model.IsManagedZone(&zone) || !zone.DeletionTimestamp.IsZero() {
+		return kubeadmission.Allowed("API server authorization applies")
+	}
+	cl, unavailable := h.projectClient(ctx, req)
+	if unavailable != nil {
+		return *unavailable
+	}
+	owner := metav1.GetControllerOf(&zone)
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	err := cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: owner.Name}, &resolverContext)
+	if apierrors.IsNotFound(err) {
+		return kubeadmission.Allowed("the managed zone's resolver context is gone")
+	}
+	if err != nil {
+		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("resolver context lookup: %w", err))
+	}
+	if resolverContext.UID != owner.UID || !resolverContext.DeletionTimestamp.IsZero() || !resolverContext.Spec.ManagedNamespace.Enabled {
+		return kubeadmission.Allowed("the managed zone's resolver context no longer uses it")
+	}
+	return kubeadmission.Denied(fmt.Sprintf("zone %s is the managed zone of resolver context %s and is removed with it", zone.Name, resolverContext.Name))
 }
 
 func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kubeadmission.Request) error {

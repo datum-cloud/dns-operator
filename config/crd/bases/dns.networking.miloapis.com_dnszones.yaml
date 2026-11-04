@@ -51,8 +51,9 @@ spec:
             description: spec defines the desired state of DNSZone
             properties:
               dnsZoneClassName:
-                description: DNSZoneClassName references the DNSZoneClass used to
-                  provision this zone.
+                description: |-
+                  DNSZoneClassName references the DNSZoneClass used to provision a public
+                  zone. Private zones are served by Private DNS and ignore it.
                 type: string
               domainName:
                 description: DomainName is the FQDN of the zone (e.g., "example.com").
@@ -79,9 +80,12 @@ spec:
                 - message: visibility is immutable
                   rule: oldSelf == self
             required:
-            - dnsZoneClassName
             - domainName
             type: object
+            x-kubernetes-validations:
+            - message: dnsZoneClassName is required for public zones
+              rule: (has(self.visibility) && self.visibility == 'Private') || (has(self.dnsZoneClassName)
+                && self.dnsZoneClassName.size() > 0)
           status:
             description: status defines the observed state of DNSZone
             properties:

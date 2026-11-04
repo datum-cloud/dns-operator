@@ -52,6 +52,30 @@ func TestDNSZoneVisibilityAdmission(t *testing.T) {
 			t.Fatalf("omitted public visibility must remain compatible: %v", err)
 		}
 	})
+	t.Run("private zones do not need a class", func(t *testing.T) {
+		zone := newZone("private-classless", dnsv1alpha1.DNSZoneVisibilityPrivate)
+		zone.Spec.DNSZoneClassName = ""
+		if err := cl.Create(ctx, zone); err != nil {
+			t.Fatalf("private zone without a class: %v", err)
+		}
+	})
+	t.Run("public zones need a class", func(t *testing.T) {
+		for _, visibility := range []dnsv1alpha1.DNSZoneVisibility{"", dnsv1alpha1.DNSZoneVisibilityPublic} {
+			zone := newZone("public-classless", visibility)
+			zone.Spec.DNSZoneClassName = ""
+			if err := cl.Create(ctx, zone); !apierrors.IsInvalid(err) {
+				t.Fatalf("visibility %q without a class: expected validation error, got %v", visibility, err)
+			}
+		}
+		zone := newZone("public-class-removed", dnsv1alpha1.DNSZoneVisibilityPublic)
+		if err := cl.Create(ctx, zone); err != nil {
+			t.Fatal(err)
+		}
+		zone.Spec.DNSZoneClassName = ""
+		if err := cl.Update(ctx, zone); !apierrors.IsInvalid(err) {
+			t.Fatalf("removing a public zone's class: expected validation error, got %v", err)
+		}
+	})
 	t.Run("invalid visibility is rejected", func(t *testing.T) {
 		if err := cl.Create(ctx, newZone("invalid", "Internal")); !apierrors.IsInvalid(err) {
 			t.Fatalf("expected validation error, got %v", err)

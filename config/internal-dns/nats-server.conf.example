@@ -30,9 +30,9 @@ authorization {
           "_INBOX.>"
         ], deny: [
           # The control plane creates and updates its streams, buckets and
-          # mirrors, but never deletes or purges a stream or removes a stored
-          # message, so it cannot erase another region's mirrored inputs.
-          "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.PURGE.>", "$JS.API.STREAM.MSG.DELETE.>"
+          # mirrors, and purges delete markers from its own buckets, but
+          # never deletes a stream or removes a stored message.
+          "$JS.API.STREAM.DELETE.>", "$JS.API.STREAM.MSG.DELETE.>"
         ] }
         subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
       }

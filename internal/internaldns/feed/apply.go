@@ -28,6 +28,7 @@ var errWatchEnded = errors.New("feed watch ended")
 const (
 	replicatedLabel      = "internal-dns.miloapis.com/replicated"
 	projectUIDAnnotation = "internal-dns.miloapis.com/project-uid"
+	replicatedValue      = "true"
 )
 
 var accessBindingList = schema.GroupVersionKind{Group: group, Version: version, Kind: "DNSResolverAccessBindingList"}
@@ -125,6 +126,11 @@ func (a *Applier) Run(ctx context.Context) error {
 					continue
 				}
 				pruned = true
+			}
+			if pruned {
+				if err := a.withdrawUnserved(ctx); err != nil {
+					log.FromContext(ctx).Error(err, "remove copies in projects the writing region no longer serves", "region", a.Region)
+				}
 			}
 		}
 	}
@@ -253,7 +259,7 @@ func (a *Applier) mapped(ctx context.Context, namespace string) error {
 		return fmt.Errorf("namespace %s: %w", namespace, err)
 	}
 	project := ns.Annotations[projectUIDAnnotation]
-	if ns.Labels[replicatedLabel] != "true" || !ns.DeletionTimestamp.IsZero() || project == "" {
+	if ns.Labels[replicatedLabel] != replicatedValue || !ns.DeletionTimestamp.IsZero() || project == "" {
 		return fmt.Errorf("namespace %s is not a live project namespace", namespace)
 	}
 	served, err := a.servedProjects(ctx)
@@ -277,7 +283,7 @@ func (a *Applier) servedProjects(ctx context.Context) (map[string]bool, error) {
 		return a.served, nil
 	}
 	var namespaces corev1.NamespaceList
-	if err := a.Local.List(ctx, &namespaces, client.MatchingLabels{replicatedLabel: "true"}); err != nil {
+	if err := a.Local.List(ctx, &namespaces, client.MatchingLabels{replicatedLabel: replicatedValue}); err != nil {
 		return nil, err
 	}
 	projectOf := map[string]string{}
@@ -322,6 +328,48 @@ func (a *Applier) prune(ctx context.Context, seen map[string]bool) error {
 		for i := range list.Items {
 			o := &list.Items[i]
 			if seen[Key(gvk.Kind, o.GetNamespace(), o.GetName())] {
+				continue
+			}
+			if err := a.Local.Delete(ctx, o); err != nil && !apierrors.IsNotFound(err) {
+				errs = errors.Join(errs, err)
+			}
+		}
+	}
+	return errs
+}
+
+// withdrawUnserved removes the writing region's copies in projects that no
+// longer have resolver access in that region, so access withdrawn after a
+// copy landed does not leave its names in place.
+func (a *Applier) withdrawUnserved(ctx context.Context) error {
+	served, err := a.servedProjects(ctx)
+	if err != nil {
+		return err
+	}
+	var namespaces corev1.NamespaceList
+	if err := a.Local.List(ctx, &namespaces, client.MatchingLabels{replicatedLabel: replicatedValue}); err != nil {
+		return err
+	}
+	unserved := map[string]bool{}
+	for _, ns := range namespaces.Items {
+		if project := ns.Annotations[projectUIDAnnotation]; project != "" && !served[project] {
+			unserved[ns.Name] = true
+		}
+	}
+	if len(unserved) == 0 {
+		return nil
+	}
+	var errs error
+	for _, gvk := range Kinds {
+		list := &unstructured.UnstructuredList{}
+		list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+		if err := a.Local.List(ctx, list, client.MatchingLabels{OriginLabel: a.Region}); err != nil {
+			errs = errors.Join(errs, err)
+			continue
+		}
+		for i := range list.Items {
+			o := &list.Items[i]
+			if !unserved[o.GetNamespace()] {
 				continue
 			}
 			if err := a.Local.Delete(ctx, o); err != nil && !apierrors.IsNotFound(err) {

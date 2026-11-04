@@ -224,6 +224,30 @@ func TestAPeerWritesOnlyIntoProjectsItServes(t *testing.T) {
 	}
 }
 
+func TestWithdrawnAccessRemovesThePeersCopies(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	access := servedBy("us-east-1")
+	copied := contribution("us-east-1")
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), access, copied).Build()
+	a := &Applier{Region: "us-east-1", Local: central, Interval: time.Nanosecond}
+	if err := a.withdrawUnserved(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := central.Get(ctx, client.ObjectKeyFromObject(copied), &dnsv1alpha1.DNSRecordContribution{}); err != nil {
+		t.Fatalf("a served project's copy was removed: %v", err)
+	}
+	if err := central.Delete(ctx, access); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.withdrawUnserved(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := central.Get(ctx, client.ObjectKeyFromObject(copied), &dnsv1alpha1.DNSRecordContribution{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the copy outlived the region's access: %v", err)
+	}
+}
+
 func TestARecreatedWriterObjectReplacesTheStaleCopy(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)

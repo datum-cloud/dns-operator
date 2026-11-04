@@ -101,6 +101,13 @@ func Connect(c Config) (*JetStream, error) {
 		// different times, so the same authorization error can repeat for a
 		// while. Keep retrying instead of closing the connection for good.
 		nats.IgnoreAuthErrorAbort(),
+		// Say why a connection dropped, so a credential the broker keeps
+		// refusing shows up in this process's log, not only the broker's.
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				logf.Log.WithName("transport").Info("broker connection lost; reconnecting", "name", c.Name, "error", err.Error())
+			}
+		}),
 	}
 	if c.CredentialsFile != "" {
 		opts = append(opts, nats.UserCredentials(c.CredentialsFile))
@@ -171,7 +178,8 @@ func loadTLS(c TLSConfig) (*tls.Config, error) {
 			if renewed, err := tls.LoadX509KeyPair(c.CertificateFile, c.KeyFile); err == nil {
 				cert = renewed
 			}
-			return &cert, nil
+			current := cert
+			return &current, nil
 		}
 	}
 	return t, nil

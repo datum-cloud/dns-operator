@@ -48,8 +48,9 @@ func logDaemonUpdate(ctx context.Context, c Command, payload map[string][]byte) 
 	started := time.Now()
 	return func(err error) {
 		if err != nil {
-			// The caller returns err, so it is logged once, as an error, there.
-			log.Info("daemon update failed", "duration", time.Since(started).String())
+			// Logged here as well as returned: several callers, such as the
+			// fail-closed gate, discard the error.
+			log.Error(err, "daemon update failed", "duration", time.Since(started).String())
 			return
 		}
 		log.Info("daemon update applied", "duration", time.Since(started).String())

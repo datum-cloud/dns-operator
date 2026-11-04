@@ -586,8 +586,12 @@ context labels named, comma separated, in the context's
 creates the context can tag what the zone is for, such as the network it
 serves. The context's `kubernetes.io/description` annotation is copied too, so
 clients can show what the zone is for. Copied labels and the description are
-added or corrected, never removed. A naming policy
-adds custom names without a zone choice on each Compute or Connect resource.
+added or corrected, never removed.
+
+A naming policy is meant to add custom names without a zone choice on each
+Compute or Connect resource. No product applies naming policies yet, so they
+are outside the [customer contract](api-contract.md) and customer roles can
+only read them.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1

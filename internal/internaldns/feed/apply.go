@@ -16,6 +16,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -59,12 +60,20 @@ func (a *Applier) Run(ctx context.Context) error {
 	failed := map[string]bool{}
 	synced, pruned := false, false
 	apply := func(key string, value []byte) {
-		if err := a.Apply(ctx, key, value); err != nil {
+		err := a.Apply(ctx, key, value)
+		var refused *refusedError
+		switch {
+		case errors.As(err, &refused):
+			// Another origin holds the key or the identity: retrying cannot
+			// change that, so it waits for the next write of the key.
+			delete(failed, key)
+			log.FromContext(ctx).Error(err, "refused another region's input", "region", a.Region, "key", key)
+		case err != nil:
 			failed[key] = true
 			log.FromContext(ctx).Error(err, "apply another region's input; retrying", "region", a.Region, "key", key)
-			return
+		default:
+			delete(failed, key)
 		}
-		delete(failed, key)
 	}
 	for {
 		select {
@@ -129,7 +138,7 @@ func (a *Applier) Apply(ctx context.Context, key string, value []byte) error {
 	}
 	exists := err == nil
 	if exists && local.GetLabels()[OriginLabel] != a.Region {
-		return fmt.Errorf("%s/%s %s is owned by origin %q, not %q; not replacing it", namespace, name, kind, local.GetLabels()[OriginLabel], a.Region)
+		return &refusedError{fmt.Sprintf("%s/%s %s is owned by origin %q, not %q; not replacing it", namespace, name, kind, local.GetLabels()[OriginLabel], a.Region)}
 	}
 	if value == nil {
 		if !exists {
@@ -145,6 +154,9 @@ func (a *Applier) Apply(ctx context.Context, key string, value []byte) error {
 		return fmt.Errorf("%s names %s/%s", key, entry.Namespace, entry.Name)
 	}
 	if err := a.mapped(ctx, namespace); err != nil {
+		return err
+	}
+	if err := a.uniqueIdentity(ctx, gvk, namespace, name, entry.Annotations[OriginUIDAnnotation]); err != nil {
 		return err
 	}
 	if exists && local.GetAnnotations()[OriginUIDAnnotation] != entry.Annotations[OriginUIDAnnotation] {
@@ -188,6 +200,39 @@ func (a *Applier) Apply(ctx context.Context, key string, value []byte) error {
 		return nil
 	})
 	return err
+}
+
+// refusedError is an entry the applier will never accept as it stands.
+type refusedError struct{ msg string }
+
+func (e *refusedError) Error() string { return e.msg }
+
+// uniqueIdentity refuses an entry whose origin UID another object of its kind
+// in the namespace already answers to. References resolve by that UID, so a
+// peer claiming one could stand in for an object it did not write.
+func (a *Applier) uniqueIdentity(ctx context.Context, gvk schema.GroupVersionKind, namespace, name, uid string) error {
+	if len(uid) != 36 || strings.Count(uid, "-") != 4 {
+		return &refusedError{fmt.Sprintf("%s/%s %s has no well-formed origin UID", namespace, name, gvk.Kind)}
+	}
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(gvk.GroupVersion().WithKind(gvk.Kind + "List"))
+	if err := a.Local.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		return err
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.GetName() == name {
+			continue
+		}
+		held := o.GetAnnotations()[OriginUIDAnnotation]
+		if held == "" {
+			held = string(o.GetUID())
+		}
+		if held == uid {
+			return &refusedError{fmt.Sprintf("%s/%s %s claims the UID of %s", namespace, name, gvk.Kind, o.GetName())}
+		}
+	}
+	return nil
 }
 
 // mapped accepts only namespaces the hub placed here for a project, so a

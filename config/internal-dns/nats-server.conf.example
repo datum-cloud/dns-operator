@@ -21,9 +21,15 @@ authorization {
         publish: { allow: [
           "dns.private.serving.>", "dns.private.records.>",
           "$KV.DNS_PRIVATE_SNAPSHOTS.>", "$KV.DNS_PRIVATE_PUBLICATIONS.>", "$JS.API.>",
+          # With feed set, the region writes only its own input bucket.
+          "$KV.DNS_PRIVATE_INPUTS.>",
           # Match the control-plane ACK durable for this region and shard.
           "$JS.ACK.DNS_PRIVATE.control-plane-us-central1-shared-0-acks.>",
           "_INBOX.>"
+        ], deny: [
+          # Other regions' inputs arrive only through the broker's mirrors of
+          # their buckets; nothing in this region writes them.
+          "$KV.DNS_PRIVATE_INPUTS_*.>"
         ] }
         subscribe: { allow: ["dns.private.acks.>", "_INBOX.>"] }
       }

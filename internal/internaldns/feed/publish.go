@@ -38,10 +38,7 @@ func (p *Publisher) Sync(ctx context.Context, gvk schema.GroupVersionKind, key t
 	}
 	feedKey := Key(gvk.Kind, key.Namespace, key.Name)
 	if apierrors.IsNotFound(err) || !obj.GetDeletionTimestamp().IsZero() || obj.GetLabels()[OriginLabel] != p.Region {
-		if err := remove(ctx, p.KV, feedKey); err != nil {
-			return err
-		}
-		return p.withdrawFromHub(ctx, gvk, key)
+		return errors.Join(remove(ctx, p.KV, feedKey), p.withdrawFromHub(ctx, gvk, key))
 	}
 	entry, err := entryOf(obj)
 	if err != nil {
@@ -51,12 +48,10 @@ func (p *Publisher) Sync(ctx context.Context, gvk schema.GroupVersionKind, key t
 	if err != nil {
 		return err
 	}
-	if err := put(ctx, p.KV, feedKey, value); err != nil {
-		return err
-	}
-	// The feed is written first: the other regions get the object even
-	// while the hub is unreachable.
-	return p.copyToHub(ctx, gvk, obj)
+	// Each copy is attempted whatever happens to the other, so the project
+	// learns of the object while NATS is down and the other regions get it
+	// while the hub is down.
+	return errors.Join(put(ctx, p.KV, feedKey, value), p.copyToHub(ctx, gvk, obj))
 }
 
 // Resync withdraws every key whose object is gone and publishes every

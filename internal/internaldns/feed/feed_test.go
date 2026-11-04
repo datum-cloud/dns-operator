@@ -4,6 +4,7 @@ package feed
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func mappedNamespace() *corev1.Namespace {
 }
 
 func contribution(origin string) *dnsv1alpha1.DNSRecordContribution {
-	return &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "instance-a", Namespace: "ns-uid", Generation: 4, UID: "writer-uid", Labels: map[string]string{OriginLabel: origin, "app": "web"}}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "web"}}}
+	return &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "instance-a", Namespace: "ns-uid", Generation: 4, UID: "11111111-1111-1111-1111-111111111111", Labels: map[string]string{OriginLabel: origin, "app": "web"}}, Spec: dnsv1alpha1.DNSRecordContributionSpec{RegistrationRef: dnsv1alpha1.DNSObjectReference{Name: "web"}}}
 }
 
 // replay applies every key the bucket holds, as a mirror's watch would.
@@ -80,7 +81,7 @@ func TestARegionsWriteReachesTheOtherRegionAndTheHub(t *testing.T) {
 	if err := central.Get(ctx, key, &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.Labels[OriginLabel] != "us-east-1" || copied.Labels["app"] != "web" || copied.Annotations[OriginGenerationAnnotation] != "4" || copied.Annotations[OriginUIDAnnotation] != "writer-uid" || copied.Spec.RegistrationRef.Name != "web" {
+	if copied.Labels[OriginLabel] != "us-east-1" || copied.Labels["app"] != "web" || copied.Annotations[OriginGenerationAnnotation] != "4" || copied.Annotations[OriginUIDAnnotation] != "11111111-1111-1111-1111-111111111111" || copied.Spec.RegistrationRef.Name != "web" {
 		t.Fatalf("central copy = %#v", copied)
 	}
 	var inHub dnsv1alpha1.DNSRecordContribution
@@ -194,11 +195,11 @@ func TestARecreatedWriterObjectReplacesTheStaleCopy(t *testing.T) {
 	ctx := context.Background()
 	s := scheme(t)
 	stale := contribution("us-east-1")
-	stale.Annotations = map[string]string{OriginUIDAnnotation: "old-uid", OriginGenerationAnnotation: "9"}
+	stale.Annotations = map[string]string{OriginUIDAnnotation: "33333333-3333-3333-3333-333333333333", OriginGenerationAnnotation: "9"}
 	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), stale).Build()
 	recreated := contribution("us-east-1")
 	recreated.Generation = 1
-	recreated.UID = "new-uid"
+	recreated.UID = "22222222-2222-2222-2222-222222222222"
 	east := fake.NewClientBuilder().WithScheme(s).WithObjects(recreated).Build()
 	kv := pubstore.NewMemoryKV()
 	key := types.NamespacedName{Namespace: "ns-uid", Name: "instance-a"}
@@ -218,7 +219,7 @@ func TestARecreatedWriterObjectReplacesTheStaleCopy(t *testing.T) {
 	if err := central.Get(ctx, key, &copied); err != nil {
 		t.Fatal(err)
 	}
-	if copied.Annotations[OriginUIDAnnotation] != "new-uid" || copied.Annotations[OriginGenerationAnnotation] != "1" {
+	if copied.Annotations[OriginUIDAnnotation] != "22222222-2222-2222-2222-222222222222" || copied.Annotations[OriginGenerationAnnotation] != "1" {
 		t.Fatalf("copy after recreate = %#v", copied.Annotations)
 	}
 }
@@ -251,5 +252,27 @@ func TestApplierPrunesOnlyOnceTheMirrorIsCaughtUp(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAPeerCannotClaimAnotherObjectsUID(t *testing.T) {
+	ctx := context.Background()
+	s := scheme(t)
+	victim := &dnsv1alpha1.DNSRecordContribution{ObjectMeta: metav1.ObjectMeta{Name: "victim", Namespace: "ns-uid", UID: "44444444-4444-4444-4444-444444444444"}}
+	central := fake.NewClientBuilder().WithScheme(s).WithObjects(mappedNamespace(), victim).Build()
+	impostor := contribution("us-east-1")
+	impostor.Annotations = map[string]string{OriginUIDAnnotation: "44444444-4444-4444-4444-444444444444"}
+	east := fake.NewClientBuilder().WithScheme(s).WithObjects(impostor).Build()
+	kv := pubstore.NewMemoryKV()
+	key := types.NamespacedName{Namespace: "ns-uid", Name: "instance-a"}
+	if err := (&Publisher{Region: "us-east-1", Local: east, KV: kv}).Sync(ctx, Kinds[1], key); err != nil {
+		t.Fatal(err)
+	}
+	feedKey := Key("DNSRecordContribution", key.Namespace, key.Name)
+	value, _, _ := kv.Get(ctx, feedKey)
+	err := (&Applier{Region: "us-east-1", Local: central}).Apply(ctx, feedKey, value)
+	var refused *refusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("a peer claimed another object's UID: %v", err)
 	}
 }

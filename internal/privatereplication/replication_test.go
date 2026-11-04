@@ -56,7 +56,7 @@ func TestReplicatorCopiesPrivateObjectsAndWithdrawsThem(t *testing.T) {
 	if err := hub.Get(ctx, ctrl.ObjectKey{Name: "ns-ns-uid"}, &ns); err != nil {
 		t.Fatal(err)
 	}
-	if ns.Annotations[UpstreamClusterAnnotation] != "project-a" || ns.Annotations[ProjectUIDAnnotation] != "project-uid" || ns.Annotations[UpstreamNamespaceAnnotation] != "default" || ns.Labels[ReplicatedLabel] != "true" {
+	if ns.Annotations[UpstreamClusterAnnotation] != "project-a" || ns.Annotations[ProjectUIDAnnotation] != "project-uid" || ns.Annotations[UpstreamNamespaceAnnotation] != "default" || ns.Labels[ReplicatedLabel] != "true" || ns.Labels[UpstreamNamespaceAnnotation] != "default" {
 		t.Fatalf("mapped namespace = %#v", ns.ObjectMeta)
 	}
 	var copied dnsv1alpha1.DNSZone

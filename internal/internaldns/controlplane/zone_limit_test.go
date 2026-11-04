@@ -110,6 +110,32 @@ func TestAssociationsRefusedPastZoneLimit(t *testing.T) {
 	if got := count(conditions); got != maxZonesPerResolverContext {
 		t.Fatalf("accepted %d associations, want %d", got, maxZonesPerResolverContext)
 	}
+
+	// If another writer accepts one association too many, the zone accepted
+	// most recently gives way, even when it is the oldest by creation time.
+	late := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "aab", Namespace: "project", UID: "zone-aab", Generation: 1}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "aab.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	lateAssociation := &dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Name: "aab", Namespace: "project", UID: "association-aab", Generation: 1, CreationTimestamp: metav1.NewTime(created.Add(-2 * time.Hour))}, Spec: dnsv1alpha1.DNSZoneAssociationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: "aab"}, ResolverContextRef: dnsv1alpha1.DNSNameReference{Name: resolver.Name}}}
+	for _, object := range []client.Object{late, lateAssociation} {
+		if err := cl.Create(ctx, object); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcile()
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(lateAssociation), lateAssociation); err != nil {
+		t.Fatal(err)
+	}
+	apimeta.RemoveStatusCondition(&lateAssociation.Status.Conditions, dnsValueAccepted)
+	setCondition(&lateAssociation.Status.Conditions, dnsValueAccepted, metav1.ConditionTrue, dnsValueAccepted, "", lateAssociation.Generation, now.Add(time.Hour))
+	if err := cl.Status().Update(ctx, lateAssociation); err != nil {
+		t.Fatal(err)
+	}
+	conditions = reconcile()
+	if c := conditions["aab"]; c == nil || c.Status != metav1.ConditionFalse || c.Reason != "ZoneLimitExceeded" {
+		t.Fatalf("most recently accepted association should give way: %v", c)
+	}
+	if got := count(conditions); got != maxZonesPerResolverContext {
+		t.Fatalf("accepted %d associations, want %d", got, maxZonesPerResolverContext)
+	}
 }
 
 func TestZoneLimitAlwaysAdmitsManagedZone(t *testing.T) {

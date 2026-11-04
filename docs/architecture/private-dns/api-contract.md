@@ -224,7 +224,7 @@ conditions rather than fixed delays.
 
 | Limit | Value |
 | --- | --- |
-| Private zones associated with one network, including the managed zone | 256. Associations past the limit report `ZoneLimitExceeded`. Zones already attached keep their place, and the managed zone always fits |
+| Private zones associated with one network, including the managed zone | 256. Associations past the limit report `ZoneLimitExceeded`. Zones already attached keep their place. The managed zone always fits, so turning on a managed namespace for a full network detaches the most recently attached zone |
 | Record types per registration | 14 |
 | Reserved subtrees per registration | 64 |
 | Values per record type in one contribution | 256 |

@@ -223,6 +223,7 @@ tasks:
         msg: python3 with PyYAML is required
     cmds:
       - hack/test-dashboard-latency.sh
+      - hack/check-dashboard-layout.sh
       - hack/test-observability-rules.sh
 
   test:dashboards:

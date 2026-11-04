@@ -362,17 +362,74 @@ region; it does not represent separate regional control planes.
 
 **The home broker remains a shared dependency.** A region's planner, exporter,
 and acknowledgment handler can continue when an unrelated regional broker is
-down. Committing or delivering zone updates still requires the home broker.
-Independent publication by region remains a
-[separate proposal](https://github.com/datum-cloud/dns-operator/pull/342).
+down. Committing or delivering zone updates still requires the home broker,
+unless each region runs its own control plane, as described below.
 
 Queries use applied serving state without contacting these stores. Delivery
 outages delay updates and withdrawals; DNS TTLs limit client caching, not how
 long a running member retains records. After restart, a saved checkpoint can
 serve for up to 15 minutes without a validated bootstrap.
 
+#### Recovery and history
+
+Each zone's writer stamps every publication with a writer epoch and a revision.
+A takeover starts a higher epoch, and a revision is reserved before anything is
+written, so a restarted or replaced writer never reuses an identity and an
+interrupted publish is retried at a new revision. Members persist each accepted
+publication and contribution fence before applying it. After a restart or a
+broker replay, a member ignores any publication older than the one it applied
+and rejects one built from an older record observation.
+
+History is retained as follows:
+
+| Where | Kept | Removed |
+| --- | --- | --- |
+| Member checkpoint | The latest publication or withdrawal of each zone, and every contribution fence, without limit | Chunks of superseded publications |
+| Publication store | Ownership records, which hold each zone's epoch; the active manifest with its chunks and outboxes; chunks and outboxes staged by a publish that stopped before writing its manifest | A superseded manifest with its chunks and outboxes ten minutes after a newer one was first exported, unless a pending outbox depends on them; settled serving outboxes older than a shard's active one, after ten minutes |
+| Broker streams | Events within the configured stream age and size | Older events; consumers of removed members after six hours idle |
+
+A withdrawal or deletion stays in the member checkpoint as the zone's fence, so
+a delayed copy of the zone cannot return.
+
 See the deployment guide for [store configuration and ownership](../../private-dns/deployment.md#publication-storage)
 and [activation and outage recovery](../../private-dns/deployment.md#transactions-health-and-outage-recovery).
+
+#### A control plane per region
+
+The `regions` option runs one control plane per region, so a region keeps
+publishing while another region, its broker or its control plane is down. Each
+control plane lists every region's shards, so a context gets the same shard
+assignment everywhere, but it plans, publishes and acknowledges only its own
+regions and connects only to their brokers. Its publication store lives on its
+own region's broker, and the bucket records which regions own it, so a control
+plane for other regions refuses to start on it.
+
+Each region's control plane holds its own lease for every zone, compiles the
+zone and commits a manifest with only its own serving targets. Writer epochs
+and revisions are ordered within a region; members only see their own region's.
+A manifest also names every region the zone is served in, so project status can
+wait for all of them: zones, registrations and contributions report each
+region's publication in `status.regions`, and `Published` names the regions
+still pending instead of one region's outage hiding the others' progress.
+Access bindings, resolver bindings and destination claims are handled by the
+control plane of the binding's region; access in a region no control plane
+serves is rejected by all of them. Before a region first publishes a zone, it
+adds a finalizer for every region the zone is served in, so a zone is not
+removed while any region still serves it, even one whose control plane is
+down. Each region removes its own finalizer once it has withdrawn the zone. A
+region taken out of service leaves its finalizers on zones it served, and they
+must be removed by hand.
+
+The project API stays shared: every region reads its inputs from it and writes
+status to it. Moving to regional control planes uses the stopped rollout in the deployment guide,
+with `data.store` set to `jetstream-regional`; serving members keep answering
+from their checkpoints during the switch, and each region's first writer epoch
+is above the shared writer's. Serving outboxes for other regions left in a
+region's bucket by the shared writer are collected. Until each region first
+compiles a zone, its project status may briefly read not published, and a
+zone deleted in that window is withdrawn from a region that has not compiled it
+yet only when its resolver bindings drop the zone. Switching back to a control
+plane for every region is not supported.
 
 ### API design
 
@@ -478,8 +535,6 @@ spec:
   visibility: Private
   # Different contexts can associate separate zones with this same apex.
   domainName: prod.internal
-  # Select private backend policy; users do not choose fleet instances.
-  dnsZoneClassName: datum-internal-dns
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSZoneAssociation
@@ -531,8 +586,12 @@ context labels named, comma separated, in the context's
 creates the context can tag what the zone is for, such as the network it
 serves. The context's `kubernetes.io/description` annotation is copied too, so
 clients can show what the zone is for. Copied labels and the description are
-added or corrected, never removed. A naming policy
-adds custom names without a zone choice on each Compute or Connect resource.
+added or corrected, never removed.
+
+A naming policy is meant to add custom names without a zone choice on each
+Compute or Connect resource. No product applies naming policies yet, so they
+are outside the [customer contract](api-contract.md) and customer roles can
+only read them.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -733,7 +792,8 @@ Their storage schemas can be reviewed with the implementation.
 Schemas, transport, and checkpoints must preserve object lifetimes and ordered
 configuration versions. Review naming conflicts, record withdrawal, field
 ownership, outage recovery, regional readiness, and snapshot limits before
-stabilizing the APIs.
+stabilizing the APIs. The [API contract](api-contract.md) states the
+supported rules and the gaps that remain.
 
 ### Integration boundaries
 

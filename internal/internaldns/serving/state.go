@@ -3,11 +3,15 @@
 package serving
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -33,8 +37,8 @@ type checkpoint struct {
 	FormatVersion      int                                          `json:"formatVersion"`
 	ServingFence       fence                                        `json:"servingFence"`
 	Snapshot           *model.ServingSnapshot                       `json:"snapshot,omitempty"`
-	Publications       map[string]publicationState                  `json:"publications"`
-	Chunks             map[string]map[string]model.PublicationChunk `json:"chunks"`
+	Publications       map[string]publicationState                  `json:"publications,omitempty"`
+	Chunks             map[string]map[string]model.PublicationChunk `json:"chunks,omitempty"`
 	Acks               map[string]map[string]replicaAck             `json:"acks"`
 	BindingFences      map[string]bindingFence                      `json:"bindingFences"`
 	ContributionFences map[string]contributionFence                 `json:"contributionFences"`
@@ -123,12 +127,11 @@ func (s stateStore) Save(state checkpoint) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
 		return err
 	}
-	b, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
+	// Encode straight to the file: a checkpoint holds every publication, and
+	// a second in-memory copy of it on each save is what pushes a recovering
+	// agent toward its memory limit.
 	temp := s.path + ".tmp"
-	if err := writeDurable(temp, b, 0o640); err != nil {
+	if err := writeCheckpointDurable(temp, state, 0o640); err != nil {
 		return err
 	}
 	if err := os.Rename(temp, s.path); err != nil {
@@ -182,4 +185,83 @@ func pruneSupersededChunks(state *checkpoint) {
 			delete(state.Chunks, manifest)
 		}
 	}
+}
+
+func writeCheckpointDurable(path string, state checkpoint, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
+	w := bufio.NewWriterSize(f, 1<<20)
+	if err := encodeCheckpoint(w, state); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := w.Flush(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// encodeCheckpoint writes the checkpoint's publications and chunks one entry
+// at a time. They hold nearly all of its bytes, and encoding the whole
+// checkpoint at once holds a second, growing copy of it on every save, which
+// is what pushes a recovering agent toward its memory limit.
+func encodeCheckpoint(w io.Writer, state checkpoint) error {
+	publications, chunks := state.Publications, state.Chunks
+	state.Publications, state.Chunks = nil, nil
+	head, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(head[:len(head)-1]); err != nil {
+		return err
+	}
+	if err := encodeMapField(w, "publications", publications); err != nil {
+		return err
+	}
+	if err := encodeMapField(w, "chunks", chunks); err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, "}")
+	return err
+}
+
+func encodeMapField[V any](w io.Writer, name string, entries map[string]V) error {
+	if _, err := fmt.Fprintf(w, ",%q:{", name); err != nil {
+		return err
+	}
+	for i, key := range slices.Sorted(maps.Keys(entries)) {
+		k, err := json.Marshal(key)
+		if err != nil {
+			return err
+		}
+		v, err := json.Marshal(entries[key])
+		if err != nil {
+			return err
+		}
+		if i > 0 {
+			if _, err := io.WriteString(w, ","); err != nil {
+				return err
+			}
+		}
+		k = append(k, ':')
+		if _, err := w.Write(k); err != nil {
+			return err
+		}
+		if _, err := w.Write(v); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "}")
+	return err
 }

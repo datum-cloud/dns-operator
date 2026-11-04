@@ -254,7 +254,11 @@ func encodeMapField[V any](w io.Writer, name string, entries map[string]V) error
 				return err
 			}
 		}
-		if _, err := w.Write(append(append(k, ':'), v...)); err != nil {
+		k = append(k, ':')
+		if _, err := w.Write(k); err != nil {
+			return err
+		}
+		if _, err := w.Write(v); err != nil {
 			return err
 		}
 	}

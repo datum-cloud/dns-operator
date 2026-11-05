@@ -236,6 +236,7 @@ func TestPasswordFileMustBeReadableAtStart(t *testing.T) {
 	}
 }
 
+// Not parallel: it swaps the package logger.
 func TestUnreadablePasswordFileIsLoggedOnceAMinute(t *testing.T) {
 	var lines []string
 	previous := credentialLog
@@ -260,5 +261,17 @@ func TestUnreadablePasswordFileIsLoggedOnceAMinute(t *testing.T) {
 	}
 	if !strings.Contains(lines[0], path) || strings.Contains(lines[0], "secret-value") {
 		t.Fatalf("log line must name the path and never the password: %s", lines[0])
+	}
+	// A good read resets the limit, so the next failure is reported at once.
+	if err := os.WriteFile(path, []byte("secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if len(lines) != 2 {
+		t.Fatalf("logged %d lines after the file recovered and broke again, want 2", len(lines))
 	}
 }

@@ -272,9 +272,10 @@ when the query carries that key. dnsdist forwards the canary from loopback, or
 from its own listen address, to its backend pool over UDP and TCP, and answers
 NXDOMAIN when no backend is available, so its own probes are not counted as
 SERVFAIL. Only NOERROR with the expected TXT answer is ready. Readiness
-finishes within 1.5 seconds, inside the example probes' 2-second timeout, and names the daemon that was slow. Any client that reaches a
-context can also read the canary; it says only that a CoreDNS process has loaded
-state. After a restart the agent waits for its daemons to answer the root SOA
+finishes within 1.5 seconds, inside the example probes' 2-second timeout,
+and names the daemon that was slow. Any client that reaches a context can also
+read the canary; it says only that a CoreDNS process has loaded state. After a
+restart the agent waits for its daemons to answer the root SOA
 without SERVFAIL, not for the canary, so it does not gate daemons still running
 rules from an earlier release. dnsdist adds the canary to retained rules when
 it starts; if it cannot place the canary, it starts with startup rules that

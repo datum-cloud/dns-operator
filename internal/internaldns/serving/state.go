@@ -271,7 +271,7 @@ func encodeMapField[V any](w io.Writer, name string, entries map[string]V) error
 // at a time, the way encodeCheckpoint writes them, so a restarting agent never
 // holds the whole file and its decoded state at once.
 func decodeCheckpoint(r io.Reader, state *checkpoint) error {
-	dec := json.NewDecoder(bufio.NewReaderSize(r, 1<<20))
+	dec := json.NewDecoder(r)
 	if err := expectDelim(dec, '{'); err != nil {
 		return err
 	}
@@ -308,6 +308,7 @@ func decodeCheckpoint(r io.Reader, state *checkpoint) error {
 				return nil
 			})
 		default:
+			// Save never repeats a key, so a repeated one keeps its last value.
 			var raw json.RawMessage
 			err = dec.Decode(&raw)
 			head[key] = raw

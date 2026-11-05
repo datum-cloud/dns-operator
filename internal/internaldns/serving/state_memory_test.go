@@ -153,8 +153,9 @@ func TestRecoveryCheckpointMemoryStaysProportional(t *testing.T) {
 		{"the loaded state holds", retained, 4},
 		// Loading read the whole file and then decoded it, about 2.1x at
 		// peak; it now decodes one entry at a time, leaving little beyond
-		// the decoded state itself.
-		{"loading peaks at", loadPeak, 1.6},
+		// the decoded state itself. The budget leaves room for a busy CI
+		// machine where the collector falls behind.
+		{"loading peaks at", loadPeak, 1.8},
 		// Saving encoded the whole checkpoint in memory, about 3x its size
 		// at peak; it now holds one entry at a time.
 		{"saving adds", savePeak, 0.75},

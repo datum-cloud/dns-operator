@@ -160,6 +160,14 @@ func (o *Outbox) Step(ctx context.Context) error {
 			}
 			continue
 		}
+		now := time.Now().UTC()
+		if o.Now != nil {
+			now = o.Now().UTC()
+		}
+		at := metav1.NewTime(now)
+		if err == nil && env.Kind == model.KindPublicationManifest {
+			err = o.markExported(ctx, out.Spec.ManifestRef.Name, &at)
+		}
 		base := current.DeepCopy()
 		current.Status.Attempts++
 		if err != nil {
@@ -169,11 +177,6 @@ func (o *Outbox) Step(ctx context.Context) error {
 				first = err
 			}
 		} else {
-			now := time.Now().UTC()
-			if o.Now != nil {
-				now = o.Now().UTC()
-			}
-			at := metav1.NewTime(now)
 			current.Status.State = dnsValueAcknowledged
 			current.Status.AcknowledgedAt = &at
 			current.Status.StreamSequence = ack.Sequence
@@ -186,19 +189,15 @@ func (o *Outbox) Step(ctx context.Context) error {
 			}
 			continue
 		}
-		if err == nil && env.Kind == model.KindPublicationManifest {
-			if markErr := o.markExported(ctx, out.Spec.ManifestRef.Name, current.Status.AcknowledgedAt); markErr != nil && first == nil {
-				first = markErr
-			}
-		}
 	}
 	return first
 }
 
-// markExported records only the first export: every region's outbox exports
-// the same manifest and keeps its own stream sequence. The patch carries no
-// resource version, so acknowledgement writes to the manifest never conflict
-// with it.
+// markExported records when the manifest was exported, before the outbox is
+// settled, so a failed mark leaves the outbox pending and retried. Each region's
+// outbox keeps its own stream sequence; the manifest keeps one export time, and
+// regions racing to set it may each write theirs. The patch carries no resource
+// version, so acknowledgement writes to the manifest never conflict with it.
 func (o *Outbox) markExported(ctx context.Context, name string, at *metav1.Time) error {
 	var m dnsv1alpha1.DNSPublicationManifest
 	if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: name}, &m); err != nil {

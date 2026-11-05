@@ -30,8 +30,13 @@ const dnsValueNode = "node"
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
 type ProjectScope struct {
-	ProjectUID     string
-	Client         client.Client
+	ProjectUID string
+	Client     client.Client
+	// Reader, when set, serves the zone and registration reads of a status
+	// projection, typically from the project's watch cache, so the status
+	// refresh reads memory instead of listing the project API. Writes always
+	// go through Client.
+	Reader         client.Reader
 	Namespace      string
 	RequestTimeout time.Duration
 }
@@ -328,10 +333,14 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 	if projectClient == nil {
 		return fmt.Errorf("project %s status client unavailable", ns)
 	}
+	var reader client.Reader = projectClient
+	if project.Reader != nil {
+		reader = project.Reader
+	}
 	var projectErrors error
 	{
 		var zones dnsv1alpha1.DNSZoneList
-		if err := projectClient.List(ctx, &zones, client.InNamespace(ns)); err != nil {
+		if err := reader.List(ctx, &zones, client.InNamespace(ns)); err != nil {
 			return fmt.Errorf("project %s list zones: %w", ns, err)
 		}
 		for i := range zones.Items {
@@ -361,7 +370,7 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				}
 			}
 			var regs dnsv1alpha1.DNSRegistrationList
-			if err := projectClient.List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
+			if err := reader.List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
 				projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s list registrations: %w", ns, err))
 				continue
 			}

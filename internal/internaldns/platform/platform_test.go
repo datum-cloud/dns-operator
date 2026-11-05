@@ -977,3 +977,56 @@ func TestPatternMemberAckAtStaleRevisionStillRequiresIt(t *testing.T) {
 		t.Fatal("a retired pattern member's row was kept")
 	}
 }
+
+type listCounter struct {
+	client.Client
+	mu    sync.Mutex
+	lists int
+}
+
+func (c *listCounter) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.mu.Lock()
+	c.lists++
+	c.mu.Unlock()
+	return c.Client.List(ctx, list, opts...)
+}
+
+// With a watch cache the projection reads the project's zones and
+// registrations from it and only writes through the project API client.
+func TestProjectionReadsFromTheProjectReader(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 18, 0, 0, 0, time.UTC)
+	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "a.internal", Registrations: []model.RegistrationFence{{UID: "registration-a", Generation: 1}}, RRSets: []model.RRSet{}}
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: "chunk", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: 1, Revision: 3, Index: 0, SHA256: model.Hash(payload), Payload: payload}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{
+		ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone-a"}, ZoneApex: "a.internal", WriterEpoch: 1, Revision: 3,
+		Chunks: []dnsv1alpha1.DNSPublicationChunkReference{{Name: chunk.Name, SHA256: chunk.Spec.SHA256, Size: int32(len(payload))}}, ContentHash: model.Hash(payload), GeneratedAt: metav1.NewTime(now),
+	}}
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "project", UID: "zone-a", Generation: 2}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "a.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "project", UID: "registration-a", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api"}}
+	backing := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).WithStatusSubresource(&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}).Build()
+	api := &listCounter{Client: backing}
+	watchCache := &listCounter{Client: backing}
+	sink := AckSink{Client: testClient(t, chunk), Namespace: "platform", Projects: []ProjectScope{{Client: api, Reader: watchCache, Namespace: "project"}}}
+	if err := sink.projectPublication(ctx, manifest, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if api.lists != 0 || watchCache.lists == 0 {
+		t.Fatalf("project API lists = %d, watch cache lists = %d; want reads from the cache only", api.lists, watchCache.lists)
+	}
+	var updated dnsv1alpha1.DNSZone
+	if err := backing.Get(ctx, client.ObjectKeyFromObject(zone), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if c := apimeta.FindStatusCondition(updated.Status.Conditions, "Published"); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("zone status was not written through the project client: %#v", updated.Status.Conditions)
+	}
+}

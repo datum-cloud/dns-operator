@@ -82,8 +82,33 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 type projectRuntime struct {
 	config ProjectConfig
 	direct client.Client
+	// cached serves status reads from the project manager's watch cache once
+	// it has synced.
+	cached *syncedReader
 	start  func(context.Context) error
 	starts *rate.Limiter
+}
+
+// syncedReader holds a project's watch cache once it has synced, and nothing
+// before that or after the project's manager stops.
+type syncedReader struct {
+	mu     sync.RWMutex
+	reader client.Reader
+}
+
+func (r *syncedReader) get() client.Reader {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.reader
+}
+
+func (r *syncedReader) set(reader client.Reader) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reader = reader
 }
 
 func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
@@ -168,6 +193,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			direct = originUIDClient{Client: direct}
 		}
 		project := p
+		cached := &syncedReader{}
 		start := func(startCtx context.Context) error {
 			mgr, err := ctrl.NewManager(projectREST, ctrl.Options{
 				Scheme:                 scheme,
@@ -204,9 +230,23 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
 			}
+			// Status reads come from the watch cache once it holds the
+			// project's objects; until then and after a stop they list the
+			// project API directly.
+			go func() {
+				if !mgr.GetCache().WaitForCacheSync(startCtx) {
+					return
+				}
+				var reader client.Reader = mgr.GetCache()
+				if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+					reader = originUIDReader{reader}
+				}
+				cached.set(reader)
+			}()
+			defer cached.set(nil)
 			return mgr.Start(startCtx)
 		}
-		return projectRuntime{config: project, direct: direct, start: start, starts: projectStarts}, nil
+		return projectRuntime{config: project, direct: direct, cached: cached, start: start, starts: projectStarts}, nil
 	}
 	projects := make([]projectRuntime, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {

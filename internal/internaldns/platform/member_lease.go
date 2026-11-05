@@ -43,10 +43,7 @@ func (s *AckSink) renewMemberLease(ctx context.Context, member string, until tim
 	value := until.UTC().Format(time.RFC3339Nano)
 	var cm corev1.ConfigMap
 	if err := s.Client.Get(ctx, key, &cm); apierrors.IsNotFound(err) {
-		cm = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{
-			"internal-dns.miloapis.com/region": model.SafeToken(s.Region),
-			"internal-dns.miloapis.com/shard":  model.SafeToken(s.Shard),
-		}}, Data: map[string]string{memberLeaseKey: value}}
+		cm = corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}, Data: map[string]string{memberLeaseKey: value}}
 		if err := s.Client.Create(ctx, &cm); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				return false, apierrors.NewConflict(corev1.Resource("configmaps"), key.Name, err)

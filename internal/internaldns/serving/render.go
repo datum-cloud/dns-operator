@@ -469,12 +469,14 @@ func renderDNSDistReadinessCanary(c DNSDistRenderConfig) []byte {
 			sources = append(sources, netip.PrefixFrom(addr, addr.BitLen()).String())
 		}
 	}
+	// Without a backend the canary gets NXDOMAIN: SERVFAIL would count as a
+	// serving failure, and readiness treats REFUSED as an older regional CoreDNS.
 	out.WriteString("local function readinessCanary() local nmg = newNMG();")
 	for _, source := range sources {
 		fmt.Fprintf(&out, " nmg:addMask(%q);", source)
 	}
 	fmt.Fprintf(&out, " return AndRule({NetmaskGroupRule(nmg, true, true),QClassRule(DNSClass.CHAOS),QTypeRule(DNSQType.TXT),QNameRule(%q)}) end\n", contextdns.ReadinessCanaryName)
-	fmt.Fprintf(&out, "getPool(%q)\nappendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.SERVFAIL))\n", c.PoolName, c.PoolName)
+	fmt.Fprintf(&out, "getPool(%q)\nappendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule(%q))}),RCodeAction(DNSRCode.NXDOMAIN))\n", c.PoolName, c.PoolName)
 	if c.IdentityKeyFile != "" {
 		fmt.Fprintf(&out, "appendRule(readinessCanary(),SetEDNSOptionAction(%d, internalDNSIdentityKey..\"::1\"))\n", contextdns.IdentityOption)
 	}

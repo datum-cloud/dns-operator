@@ -376,13 +376,13 @@ func TestRenderForwardsLoopbackReadinessCanaryBeforeClassifying(t *testing.T) {
 		for _, d := range []DNSDistRenderConfig{c.NodeDNSDist, c.ClusterDNSDist} {
 			config := string(r.Files[d.Path])
 			canary := `local function readinessCanary() local nmg = newNMG(); nmg:addMask("127.0.0.0/8"); nmg:addMask("::1/128"); return AndRule({NetmaskGroupRule(nmg, true, true),QClassRule(DNSClass.CHAOS),QTypeRule(DNSQType.TXT),QNameRule("ready.internal-dns.")}) end`
-			unavailable := `appendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule("` + d.PoolName + `"))}),RCodeAction(DNSRCode.SERVFAIL))`
+			unavailable := `appendRule(AndRule({readinessCanary(),NotRule(PoolAvailableRule("` + d.PoolName + `"))}),RCodeAction(DNSRCode.NXDOMAIN))`
 			forward := `appendRule(readinessCanary(),PoolAction("` + d.PoolName + `"))`
 			refuse := `appendRule(NotRule(TagRule("dns-context")), RCodeAction(DNSRCode.REFUSED))`
 			at := []int{strings.Index(config, canary), strings.Index(config, unavailable), strings.Index(config, forward), strings.Index(config, refuse)}
 			for i := range at {
 				if at[i] < 0 || i > 0 && at[i] < at[i-1] {
-					t.Fatalf("%s with %d bindings must define the loopback canary, answer SERVFAIL without a backend, then forward, all before refusing unclassified traffic: %v", d.Path, len(bindings), at)
+					t.Fatalf("%s with %d bindings must define the loopback canary, answer NXDOMAIN without a backend, then forward, all before refusing unclassified traffic: %v", d.Path, len(bindings), at)
 				}
 			}
 			if strings.Count(config, "readinessCanary()") != 3 {

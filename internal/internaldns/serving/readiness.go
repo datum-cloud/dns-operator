@@ -307,7 +307,7 @@ func readinessCanaryQuery(identityKey []byte) *dns.Msg {
 }
 
 // Only NOERROR with the canary text proves a loaded snapshot answered. dnsdist
-// answers SERVFAIL when its pool has no available backend.
+// answers NXDOMAIN when its pool has no available backend.
 func readinessCanaryAnswer(answer *dns.Msg, err error) error {
 	if err != nil {
 		return fmt.Errorf("exchange: %w", err)

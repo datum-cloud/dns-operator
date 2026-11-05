@@ -171,6 +171,53 @@ func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
 	}
 }
 
+const localServingWait = 30 * time.Second
+
+// awaitLocalServing holds query verification until the member's own daemons
+// answer the readiness canary, once per daemon restart and again after a failed
+// context probe while they last answered. A probe answered before CoreDNS loads would otherwise gate
+// every context it checks. It holds the agent lock, so the wait is bounded.
+func (a *Agent) awaitLocalServing(ctx context.Context) {
+	if a.deps.LocalServing == nil {
+		return
+	}
+	if a.localServingRestarts != a.tx.restarts {
+		a.localServingAwaited = false
+		a.localServingRestarts = a.tx.restarts
+	}
+	if a.localServingAwaited {
+		return
+	}
+	a.localServingAwaited = true
+	wait := a.localServingWait
+	if wait <= 0 {
+		wait = localServingWait
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		err := a.deps.LocalServing(waitCtx)
+		a.localServingAnswered = err == nil
+		if err == nil {
+			return
+		}
+		if waitCtx.Err() != nil || !waitRetry(waitCtx, 250*time.Millisecond) {
+			if ctx.Err() == nil {
+				a.report(fmt.Errorf("local daemons did not answer the readiness canary within %s, verifying anyway: %w", wait, err))
+			}
+			return
+		}
+	}
+}
+
+// recheckLocalServing makes the next verification check local serving again,
+// unless the last check already ran out its wait without an answer.
+func (a *Agent) recheckLocalServing() {
+	if a.localServingAnswered {
+		a.localServingAwaited = false
+	}
+}
+
 // restoreActive preserves running daemons when their installed configuration
 // matches the approved checkpoint. Incomplete installation requires recovery.
 func (a *Agent) restoreActive(ctx context.Context) error {

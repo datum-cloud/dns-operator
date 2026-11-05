@@ -137,6 +137,7 @@ type Dependencies struct {
 	AckPublisher        transport.ExportPublisher
 	Runner              Runner
 	Verifier            Verifier
+	LocalServing        func(context.Context) error
 	Clock               func() time.Time
 	PublicationVerifier PublicationVerifier
 	OnError             func(error)
@@ -209,6 +210,10 @@ type Agent struct {
 	installedPublications map[string]installedPublication
 	verifiedPaths         map[string]string
 	verifiedRestarts      uint64
+	localServingRestarts  uint64
+	localServingAwaited   bool
+	localServingAnswered  bool
+	localServingWait      time.Duration
 	restoredAt            time.Time
 	bootstrapComplete     bool
 	bootstrapInProgress   bool
@@ -256,6 +261,14 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 			probeConfig.UseClusterAddress = true
 		}
 		d.Verifier = DNSVerifier{Config: probeConfig}
+		if d.LocalServing == nil {
+			render := c.Render
+			d.LocalServing = func(ctx context.Context) error {
+				ctx, cancel := context.WithTimeout(ctx, readinessDeadline)
+				defer cancel()
+				return probeLocalReadiness(ctx, render)
+			}
+		}
 	}
 	publicationVerifier := d.PublicationVerifier
 	if c.Mode == ModeCombined {
@@ -990,6 +1003,7 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 		a.installedPublications = installed
 		for _, p := range a.state.Publications {
 			if p.Verified && !p.Manifest.Tombstone && len(a.publicationViews(p)) > 0 {
+				a.awaitLocalServing(ctx)
 				if err := a.verifyPublication(ctx, p); err != nil {
 					_ = a.failClosed(ctx)
 					a.needsActivation = true
@@ -1095,6 +1109,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	if len(eligible) == 0 {
 		return false
 	}
+	a.awaitLocalServing(ctx)
 
 	timeout := a.cfg.ResolverDNSProbe.Timeout
 	if timeout <= 0 {
@@ -1146,6 +1161,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s after %s: %w", result.bindingUID, result.duration.Round(time.Millisecond), result.err))
 				delete(active, result.bindingUID)
 				probeFailed = true
+				a.recheckLocalServing()
 			} else {
 				a.verifiedPaths[result.bindingUID] = identities[result.bindingUID]
 			}
@@ -1155,6 +1171,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s within shared %s batch deadline: %w", bindingUID, timeout, probeCtx.Err()))
 				delete(active, bindingUID)
 			}
+			a.recheckLocalServing()
 			return true
 		}
 	}

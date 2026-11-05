@@ -54,16 +54,17 @@ type stateStore struct{ path string }
 
 func (s stateStore) Load() (checkpoint, error) {
 	state := newCheckpoint()
-	b, err := os.ReadFile(s.path)
+	f, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return state, nil
 	}
 	if err != nil {
 		return state, err
 	}
+	defer func() { _ = f.Close() }()
 	state.FormatVersion = 0
 	state.BindingFences = nil
-	if err := json.Unmarshal(b, &state); err != nil {
+	if err := decodeCheckpoint(f, &state); err != nil {
 		return state, fmt.Errorf("decode checkpoint: %w", err)
 	}
 	if state.FormatVersion != checkpointFormatVersion {
@@ -264,4 +265,103 @@ func encodeMapField[V any](w io.Writer, name string, entries map[string]V) error
 	}
 	_, err := io.WriteString(w, "}")
 	return err
+}
+
+// decodeCheckpoint reads the checkpoint's publications and chunks one entry
+// at a time, the way encodeCheckpoint writes them, so a restarting agent never
+// holds the whole file and its decoded state at once.
+func decodeCheckpoint(r io.Reader, state *checkpoint) error {
+	dec := json.NewDecoder(r)
+	if err := expectDelim(dec, '{'); err != nil {
+		return err
+	}
+	head := map[string]json.RawMessage{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, _ := tok.(string)
+		switch key {
+		case "publications":
+			if state.Publications == nil {
+				state.Publications = map[string]publicationState{}
+			}
+			err = decodeMapEntries(dec, func(k string) error {
+				var v publicationState
+				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				state.Publications[k] = v
+				return nil
+			})
+		case "chunks":
+			if state.Chunks == nil {
+				state.Chunks = map[string]map[string]model.PublicationChunk{}
+			}
+			err = decodeMapEntries(dec, func(k string) error {
+				var v map[string]model.PublicationChunk
+				if err := dec.Decode(&v); err != nil {
+					return err
+				}
+				state.Chunks[k] = v
+				return nil
+			})
+		default:
+			// Save never repeats a key, so a repeated one keeps its last value.
+			var raw json.RawMessage
+			err = dec.Decode(&raw)
+			head[key] = raw
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if err := expectDelim(dec, '}'); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("unexpected data after the checkpoint")
+	}
+	rest, err := json.Marshal(head)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(rest, state)
+}
+
+// decodeMapEntries calls each for every key of the JSON object or null that
+// comes next, leaving the decoder at that entry's value.
+func decodeMapEntries(dec *json.Decoder, each func(string) error) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if tok == nil {
+		return nil
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return fmt.Errorf("checkpoint map starts with %v", tok)
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if err := each(tok.(string)); err != nil {
+			return err
+		}
+	}
+	return expectDelim(dec, '}')
+}
+
+func expectDelim(dec *json.Decoder, want json.Delim) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != want {
+		return fmt.Errorf("checkpoint has %v where %v belongs", tok, want)
+	}
+	return nil
 }

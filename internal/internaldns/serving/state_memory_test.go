@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -124,6 +125,16 @@ func TestRecoveryCheckpointMemoryStaysProportional(t *testing.T) {
 	}
 	held := liveHeap()
 	retained := held - min(baseline, held)
+	runtime.KeepAlive(state)
+	state = checkpoint{}
+	var reloaded checkpoint
+	loadPeak := peakHeapDuring(func() {
+		reloaded, err = store.Load()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = reloaded
 	savePeak := peakHeapDuring(func() {
 		for range 5 {
 			if err := store.Save(state); err != nil {
@@ -132,7 +143,7 @@ func TestRecoveryCheckpointMemoryStaysProportional(t *testing.T) {
 		}
 	})
 	runtime.KeepAlive(state)
-	t.Logf("checkpoint %d KiB: load allocates %.1fx, holds %.1fx; saves add %.2fx at peak", size>>10, float64(loadAlloc)/float64(size), float64(retained)/float64(size), float64(savePeak)/float64(size))
+	t.Logf("checkpoint %d KiB: load allocates %.1fx, peaks at %.2fx, holds %.1fx; saves add %.2fx at peak", size>>10, float64(loadAlloc)/float64(size), float64(loadPeak)/float64(size), float64(retained)/float64(size), float64(savePeak)/float64(size))
 	for _, check := range []struct {
 		what  string
 		bytes uint64
@@ -140,6 +151,11 @@ func TestRecoveryCheckpointMemoryStaysProportional(t *testing.T) {
 	}{
 		{"loading allocates", loadAlloc, 8},
 		{"the loaded state holds", retained, 4},
+		// Loading read the whole file and then decoded it, about 2.1x at
+		// peak; it now decodes one entry at a time, leaving little beyond
+		// the decoded state itself. The budget leaves room for a busy CI
+		// machine where the collector falls behind.
+		{"loading peaks at", loadPeak, 1.8},
 		// Saving encoded the whole checkpoint in memory, about 3x its size
 		// at peak; it now holds one entry at a time.
 		{"saving adds", savePeak, 0.75},
@@ -192,5 +208,62 @@ func TestStreamedCheckpointMatchesWholeEncoding(t *testing.T) {
 	}
 	if loaded.Publications == nil || loaded.Chunks == nil {
 		t.Fatal("omitted empty maps did not load as empty maps")
+	}
+}
+
+func TestStreamedCheckpointLoadMatchesWholeDecoding(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"written whole": "",
+		"null maps":     `{"formatVersion":7,"servingFence":{"epoch":0,"revision":0},"publications":null,"chunks":null,"acks":{},"bindingFences":{},"contributionFences":{},"updatedAt":"2026-11-05T00:00:00Z","futureField":{"x":1}}`,
+		"maps first":    `{"chunks":{},"publications":{},"formatVersion":7,"servingFence":{"epoch":0,"revision":0},"acks":{},"bindingFences":{},"contributionFences":{},"updatedAt":"2026-11-05T00:00:00Z"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if body == "" {
+				whole, err := json.Marshal(recoveryCheckpoint(t, 3, 2))
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = string(whole)
+			}
+			var want checkpoint
+			if err := json.Unmarshal([]byte(body), &want); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := newCheckpoint()
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			if err := decodeCheckpoint(f, &got); err != nil {
+				t.Fatal(err)
+			}
+			if len(want.Publications) == 0 {
+				want.Publications = got.Publications
+			}
+			if len(want.Chunks) == 0 {
+				want.Chunks = got.Chunks
+			}
+			if !reflect.DeepEqual(got.Publications, want.Publications) || !reflect.DeepEqual(got.Chunks, want.Chunks) || got.FormatVersion != want.FormatVersion || !reflect.DeepEqual(got.Acks, want.Acks) || !got.UpdatedAt.Equal(want.UpdatedAt) {
+				t.Fatal("streamed load differs from decoding the file whole")
+			}
+		})
+	}
+	for name, body := range map[string]string{
+		"trailing data": `{"formatVersion":7} {}`,
+		"not an object": `[1]`,
+		"bad map":       `{"publications":[1]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := newCheckpoint()
+			if err := decodeCheckpoint(strings.NewReader(body), &got); err == nil {
+				t.Fatalf("%s decoded without an error", name)
+			}
+		})
 	}
 }

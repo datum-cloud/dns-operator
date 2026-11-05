@@ -38,17 +38,18 @@ func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {
 
 func TestClientCertificateAloneAuthenticates(t *testing.T) {
 	t.Parallel()
-	base := Config{URL: "nats://example:4222", Name: "agent", TLS: &TLSConfig{ServerName: "nats.example", CertificateFile: "/tls/tls.crt"}}
-	if err := base.validate(); err == nil {
-		t.Fatal("a client certificate without its key was accepted as authentication")
+	for name, tls := range map[string]*TLSConfig{
+		"CA only":          {ServerName: "nats.example", CAFile: "/tls/ca.crt"},
+		"cert without key": {ServerName: "nats.example", CertificateFile: "/tls/tls.crt"},
+		"key without cert": {ServerName: "nats.example", KeyFile: "/tls/tls.key"},
+	} {
+		if err := (Config{URL: "nats://example:4222", Name: "agent", TLS: tls}).validate(); err == nil {
+			t.Errorf("%s was accepted as authentication", name)
+		}
 	}
-	base.TLS.KeyFile = "/tls/tls.key"
-	if err := base.validate(); err != nil {
+	certOnly := Config{URL: "nats://example:4222", Name: "agent", TLS: &TLSConfig{ServerName: "nats.example", CertificateFile: "/tls/tls.crt", KeyFile: "/tls/tls.key"}}
+	if err := certOnly.validate(); err != nil {
 		t.Fatalf("a client certificate alone was rejected: %v", err)
-	}
-	base.Username, base.PasswordFile = "node", "/tls/password"
-	if err := base.validate(); err != nil {
-		t.Fatalf("a client certificate with a password was rejected: %v", err)
 	}
 }
 

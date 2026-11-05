@@ -213,6 +213,7 @@ type Agent struct {
 	localServingRestarts  uint64
 	localServingAwaited   bool
 	localServingAnswered  bool
+	localServingExpired   bool
 	localServingWait      time.Duration
 	restoredAt            time.Time
 	bootstrapComplete     bool

@@ -983,4 +983,16 @@ func TestResolverVerificationRechecksLocalServingAfterAFailedProbe(t *testing.T)
 	if !verify() || checks != before {
 		t.Fatalf("an expired wait was repeated before the daemons restarted: %d more checks", checks-before)
 	}
+	agent.tx.restarts++
+	before = checks
+	started := time.Now()
+	if verify(); checks-before != 1 || time.Since(started) >= agent.localServingWait {
+		t.Fatalf("after an expired wait, a restart waited again: %d checks in %s", checks-before, time.Since(started))
+	}
+	serving = true
+	agent.tx.restarts++
+	before = checks
+	if verify(); checks-before != 1 || agent.localServingExpired {
+		t.Fatalf("daemons answering again did not end the expired state: %d checks", checks-before)
+	}
 }

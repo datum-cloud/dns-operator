@@ -174,9 +174,11 @@ func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
 const localServingWait = 30 * time.Second
 
 // awaitLocalServing holds query verification until the member's own daemons
-// answer the readiness canary, once per daemon restart and again after a failed
-// context probe while they last answered. A probe answered before CoreDNS loads would otherwise gate
-// every context it checks. It holds the agent lock, so the wait is bounded.
+// answer the readiness canary, once per agent-driven daemon restart and again
+// after a failed context probe while they last answered. After a wait runs
+// out, later checks probe once without waiting until the daemons answer again.
+// A probe answered before CoreDNS loads would otherwise gate every context it
+// checks. It holds the agent lock, so the wait is bounded.
 func (a *Agent) awaitLocalServing(ctx context.Context) {
 	if a.deps.LocalServing == nil {
 		return
@@ -193,16 +195,21 @@ func (a *Agent) awaitLocalServing(ctx context.Context) {
 	if wait <= 0 {
 		wait = localServingWait
 	}
+	if a.localServingExpired {
+		wait = 0
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for {
-		err := a.deps.LocalServing(waitCtx)
+		err := a.deps.LocalServing(ctx)
 		a.localServingAnswered = err == nil
 		if err == nil {
+			a.localServingExpired = false
 			return
 		}
 		if waitCtx.Err() != nil || !waitRetry(waitCtx, 250*time.Millisecond) {
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && !a.localServingExpired {
+				a.localServingExpired = true
 				a.report(fmt.Errorf("local daemons did not answer the readiness canary within %s, verifying anyway: %w", wait, err))
 			}
 			return

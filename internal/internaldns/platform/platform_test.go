@@ -839,3 +839,16 @@ func TestWithdrawalToAShardTheManifestDoesNotServeIsExported(t *testing.T) {
 		t.Fatalf("a withdrawal of the active revision must be exportable: %v %v", committed, err)
 	}
 }
+
+func TestNodePublicationAckIsDroppedNotRetried(t *testing.T) {
+	now := time.Now().UTC()
+	a := model.MemberAck{MemberID: "node-a", ReplicaID: "node-a", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckRejected, Error: "local verification failed", ObservedAt: now}
+	env, err := model.NewEnvelope(model.KindMemberAck, "ack-node", "east", "shared", "zone-uid", 1, 1, now, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "node-a", ReplicaID: "node-a", Role: "node"}}}
+	if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", "node-a"), env); err != nil {
+		t.Fatalf("a node member's publication acknowledgement must be settled, not retried: %v", err)
+	}
+}

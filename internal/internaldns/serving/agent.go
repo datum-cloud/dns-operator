@@ -641,7 +641,9 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 			return errors.New("conflicting publication manifest at the same epoch and revision")
 		}
 		if err := a.verifyPublication(ctx, old); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
+			if !a.cfg.NodeAuthoritative {
+				_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
+			}
 			return err
 		}
 		return a.emitVerifiedPublicationAck(ctx, m.ZoneUID, m.WriterEpoch, m.Revision)

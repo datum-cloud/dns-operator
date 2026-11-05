@@ -132,7 +132,13 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 	switch a.Kind {
 	case model.KindPublicationManifest:
 		if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
-			return fmt.Errorf("publication ack is not from a regional resolver")
+			// Only regional resolvers verify publications for readiness. A node
+			// member still reports a local verification failure, which is worth
+			// a log line, but retrying it can never succeed: the broker would
+			// redeliver it forever.
+			log.FromContext(ctx).V(1).Info("ignoring a publication acknowledgement from a member that does not verify publications",
+				"member", a.MemberID, "role", member.Role, "zone", a.ResourceUID, "epoch", a.Epoch, "revision", a.Revision, "phase", a.Phase, "detail", a.Error)
+			return nil
 		}
 		return s.publication(ctx, a, row, now)
 	case model.KindServingSnapshot:

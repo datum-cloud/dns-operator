@@ -4,6 +4,8 @@ package platform
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,8 +36,9 @@ func memberLeaseName(region, shard, member string) string {
 func memberLeaseKeyFor(group, member string) string { return group + "/" + member }
 
 // renewMemberLease extends the member's lease to until and reports whether it
-// wrote. Renewals that extend it by less than memberLeaseRenewAfter are skipped.
-func (s *AckSink) renewMemberLease(ctx context.Context, member string, until time.Time) (bool, error) {
+// wrote. A renewal that extends it by less than memberLeaseRenewAfter, or a
+// quarter of the lease, is skipped.
+func (s *AckSink) renewMemberLease(ctx context.Context, member string, until time.Time, lease time.Duration) (bool, error) {
 	key := client.ObjectKey{Namespace: s.Namespace, Name: memberLeaseName(s.Region, s.Shard, member)}
 	value := until.UTC().Format(time.RFC3339Nano)
 	var cm corev1.ConfigMap
@@ -54,7 +57,7 @@ func (s *AckSink) renewMemberLease(ctx context.Context, member string, until tim
 	} else if err != nil {
 		return false, err
 	}
-	if stored, err := time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey]); err == nil && until.Before(stored.Add(memberLeaseRenewAfter)) {
+	if stored, err := time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey]); err == nil && until.Before(stored.Add(min(memberLeaseRenewAfter, lease/4))) {
 		return false, nil
 	}
 	if cm.Data == nil {
@@ -80,11 +83,17 @@ func (s *AckSink) publicationGroups() map[string][]model.Member {
 	return map[string][]model.Member{s.Region + "/" + s.Shard: members}
 }
 
-// loadMemberLeases reads the leases of every publication-verifying member. A
-// member without a lease is left out: its manifest rows alone decide.
-func (s *AckSink) loadMemberLeases(ctx context.Context) (map[string]time.Time, error) {
+// loadMemberLeases reads the leases of the publication-verifying members of
+// groups (all groups when nil). A member whose lease is missing or unreadable is
+// left out, so its manifest rows alone decide; read errors are returned
+// alongside the leases that were read.
+func (s *AckSink) loadMemberLeases(ctx context.Context, groups map[string]bool) (map[string]time.Time, error) {
 	leases := map[string]time.Time{}
+	var failed error
 	for group, members := range s.publicationGroups() {
+		if groups != nil && !groups[group] {
+			continue
+		}
 		region, shard := cutGroup(group)
 		for _, member := range members {
 			if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
@@ -96,14 +105,23 @@ func (s *AckSink) loadMemberLeases(ctx context.Context) (map[string]time.Time, e
 				continue
 			}
 			if err != nil {
-				return nil, err
+				failed = errors.Join(failed, fmt.Errorf("read member lease %s/%s: %w", group, member.MemberID, err))
+				continue
 			}
 			if until, err := time.Parse(time.RFC3339Nano, cm.Data[memberLeaseKey]); err == nil {
 				leases[memberLeaseKeyFor(group, member.MemberID)] = until
 			}
 		}
 	}
-	return leases, nil
+	return leases, failed
+}
+
+func manifestGroups(m *dnsv1alpha1.DNSPublicationManifest) map[string]bool {
+	groups := map[string]bool{}
+	for _, target := range m.Spec.ServingTargets {
+		groups[target.Region+"/"+target.Shard] = true
+	}
+	return groups
 }
 
 func cutGroup(group string) (string, string) {

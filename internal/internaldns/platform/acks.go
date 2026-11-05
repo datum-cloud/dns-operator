@@ -179,7 +179,7 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	renewed := false
 	if a.Phase == model.AckVerified {
 		var err error
-		if renewed, err = s.renewMemberLease(ctx, a.MemberID, a.ValidUntil); err != nil {
+		if renewed, err = s.renewMemberLease(ctx, a.MemberID, a.ValidUntil, a.ValidUntil.Sub(a.ObservedAt)); err != nil {
 			return err
 		}
 	}
@@ -193,9 +193,9 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	} else if !renewed {
 		return nil
 	}
-	leases, err := s.loadMemberLeases(ctx)
-	if err != nil {
-		return err
+	leases, leaseErr := s.loadMemberLeases(ctx, manifestGroups(&m))
+	if leaseErr != nil {
+		log.FromContext(ctx).Error(leaseErr, "member leases unreadable; their rows decide")
 	}
 	complete := s.withLeases(leases).publicationVerified(&m, now)
 	condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
@@ -609,10 +609,8 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if err := s.Client.List(ctx, &owners, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
-	leases, err := s.loadMemberLeases(ctx)
-	if err != nil {
-		return errors.Join(refreshErrors, err)
-	}
+	leases, err := s.loadMemberLeases(ctx, nil)
+	refreshErrors = errors.Join(refreshErrors, err)
 	leased := s.withLeases(leases)
 	type projection struct {
 		manifest *dnsv1alpha1.DNSPublicationManifest

@@ -194,7 +194,7 @@ publication holds at least one eligible address for it.
 | `DNSZone` (private) | `Programmed` | A resolver applied the current publication | `PendingReplicaApplication` |
 | `DNSZone` (private) | `Published` | Every required resolver confirmed it | `PendingReplicaVerification` |
 | `DNSRecordSet` (private zone) | `Accepted` | Included in the zone's publication | `UnsupportedPrivateRecord`, `ReservedScope`, `InvalidRecord`, `InvalidTTL`, `ConflictingTTL`, `NameConflict`, `MissingSRVTargetAddress` |
-| `DNSZoneAssociation` | `Accepted` | The zone is attached to the network | `InvalidReference`, `ReservedScope`, `ApexConflict` |
+| `DNSZoneAssociation` | `Accepted` | The zone is attached to the network | `InvalidReference`, `ReservedScope`, `ApexConflict`, `ZoneLimitExceeded` |
 | `DNSResolverContext` | `Ready` | The context and its managed zone are active | `Preparing`, `InvalidIdentity`, `DuplicateConsumerID`, `InvalidManagedDomain` |
 | `DNSResolverAccessBinding` | `Accepted` | The access request is valid | `InvalidOrStaleAccess` |
 | `DNSResolverAccessBinding` | `Ready` | Resolvers in the region applied this access | `PendingReplicaVerification`, `ObservationUnavailable` (status `Unknown`), `AccessRejected` |
@@ -224,7 +224,7 @@ conditions rather than fixed delays.
 
 | Limit | Value |
 | --- | --- |
-| Private zones associated with one network, including the managed zone | 256, not yet enforced. See [Known gaps](#known-gaps) |
+| Private zones associated with one network, including the managed zone | 256. Associations past the limit report `ZoneLimitExceeded`. Zones already attached keep their place. The managed zone always fits, so turning on a managed namespace for a full network detaches the most recently attached zone |
 | Record types per registration | 14 |
 | Reserved subtrees per registration | 64 |
 | Values per record type in one contribution | 256 |
@@ -272,6 +272,7 @@ Service integrations can also rely on these rules:
 | Managed zones | `TestManagedDomainRequiresPermittedSuffix`, `TestManagedNamespaceRequiresRequestedDomain`, `TestManagedZoneCarriesContextLabels`, `TestManagedZoneIsKeptWhileItsContextUsesIt`, `TestManagedZoneKeepsItsController` |
 | Public and private isolation | `TestPublicControllersSkipPrivateZones`, `TestPrivateReferenceRemovesPublicShadow` |
 | Reference lifetimes | `TestNamedReferencesPreserveLifetimesAcrossReplacement` |
+| Zone limit per network | `TestAssociationsRefusedPastZoneLimit`, `TestZoneLimitAlwaysAdmitsManagedZone` |
 
 ## Known gaps
 
@@ -295,9 +296,6 @@ These keep the contract from being fully enforced. Each needs its own change.
 - **Managed zone protection needs its admission entry.** Admission keeps a
   managed zone only where the deployment sends managed zone updates and deletes
   to it, as the example admission configuration does.
-- **The 256-zone limit isn't enforced on associations.** A 257th association
-  is accepted, and the network's serving configuration then fails to update.
-  Admission or status should refuse it.
 - **Cross-zone `CNAME`s can fail over UDP until the fix is deployed.** When a
   resolver follows a `CNAME` to another zone, or to a public name, over UDP
   with keyed identity, older resolvers lose the context identity on the

@@ -75,8 +75,13 @@ func (c Config) validate() error {
 	if c.Username != "" {
 		auth++
 	}
+	if auth == 0 && c.TLS != nil && c.TLS.CertificateFile != "" && c.TLS.KeyFile != "" {
+		// A broker that maps client certificates to users authenticates by
+		// the certificate alone.
+		return nil
+	}
 	if auth != 1 {
-		return errors.New("exactly one NATS authentication method is required")
+		return errors.New("exactly one NATS authentication method, or a client certificate alone, is required")
 	}
 	return nil
 }

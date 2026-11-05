@@ -870,3 +870,69 @@ func TestSameFenceAckRefreshDoesNotRewriteCheckpoint(t *testing.T) {
 		t.Fatal("a verified ack after a rejection at the same fence was not persisted")
 	}
 }
+
+func TestSameFenceAckRefreshDoesNotReconcile(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	renderConfig, snapshot := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	renders := 0
+	agent.render = func(c RenderConfig, s model.ServingSnapshot, active map[string]bool, p map[string]publicationState) (Rendered, error) {
+		renders++
+		return renderPublications(c, s, active, p)
+	}
+	handle := func(ack model.MemberAck) int {
+		t.Helper()
+		before := renders
+		if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, ack.ResourceUID, ack.Epoch, ack.Revision, ack)); err != nil {
+			t.Fatal(err)
+		}
+		return renders - before
+	}
+
+	ack := model.MemberAck{MemberID: "regional-0", ReplicaID: "regional-0", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	if handle(ack) == 0 {
+		t.Fatal("the first verified ack for a member did not reconcile")
+	}
+	for i := 1; i <= 3; i++ {
+		ack.ObservedAt, ack.ValidUntil = now.Add(time.Duration(i)*time.Second), now.Add(time.Minute+time.Duration(i)*time.Second)
+		if n := handle(ack); n != 0 {
+			t.Fatalf("same-fence lease refresh %d reconciled %d times", i, n)
+		}
+	}
+	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"].ValidUntil; !got.Equal(ack.ValidUntil) {
+		t.Fatalf("refresh did not extend the lease in memory: %s", got)
+	}
+
+	ack.Revision, ack.ObservedAt = 5, now.Add(4*time.Second)
+	if handle(ack) == 0 {
+		t.Fatal("a verified ack at a new fence did not reconcile")
+	}
+
+	rejected := ack
+	rejected.Phase, rejected.ObservedAt, rejected.ValidUntil = model.AckRejected, now.Add(5*time.Second), now.Add(time.Minute+5*time.Second)
+	if handle(rejected) == 0 {
+		t.Fatal("a rejection did not reconcile")
+	}
+	ack.ObservedAt, ack.ValidUntil = now.Add(6*time.Second), now.Add(time.Minute+6*time.Second)
+	if handle(ack) == 0 {
+		t.Fatal("a verified ack that clears a rejection did not reconcile")
+	}
+}

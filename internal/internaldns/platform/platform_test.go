@@ -977,3 +977,84 @@ func TestPatternMemberAckAtStaleRevisionStillRequiresIt(t *testing.T) {
 		t.Fatal("a retired pattern member's row was kept")
 	}
 }
+
+type countingListClient struct {
+	client.Client
+	mu    sync.Mutex
+	lists int
+}
+
+func (c *countingListClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.mu.Lock()
+	c.lists++
+	c.mu.Unlock()
+	return c.Client.List(ctx, list, opts...)
+}
+
+func (c *countingListClient) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lists
+}
+
+// The refresh runs every few seconds. A manifest whose projection inputs have
+// not changed must not list its project's zones and registrations again until
+// the resync interval passes.
+func TestRefreshSkipsUnchangedProjectionUntilResync(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 18, 0, 0, 0, time.UTC)
+	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "a.internal", RRSets: []model.RRSet{}}
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: "chunk", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: 1, Revision: 3, Index: 0, SHA256: model.Hash(payload), Payload: payload}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform", UID: "manifest-uid", Generation: 1}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{
+		ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone-a"}, ZoneApex: "a.internal", WriterEpoch: 1, Revision: 3, Tombstone: true,
+		Chunks: []dnsv1alpha1.DNSPublicationChunkReference{{Name: chunk.Name, SHA256: chunk.Spec.SHA256, Size: int32(len(payload))}}, ContentHash: model.Hash(payload), GeneratedAt: metav1.NewTime(now),
+	}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "zone-a", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone-a", ActiveManifestName: manifest.Name}}
+	platformClient := testClient(t, chunk, manifest, owner)
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	project := &countingListClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	clock := now
+	sink := &AckSink{Client: platformClient, Namespace: "platform", Region: "central", Shard: "s", Projects: []ProjectScope{{Client: project, Namespace: "project"}}, Now: func() time.Time { return clock }}
+
+	refresh := func() int {
+		t.Helper()
+		before := project.count()
+		_ = sink.Refresh(ctx)
+		return project.count() - before
+	}
+	if n := refresh(); n == 0 {
+		t.Fatal("first refresh did not project the manifest")
+	}
+	clock = clock.Add(2 * time.Second)
+	if n := refresh(); n != 0 {
+		t.Fatalf("unchanged manifest listed project objects %d times", n)
+	}
+	var current dnsv1alpha1.DNSPublicationManifest
+	if err := platformClient.Get(ctx, client.ObjectKeyFromObject(manifest), &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Revision = 4
+	current.Generation = 2
+	if err := platformClient.Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(2 * time.Second)
+	if n := refresh(); n == 0 {
+		t.Fatal("a new manifest revision was not projected")
+	}
+	clock = clock.Add(2 * time.Second)
+	if n := refresh(); n != 0 {
+		t.Fatalf("unchanged manifest listed project objects %d times", n)
+	}
+	clock = clock.Add(projectionResync)
+	if n := refresh(); n == 0 {
+		t.Fatal("the resync interval did not project the manifest again")
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
@@ -55,6 +56,68 @@ type AckSink struct {
 	// origin's generation, and conditions wait only for this sink's regions.
 	LocalInputs bool
 	Now         func() time.Time
+
+	// projected remembers what each manifest's last successful projection
+	// wrote, so an unchanged manifest is not projected again until
+	// projectionResync passes. Projection lists the owning project's zones
+	// and registrations, and the refresh runs every few seconds.
+	projected *projectionCache
+}
+
+type projectionCache struct {
+	mu    sync.Mutex
+	memos map[string]projectionMemo
+}
+
+// projectionResync bounds how long a project object changed outside its
+// manifest, such as a zone edit that needs no republish, can wait for its
+// status to catch up.
+const projectionResync = 5 * time.Minute
+
+type projectionMemo struct {
+	key string
+	at  time.Time
+}
+
+// projectionKey is everything a projection's writes depend on apart from the
+// project's own zones and registrations.
+func (s *AckSink) projectionKey(m *dnsv1alpha1.DNSPublicationManifest, complete bool) string {
+	applied := hasApplied(m.Status.ReplicaAcknowledgements, m.Spec.WriterEpoch, m.Spec.Revision)
+	return fmt.Sprintf("%s/%d/%d/%d/%t/%t/%v/%v", m.UID, m.Generation, m.Spec.WriterEpoch, m.Spec.Revision, complete, applied, m.Spec.ExpectedRegions, s.Regions)
+}
+
+// needsProjection reports whether the manifest must be projected now.
+func (s *AckSink) needsProjection(m *dnsv1alpha1.DNSPublicationManifest, key string, now time.Time) bool {
+	if s.projected == nil {
+		return true
+	}
+	s.projected.mu.Lock()
+	defer s.projected.mu.Unlock()
+	memo, ok := s.projected.memos[m.Name]
+	return !ok || memo.key != key || now.Sub(memo.at) >= projectionResync
+}
+
+func (s *AckSink) rememberProjection(m *dnsv1alpha1.DNSPublicationManifest, key string, now time.Time) {
+	if s.projected == nil {
+		return
+	}
+	s.projected.mu.Lock()
+	defer s.projected.mu.Unlock()
+	s.projected.memos[m.Name] = projectionMemo{key: key, at: now}
+}
+
+// forgetProjections drops memos of manifests no longer active.
+func (s *AckSink) forgetProjections(active map[string]bool) {
+	if s.projected == nil {
+		return
+	}
+	s.projected.mu.Lock()
+	defer s.projected.mu.Unlock()
+	for name := range s.projected.memos {
+		if !active[name] {
+			delete(s.projected.memos, name)
+		}
+	}
 }
 
 func (s *AckSink) entryGeneration(obj metav1.Object) int64 {
@@ -541,6 +604,9 @@ func hasApplied(rows []dnsv1alpha1.DNSApplyAcknowledgement, epoch, revision int6
 // Refresh withdraws status readiness when member acknowledgment freshness expires,
 // even if its process or event stream has stopped producing acknowledgements.
 func (s *AckSink) Refresh(ctx context.Context) error {
+	if s.projected == nil {
+		s.projected = &projectionCache{memos: map[string]projectionMemo{}}
+	}
 	now := time.Now().UTC()
 	if s.Now != nil {
 		now = s.Now().UTC()
@@ -586,8 +652,10 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	type projection struct {
 		manifest *dnsv1alpha1.DNSPublicationManifest
 		complete bool
+		key      string
 	}
 	projections := make([]projection, 0, len(owners.Items))
+	active := map[string]bool{}
 	for _, owner := range owners.Items {
 		if owner.Spec.ActiveManifestName == "" {
 			continue
@@ -609,15 +677,27 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 				continue
 			}
 		}
+		active[m.Name] = true
+		key := s.projectionKey(&m, complete)
+		if !s.needsProjection(&m, key, now) {
+			continue
+		}
 		manifest := m.DeepCopy()
-		projections = append(projections, projection{manifest: manifest, complete: complete})
+		projections = append(projections, projection{manifest: manifest, complete: complete, key: key})
 	}
+	s.forgetProjections(active)
 	// Launch every manifest projection before waiting for any source. Thus one
 	// partitioned project cannot delay status for healthy projects or manifests.
 	results := make(chan error, len(projections))
 	for _, p := range projections {
 
-		go func() { results <- s.projectPublication(ctx, p.manifest, p.complete, now) }()
+		go func() {
+			err := s.projectPublication(ctx, p.manifest, p.complete, now)
+			if err == nil {
+				s.rememberProjection(p.manifest, p.key, now)
+			}
+			results <- err
+		}()
 	}
 	for range projections {
 		refreshErrors = errors.Join(refreshErrors, <-results)

@@ -433,3 +433,39 @@ func TestConfigLoaderResolvesMemberIDFromPod(t *testing.T) {
 		t.Fatalf("member %q replica %q", loaded.Agent.MemberID, loaded.Agent.ReplicaID)
 	}
 }
+
+func TestFeedValidation(t *testing.T) {
+	base := Config{
+		Region: "central", Shard: "one",
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Shards: []platform.PlannerConfig{
+			{Region: "central", Shard: "one", Members: []model.Member{{MemberID: "regional-central", Role: "regional"}}},
+			{Region: "east", Shard: "one", Members: []model.Member{{MemberID: "regional-east", Role: "regional"}}},
+		},
+		Regions:          []string{"east"},
+		PublicationStore: &PublicationStoreConfig{Region: "east", Bucket: "PUBLICATIONS"},
+	}
+	valid := base
+	valid.Feed = &FeedConfig{Bucket: "DNS_PRIVATE_INPUTS", Peers: []FeedPeer{{Region: "central", Domain: "central", Bucket: "DNS_PRIVATE_INPUTS", Mirror: "DNS_PRIVATE_INPUTS_CENTRAL"}}}
+	if err := valid.Validate(roleControlPlane); err != nil {
+		t.Fatalf("feed rejected: %v", err)
+	}
+	for name, change := range map[string]func(*Config){
+		"no single region": func(c *Config) { c.Regions = nil; c.PublicationStore = nil },
+		"own region as peer": func(c *Config) {
+			c.Feed = &FeedConfig{Bucket: "IN", Peers: []FeedPeer{{Region: "east", Bucket: "IN", Mirror: "IN_EAST"}}}
+		},
+		"mirror over own bucket": func(c *Config) {
+			c.Feed = &FeedConfig{Bucket: "IN", Peers: []FeedPeer{{Region: "central", Bucket: "IN", Mirror: "IN"}}}
+		},
+		"bad bucket": func(c *Config) { c.Feed = &FeedConfig{Bucket: "in.puts"} },
+	} {
+		invalid := valid
+		change(&invalid)
+		if err := invalid.Validate(roleControlPlane); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}

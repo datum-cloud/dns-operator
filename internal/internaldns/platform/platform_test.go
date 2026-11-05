@@ -853,7 +853,7 @@ func TestNodePublicationAckIsDroppedNotRetried(t *testing.T) {
 	}
 }
 
-func TestPatternMemberAckIsAcceptedAndCountsWhileFresh(t *testing.T) {
+func TestPatternMemberAckIsAccepted(t *testing.T) {
 	now := time.Now().UTC()
 	patterns := []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}
 	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared",
@@ -873,22 +873,45 @@ func TestPatternMemberAckIsAcceptedAndCountsWhileFresh(t *testing.T) {
 		}
 	}
 
+}
+
+func TestPatternMembersHoldWithdrawalUntilRetired(t *testing.T) {
+	now := time.Now().UTC()
 	fresh := metav1.NewTime(now.Add(time.Minute))
-	stale := metav1.NewTime(now.Add(-time.Second))
-	rows := []dnsv1alpha1.DNSApplyAcknowledgement{
-		{MemberID: "cluster", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
-		{MemberID: "node-east-2", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
-		{MemberID: "node-east-3", WriterEpoch: 2, Revision: 6, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
-		{MemberID: "node-west-0", WriterEpoch: 2, Revision: 6, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid", Generation: 2}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Tombstone: true, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}}}
+	sink := AckSink{Members: []model.Member{{MemberID: "regional-a", Role: "regional"}}, MemberPatterns: []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}}
+	envelope := &model.Envelope{Epoch: 7, Revision: 11}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}, Tombstone: true}}}
+	ack := func(member string, snapshotRevision int64, until metav1.Time) dnsv1alpha1.DNSApplyAcknowledgement {
+		return dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 7, SnapshotRevision: snapshotRevision, Revision: 2, AccessEpoch: 1, AccessSequence: 2, Phase: string(model.AckVerified), ValidUntil: &until}
 	}
-	if sink.verified(rows, now, "resolver", 7, 2, 3, 5) {
-		t.Fatal("a serving pattern member that has not applied the revision was not required")
+	fullyReplicated := func() bool {
+		sink.bindingConditions(binding, envelope, snapshot, now, true)
+		return apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated")
 	}
-	rows[2].ValidUntil = &stale
-	if !sink.verified(rows, now, "resolver", 7, 2, 3, 5) {
-		t.Fatal("a pattern member whose acknowledgement expired was still required")
+
+	binding.Status.MemberAcknowledgements = []dnsv1alpha1.DNSApplyAcknowledgement{ack("regional-a", 11, fresh)}
+	if sink.bindingVerified(binding, envelope, snapshot, now) || fullyReplicated() {
+		t.Fatal("a withdrawal was proven before any node member applied it")
 	}
-	if got := sink.liveMembers(rows, now); len(got) != 2 || got[1].MemberID != "node-east-2" || got[1].Role != "node" {
-		t.Fatalf("live members = %#v", got)
+
+	binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, ack("node-east-2", 11, fresh), ack("node-east-3", 10, fresh))
+	if !sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("one verified node member did not report the applied withdrawal while another lagged")
+	}
+	if fullyReplicated() {
+		t.Fatal("a pattern member on an older snapshot did not hold back full replication")
+	}
+
+	expired := metav1.NewTime(now.Add(-time.Hour))
+	binding.Status.MemberAcknowledgements[2] = ack("node-east-3", 10, expired)
+	if fullyReplicated() {
+		t.Fatal("a pattern member silent for an hour stopped holding back full replication")
+	}
+
+	retired := metav1.NewTime(now.Add(-patternMemberRetireAfter - time.Minute))
+	binding.Status.MemberAcknowledgements[2] = ack("node-east-3", 10, retired)
+	if !fullyReplicated() {
+		t.Fatal("a retired pattern member still held back full replication")
 	}
 }

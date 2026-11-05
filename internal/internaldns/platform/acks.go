@@ -425,7 +425,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		return len(groups) > 0
 	}
 	required := 0
-	for _, member := range s.liveMembers(rows, now) {
+	for _, member := range s.Members {
 		match := member.Role == role
 		if role == dnsValueResolver {
 			match = member.Role == dnsValueNode || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
@@ -697,11 +697,17 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 			rows = append(rows, row)
 		}
 	}
+	members := s.bindingMembers(b.Status.MemberAcknowledgements, now)
+	if len(s.MemberPatterns) > 0 && !slices.ContainsFunc(members, func(m model.Member) bool { return m.Role == dnsValueNode }) {
+		return false
+	}
 	if all {
-		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
+		scoped := *s
+		scoped.Members, scoped.MemberPatterns = members, nil
+		return scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 	}
 	tiers := map[string][]model.Member{}
-	for _, member := range s.liveMembers(rows, now) {
+	for _, member := range members {
 		role := member.Role
 		if role == dnsValueCluster {
 			role = dnsValueRegional
@@ -714,7 +720,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		ready := false
 		for _, member := range members {
 			scoped := *s
-			scoped.Members = []model.Member{member}
+			scoped.Members, scoped.MemberPatterns = []model.Member{member}, nil
 			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 		}
 		if !ready {
@@ -733,10 +739,15 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	}
 }
 
-// liveMembers is the listed members plus every pattern member holding an
-// unexpired acknowledgement, so a pattern member counts while it serves and
-// stops counting once it has gone.
-func (s *AckSink) liveMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []model.Member {
+// patternMemberRetireAfter is how long a pattern member stays required after
+// its last acknowledgement expired. Until then a binding cannot be finalized
+// without it, so a member that is only lagging or partitioned still holds
+// back the release of an address it may serve.
+const patternMemberRetireAfter = 6 * time.Hour
+
+// bindingMembers is the listed members plus every pattern member that has
+// acknowledged the binding at any revision within patternMemberRetireAfter.
+func (s *AckSink) bindingMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []model.Member {
 	if len(s.MemberPatterns) == 0 {
 		return s.Members
 	}
@@ -745,17 +756,16 @@ func (s *AckSink) liveMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now ti
 	for _, m := range s.Members {
 		seen[m.MemberID] = true
 	}
+	var admitted []model.Member
 	for _, row := range rows {
-		if seen[row.MemberID] || row.ValidUntil == nil || !row.ValidUntil.After(now) {
+		if seen[row.MemberID] || row.ValidUntil == nil || !row.ValidUntil.Add(patternMemberRetireAfter).After(now) {
 			continue
 		}
 		if m, ok := model.LookupMember(nil, s.MemberPatterns, row.MemberID); ok {
 			seen[row.MemberID] = true
-			members = append(members, m)
+			admitted = append(admitted, m)
 		}
 	}
-	sort.Slice(members[len(s.Members):], func(i, j int) bool {
-		return members[len(s.Members)+i].MemberID < members[len(s.Members)+j].MemberID
-	})
-	return members
+	sort.Slice(admitted, func(i, j int) bool { return admitted[i].MemberID < admitted[j].MemberID })
+	return append(members, admitted...)
 }

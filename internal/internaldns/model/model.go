@@ -167,8 +167,22 @@ func (p MemberPattern) Validate() error {
 	return nil
 }
 
+// Matches reports whether memberID is IDPrefix followed by an ordinal.
 func (p MemberPattern) Matches(memberID string) bool {
-	return p.IDPrefix != "" && len(memberID) > len(p.IDPrefix) && strings.HasPrefix(memberID, p.IDPrefix)
+	return p.IDPrefix != "" && strings.HasPrefix(memberID, p.IDPrefix) && IsOrdinal(memberID[len(p.IDPrefix):])
+}
+
+// IsOrdinal reports whether s is a non-negative decimal without leading zeros.
+func IsOrdinal(s string) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // LookupMember returns the listed member with memberID, or else the member a

@@ -434,8 +434,8 @@ func validateMembers(c *Config) error {
 				return err
 			}
 			for _, m := range members {
-				if p.Matches(m.MemberID) && m.Role != p.Role {
-					return fmt.Errorf("member %s has role %s but pattern %q admits role %s", m.MemberID, m.Role, p.IDPrefix, p.Role)
+				if p.Matches(m.MemberID) {
+					return fmt.Errorf("member pattern %q admits listed member %s; give pattern members their own prefix", p.IDPrefix, m.MemberID)
 				}
 			}
 		}

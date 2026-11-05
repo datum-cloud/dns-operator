@@ -406,7 +406,7 @@ func TestControlPlaneValidatesMemberPatterns(t *testing.T) {
 	for name, patterns := range map[string][]model.MemberPattern{
 		"regional role": {{Role: "regional", IDPrefix: "regional-east-"}},
 		"empty prefix":  {{Role: "node"}},
-		"role conflict": {{Role: "node", IDPrefix: "regional-"}},
+		"admits listed": {{Role: "node", IDPrefix: "regional-east-"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := base

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
 // MemberIDSource derives a member's ID from its Pod, so every member of a
@@ -30,11 +32,11 @@ func (c *Config) ResolveMemberID(getenv func(string) string) error {
 		return errors.New("memberIDFrom requires env and prefix")
 	}
 	name := getenv(source.Env)
-	ordinal := name[strings.LastIndex(name, "-")+1:]
-	if !isOrdinal(ordinal) {
+	separator := strings.LastIndex(name, "-")
+	if separator < 0 || !model.IsOrdinal(name[separator+1:]) {
 		return fmt.Errorf("memberIDFrom: %s=%q does not end in a Pod ordinal", source.Env, name)
 	}
-	c.MemberID = source.Prefix + ordinal
+	c.MemberID = source.Prefix + name[separator+1:]
 	c.ReplicaID = c.MemberID
 	for i := range c.Render.NodeDNSDist.Backends {
 		if c.Render.NodeDNSDist.Backends[i].MemberID == "" {
@@ -42,16 +44,4 @@ func (c *Config) ResolveMemberID(getenv func(string) string) error {
 		}
 	}
 	return nil
-}
-
-func isOrdinal(s string) bool {
-	if s == "" || len(s) > 1 && s[0] == '0' {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }

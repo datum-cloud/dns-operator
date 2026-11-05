@@ -149,3 +149,18 @@ func TestNextWriterEpochOutranksEveryEarlierWriter(t *testing.T) {
 		t.Fatalf("first epoch before the Unix epoch: got %d", got)
 	}
 }
+
+func TestMemberPatternAdmitsOnlyOrdinals(t *testing.T) {
+	p := MemberPattern{Role: "node", IDPrefix: "node-east-"}
+	for id, want := range map[string]bool{"node-east-0": true, "node-east-12": true, "node-east-": false, "node-east-01": false, "node-east-x": false, "node-east-2-serving": false, "regional-east-0": false} {
+		if got := p.Matches(id); got != want {
+			t.Errorf("Matches(%q) = %v, want %v", id, got, want)
+		}
+	}
+	if m, ok := LookupMember([]Member{{MemberID: "node-east-0", ReplicaID: "r", Role: "node"}}, []MemberPattern{p}, "node-east-0"); !ok || m.ReplicaID != "r" {
+		t.Fatalf("listed member did not take precedence: %#v %v", m, ok)
+	}
+	if m, ok := LookupMember(nil, []MemberPattern{p}, "node-east-4"); !ok || m.ReplicaID != "node-east-4" || m.Role != "node" {
+		t.Fatalf("pattern member = %#v %v", m, ok)
+	}
+}

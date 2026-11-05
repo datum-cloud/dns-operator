@@ -920,6 +920,15 @@ func TestSameFenceAckRefreshDoesNotReconcile(t *testing.T) {
 	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"].ValidUntil; !got.Equal(ack.ValidUntil) {
 		t.Fatalf("refresh did not extend the lease in memory: %s", got)
 	}
+	stored := agent.state.Acks["zone-a"]["regional-0/regional-0"]
+	unchangedLease := ack
+	unchangedLease.ObservedAt = now.Add(3*time.Second + time.Millisecond)
+	if n := handle(unchangedLease); n != 0 {
+		t.Fatalf("a refresh that does not extend the lease reconciled %d times", n)
+	}
+	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"]; got != stored {
+		t.Fatalf("a refresh that does not extend the lease changed the stored ack: %+v", got)
+	}
 
 	ack.Revision, ack.ObservedAt = 5, now.Add(4*time.Second)
 	if handle(ack) == 0 {

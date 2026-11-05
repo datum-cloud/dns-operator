@@ -817,16 +817,13 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 	if comparison < 0 || (comparison == 0 && !ack.ObservedAt.After(old.ObservedAt)) {
 		return nil
 	}
-	sameFence := ack.Epoch == old.Fence.Epoch && ack.Revision == old.Fence.Revision
-	if comparison <= 0 && !(sameFence && ack.ValidUntil.After(old.ValidUntil)) {
+	if comparison == 0 && !ack.ValidUntil.After(old.ValidUntil) {
 		return nil
 	}
 	a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ValidUntil: ack.ValidUntil, ObservedAt: ack.ObservedAt}
-	// Readiness reads only an ack's fence, rejection and presence, never its
-	// lease. A same-fence refresh therefore neither rewrites the checkpoint
-	// nor changes rendered configuration, and reconciling on every periodic
-	// refresh makes agent work grow with zones times refresh rate.
-	if sameFence && !old.Rejected && !old.ObservedAt.IsZero() {
+	// Readiness does not read the lease, so a same-fence refresh has nothing
+	// to persist or render.
+	if comparison == 0 && !old.Rejected && !old.ObservedAt.IsZero() {
 		return nil
 	}
 	if err := a.store.Save(a.state); err != nil {

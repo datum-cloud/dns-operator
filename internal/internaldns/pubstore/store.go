@@ -59,7 +59,9 @@ var (
 	chunkKind     = &storedKind{prefix: "chk.", resource: dnsResource("dnspublicationchunks"), newObj: func() client.Object { return &dnsv1.DNSPublicationChunk{} }}
 	outboxKind    = &storedKind{prefix: "out.", resource: dnsResource("dnstransportoutboxes"), status: true, indexed: true, newObj: func() client.Object { return &dnsv1.DNSTransportOutbox{} }}
 	shardKind     = &storedKind{prefix: "shd.", resource: schema.GroupResource{Resource: "configmaps"}, indexed: true, newObj: func() client.Object { return &corev1.ConfigMap{} }}
-	storedKinds   = []*storedKind{ownershipKind, manifestKind, chunkKind, outboxKind, shardKind}
+	// Member leases stay in the home bucket so every region's sink reads them.
+	memberKind  = &storedKind{prefix: "mbr.", resource: schema.GroupResource{Resource: "configmaps"}, newObj: func() client.Object { return &corev1.ConfigMap{} }}
+	storedKinds = []*storedKind{ownershipKind, manifestKind, chunkKind, outboxKind, shardKind, memberKind}
 )
 
 // WatchFilter names the keys the store's index follows. Chunks stay out of it:
@@ -93,6 +95,9 @@ func storedKindFor(obj k8sruntime.Object, name string) *storedKind {
 	case *corev1.ConfigMap:
 		if strings.HasPrefix(name, shardOwnerPrefix) {
 			return shardKind
+		}
+		if strings.HasPrefix(name, model.MemberLeasePrefix) {
+			return memberKind
 		}
 	}
 	return nil

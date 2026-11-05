@@ -397,6 +397,43 @@ func TestRegionsValidation(t *testing.T) {
 	}
 }
 
+func TestControlPlaneValidatesMemberPatterns(t *testing.T) {
+	base := Config{
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{ProjectUID: "p1", Namespace: "n1"}},
+	}
+	for name, patterns := range map[string][]model.MemberPattern{
+		"regional role": {{Role: "regional", IDPrefix: "regional-east-"}},
+		"empty prefix":  {{Role: "node"}},
+		"admits listed": {{Role: "node", IDPrefix: "regional-east-"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := base
+			c.Members = []model.Member{{MemberID: "regional-east-0", Role: "regional"}}
+			c.MemberPatterns = patterns
+			if err := c.Validate("control-plane"); err == nil {
+				t.Fatal("invalid member pattern was accepted")
+			}
+		})
+	}
+}
+
+func TestConfigLoaderResolvesMemberIDFromPod(t *testing.T) {
+	t.Setenv("POD_NAME", "private-dns-node-4")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"agent":{"memberIDFrom":{"env":"POD_NAME","prefix":"node-east-"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Agent.MemberID != "node-east-4" || loaded.Agent.ReplicaID != "node-east-4" {
+		t.Fatalf("member %q replica %q", loaded.Agent.MemberID, loaded.Agent.ReplicaID)
+	}
+}
+
 func TestFeedValidation(t *testing.T) {
 	base := Config{
 		Region: "central", Shard: "one",

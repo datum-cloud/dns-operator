@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ type AckSink struct {
 	Region             string
 	Shard              string
 	Members            []model.Member
+	MemberPatterns     []model.MemberPattern
 	// Regions, when set, are the regions this sink's control plane publishes
 	// while every other region runs its own. Project status then records each
 	// region's verdict separately.
@@ -95,14 +97,9 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 	if subject != model.AckSubject(s.Region, s.Shard, a.MemberID) || env.ResourceUID != a.ResourceUID || env.Epoch != a.Epoch || env.Revision != a.Revision {
 		return fmt.Errorf("ack subject or envelope identity mismatch")
 	}
-	var member *model.Member
-	for i := range s.Members {
-		if s.Members[i].MemberID == a.MemberID {
-			member = &s.Members[i]
-			break
-		}
-	}
-	if member == nil || member.ReplicaID != a.ReplicaID {
+	found, ok := model.LookupMember(s.Members, s.MemberPatterns, a.MemberID)
+	member := &found
+	if !ok || member.ReplicaID != a.ReplicaID {
 		log.FromContext(ctx).Error(errors.New("ack member identity is not assigned to this shard"), "dropping acknowledgement", "member", a.MemberID, "replica", a.ReplicaID, "region", s.Region, "shard", s.Shard)
 		return nil
 	}
@@ -190,13 +187,14 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 	if err != nil {
 		return err
 	}
-	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
-		return nil
-	}
 	var bindings dnsv1alpha1.DNSResolverBindingList
+	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
+	recorded := false
 	for _, b := range snapshot.Bindings {
 		if b.BindingUID != a.ResourceUID {
 			continue
@@ -206,7 +204,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Version.Sequence != int64(b.Version.Sequence) || binding.Spec.Version.Epoch != int64(b.Version.Epoch) {
 				continue
 			}
+			recorded = true
 			base := binding.DeepCopy()
+			binding.Status.MemberAcknowledgements = s.withoutRetired(binding.Status.MemberAcknowledgements, now)
 			bindingRow := row
 			bindingRow.Revision = binding.Spec.Configuration.Revision
 			bindingRow.WriterEpoch = int64(a.Epoch)
@@ -233,7 +233,60 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			}
 		}
 	}
+	if !recorded {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	return nil
+}
+
+// recordPatternPresence gives a pattern member a row on a binding it
+// acknowledged at a revision that could not be recorded, so the member is
+// required for the binding's withdrawal even if it never acknowledges the
+// committed revision. The row proves nothing, because its revision is zero.
+func (s *AckSink) recordPatternPresence(ctx context.Context, bindings *dnsv1alpha1.DNSResolverBindingList, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
+	if len(s.MemberPatterns) == 0 || slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == a.MemberID }) {
+		return nil
+	}
+	if _, ok := model.LookupMember(nil, s.MemberPatterns, a.MemberID); !ok {
+		return nil
+	}
+	if bindings.Items == nil {
+		if err := s.Client.List(ctx, bindings, client.InNamespace(s.Namespace)); err != nil {
+			return err
+		}
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if string(binding.UID) != a.ResourceUID {
+			continue
+		}
+		if slices.ContainsFunc(binding.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == a.MemberID }) {
+			return nil
+		}
+		base := binding.DeepCopy()
+		presence := row
+		presence.Revision = 0
+		presence.WriterEpoch = int64(a.Epoch)
+		presence.SnapshotRevision = int64(a.Revision)
+		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, presence)
+		return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	}
+	return nil
+}
+
+// withoutRetired drops the rows of pattern members past
+// patternMemberRetireAfter, so members that scaled away stop accumulating.
+func (s *AckSink) withoutRetired(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []dnsv1alpha1.DNSApplyAcknowledgement {
+	if len(s.MemberPatterns) == 0 {
+		return rows
+	}
+	return slices.DeleteFunc(slices.Clone(rows), func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+		if slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == r.MemberID }) {
+			return false
+		}
+		_, pattern := model.LookupMember(nil, s.MemberPatterns, r.MemberID)
+		return pattern && (r.ValidUntil == nil || !r.ValidUntil.Add(patternMemberRetireAfter).After(now))
+	})
 }
 
 func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
@@ -508,6 +561,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
+		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
 		complete := s.bindingVerified(b, envelope, snapshot, now)
 		s.bindingConditions(b, envelope, snapshot, now, complete)
 		if complete {
@@ -700,11 +754,17 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 			rows = append(rows, row)
 		}
 	}
+	members := s.bindingMembers(b.Status.MemberAcknowledgements, now)
+	if len(s.MemberPatterns) > 0 && !slices.ContainsFunc(members, func(m model.Member) bool { return m.Role == dnsValueNode }) {
+		return false
+	}
 	if all {
-		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
+		scoped := *s
+		scoped.Members, scoped.MemberPatterns = members, nil
+		return scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 	}
 	tiers := map[string][]model.Member{}
-	for _, member := range s.Members {
+	for _, member := range members {
 		role := member.Role
 		if role == dnsValueCluster {
 			role = dnsValueRegional
@@ -717,7 +777,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		ready := false
 		for _, member := range members {
 			scoped := *s
-			scoped.Members = []model.Member{member}
+			scoped.Members, scoped.MemberPatterns = []model.Member{member}, nil
 			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 		}
 		if !ready {
@@ -734,4 +794,35 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}
+}
+
+// patternMemberRetireAfter is how long a pattern member stays required after
+// its last acknowledgement expired. Until then a binding cannot be finalized
+// without it, so a member that is only lagging or partitioned still holds
+// back the release of an address it may serve.
+const patternMemberRetireAfter = 6 * time.Hour
+
+// bindingMembers is the listed members plus every pattern member that has
+// acknowledged the binding at any revision within patternMemberRetireAfter.
+func (s *AckSink) bindingMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []model.Member {
+	if len(s.MemberPatterns) == 0 {
+		return s.Members
+	}
+	members := append([]model.Member(nil), s.Members...)
+	seen := map[string]bool{}
+	for _, m := range s.Members {
+		seen[m.MemberID] = true
+	}
+	var admitted []model.Member
+	for _, row := range rows {
+		if seen[row.MemberID] || row.ValidUntil == nil || !row.ValidUntil.Add(patternMemberRetireAfter).After(now) {
+			continue
+		}
+		if m, ok := model.LookupMember(nil, s.MemberPatterns, row.MemberID); ok {
+			seen[row.MemberID] = true
+			admitted = append(admitted, m)
+		}
+	}
+	sort.Slice(admitted, func(i, j int) bool { return admitted[i].MemberID < admitted[j].MemberID })
+	return append(members, admitted...)
 }

@@ -87,6 +87,7 @@ type Config struct {
 	NodeBackends          []model.Backend           `json:"nodeBackends,omitempty"`
 	ClusterBackends       []model.Backend           `json:"clusterBackends,omitempty"`
 	Members               []model.Member            `json:"members,omitempty"`
+	MemberPatterns        []model.MemberPattern     `json:"memberPatterns,omitempty"`
 	ClusterPrefix         string                    `json:"clusterPrefix,omitempty"`
 	NATS                  transport.Config          `json:"nats"`
 	Stream                transport.StreamConfig    `json:"stream"`
@@ -152,6 +153,9 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, errors.New("config must contain exactly one JSON object")
 		}
 		return Config{}, fmt.Errorf("decode trailing config data: %w", err)
+	}
+	if err := c.Agent.ResolveMemberID(os.Getenv); err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }
@@ -430,8 +434,24 @@ func validateMembers(c *Config) error {
 		}
 		return nil
 	}
+	checkPatterns := func(members []model.Member, patterns []model.MemberPattern) error {
+		for _, p := range patterns {
+			if err := p.Validate(); err != nil {
+				return err
+			}
+			for _, m := range members {
+				if p.Matches(m.MemberID) {
+					return fmt.Errorf("member pattern %q admits listed member %s; give pattern members their own prefix", p.IDPrefix, m.MemberID)
+				}
+			}
+		}
+		return nil
+	}
 	if len(c.Shards) == 0 {
-		return check(c.Members)
+		if err := check(c.Members); err != nil {
+			return err
+		}
+		return checkPatterns(c.Members, c.MemberPatterns)
 	}
 	for _, s := range c.Shards {
 		members := s.Members
@@ -439,6 +459,13 @@ func validateMembers(c *Config) error {
 			members = c.Members
 		}
 		if err := check(members); err != nil {
+			return err
+		}
+		patterns := s.MemberPatterns
+		if len(patterns) == 0 {
+			patterns = c.MemberPatterns
+		}
+		if err := checkPatterns(members, patterns); err != nil {
 			return err
 		}
 	}

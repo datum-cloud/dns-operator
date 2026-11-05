@@ -65,14 +65,19 @@ type AckSink struct {
 }
 
 type projectionCache struct {
-	mu    sync.Mutex
-	memos map[string]projectionMemo
+	mu        sync.Mutex
+	memos     map[string]projectionMemo
+	refreshed time.Time
 }
 
 // projectionResync bounds how long a project object changed outside its
-// manifest, such as a zone edit that needs no republish, can wait for its
-// status to catch up.
-const projectionResync = 5 * time.Minute
+// manifest, such as a zone edit that needs no republish, waits for its status
+// and observed generation to catch up.
+const projectionResync = time.Minute
+
+// projectionGap is how long Refresh may go without running, as on a pod that
+// lost its region lease, before its memos are dropped.
+const projectionGap = 30 * time.Second
 
 type projectionMemo struct {
 	key string
@@ -353,6 +358,13 @@ func (s *AckSink) withoutRetired(rows []dnsv1alpha1.DNSApplyAcknowledgement, now
 }
 
 func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
+	_, err := s.projectPublicationToScopes(ctx, m, complete, now)
+	return err
+}
+
+// projectPublicationToScopes also reports how many project scopes the
+// manifest matched, so a pass that wrote nothing is not remembered.
+func (s *AckSink) projectPublicationToScopes(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) (int, error) {
 	projects := append([]ProjectScope(nil), s.Projects...)
 	if s.ProjectScopes != nil {
 		projects = append(projects, s.ProjectScopes()...)
@@ -383,7 +395,7 @@ func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPubl
 	for i := 0; i < started; i++ {
 		projectErrors = errors.Join(projectErrors, <-results)
 	}
-	return projectErrors
+	return started, projectErrors
 }
 
 func (s *AckSink) projectPublicationForScope(ctx context.Context, project ProjectScope, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
@@ -604,13 +616,16 @@ func hasApplied(rows []dnsv1alpha1.DNSApplyAcknowledgement, epoch, revision int6
 // Refresh withdraws status readiness when member acknowledgment freshness expires,
 // even if its process or event stream has stopped producing acknowledgements.
 func (s *AckSink) Refresh(ctx context.Context) error {
-	if s.projected == nil {
-		s.projected = &projectionCache{memos: map[string]projectionMemo{}}
-	}
 	now := time.Now().UTC()
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
+	// While another pod led the region its writes may have moved project
+	// status on, so a pod that resumes after a gap starts from nothing.
+	if s.projected == nil || now.Sub(s.projected.refreshed) > projectionGap {
+		s.projected = &projectionCache{memos: map[string]projectionMemo{}}
+	}
+	s.projected.refreshed = now
 	// A conflicting write to one binding must not stop the rest of the pass:
 	// manifest publication status and project projections run after the
 	// bindings, and ack writes contend with this loop on every busy binding.
@@ -692,8 +707,8 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	for _, p := range projections {
 
 		go func() {
-			err := s.projectPublication(ctx, p.manifest, p.complete, now)
-			if err == nil {
+			matched, err := s.projectPublicationToScopes(ctx, p.manifest, p.complete, now)
+			if err == nil && matched > 0 {
 				s.rememberProjection(p.manifest, p.key, now)
 			}
 			results <- err

@@ -5,6 +5,7 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -982,12 +983,17 @@ type countingListClient struct {
 	client.Client
 	mu    sync.Mutex
 	lists int
+	fail  bool
 }
 
 func (c *countingListClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 	c.mu.Lock()
 	c.lists++
+	fail := c.fail
 	c.mu.Unlock()
+	if fail {
+		return errors.New("project API unavailable")
+	}
 	return c.Client.List(ctx, list, opts...)
 }
 
@@ -1021,7 +1027,8 @@ func TestRefreshSkipsUnchangedProjectionUntilResync(t *testing.T) {
 	}
 	project := &countingListClient{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
 	clock := now
-	sink := &AckSink{Client: platformClient, Namespace: "platform", Region: "central", Shard: "s", Projects: []ProjectScope{{Client: project, Namespace: "project"}}, Now: func() time.Time { return clock }}
+	var scopes []ProjectScope
+	sink := &AckSink{Client: platformClient, Namespace: "platform", Region: "central", Shard: "s", ProjectScopes: func() []ProjectScope { return scopes }, Now: func() time.Time { return clock }}
 
 	refresh := func() int {
 		t.Helper()
@@ -1029,8 +1036,13 @@ func TestRefreshSkipsUnchangedProjectionUntilResync(t *testing.T) {
 		_ = sink.Refresh(ctx)
 		return project.count() - before
 	}
+	// Before discovery finds the owning project nothing is written, and that
+	// must not count as projected.
+	refresh()
+	scopes = []ProjectScope{{Client: project, Namespace: "project"}}
+	clock = clock.Add(2 * time.Second)
 	if n := refresh(); n == 0 {
-		t.Fatal("first refresh did not project the manifest")
+		t.Fatal("the manifest was not projected once its project was discovered")
 	}
 	clock = clock.Add(2 * time.Second)
 	if n := refresh(); n != 0 {
@@ -1056,5 +1068,30 @@ func TestRefreshSkipsUnchangedProjectionUntilResync(t *testing.T) {
 	clock = clock.Add(projectionResync)
 	if n := refresh(); n == 0 {
 		t.Fatal("the resync interval did not project the manifest again")
+	}
+
+	// A failed projection is retried on the next pass.
+	project.fail = true
+	clock = clock.Add(2 * time.Second)
+	current.Spec.Revision = 5
+	if err := platformClient.Get(ctx, client.ObjectKeyFromObject(manifest), &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.Revision = 5
+	if err := platformClient.Update(ctx, &current); err != nil {
+		t.Fatal(err)
+	}
+	refresh()
+	project.fail = false
+	clock = clock.Add(2 * time.Second)
+	if n := refresh(); n == 0 {
+		t.Fatal("a failed projection was remembered as done")
+	}
+
+	// A pod that stopped refreshing, as after losing its region lease, starts
+	// again from nothing.
+	clock = clock.Add(projectionGap + time.Second)
+	if n := refresh(); n == 0 {
+		t.Fatal("memos survived a gap in refreshing")
 	}
 }

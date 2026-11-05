@@ -55,6 +55,16 @@ type AckSink struct {
 	// origin's generation, and conditions wait only for this sink's regions.
 	LocalInputs bool
 	Now         func() time.Time
+
+	// leases holds the member leases read for one decision, keyed
+	// region/shard/member.
+	leases map[string]time.Time
+}
+
+func (s *AckSink) withLeases(leases map[string]time.Time) *AckSink {
+	scoped := *s
+	scoped.leases = leases
+	return &scoped
 }
 
 func (s *AckSink) entryGeneration(obj metav1.Object) int64 {
@@ -166,9 +176,28 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 		return nil
 	}
 	row.WriterEpoch = int64(a.Epoch)
+	renewed := false
+	if a.Phase == model.AckVerified {
+		var err error
+		if renewed, err = s.renewMemberLease(ctx, a.MemberID, a.ValidUntil, a.ValidUntil.Sub(a.ObservedAt)); err != nil {
+			return err
+		}
+	}
 	base := m.DeepCopy()
-	m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
-	complete := s.publicationVerified(&m, now)
+	if publicationRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
+		if a.Phase == model.AckVerified {
+			until := metav1.NewTime(a.ObservedAt.Add(publicationRowLease))
+			row.ValidUntil = &until
+		}
+		m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
+	} else if !renewed {
+		return nil
+	}
+	leases, leaseErr := s.loadMemberLeases(ctx, manifestGroups(&m))
+	if leaseErr != nil {
+		log.FromContext(ctx).Error(leaseErr, "member leases unreadable; their rows decide")
+	}
+	complete := s.withLeases(leases).publicationVerified(&m, now)
 	condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
 	if jsonEqualStatus(base.Status, m.Status) {
 		return nil
@@ -454,22 +483,19 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		}
 		return false
 	}
+	live := func(group string, member model.Member) bool {
+		until, ok := s.leases[memberLeaseKeyFor(group, member.MemberID)]
+		return !ok || until.After(now)
+	}
 	if role == "publication" {
-		groups := s.PublicationRegions
-		if len(groups) == 0 {
-			members := s.PublicationMembers
-			if len(members) == 0 {
-				members = s.Members
-			}
-			groups = map[string][]model.Member{"local": members}
-		}
-		for _, members := range groups {
+		groups := s.publicationGroups()
+		for group, members := range groups {
 			required := 0
 			verified := 0
 			for _, member := range members {
 				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
-					if matches(member) {
+					if matches(member) && live(group, member) {
 						verified++
 					}
 				}
@@ -583,6 +609,9 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if err := s.Client.List(ctx, &owners, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
+	leases, err := s.loadMemberLeases(ctx, nil)
+	refreshErrors = errors.Join(refreshErrors, err)
+	leased := s.withLeases(leases)
 	type projection struct {
 		manifest *dnsv1alpha1.DNSPublicationManifest
 		complete bool
@@ -601,7 +630,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 			continue
 		}
 		base := m.DeepCopy()
-		complete := s.publicationVerified(&m, now)
+		complete := leased.publicationVerified(&m, now)
 		condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
 		if !jsonEqualStatus(base.Status, m.Status) {
 			if err := s.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {

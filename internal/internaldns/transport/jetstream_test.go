@@ -6,9 +6,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -231,5 +233,45 @@ func TestPasswordFileMustBeReadableAtStart(t *testing.T) {
 	}
 	if _, err := passwordFileUserInfo("member", empty); err == nil {
 		t.Fatal("empty password file accepted")
+	}
+}
+
+// Not parallel: it swaps the package logger.
+func TestUnreadablePasswordFileIsLoggedOnceAMinute(t *testing.T) {
+	var lines []string
+	previous := credentialLog
+	credentialLog = funcr.New(func(prefix, args string) { lines = append(lines, args) }, funcr.Options{})
+	t.Cleanup(func() { credentialLog = previous })
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte("secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userInfo, err := passwordFileUserInfo("member", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		userInfo()
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d lines for repeated failures, want 1: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], path) || strings.Contains(lines[0], "secret-value") {
+		t.Fatalf("log line must name the path and never the password: %s", lines[0])
+	}
+	// A good read resets the limit, so the next failure is reported at once.
+	if err := os.WriteFile(path, []byte("secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if len(lines) != 2 {
+		t.Fatalf("logged %d lines after the file recovered and broke again, want 2", len(lines))
 	}
 }

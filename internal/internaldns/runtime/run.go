@@ -321,7 +321,7 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
-			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, Regions: cfg.Regions,
+			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, MemberPatterns: pc.MemberPatterns, Regions: cfg.Regions,
 			LocalInputs: cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
@@ -831,6 +831,9 @@ func (c Config) plannerConfigs() []platform.PlannerConfig {
 
 		if len(p.Members) == 0 {
 			p.Members = append([]model.Member(nil), c.Members...)
+		}
+		if len(p.MemberPatterns) == 0 {
+			p.MemberPatterns = append([]model.MemberPattern(nil), c.MemberPatterns...)
 		}
 	}
 	return configs

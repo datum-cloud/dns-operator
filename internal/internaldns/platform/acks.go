@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +46,7 @@ type AckSink struct {
 	Region             string
 	Shard              string
 	Members            []model.Member
+	MemberPatterns     []model.MemberPattern
 	// Regions, when set, are the regions this sink's control plane publishes
 	// while every other region runs its own. Project status then records each
 	// region's verdict separately.
@@ -95,14 +97,9 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 	if subject != model.AckSubject(s.Region, s.Shard, a.MemberID) || env.ResourceUID != a.ResourceUID || env.Epoch != a.Epoch || env.Revision != a.Revision {
 		return fmt.Errorf("ack subject or envelope identity mismatch")
 	}
-	var member *model.Member
-	for i := range s.Members {
-		if s.Members[i].MemberID == a.MemberID {
-			member = &s.Members[i]
-			break
-		}
-	}
-	if member == nil || member.ReplicaID != a.ReplicaID {
+	found, ok := model.LookupMember(s.Members, s.MemberPatterns, a.MemberID)
+	member := &found
+	if !ok || member.ReplicaID != a.ReplicaID {
 		log.FromContext(ctx).Error(errors.New("ack member identity is not assigned to this shard"), "dropping acknowledgement", "member", a.MemberID, "replica", a.ReplicaID, "region", s.Region, "shard", s.Shard)
 		return nil
 	}
@@ -428,7 +425,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		return len(groups) > 0
 	}
 	required := 0
-	for _, member := range s.Members {
+	for _, member := range s.liveMembers(rows, now) {
 		match := member.Role == role
 		if role == dnsValueResolver {
 			match = member.Role == dnsValueNode || member.Role == dnsValueCluster || member.Role == dnsValueResolver || member.Role == dnsValueRegional
@@ -704,7 +701,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 	}
 	tiers := map[string][]model.Member{}
-	for _, member := range s.Members {
+	for _, member := range s.liveMembers(rows, now) {
 		role := member.Role
 		if role == dnsValueCluster {
 			role = dnsValueRegional
@@ -734,4 +731,31 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}
+}
+
+// liveMembers is the listed members plus every pattern member holding an
+// unexpired acknowledgement, so a pattern member counts while it serves and
+// stops counting once it has gone.
+func (s *AckSink) liveMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []model.Member {
+	if len(s.MemberPatterns) == 0 {
+		return s.Members
+	}
+	members := append([]model.Member(nil), s.Members...)
+	seen := map[string]bool{}
+	for _, m := range s.Members {
+		seen[m.MemberID] = true
+	}
+	for _, row := range rows {
+		if seen[row.MemberID] || row.ValidUntil == nil || !row.ValidUntil.After(now) {
+			continue
+		}
+		if m, ok := model.LookupMember(nil, s.MemberPatterns, row.MemberID); ok {
+			seen[row.MemberID] = true
+			members = append(members, m)
+		}
+	}
+	sort.Slice(members[len(s.Members):], func(i, j int) bool {
+		return members[len(s.Members)+i].MemberID < members[len(s.Members)+j].MemberID
+	})
+	return members
 }

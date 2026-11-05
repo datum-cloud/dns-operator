@@ -852,3 +852,43 @@ func TestNodePublicationAckIsDroppedNotRetried(t *testing.T) {
 		t.Fatalf("a node member's publication acknowledgement must be settled, not retried: %v", err)
 	}
 }
+
+func TestPatternMemberAckIsAcceptedAndCountsWhileFresh(t *testing.T) {
+	now := time.Now().UTC()
+	patterns := []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}
+	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared",
+		Members:        []model.Member{{MemberID: "cluster", Role: "cluster"}},
+		MemberPatterns: patterns,
+	}
+	for _, a := range []model.MemberAck{
+		{MemberID: "node-east-3", ReplicaID: "node-east-3", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+		{MemberID: "node-east-3", ReplicaID: "other", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+	} {
+		env, err := model.NewEnvelope(model.KindMemberAck, "ack-1", "east", "shared", "zone-uid", 1, 1, now, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", a.MemberID), env); err != nil {
+			t.Fatalf("acknowledgement from %s/%s: %v", a.MemberID, a.ReplicaID, err)
+		}
+	}
+
+	fresh := metav1.NewTime(now.Add(time.Minute))
+	stale := metav1.NewTime(now.Add(-time.Second))
+	rows := []dnsv1alpha1.DNSApplyAcknowledgement{
+		{MemberID: "cluster", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
+		{MemberID: "node-east-2", WriterEpoch: 2, Revision: 7, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
+		{MemberID: "node-east-3", WriterEpoch: 2, Revision: 6, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
+		{MemberID: "node-west-0", WriterEpoch: 2, Revision: 6, AccessEpoch: 3, AccessSequence: 5, Phase: string(model.AckVerified), ValidUntil: &fresh},
+	}
+	if sink.verified(rows, now, "resolver", 7, 2, 3, 5) {
+		t.Fatal("a serving pattern member that has not applied the revision was not required")
+	}
+	rows[2].ValidUntil = &stale
+	if !sink.verified(rows, now, "resolver", 7, 2, 3, 5) {
+		t.Fatal("a pattern member whose acknowledgement expired was still required")
+	}
+	if got := sink.liveMembers(rows, now); len(got) != 2 || got[1].MemberID != "node-east-2" || got[1].Role != "node" {
+		t.Fatalf("live members = %#v", got)
+	}
+}

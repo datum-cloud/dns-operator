@@ -29,6 +29,7 @@ type Config struct {
 	Region                    string                       `json:"region"`
 	Shard                     string                       `json:"shard"`
 	MemberID                  string                       `json:"memberID"`
+	MemberIDFrom              *MemberIDSource              `json:"memberIDFrom,omitempty"`
 	ReplicaID                 string                       `json:"replicaID,omitempty"`
 	StateDir                  string                       `json:"stateDir"`
 	Mode                      Mode                         `json:"mode"`
@@ -768,14 +769,8 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 	if a.state.Snapshot == nil {
 		return nil
 	}
-	known := false
-	for _, m := range a.state.Snapshot.Members {
-		if m.MemberID == ack.MemberID && m.ReplicaID == ack.ReplicaID {
-			known = true
-			break
-		}
-	}
-	if !known {
+	member, known := model.LookupMember(a.state.Snapshot.Members, a.state.Snapshot.MemberPatterns, ack.MemberID)
+	if !known || member.ReplicaID != ack.ReplicaID {
 		a.report(fmt.Errorf("drop ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID))
 		return nil
 	}

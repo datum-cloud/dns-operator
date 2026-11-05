@@ -187,13 +187,14 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 	if err != nil {
 		return err
 	}
-	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
-		return nil
-	}
 	var bindings dnsv1alpha1.DNSResolverBindingList
+	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
+	recorded := false
 	for _, b := range snapshot.Bindings {
 		if b.BindingUID != a.ResourceUID {
 			continue
@@ -203,7 +204,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Version.Sequence != int64(b.Version.Sequence) || binding.Spec.Version.Epoch != int64(b.Version.Epoch) {
 				continue
 			}
+			recorded = true
 			base := binding.DeepCopy()
+			binding.Status.MemberAcknowledgements = s.withoutRetired(binding.Status.MemberAcknowledgements, now)
 			bindingRow := row
 			bindingRow.Revision = binding.Spec.Configuration.Revision
 			bindingRow.WriterEpoch = int64(a.Epoch)
@@ -230,7 +233,60 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			}
 		}
 	}
+	if !recorded {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	return nil
+}
+
+// recordPatternPresence gives a pattern member a row on a binding it
+// acknowledged at a revision that could not be recorded, so the member is
+// required for the binding's withdrawal even if it never acknowledges the
+// committed revision. The row proves nothing, because its revision is zero.
+func (s *AckSink) recordPatternPresence(ctx context.Context, bindings *dnsv1alpha1.DNSResolverBindingList, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
+	if len(s.MemberPatterns) == 0 || slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == a.MemberID }) {
+		return nil
+	}
+	if _, ok := model.LookupMember(nil, s.MemberPatterns, a.MemberID); !ok {
+		return nil
+	}
+	if bindings.Items == nil {
+		if err := s.Client.List(ctx, bindings, client.InNamespace(s.Namespace)); err != nil {
+			return err
+		}
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if string(binding.UID) != a.ResourceUID {
+			continue
+		}
+		if slices.ContainsFunc(binding.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == a.MemberID }) {
+			return nil
+		}
+		base := binding.DeepCopy()
+		presence := row
+		presence.Revision = 0
+		presence.WriterEpoch = int64(a.Epoch)
+		presence.SnapshotRevision = int64(a.Revision)
+		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, presence)
+		return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	}
+	return nil
+}
+
+// withoutRetired drops the rows of pattern members past
+// patternMemberRetireAfter, so members that scaled away stop accumulating.
+func (s *AckSink) withoutRetired(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []dnsv1alpha1.DNSApplyAcknowledgement {
+	if len(s.MemberPatterns) == 0 {
+		return rows
+	}
+	return slices.DeleteFunc(slices.Clone(rows), func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+		if slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == r.MemberID }) {
+			return false
+		}
+		_, pattern := model.LookupMember(nil, s.MemberPatterns, r.MemberID)
+		return pattern && (r.ValidUntil == nil || !r.ValidUntil.Add(patternMemberRetireAfter).After(now))
+	})
 }
 
 func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
@@ -505,6 +561,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
+		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
 		complete := s.bindingVerified(b, envelope, snapshot, now)
 		s.bindingConditions(b, envelope, snapshot, now, complete)
 		if complete {

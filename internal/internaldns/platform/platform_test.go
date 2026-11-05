@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -913,5 +914,66 @@ func TestPatternMembersHoldWithdrawalUntilRetired(t *testing.T) {
 	binding.Status.MemberAcknowledgements[2] = ack("node-east-3", 10, retired)
 	if !fullyReplicated() {
 		t.Fatal("a retired pattern member still held back full replication")
+	}
+}
+
+func TestPatternMemberAckAtStaleRevisionStillRequiresIt(t *testing.T) {
+	now := time.Now().UTC()
+	const namespace, region, shard = "platform", "east", "shared"
+	snapshot := model.ServingSnapshot{Region: region, Shard: shard, ConfigurationEpoch: 1, ConfigurationRevision: 7, GeneratedAt: now,
+		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}}}}
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "serving-1-7", region, shard, "owner-uid", 1, 7, now, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: envelope.EventID, Namespace: namespace}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{WriterEpoch: 1, Revision: 7, Payload: payload, PayloadHash: model.Hash(payload)}}
+	state, err := json.Marshal(shardState{Epoch: 1, ActiveOutbox: out.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: namespace}, Data: map[string]string{"state": string(state)}}
+	retired := metav1.NewTime(now.Add(-patternMemberRetireAfter - time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: namespace, UID: "binding-uid", Labels: map[string]string{"internal-dns.miloapis.com/region": model.SafeToken(region), "internal-dns.miloapis.com/shard": model.SafeToken(shard)}},
+		Spec:   dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}},
+		Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{MemberID: "node-east-9", Phase: string(model.AckVerified), ValidUntil: &retired}}}}
+	c := testClient(t, owner, out, binding)
+	sink := AckSink{Client: c, Namespace: namespace, Region: region, Shard: shard,
+		Members: []model.Member{{MemberID: "regional-a", Role: "regional"}}, MemberPatterns: []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}}
+
+	ack := model.MemberAck{MemberID: "node-east-4", ReplicaID: "node-east-4", ResourceUID: "binding-uid", Kind: model.KindServingSnapshot, Epoch: 1, Revision: 6, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	env, err := model.NewEnvelope(model.KindMemberAck, "ack-1", region, shard, "binding-uid", 1, 6, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Apply(context.Background(), model.AckSubject(region, shard, ack.MemberID), env); err != nil {
+		t.Fatal(err)
+	}
+	var got dnsv1alpha1.DNSResolverBinding
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(binding), &got); err != nil {
+		t.Fatal(err)
+	}
+	rows := got.Status.MemberAcknowledgements
+	if !slices.ContainsFunc(rows, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+		return r.MemberID == "node-east-4" && r.Revision == 0 && r.SnapshotRevision == 6
+	}) {
+		t.Fatalf("a stale acknowledgement left the pattern member without a presence row: %#v", rows)
+	}
+	members := sink.bindingMembers(rows, now)
+	if !slices.ContainsFunc(members, func(m model.Member) bool { return m.MemberID == "node-east-4" }) {
+		t.Fatalf("the present pattern member is not required: %#v", members)
+	}
+
+	if err := sink.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(binding), &got); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(got.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == "node-east-9" }) {
+		t.Fatal("a retired pattern member's row was kept")
 	}
 }

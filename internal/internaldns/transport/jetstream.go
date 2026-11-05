@@ -97,6 +97,17 @@ func Connect(c Config) (*JetStream, error) {
 		// A regional partition must not permanently close a long-running agent.
 		// Callers retry delivery while local health checks govern serving.
 		nats.MaxReconnects(-1),
+		// A credential rotation reaches the broker and this process at
+		// different times, so the same authorization error can repeat for a
+		// while. Keep retrying instead of closing the connection for good.
+		nats.IgnoreAuthErrorAbort(),
+		// Say why a connection dropped, so a credential the broker keeps
+		// refusing shows up in this process's log, not only the broker's.
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			if err != nil {
+				logf.Log.WithName("transport").Info("broker connection lost; reconnecting", "name", c.Name, "error", err.Error())
+			}
+		}),
 	}
 	if c.CredentialsFile != "" {
 		opts = append(opts, nats.UserCredentials(c.CredentialsFile))
@@ -105,18 +116,15 @@ func Connect(c Config) (*JetStream, error) {
 		opts = append(opts, nats.Token(c.Token))
 	}
 	if c.Username != "" {
-		password := c.Password
 		if c.PasswordFile != "" {
-			value, err := os.ReadFile(c.PasswordFile)
+			userInfo, err := passwordFileUserInfo(c.Username, c.PasswordFile)
 			if err != nil {
-				return nil, fmt.Errorf("read NATS password: %w", err)
+				return nil, err
 			}
-			password = strings.TrimSpace(string(value))
-			if password == "" {
-				return nil, errors.New("NATS password file is empty")
-			}
+			opts = append(opts, nats.UserInfoHandler(userInfo))
+		} else {
+			opts = append(opts, nats.UserInfo(c.Username, c.Password))
 		}
-		opts = append(opts, nats.UserInfo(c.Username, password))
 	}
 	if c.TLS != nil {
 		tlsConfig, err := loadTLS(*c.TLS)
@@ -161,7 +169,18 @@ func loadTLS(c TLSConfig) (*tls.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("load NATS client certificate: %w", err)
 		}
-		t.Certificates = []tls.Certificate{cert}
+		// Load the pair again on each handshake so a renewed certificate is
+		// used on the next reconnect, keeping the last pair that loaded.
+		var mu sync.Mutex
+		t.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if renewed, err := tls.LoadX509KeyPair(c.CertificateFile, c.KeyFile); err == nil {
+				cert = renewed
+			}
+			current := cert
+			return &current, nil
+		}
 	}
 	return t, nil
 }
@@ -729,4 +748,35 @@ func defaultInt(v, d int) int {
 		return d
 	}
 	return v
+}
+
+// passwordFileUserInfo reads the password file again on every connect and
+// reconnect, so a rotated password takes effect when the broker drops the old
+// one, without restarting the process. A file that cannot be read later keeps
+// the last password that could; only the first read must succeed.
+func passwordFileUserInfo(username, path string) (nats.UserInfoCB, error) {
+	read := func() (string, error) {
+		value, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read NATS password: %w", err)
+		}
+		password := strings.TrimSpace(string(value))
+		if password == "" {
+			return "", errors.New("NATS password file is empty")
+		}
+		return password, nil
+	}
+	password, err := read()
+	if err != nil {
+		return nil, err
+	}
+	var mu sync.Mutex
+	return func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if current, err := read(); err == nil {
+			password = current
+		}
+		return username, password
+	}, nil
 }

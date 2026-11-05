@@ -187,19 +187,30 @@ func (o *Outbox) Step(ctx context.Context) error {
 			continue
 		}
 		if err == nil && env.Kind == model.KindPublicationManifest {
-			var m dnsv1alpha1.DNSPublicationManifest
-			if getErr := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: out.Spec.ManifestRef.Name}, &m); getErr == nil {
-				base := m.DeepCopy()
-				m.Status.ExportState = dnsValueAcknowledged
-				m.Status.StreamSequence = ack.Sequence
-				m.Status.ExportedAt = current.Status.AcknowledgedAt
-				if patchErr := o.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); patchErr != nil && first == nil {
-					first = patchErr
-				}
+			if markErr := o.markExported(ctx, out.Spec.ManifestRef.Name, current.Status.AcknowledgedAt); markErr != nil && first == nil {
+				first = markErr
 			}
 		}
 	}
 	return first
+}
+
+// markExported records only the first export: every region's outbox exports
+// the same manifest and keeps its own stream sequence. The patch carries no
+// resource version, so acknowledgement writes to the manifest never conflict
+// with it.
+func (o *Outbox) markExported(ctx context.Context, name string, at *metav1.Time) error {
+	var m dnsv1alpha1.DNSPublicationManifest
+	if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: name}, &m); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if m.Status.ExportedAt != nil {
+		return nil
+	}
+	base := m.DeepCopy()
+	m.Status.ExportState = dnsValueAcknowledged
+	m.Status.ExportedAt = at
+	return client.IgnoreNotFound(o.Client.Status().Patch(ctx, &m, client.MergeFrom(base)))
 }
 
 func (o *Outbox) committed(ctx context.Context, out *dnsv1alpha1.DNSTransportOutbox, env model.Envelope) (bool, error) {

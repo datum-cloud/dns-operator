@@ -89,11 +89,14 @@ type projectRuntime struct {
 	starts *rate.Limiter
 }
 
-// syncedReader holds a project's watch cache once it has synced, and nothing
-// before that or after the project's manager stops.
+// syncedReader holds a project's watch cache once its zones and registrations
+// have synced, and nothing before that or after that manager stops. Each
+// manager start takes a token, so a late install from a stopped manager is
+// refused.
 type syncedReader struct {
 	mu     sync.RWMutex
 	reader client.Reader
+	token  uint64
 }
 
 func (r *syncedReader) get() client.Reader {
@@ -105,10 +108,34 @@ func (r *syncedReader) get() client.Reader {
 	return r.reader
 }
 
-func (r *syncedReader) set(reader client.Reader) {
+// begin starts a new manager run and returns its token.
+func (r *syncedReader) begin() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.token++
+	r.reader = nil
+	return r.token
+}
+
+// install sets the reader if the run it belongs to is still current.
+func (r *syncedReader) install(token uint64, reader client.Reader) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if token != r.token {
+		return false
+	}
 	r.reader = reader
+	return true
+}
+
+// end clears the reader of a run that stopped and refuses its late install.
+func (r *syncedReader) end(token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if token == r.token {
+		r.token++
+		r.reader = nil
+	}
 }
 
 func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
@@ -231,20 +258,30 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				return fmt.Errorf("setup reconciler: %w", err)
 			}
 			// Status reads come from the watch cache once it holds the
-			// project's objects; until then and after a stop they list the
-			// project API directly.
+			// project's zones and registrations; until then and after this
+			// run stops they list the project API directly.
+			runCtx, cancel := context.WithCancel(startCtx)
+			defer cancel()
+			token := cached.begin()
+			defer cached.end(token)
 			go func() {
-				if !mgr.GetCache().WaitForCacheSync(startCtx) {
+				projectCache := mgr.GetCache()
+				if !projectCache.WaitForCacheSync(runCtx) {
 					return
 				}
-				var reader client.Reader = mgr.GetCache()
+				// GetInformer blocks until each informer has synced.
+				for _, obj := range []client.Object{&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}} {
+					if _, err := projectCache.GetInformer(runCtx, obj); err != nil {
+						return
+					}
+				}
+				var reader client.Reader = projectCache
 				if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
 					reader = originUIDReader{reader}
 				}
-				cached.set(reader)
+				cached.install(token, reader)
 			}()
-			defer cached.set(nil)
-			return mgr.Start(startCtx)
+			return mgr.Start(runCtx)
 		}
 		return projectRuntime{config: project, direct: direct, cached: cached, start: start, starts: projectStarts}, nil
 	}

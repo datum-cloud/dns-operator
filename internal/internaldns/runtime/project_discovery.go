@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -76,7 +77,10 @@ func (d *projectDirectory) selectProject(ctx context.Context, req kubeadmission.
 	if err := reader.Get(ctx, client.ObjectKey{Name: parents[0]}, &project); err != nil {
 		return nil, fmt.Errorf("observe authenticated project: %w", err)
 	}
-	if !project.DeletionTimestamp.IsZero() || !apimeta.IsStatusConditionTrue(project.Status.Conditions, resourcemanagerv1alpha1.ProjectReady) {
+	if !project.DeletionTimestamp.IsZero() {
+		return nil, dnsadmission.ErrProjectDeleting
+	}
+	if !apimeta.IsStatusConditionTrue(project.Status.Conditions, resourcemanagerv1alpha1.ProjectReady) {
 		return nil, errors.New("authenticated project is unavailable")
 	}
 	d.mu.RLock()

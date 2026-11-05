@@ -750,10 +750,14 @@ func defaultInt(v, d int) int {
 	return v
 }
 
+// credentialLog reports credential files that stop being readable.
+var credentialLog = logf.Log.WithName("transport")
+
 // passwordFileUserInfo reads the password file again on every connect and
 // reconnect, so a rotated password takes effect when the broker drops the old
 // one, without restarting the process. A file that cannot be read later keeps
-// the last password that could; only the first read must succeed.
+// the last password that could, and is logged; only the first read must
+// succeed.
 func passwordFileUserInfo(username, path string) (nats.UserInfoCB, error) {
 	read := func() (string, error) {
 		value, err := os.ReadFile(path)
@@ -771,12 +775,22 @@ func passwordFileUserInfo(username, path string) (nats.UserInfoCB, error) {
 		return nil, err
 	}
 	var mu sync.Mutex
+	var reported time.Time
 	return func() (string, string) {
 		mu.Lock()
 		defer mu.Unlock()
-		if current, err := read(); err == nil {
-			password = current
+		current, err := read()
+		if err != nil {
+			// Reconnects retry every few seconds, so report a broken mount once
+			// a minute. Never the value: the path and error name the mount.
+			if time.Since(reported) >= time.Minute {
+				reported = time.Now()
+				credentialLog.Error(err, "broker password file unreadable; using the last password read", "path", path)
+			}
+			return username, password
 		}
+		reported = time.Time{}
+		password = current
 		return username, password
 	}, nil
 }

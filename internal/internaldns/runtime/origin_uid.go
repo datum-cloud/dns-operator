@@ -30,7 +30,19 @@ const (
 type originUIDClient struct{ client.Client }
 
 func (c originUIDClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+	return originUIDReader{c.Client}.Get(ctx, key, obj, opts...)
+}
+
+func (c originUIDClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return originUIDReader{c.Client}.List(ctx, list, opts...)
+}
+
+// originUIDReader gives a read-only source, such as a watch cache, the same
+// origin view as originUIDClient.
+type originUIDReader struct{ client.Reader }
+
+func (c originUIDReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := c.Reader.Get(ctx, key, obj, opts...); err != nil {
 		return err
 	}
 	withOriginUID(obj)
@@ -42,8 +54,8 @@ func (c originUIDClient) Get(ctx context.Context, key client.ObjectKey, obj clie
 // copy that shares one could stand in for an object it did not write. When
 // only other regions' copies share a UID, none of them can be trusted, and
 // all are dropped.
-func (c originUIDClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	if err := c.Client.List(ctx, list, opts...); err != nil {
+func (c originUIDReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if err := c.Reader.List(ctx, list, opts...); err != nil {
 		return err
 	}
 	items, err := meta.ExtractList(list)

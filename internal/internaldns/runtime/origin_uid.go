@@ -7,9 +7,9 @@ import (
 	"strconv"
 
 	"k8s.io/apimachinery/pkg/api/meta"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // originUIDAnnotation and originGenerationAnnotation are the UID and
@@ -19,6 +19,8 @@ import (
 const (
 	originUIDAnnotation        = "internal-dns.miloapis.com/origin-uid"
 	originGenerationAnnotation = "internal-dns.miloapis.com/origin-generation"
+	originLabel                = "internal-dns.miloapis.com/origin"
+	originProject              = "project"
 )
 
 // originUIDClient presents every copy it reads with its origin's UID and
@@ -35,16 +37,48 @@ func (c originUIDClient) Get(ctx context.Context, key client.ObjectKey, obj clie
 	return nil
 }
 
+// List also drops another region's copy that claims the UID of an object
+// the project API or this cluster wrote. References resolve by UID, so a
+// copy that shares one could stand in for an object it did not write. When
+// only other regions' copies share a UID, none of them can be trusted, and
+// all are dropped.
 func (c originUIDClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 	if err := c.Client.List(ctx, list, opts...); err != nil {
 		return err
 	}
-	return meta.EachListItem(list, func(o k8sruntime.Object) error {
-		if obj, ok := o.(client.Object); ok {
-			withOriginUID(obj)
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return err
+	}
+	trusted := map[types.UID]bool{}
+	count := map[types.UID]int{}
+	for _, o := range items {
+		obj, ok := o.(client.Object)
+		if !ok {
+			continue
 		}
-		return nil
-	})
+		peer := peerCopy(obj)
+		withOriginUID(obj)
+		count[obj.GetUID()]++
+		if !peer {
+			trusted[obj.GetUID()] = true
+		}
+	}
+	kept := items[:0]
+	for _, o := range items {
+		if obj, ok := o.(client.Object); ok && count[obj.GetUID()] > 1 && peerCopy(obj) {
+			log.FromContext(ctx).Info("ignoring another region's copy that shares its UID with another object", "namespace", obj.GetNamespace(), "name", obj.GetName(), "uid", obj.GetUID(), "trustedHolder", trusted[obj.GetUID()])
+			continue
+		}
+		kept = append(kept, o)
+	}
+	return meta.SetList(list, kept)
+}
+
+// peerCopy reports whether obj is another region's copy: it carries an origin
+// UID but was not written by the project API.
+func peerCopy(obj client.Object) bool {
+	return obj.GetAnnotations()[originUIDAnnotation] != "" && obj.GetLabels()[originLabel] != originProject
 }
 
 func withOriginUID(obj client.Object) {

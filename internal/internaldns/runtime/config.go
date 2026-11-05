@@ -116,6 +116,9 @@ type Config struct {
 	// on one of these regions' brokers that no other region shares. Empty
 	// means this control plane publishes every region.
 	Regions []string `json:"regions,omitempty"`
+	// Feed carries the inputs this region writes itself to the other
+	// regions and to the federation hub.
+	Feed *FeedConfig `json:"feed,omitempty"`
 }
 
 // PublicationStoreConfig moves the control plane's publication records
@@ -277,6 +280,9 @@ func (c *Config) Validate(role string) error {
 		return err
 	}
 	if err := c.validateRegions(); err != nil {
+		return err
+	}
+	if err := c.validateFeed(); err != nil {
 		return err
 	}
 	for i, suffix := range c.ManagedDomainSuffixes {

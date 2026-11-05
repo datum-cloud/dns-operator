@@ -469,6 +469,31 @@ project UID the replicator recorded on it. Every input, status write and
 platform record is then in the region's own cluster. Region entries report
 the object's generation at its origin, so entries from every region compare
 against the same project object.
+
+##### Inputs a region writes itself
+
+A producer in a region, such as a compute service naming its instances,
+writes registrations and contributions into the region's own cluster with the
+region as their origin. The region's control plane publishes them at once.
+With `feed` set, it also keeps one key per such object in the region's input
+bucket on its own broker, and copies each object into the federation hub,
+where the replicator's mirror records it in the project. The hub copy carries
+no replicated label, so the hub does not place it in any region.
+
+Every other region's broker mirrors that bucket over a JetStream domain link
+(`feed.peers`), and that region's control plane keeps a local copy of each
+object, marked with the writing region as its origin. A mirror carries deletes
+as well as writes, the applier removes copies whose key is gone after each
+replay, and it never replaces an object of another origin. Regions exchange
+their own writes this way without the project API or the hub in between.
+
+A region accepts another region's object only in a project namespace whose
+project has resolver access in the writing region, and removes its copies
+from a project once that access is gone. It also requires that no other
+object of the same kind in the namespace already hold its origin UID. When
+a copy from another region and an object from the project API or this region
+end up sharing a UID anyway, the control plane reads only the latter; when
+only copies from other regions share one, it reads none of them.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS

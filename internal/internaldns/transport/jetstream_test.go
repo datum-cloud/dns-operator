@@ -36,6 +36,23 @@ func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {
 	}
 }
 
+func TestClientCertificateAloneAuthenticates(t *testing.T) {
+	t.Parallel()
+	for name, tls := range map[string]*TLSConfig{
+		"CA only":          {ServerName: "nats.example", CAFile: "/tls/ca.crt"},
+		"cert without key": {ServerName: "nats.example", CertificateFile: "/tls/tls.crt"},
+		"key without cert": {ServerName: "nats.example", KeyFile: "/tls/tls.key"},
+	} {
+		if err := (Config{URL: "nats://example:4222", Name: "agent", TLS: tls}).validate(); err == nil {
+			t.Errorf("%s was accepted as authentication", name)
+		}
+	}
+	certOnly := Config{URL: "nats://example:4222", Name: "agent", TLS: &TLSConfig{ServerName: "nats.example", CertificateFile: "/tls/tls.crt", KeyFile: "/tls/tls.key"}}
+	if err := certOnly.validate(); err != nil {
+		t.Fatalf("a client certificate alone was rejected: %v", err)
+	}
+}
+
 func TestDevelopmentTransportMustBeExplicit(t *testing.T) {
 	t.Parallel()
 	if err := (Config{URL: "nats://127.0.0.1:4222", Name: "e2e", AllowInsecure: true}).validate(); err != nil {

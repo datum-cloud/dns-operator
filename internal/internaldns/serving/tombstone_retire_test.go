@@ -4,6 +4,7 @@ package serving
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -94,12 +95,51 @@ func TestVerifiedTombstoneStopsRenewingAfterRetention(t *testing.T) {
 		t.Fatalf("retirement was not persisted: %+v", p)
 	}
 
-	older := model.PublicationManifest{ManifestUID: "pub-old", ZoneUID: "zone-gone", Apex: "gone.example.", WriterEpoch: 3, Revision: 8, PreviousRevision: 7, Tombstone: true, Chunks: []model.ChunkRef{}, ContentHash: model.EmptyContentHash(), GeneratedAt: now}
-	if err := agent.handleManifest(context.Background(), envelope(t, model.KindPublicationManifest, "zone-gone", 3, 8, older)); err != nil {
+	republished := model.PublicationManifest{ManifestUID: "pub-new", ZoneUID: "zone-gone", Apex: "gone.example.", WriterEpoch: 4, Revision: 1, Tombstone: true, Chunks: []model.ChunkRef{}, ContentHash: model.EmptyContentHash(), GeneratedAt: now}
+	if err := agent.handleManifest(context.Background(), envelope(t, model.KindPublicationManifest, "zone-gone", 4, 1, republished)); err != nil {
 		t.Fatal(err)
 	}
-	if p := agent.state.Publications["zone-gone"]; !p.Manifest.Tombstone || p.Fence != gone.Fence {
-		t.Fatalf("an older manifest replaced a retired withdrawal: %+v", p)
+	if p := agent.state.Publications["zone-gone"]; p.Retired || !p.WithdrawnAt.IsZero() || p.Fence != (fence{Epoch: 4, Revision: 1}) {
+		t.Fatalf("a newer withdrawal did not restart retention: %+v", p)
+	}
+	if err := agent.retireTombstones(now); err != nil {
+		t.Fatal(err)
+	}
+	if n := renewals(); n != 1 {
+		t.Fatalf("a newer withdrawal renewed %d acks, want 1", n)
+	}
+}
+
+func TestRetireTombstonesKeepsMemoryWhenSaveFails(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := publicationState{Fence: fence{Epoch: 1, Revision: 2}, Manifest: model.PublicationManifest{ZoneUID: "zone-gone", Tombstone: true}, Plan: model.PublicationPlan{ZoneUID: "zone-gone", Apex: "gone.example."}, Verified: true, WithdrawnAt: now.Add(-2 * tombstoneAckRetention)}
+	agent.state.Publications["zone-gone"] = gone
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agent.store = stateStore{path: filepath.Join(blocker, "checkpoint.json")}
+	if err := agent.retireTombstones(now); err == nil {
+		t.Fatal("a failed save was not reported")
+	}
+	if got := agent.state.Publications["zone-gone"]; !equalJSON(got, gone) {
+		t.Fatalf("a failed save left retirement in memory: %+v", got)
 	}
 }
 

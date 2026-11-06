@@ -3,6 +3,7 @@
 package serving
 
 import (
+	"maps"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -33,24 +34,29 @@ type publicationState struct {
 // it has run out, keeps only the fence and manifest that reject an older
 // replay of the zone.
 func (a *Agent) retireTombstones(now time.Time) error {
-	changed := false
+	previous := map[string]publicationState{}
 	for uid, p := range a.state.Publications {
 		if !p.Manifest.Tombstone || !p.Verified || p.Retired {
 			continue
 		}
+		next := p
 		switch {
 		case p.WithdrawnAt.IsZero():
-			p.WithdrawnAt = now
+			next.WithdrawnAt = now
 		case now.Sub(p.WithdrawnAt) >= tombstoneAckRetention:
-			p.Plan, p.EffectiveHash, p.Retired = model.PublicationPlan{}, "", true
+			next.Plan, next.EffectiveHash, next.Retired = model.PublicationPlan{}, "", true
 		default:
 			continue
 		}
-		a.state.Publications[uid] = p
-		changed = true
+		previous[uid] = p
+		a.state.Publications[uid] = next
 	}
-	if !changed {
+	if len(previous) == 0 {
 		return nil
 	}
-	return a.store.Save(a.state)
+	if err := a.store.Save(a.state); err != nil {
+		maps.Copy(a.state.Publications, previous)
+		return err
+	}
+	return nil
 }

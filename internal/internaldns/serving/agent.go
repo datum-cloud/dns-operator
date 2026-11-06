@@ -852,7 +852,7 @@ func (a *Agent) Step(ctx context.Context) error {
 		return errors.New("no verified serving configuration is available")
 	}
 	if err := a.retireTombstones(a.deps.Clock()); err != nil {
-		return err
+		a.report(fmt.Errorf("retire withdrawn publications: %w", err))
 	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {

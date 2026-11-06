@@ -41,6 +41,13 @@ func (a *Agent) canRetainActive() bool {
 		next[binding.BindingUID] = binding
 	}
 	for _, binding := range old.Snapshot.Bindings {
+		// The approved configuration answers nothing for a withdrawn or
+		// pending context, so whatever the snapshot now says about it
+		// withdraws nothing. Shards carry such contexts until every member
+		// confirms them, which would otherwise drop approval on every update.
+		if binding.Tombstone || binding.ConfigurationPending {
+			continue
+		}
 		candidate, ok := next[binding.BindingUID]
 		if !ok || candidate.Tombstone || candidate.ConfigurationPending || bindingIdentity(binding) != bindingIdentity(candidate) || binding.Version != candidate.Version {
 			return false
@@ -98,8 +105,15 @@ func (a *Agent) retainedNodeRouting() []byte {
 	renderConfig.NodeAuthoritative = true
 	renderConfig.ReadyZoneMembers = map[string]map[string]map[string]bool{}
 	ready := map[string]bool{}
+	// Render withdrawn contexts the way reconciliation does: not at all.
+	served := active.Snapshot
+	served.Bindings = nil
 	for _, binding := range active.Snapshot.Bindings {
-		ready[binding.BindingUID] = !binding.Tombstone && !binding.ConfigurationPending
+		if binding.Tombstone {
+			continue
+		}
+		served.Bindings = append(served.Bindings, binding)
+		ready[binding.BindingUID] = !binding.ConfigurationPending
 		renderConfig.ReadyZoneMembers[binding.BindingUID] = map[string]map[string]bool{}
 		for _, zone := range binding.Zones {
 			publication, ok := active.Publications[zone.ZoneUID]
@@ -109,7 +123,7 @@ func (a *Agent) retainedNodeRouting() []byte {
 			renderConfig.ReadyZoneMembers[binding.BindingUID][zone.ZoneUID] = map[string]bool{a.cfg.MemberID: true}
 		}
 	}
-	rendered, err := renderPublications(renderConfig, active.Snapshot, ready, active.Publications)
+	rendered, err := renderPublications(renderConfig, served, ready, active.Publications)
 	if err != nil || string(rendered.Files[renderConfig.NodeDNSDist.Path]) != string(active.Files[renderConfig.NodeDNSDist.Path]) {
 		return nil
 	}

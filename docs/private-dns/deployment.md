@@ -154,9 +154,14 @@ retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
 static RRset must use the same TTL.
 
 A context without private zones proves recursion with the root SOA over UDP and
-TCP. `verifier.publicName` can override this probe. CoreDNS members need a
-writable
-`/tmp` runtime volume even when the image root filesystem is read-only.
+TCP. `verifier.publicName` can override this probe. After each daemon restart
+the agent itself performs, and after a failed context probe, the agent waits up
+to 30 seconds for its own daemons to answer the readiness canary before it
+probes, so a probe sent while CoreDNS is still loading does not gate a context
+that would have answered. If the daemons do not answer within that time, the
+agent probes anyway, and later checks probe the canary once without waiting
+until it answers again. CoreDNS members need a writable `/tmp` runtime volume
+even when the image root filesystem is read-only.
 
 Private packet caching stays disabled in dnsdist and CoreDNS. The context plugin
 answers private queries from the accepted in-memory zone data. Endpoint changes
@@ -265,11 +270,12 @@ before it selects a context, with NOERROR once a snapshot is loaded, so a member
 with no contexts is still ready. With an identity key, CoreDNS answers it only
 when the query carries that key. dnsdist forwards the canary from loopback, or
 from its own listen address, to its backend pool over UDP and TCP, and answers
-SERVFAIL when no backend is available. Only NOERROR with the expected TXT answer
-is ready. Readiness finishes within 1.5 seconds, inside the example probes'
-2-second timeout, and names the daemon that was slow. Any client that reaches a
-context can also read the canary; it says only that a CoreDNS process has loaded
-state. After a restart the agent waits for its daemons to answer the root SOA
+NXDOMAIN when no backend is available, so its own probes are not counted as
+SERVFAIL. Only NOERROR with the expected TXT answer is ready. Readiness
+finishes within 1.5 seconds, inside the example probes' 2-second timeout,
+and names the daemon that was slow. Any client that reaches a context can also
+read the canary; it says only that a CoreDNS process has loaded state. After a
+restart the agent waits for its daemons to answer the root SOA
 without SERVFAIL, not for the canary, so it does not gate daemons still running
 rules from an earlier release. dnsdist adds the canary to retained rules when
 it starts; if it cannot place the canary, it starts with startup rules that
@@ -400,10 +406,11 @@ Regional CoreDNS members from before the readiness canary refuse it. Until
 every regional CoreDNS answers the canary, a regional front treats a REFUSED
 canary as a live backend and logs that it did, so fronts and CoreDNS members can
 upgrade in either order. This is temporary: once every regional CoreDNS has
-the canary, a REFUSED canary should fail front readiness too. A SERVFAIL
-canary, which means no backend is available or a backend has no state or the
-wrong identity key, is never ready. A node member's dnsdist and CoreDNS run in
-one pod and upgrade together, so node readiness requires NOERROR.
+the canary, a REFUSED canary should fail front readiness too. An NXDOMAIN
+canary, which means no backend is available, and a SERVFAIL canary, which means
+a backend has no state or the wrong identity key, are never ready. A node
+member's dnsdist and CoreDNS run in one pod and upgrade together, so node
+readiness requires NOERROR.
 
 The checkpoint retains desired version fences and the activated configuration
 separately. Restart can restore the activated configuration during a rejected

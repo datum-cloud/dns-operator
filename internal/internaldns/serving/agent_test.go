@@ -871,6 +871,132 @@ func TestSameFenceAckRefreshDoesNotRewriteCheckpoint(t *testing.T) {
 	}
 }
 
+func TestResolverVerificationWaitsForLocalServing(t *testing.T) {
+	t.Parallel()
+	servingAfter, checks := 2, 0
+	var probedAt []int
+	agent := &Agent{
+		cfg: Config{ResolverDNSProbe: DNSVerifierConfig{Timeout: time.Second}},
+		deps: Dependencies{
+			LocalServing: func(context.Context) error {
+				checks++
+				if checks <= servingAfter {
+					return errors.New("returned SERVFAIL, want NOERROR")
+				}
+				return nil
+			},
+			Verifier: resolverVerifierFunc(func(context.Context, model.Binding) error {
+				probedAt = append(probedAt, checks)
+				return nil
+			}),
+		},
+	}
+	bindings := []model.Binding{{BindingUID: "binding-0"}}
+	active := map[string]bool{"binding-0": true}
+
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, active); failed || !active["binding-0"] {
+		t.Fatalf("verification after local serving failed=%v active=%v", failed, active)
+	}
+	if len(probedAt) != 1 || probedAt[0] != servingAfter+1 {
+		t.Fatalf("binding probed after %v local checks, want only after check %d passed", probedAt, servingAfter+1)
+	}
+
+	bindings[0].Version.Sequence++
+	before := checks
+	if agent.verifyResolverBindings(context.Background(), bindings, active); checks != before {
+		t.Fatalf("local serving checked %d more times without a daemon restart", checks-before)
+	}
+
+	agent.tx.restarts++
+	servingAfter = checks + 1
+	bindings[0].Version.Sequence++
+	probedAt = nil
+	if agent.verifyResolverBindings(context.Background(), bindings, active); len(probedAt) != 1 || probedAt[0] != servingAfter+1 {
+		t.Fatalf("after a daemon restart, binding probed after %v local checks, want after check %d", probedAt, servingAfter+1)
+	}
+}
+
+func TestResolverAgentChecksLocalServing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true,
+	}, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.deps.LocalServing == nil {
+		t.Fatal("a resolver agent verifies contexts without first checking its own daemons")
+	}
+}
+
+func TestResolverVerificationRechecksLocalServingAfterAFailedProbe(t *testing.T) {
+	t.Parallel()
+	checks, serving, failing := 0, true, true
+	var reported []error
+	agent := &Agent{
+		cfg: Config{ResolverDNSProbe: DNSVerifierConfig{Timeout: time.Second}},
+		deps: Dependencies{
+			LocalServing: func(context.Context) error {
+				checks++
+				if !serving {
+					return errors.New("no DNS response")
+				}
+				return nil
+			},
+			Verifier: resolverVerifierFunc(func(context.Context, model.Binding) error {
+				if failing {
+					return errors.New("returned SERVFAIL")
+				}
+				return nil
+			}),
+			OnError: func(err error) { reported = append(reported, err) },
+		},
+		localServingWait: 300 * time.Millisecond,
+	}
+	bindings := []model.Binding{{BindingUID: "binding-0"}}
+	verify := func() bool {
+		return agent.verifyResolverBindings(context.Background(), bindings, map[string]bool{"binding-0": true})
+	}
+
+	if !verify() || checks != 1 {
+		t.Fatalf("failing probe after local serving: checks=%d", checks)
+	}
+	if verify(); checks != 2 {
+		t.Fatalf("local serving was not checked again after a failed probe: checks=%d", checks)
+	}
+
+	serving = false
+	before := checks
+	verify()
+	if checks-before < 2 {
+		t.Fatalf("local serving that stopped answering was not retried within the wait: %d checks", checks-before)
+	}
+	if !slices.ContainsFunc(reported, func(err error) bool { return strings.Contains(err.Error(), "did not answer the readiness canary") }) {
+		t.Fatalf("an expired wait was not reported: %v", reported)
+	}
+	before = checks
+	if !verify() || checks != before {
+		t.Fatalf("an expired wait was repeated before the daemons restarted: %d more checks", checks-before)
+	}
+	agent.tx.restarts++
+	before = checks
+	started := time.Now()
+	if verify(); checks-before != 1 || time.Since(started) >= agent.localServingWait {
+		t.Fatalf("after an expired wait, a restart waited again: %d checks in %s", checks-before, time.Since(started))
+	}
+	serving = true
+	agent.tx.restarts++
+	before = checks
+	if verify(); checks-before != 1 || agent.localServingExpired {
+		t.Fatalf("daemons answering again did not end the expired state: %d checks", checks-before)
+	}
+}
+
 func TestSameFenceAckRefreshDoesNotReconcile(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()

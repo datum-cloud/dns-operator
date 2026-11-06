@@ -35,6 +35,15 @@ func readActivation(markerPath string) (activationState, error) {
 }
 
 func (t *FileTransaction) beginActivation() error {
+	return t.beginPhase(activationInstalling)
+}
+
+// beginGate takes activation ownership for failing closed.
+func (t *FileTransaction) beginGate() error {
+	return t.beginPhase(activationGating)
+}
+
+func (t *FileTransaction) beginPhase(phase string) error {
 	if t.MarkerPath == "" {
 		return nil
 	}
@@ -55,15 +64,7 @@ func (t *FileTransaction) beginActivation() error {
 	if err := unix.Flock(int(t.activationLock.Fd()), unix.LOCK_EX); err != nil {
 		return err
 	}
-	return t.writeActivation(activationState{Phase: activationInstalling})
-}
-
-// beginGate takes activation ownership for failing closed.
-func (t *FileTransaction) beginGate() error {
-	if err := t.beginActivation(); err != nil {
-		return err
-	}
-	return t.writeActivation(activationState{Phase: activationGating})
+	return t.writeActivation(activationState{Phase: phase})
 }
 
 func (t *FileTransaction) writeActivation(state activationState) error {

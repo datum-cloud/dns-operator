@@ -583,15 +583,9 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
-		if !a.canRetainActive() {
-			// Own the activation before readiness can see the withdrawal,
-			// when reconciliation installs it right away.
-			if a.state.Active != nil && !a.bootstrapInProgress && (a.bootstrapComplete || !a.cfg.NodeAuthoritative) {
-				if err := a.tx.beginActivation(); err != nil {
-					_ = a.failClosed(ctx)
-					return err
-				}
-			}
+		// Reconciliation withdraws the approval when it installs. Without
+		// it, withdraw now; restart never retains it either way.
+		if !a.canRetainActive() && (a.bootstrapInProgress || a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
 			a.withdrawApproval()
 		}
 		if err := a.store.Save(a.state); err != nil {
@@ -1017,6 +1011,13 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 			return err
 		}
 		a.needsActivation = false
+	} else if a.state.Active != nil && !a.canRetainActive() {
+		// Nothing to install, so nothing serves from the replaced approval
+		// under a lock; drop it as before.
+		a.withdrawApproval()
+		if err := a.store.Save(a.state); err != nil {
+			return err
+		}
 	}
 	if a.cfg.Mode == ModeCombined {
 		installed := map[string]installedPublication{}

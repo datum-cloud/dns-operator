@@ -269,48 +269,27 @@ func TestRepublishKeepsApprovalBesideWithdrawnAndPendingContexts(t *testing.T) {
 	}
 }
 
-// A withdrawal stops retaining the approved configuration, but the daemons
-// keep answering from it until the withdrawal is installed. Readiness keeps
-// that approval while the agent installs and verifies, so a record deletion
-// does not close every member's health port at once.
-func TestWithdrawalKeepsReadinessWhileInstalling(t *testing.T) {
-	now := time.Now().UTC()
-	cfg := nodeAuthoritativeTestConfig(t)
-	runner := &recordingRunner{}
-	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
-	if err != nil {
-		t.Fatal(err)
+// hookRunner records commands and calls each hook before its command runs.
+type hookRunner struct {
+	recordingRunner
+	hooks map[string]func()
+}
+
+func (r *hookRunner) Run(ctx context.Context, c Command) ([]byte, error) {
+	if hook := r.hooks[c.Path]; hook != nil {
+		hook()
 	}
-	installTestPublication(t, a, now)
-	approved := a.state.Active
-	p := a.state.Publications["zone-a"]
-	b, _ := json.Marshal(p.Plan)
+	return r.recordingRunner.Run(ctx, c)
+}
+
+func republishZone(t *testing.T, a *Agent, now time.Time, mutate func(*model.PublicationPlan)) error {
+	t.Helper()
+	b, _ := json.Marshal(a.state.Publications["zone-a"].Plan)
 	var plan model.PublicationPlan
 	if err := json.Unmarshal(b, &plan); err != nil {
 		t.Fatal(err)
 	}
-	plan.RRSets = nil
-	checked := false
-	a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
-		if checked {
-			return nil
-		}
-		checked = true
-		state, err := a.store.Load()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if state.Active != nil {
-			t.Fatal("withdrawal retained the approval it replaces")
-		}
-		if state.Withdrawing == nil || !equalJSON(*state.Withdrawing, *approved) {
-			t.Fatal("withdrawal did not keep the replaced approval for readiness")
-		}
-		if installing, err := installationReadiness(cfg.StateDir, time.Now()); !installing || err != nil {
-			t.Fatalf("withdrawal not reported as a live installation: %v %v", installing, err)
-		}
-		return nil
-	})
+	mutate(&plan)
 	payload, _ := json.Marshal(plan)
 	chunk := model.PublicationChunk{ManifestUID: "manifest-b", ZoneUID: "zone-a", WriterEpoch: 2, Revision: 5, Index: 0, SHA256: model.Hash(payload), Payload: payload}
 	manifest := model.PublicationManifest{ManifestUID: chunk.ManifestUID, ZoneUID: "zone-a", Apex: plan.Apex, WriterEpoch: 2, Revision: 5, PreviousRevision: 4, Chunks: []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}, ContentHash: model.Hash(payload), GeneratedAt: now}
@@ -318,20 +297,100 @@ func TestWithdrawalKeepsReadinessWhileInstalling(t *testing.T) {
 	if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err != nil {
-		t.Fatal(err)
+	return a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest))
+}
+
+// A withdrawal stops retaining the approved configuration, but the daemons
+// keep answering from it until the withdrawal is installed. Readiness keeps
+// that approval from the moment the withdrawal is saved, so a record or
+// context withdrawal does not close every member's health port at once.
+func TestWithdrawalKeepsReadinessWhileInstalling(t *testing.T) {
+	for _, withdrawal := range []string{"record", "zone-detached"} {
+		t.Run(withdrawal, func(t *testing.T) {
+			now := time.Now().UTC()
+			cfg := nodeAuthoritativeTestConfig(t)
+			runner := &hookRunner{}
+			a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installTestPublication(t, a, now)
+			approved := *a.state.Active
+			validated := false
+			// Validation runs before the transaction takes its own lock.
+			runner.hooks = map[string]func(){"validate": func() {
+				validated = true
+				state, err := a.store.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state.Active != nil {
+					t.Fatal("withdrawal retained the approval it replaces")
+				}
+				served, installing, err := servedApproval(cfg.StateDir)
+				if err != nil || !installing || !equalJSON(*served, approved) {
+					t.Fatalf("withdrawal not served from the replaced approval: installing=%v err=%v", installing, err)
+				}
+			}}
+			ctx := context.Background()
+			if withdrawal == "record" {
+				err = republishZone(t, a, now, func(p *model.PublicationPlan) { p.RRSets = nil })
+			} else {
+				snapshot := *a.state.Snapshot
+				snapshot.Bindings = append([]model.Binding(nil), snapshot.Bindings...)
+				snapshot.Bindings[0].Zones = nil
+				snapshot.Bindings[0].ConfigurationRevision++
+				snapshot.ConfigurationRevision++
+				err = a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !validated {
+				t.Fatal("withdrawal was not installed")
+			}
+			state, err := a.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Active == nil || state.Withdrawing != nil {
+				t.Fatal("installed withdrawal not approved")
+			}
+			if activationPending(cfg.StateDir) {
+				t.Fatal("approved withdrawal left the activation pending")
+			}
+		})
 	}
-	if !checked {
-		t.Fatal("withdrawal was not verified")
-	}
-	state, err := a.store.Load()
+}
+
+// A member failing closed is never ready on the approval a withdrawal
+// replaced, even while its agent still holds the activation lock.
+func TestFailedWithdrawalIsNotReadyWhileGating(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	runner := &hookRunner{}
+	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Active == nil || state.Withdrawing != nil || state.Active.Publications["zone-a"].Fence.Revision != 5 {
-		t.Fatal("verified withdrawal not approved")
+	installTestPublication(t, a, now)
+	gated := false
+	runner.hooks = map[string]func(){"gate": func() {
+		gated = true
+		if _, _, err := servedApproval(cfg.StateDir); err == nil {
+			t.Fatal("gating member served the replaced approval")
+		}
+	}}
+	a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+		return errors.New("withdrawal probe failed")
+	})
+	if err := republishZone(t, a, now, func(p *model.PublicationPlan) { p.RRSets = nil }); err == nil {
+		t.Fatal("failed withdrawal accepted")
 	}
-	if activationPending(cfg.StateDir) {
-		t.Fatal("approved withdrawal left the activation pending")
+	if !gated {
+		t.Fatal("failed withdrawal did not fail closed")
+	}
+	if _, _, err := servedApproval(cfg.StateDir); err == nil {
+		t.Fatal("failed withdrawal ready after gating")
 	}
 }

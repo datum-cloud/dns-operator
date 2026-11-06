@@ -362,11 +362,11 @@ kubectl -n <fleet-namespace> get events --field-selector reason=Unhealthy
 pool at 0 active servers while queries for it keep arriving.
 
 **Known failure modes.** Readiness fails with `no approved configuration is
-active` while a member installs an update that withdraws a context, zone or
-record from its approved configuration. Additive updates, such as a zone republished
-after a control plane takeover, keep the approved configuration and do not
-fail readiness. The failures last less than a scrape interval, so
-`kube_pod_status_ready` never shows them.
+active` when a member has never been approved, or when its agent stopped or
+failed partway through an update that withdraws a context, zone or record.
+While the agent is still installing and verifying such an update, readiness
+keeps using the approval it replaces, because the daemons answer from it until
+the new files are live.
 
 **Gaps.** No metric for reloads or snapshot applies (the CoreDNS
 `context_snapshot_*` families arrive with #300), so reload churn is only

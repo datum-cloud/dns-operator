@@ -359,6 +359,9 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
+	// A gated member is never ready on an approval it replaced. The next
+	// save persists this; readiness already ignores it once the lock is gone.
+	a.state.Withdrawing = nil
 	a.verifiedPaths = nil
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -580,12 +583,19 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
-		if !a.canRetainActive() {
-			a.state.Active = nil
+		withdrawing := !a.canRetainActive()
+		if withdrawing {
+			a.withdrawApproval()
 		}
 		if err := a.store.Save(a.state); err != nil {
 			_ = a.failClosed(ctx)
 			return err
+		}
+		if withdrawing && !a.bootstrapInProgress && (a.bootstrapComplete || !a.cfg.NodeAuthoritative) {
+			if err := a.tx.beginActivation(); err != nil {
+				_ = a.failClosed(ctx)
+				return err
+			}
 		}
 	}
 	if a.cfg.NodeAuthoritative && !a.bootstrapComplete && !a.bootstrapInProgress {
@@ -976,8 +986,11 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
 		if !a.canRetainActive() {
-			a.state.Active = nil
+			a.withdrawApproval()
 			if err := a.store.Save(a.state); err != nil {
+				return err
+			}
+			if err := a.tx.beginActivation(); err != nil {
 				return err
 			}
 		}

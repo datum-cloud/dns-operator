@@ -149,10 +149,16 @@ func Readiness(ctx context.Context, config Config) error {
 	if err != nil {
 		return err
 	}
-	if state.Active == nil {
+	active := state.Active
+	if active == nil && installing {
+		// A live agent is installing a withdrawal. The daemons answer from
+		// the approval it replaces until the new files are live.
+		active = state.Withdrawing
+	}
+	if active == nil {
 		return errors.New("no approved configuration is active")
 	}
-	if !installing && !installedFilesMatch(state.Active.Files) {
+	if !installing && !installedFilesMatch(active.Files) {
 		if installing, err = installationReadiness(config.StateDir, time.Now()); err != nil {
 			return err
 		}
@@ -160,7 +166,7 @@ func Readiness(ctx context.Context, config Config) error {
 			return errors.New("installed configuration does not match the approved checkpoint")
 		}
 	}
-	if err := state.Active.Snapshot.Validate(); err != nil {
+	if err := active.Snapshot.Validate(); err != nil {
 		return fmt.Errorf("approved snapshot: %w", err)
 	}
 	if config.UnsafeAllowNoDNSVerify {

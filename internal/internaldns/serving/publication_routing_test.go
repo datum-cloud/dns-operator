@@ -268,3 +268,70 @@ func TestRepublishKeepsApprovalBesideWithdrawnAndPendingContexts(t *testing.T) {
 		})
 	}
 }
+
+// A withdrawal stops retaining the approved configuration, but the daemons
+// keep answering from it until the withdrawal is installed. Readiness keeps
+// that approval while the agent installs and verifies, so a record deletion
+// does not close every member's health port at once.
+func TestWithdrawalKeepsReadinessWhileInstalling(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	runner := &recordingRunner{}
+	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, a, now)
+	approved := a.state.Active
+	p := a.state.Publications["zone-a"]
+	b, _ := json.Marshal(p.Plan)
+	var plan model.PublicationPlan
+	if err := json.Unmarshal(b, &plan); err != nil {
+		t.Fatal(err)
+	}
+	plan.RRSets = nil
+	checked := false
+	a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+		if checked {
+			return nil
+		}
+		checked = true
+		state, err := a.store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Active != nil {
+			t.Fatal("withdrawal retained the approval it replaces")
+		}
+		if state.Withdrawing == nil || !equalJSON(*state.Withdrawing, *approved) {
+			t.Fatal("withdrawal did not keep the replaced approval for readiness")
+		}
+		if installing, err := installationReadiness(cfg.StateDir, time.Now()); !installing || err != nil {
+			t.Fatalf("withdrawal not reported as a live installation: %v %v", installing, err)
+		}
+		return nil
+	})
+	payload, _ := json.Marshal(plan)
+	chunk := model.PublicationChunk{ManifestUID: "manifest-b", ZoneUID: "zone-a", WriterEpoch: 2, Revision: 5, Index: 0, SHA256: model.Hash(payload), Payload: payload}
+	manifest := model.PublicationManifest{ManifestUID: chunk.ManifestUID, ZoneUID: "zone-a", Apex: plan.Apex, WriterEpoch: 2, Revision: 5, PreviousRevision: 4, Chunks: []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}, ContentHash: model.Hash(payload), GeneratedAt: now}
+	ctx := context.Background()
+	if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest)); err != nil {
+		t.Fatal(err)
+	}
+	if !checked {
+		t.Fatal("withdrawal was not verified")
+	}
+	state, err := a.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Active == nil || state.Withdrawing != nil || state.Active.Publications["zone-a"].Fence.Revision != 5 {
+		t.Fatal("verified withdrawal not approved")
+	}
+	if activationPending(cfg.StateDir) {
+		t.Fatal("approved withdrawal left the activation pending")
+	}
+}

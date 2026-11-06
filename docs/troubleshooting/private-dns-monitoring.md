@@ -361,10 +361,12 @@ kubectl -n <fleet-namespace> get events --field-selector reason=Unhealthy
 **Bad looks like.** Every regional backend down on the front, or a `ready_<hash>`
 pool at 0 active servers while queries for it keep arriving.
 
-**Known failure modes.** Readiness blips during a snapshot swap, with the
-message `no approved configuration is active`. They line up with config reloads
-and last less than a scrape interval, so `kube_pod_status_ready` never shows
-them.
+**Known failure modes.** Readiness fails with `no approved configuration is
+active` while a member installs an update that withdraws a context, zone or
+record from its approved configuration. Additive updates, such as a zone republished
+after a control plane takeover, keep the approved configuration and do not
+fail readiness. The failures last less than a scrape interval, so
+`kube_pod_status_ready` never shows them.
 
 **Gaps.** No metric for reloads or snapshot applies (the CoreDNS
 `context_snapshot_*` families arrive with #300), so reload churn is only

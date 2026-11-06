@@ -186,3 +186,85 @@ func TestRetainedNodeRoutingRequiresUnchangedAuthorization(t *testing.T) {
 		})
 	}
 }
+
+// A shard keeps withdrawn and pending contexts in its snapshot until every
+// member confirms them. The approved configuration serves neither, so their
+// presence must not stop a member keeping that configuration while it
+// installs an unrelated update, such as every zone being republished under a
+// new writer epoch after a control plane takeover.
+func TestRepublishKeepsApprovalBesideWithdrawnAndPendingContexts(t *testing.T) {
+	for _, peer := range []string{"tombstone", "pending"} {
+		t.Run(peer, func(t *testing.T) {
+			now := time.Now().UTC()
+			cfg := nodeAuthoritativeTestConfig(t)
+			cfg.Transaction.Reload = []Command{
+				{Path: "reload-coredns", WhenChanged: []string{cfg.Render.NodeCoreDNS.Path}},
+				{Path: "reload-dnsdist", WhenChanged: []string{cfg.Render.NodeDNSDist.Path}},
+			}
+			runner := &recordingRunner{}
+			a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installTestPublication(t, a, now)
+			ctx := context.Background()
+
+			snapshot := *a.state.Snapshot
+			snapshot.Bindings = append([]model.Binding(nil), snapshot.Bindings...)
+			other := snapshot.Bindings[0]
+			other.BindingUID, other.ContextUID = "binding-b", "vpc-b"
+			other.ConsumerAddress, other.ClusterAddress = "10.253.0.52", "10.253.0.42"
+			other.Zones = nil
+			if peer == "tombstone" {
+				other.Tombstone = true
+			} else {
+				other.ConfigurationPending = true
+			}
+			snapshot.Bindings = append(snapshot.Bindings, other)
+			snapshot.ConfigurationRevision++
+			if err := a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+				t.Fatal(err)
+			}
+			if a.state.Active == nil || !a.canRetainActive() {
+				t.Fatal("approved configuration not retainable beside a context it does not serve")
+			}
+			baseline, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Republish the zone unchanged under a new writer epoch.
+			runner.calls = nil
+			a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+				if a.state.Active == nil {
+					t.Fatal("approved configuration dropped while the republished zone was verified")
+				}
+				return nil
+			})
+			payload, _ := json.Marshal(a.state.Publications["zone-a"].Plan)
+			chunk := model.PublicationChunk{ManifestUID: "manifest-takeover", ZoneUID: "zone-a", WriterEpoch: 3, Revision: 5, Index: 0, SHA256: model.Hash(payload), Payload: payload}
+			manifest := model.PublicationManifest{ManifestUID: chunk.ManifestUID, ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 5, PreviousRevision: 4, Chunks: []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}, ContentHash: model.Hash(payload), GeneratedAt: now}
+			if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 3, 5, chunk)); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 3, 5, manifest)); err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range runner.calls {
+				if call.Path == "reload-dnsdist" || call.Path == "gate" {
+					t.Fatalf("republish ran %s", call.Path)
+				}
+			}
+			current, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(current) != string(baseline) {
+				t.Fatal("republish changed routing")
+			}
+			if a.state.Active == nil || a.state.Active.Publications["zone-a"].Fence.Epoch != 3 {
+				t.Fatal("republished zone not approved")
+			}
+		})
+	}
+}

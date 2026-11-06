@@ -33,7 +33,11 @@ type replicaAck struct {
 const checkpointFormatVersion = 7
 
 type checkpoint struct {
-	Active             *activeConfiguration                         `json:"active,omitempty"`
+	Active *activeConfiguration `json:"active,omitempty"`
+	// Withdrawing is the approval a withdrawal replaced. Readiness keeps
+	// using it only while a live agent installs and verifies the
+	// withdrawal; it is never restored or retained.
+	Withdrawing        *activeConfiguration                         `json:"withdrawing,omitempty"`
 	FormatVersion      int                                          `json:"formatVersion"`
 	ServingFence       fence                                        `json:"servingFence"`
 	Snapshot           *model.ServingSnapshot                       `json:"snapshot,omitempty"`

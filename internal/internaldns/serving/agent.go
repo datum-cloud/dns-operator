@@ -359,10 +359,13 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
+	// Readiness rejects the gating phase, and later saves drop the
+	// replaced approval before anything takes the lock again.
+	a.state.Withdrawing = nil
 	a.verifiedPaths = nil
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
+	return errors.Join(a.tx.beginGate(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
 }
 
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {
@@ -580,8 +583,10 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
-		if !a.canRetainActive() {
-			a.state.Active = nil
+		// Reconciliation withdraws the approval when it installs. Without
+		// it, withdraw now; restart never retains it either way.
+		if !a.canRetainActive() && (a.bootstrapInProgress || a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
+			a.withdrawApproval()
 		}
 		if err := a.store.Save(a.state); err != nil {
 			_ = a.failClosed(ctx)
@@ -976,7 +981,15 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
 		if !a.canRetainActive() {
-			a.state.Active = nil
+			// Own the activation before readiness can see a new withdrawal.
+			// Without an approval to replace, persist that first instead, so
+			// a replaced approval left by a gated run is never served.
+			if a.state.Active != nil {
+				if err := a.tx.beginActivation(); err != nil {
+					return err
+				}
+			}
+			a.withdrawApproval()
 			if err := a.store.Save(a.state); err != nil {
 				return err
 			}
@@ -998,6 +1011,13 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 			return err
 		}
 		a.needsActivation = false
+	} else if a.state.Active != nil && !a.canRetainActive() {
+		// Nothing to install, so nothing serves from the replaced approval
+		// under a lock; drop it as before.
+		a.withdrawApproval()
+		if err := a.store.Save(a.state); err != nil {
+			return err
+		}
 	}
 	if a.cfg.Mode == ModeCombined {
 		installed := map[string]installedPublication{}

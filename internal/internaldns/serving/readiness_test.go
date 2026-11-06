@@ -473,3 +473,32 @@ func TestReadinessNamesASlowDaemonWithinTheProbeTimeout(t *testing.T) {
 		t.Fatalf("readiness took %s, longer than the probe timeout", elapsed)
 	}
 }
+
+func TestReadinessUsesReplacedApprovalOnlyDuringLiveWithdrawal(t *testing.T) {
+	f := newReadinessFixture(t)
+	store := stateStore{path: filepath.Join(f.dir, "checkpoint.json")}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Withdrawing, state.Active = state.Active, nil
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("a replaced approval was ready without a live installer")
+	}
+	tx := FileTransaction{MarkerPath: activationMarkerPath(f.dir)}
+	if err := tx.beginActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err != nil {
+		t.Fatalf("a live withdrawal was not ready on the approval it replaces: %v", err)
+	}
+	if err := tx.abandonActivation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := Readiness(context.Background(), f.config); err == nil {
+		t.Fatal("an abandoned withdrawal was ready")
+	}
+}

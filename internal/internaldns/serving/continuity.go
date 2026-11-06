@@ -132,6 +132,17 @@ func (a *Agent) retainedNodeRouting() []byte {
 	return active.Files[renderConfig.NodeDNSDist.Path]
 }
 
+// withdrawApproval stops retaining the approved configuration because the
+// desired state withdraws something it serves. The daemons keep answering
+// from it until the withdrawal is installed, so readiness keeps it while this
+// agent holds the activation lock. Restart and retention never use it.
+func (a *Agent) withdrawApproval() {
+	if a.state.Active != nil {
+		a.state.Withdrawing = a.state.Active
+	}
+	a.state.Active = nil
+}
+
 func (a *Agent) approveConfiguration(files map[string][]byte) error {
 	candidate := activeConfiguration{Snapshot: *a.state.Snapshot, Publications: a.state.Publications, Files: files, NodeAuthoritative: a.cfg.NodeAuthoritative}
 	data, err := json.Marshal(candidate)
@@ -142,13 +153,13 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 	if err := json.Unmarshal(data, &active); err != nil {
 		return err
 	}
-	if a.state.Active != nil && equalJSON(*a.state.Active, active) {
+	if a.state.Active != nil && a.state.Withdrawing == nil && equalJSON(*a.state.Active, active) {
 		return a.tx.commitActivation()
 	}
-	previous := a.state.Active
-	a.state.Active = &active
+	previous, withdrawing := a.state.Active, a.state.Withdrawing
+	a.state.Active, a.state.Withdrawing = &active, nil
 	if err := a.store.Save(a.state); err != nil {
-		a.state.Active = previous
+		a.state.Active, a.state.Withdrawing = previous, withdrawing
 		return err
 	}
 	return a.tx.commitActivation()

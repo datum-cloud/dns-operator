@@ -63,7 +63,11 @@ func routineInstallation(stateDir string, info os.FileInfo, now time.Time) error
 		return errors.New("configuration installation is incomplete")
 	}
 	since := info.ModTime()
-	if state, err := readActivation(activationMarkerPath(stateDir)); err == nil && !state.Since.IsZero() {
+	state, err := readActivation(activationMarkerPath(stateDir))
+	if err == nil && state.Phase == activationGating {
+		return errors.New("serving is failing closed")
+	}
+	if err == nil && !state.Since.IsZero() {
 		since = state.Since
 	}
 	if age := now.Sub(since); age > activationInstallGrace {
@@ -135,24 +139,46 @@ func sameDNSDistRules(a, b []byte) bool {
 	return okA && okB && bytes.Equal(withoutDNSDistReadinessCanary(rulesA), withoutDNSDistReadinessCanary(rulesB))
 }
 
+// servedApproval returns the approval the daemons answer from. While a live
+// agent installs a withdrawal, that is the approval the withdrawal replaces:
+// the daemons keep answering from it until the new files are live. The agent
+// takes the activation lock before it saves the withdrawal, so a withdrawal
+// seen without a live installer is checked once more.
+func servedApproval(stateDir string) (*activeConfiguration, bool, error) {
+	installing, err := installationReadiness(stateDir, time.Now())
+	if err != nil {
+		return nil, false, err
+	}
+	state, err := (stateStore{path: filepath.Join(stateDir, "checkpoint.json")}).Load()
+	if err != nil {
+		return nil, false, err
+	}
+	if state.Active == nil && state.Withdrawing != nil && !installing {
+		if installing, err = installationReadiness(stateDir, time.Now()); err != nil {
+			return nil, false, err
+		}
+	}
+	active := state.Active
+	if active == nil && installing {
+		active = state.Withdrawing
+	}
+	if active == nil {
+		return nil, false, errors.New("no approved configuration is active")
+	}
+	return active, installing, nil
+}
+
 // Readiness verifies the approved files and live DNS processes using local state.
 // It does not require the configuration agent or state delivery to be available.
 // While a live agent installs an update, the daemons keep serving and the
 // installed files are expected to differ from the approved checkpoint. An
 // abandoned or gated activation is never ready.
 func Readiness(ctx context.Context, config Config) error {
-	installing, err := installationReadiness(config.StateDir, time.Now())
+	active, installing, err := servedApproval(config.StateDir)
 	if err != nil {
 		return err
 	}
-	state, err := (stateStore{path: filepath.Join(config.StateDir, "checkpoint.json")}).Load()
-	if err != nil {
-		return err
-	}
-	if state.Active == nil {
-		return errors.New("no approved configuration is active")
-	}
-	if !installing && !installedFilesMatch(state.Active.Files) {
+	if !installing && !installedFilesMatch(active.Files) {
 		if installing, err = installationReadiness(config.StateDir, time.Now()); err != nil {
 			return err
 		}
@@ -160,7 +186,7 @@ func Readiness(ctx context.Context, config Config) error {
 			return errors.New("installed configuration does not match the approved checkpoint")
 		}
 	}
-	if err := state.Active.Snapshot.Validate(); err != nil {
+	if err := active.Snapshot.Validate(); err != nil {
 		return fmt.Errorf("approved snapshot: %w", err)
 	}
 	if config.UnsafeAllowNoDNSVerify {

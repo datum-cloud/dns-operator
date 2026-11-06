@@ -865,6 +865,9 @@ func (a *Agent) Step(ctx context.Context) error {
 	if a.state.Snapshot == nil {
 		return errors.New("no verified serving configuration is available")
 	}
+	if err := a.retireTombstones(a.deps.Clock()); err != nil {
+		a.report(fmt.Errorf("retire withdrawn publications: %w", err))
+	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {
 			a.gateRejectedUpdate(ctx, err)
@@ -1419,7 +1422,7 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	}
 	var due []duePublication
 	for uid, p := range a.state.Publications {
-		if !p.Verified || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
+		if !p.Verified || p.Retired || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
 			continue
 		}
 		if last := a.lastPublicationAck[uid]; !last.IsZero() && now.Sub(last) < interval {

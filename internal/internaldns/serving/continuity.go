@@ -45,6 +45,8 @@ func (a *Agent) canRetainActive() bool {
 		// pending context, so whatever the snapshot now says about it
 		// withdraws nothing. Shards carry such contexts until every member
 		// confirms them, which would otherwise drop approval on every update.
+		// A pending context carries no zones (Snapshot.Validate), so it has
+		// no zone data to withdraw either.
 		if binding.Tombstone || binding.ConfigurationPending {
 			continue
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -471,18 +472,25 @@ func convergeImport(
 	)
 	for _, t := range orderTypes(records) {
 		group := recordsOfType(records, t)
-		plan, decided := planType(zone, t, existing[t], group, opts, warnTo)
-		outcomes = append(outcomes, decided...)
-		// Only a failure aborts. A skip is a deliberate outcome — a platform
-		// record the import declined to touch — and must not take the rest of
-		// the file down with it, or no provider export would ever import.
-		for _, o := range decided {
-			if o.result == outcomeFailed {
-				rejected = true
+		// One plan per record set the type's records belong in, rather than one
+		// per type: a name goes to the object that already holds it.
+		for _, g := range partitionByHolder(existing[t], group, t, zone.Spec.DomainName) {
+			if len(g.records) == 0 {
+				continue
 			}
-		}
-		if plan != nil {
-			plans = append(plans, *plan)
+			plan, decided := planType(zone, t, g.set, g.records, opts, warnTo)
+			outcomes = append(outcomes, decided...)
+			// Only a failure aborts. A skip is a deliberate outcome — a platform
+			// record the import declined to touch — and must not take the rest of
+			// the file down with it, or no provider export would ever import.
+			for _, o := range decided {
+				if o.result == outcomeFailed {
+					rejected = true
+				}
+			}
+			if plan != nil {
+				plans = append(plans, *plan)
+			}
 		}
 	}
 	if rejected {
@@ -683,26 +691,116 @@ func reportImport(w io.Writer, outcomes []outcome, dryRun bool) error {
 // Helpers shared by import and export.
 // ---------------------------------------------------------------------------
 
-// bulkSetsByType indexes a zone's record sets by type, which is the unit every
-// write works in.
+// bulkSetsByType groups a zone's record sets by type, in object-name order so
+// repeated runs partition the same way.
+//
+// Every set of a type is kept, not just the first. A type is not one object:
+// the CLI writes to its own set, and a Gateway gets one per listener, so a live
+// zone routinely has several of one type each holding different names. Indexing
+// only the first wrote the whole type into it, leaving the set that really held
+// a name stale and giving the zone two entries for one key — and, when that
+// first set belonged to a Gateway, failed every record of the type over names
+// the Gateway had nothing to do with.
 func bulkSetsByType(
 	ctx context.Context, c client.Client, zone *dnsv1alpha1.DNSZone,
-) (map[dnsv1alpha1.RRType]*dnsv1alpha1.DNSRecordSet, error) {
+) (map[dnsv1alpha1.RRType][]*dnsv1alpha1.DNSRecordSet, error) {
 	items, err := zoneRecordSets(ctx, c, zone)
 	if err != nil {
 		return nil, util.ClassifyError(err)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	out := map[dnsv1alpha1.RRType]*dnsv1alpha1.DNSRecordSet{}
+	out := map[dnsv1alpha1.RRType][]*dnsv1alpha1.DNSRecordSet{}
 	for i := range items {
 		t := items[i].Spec.RecordType
-		// Nothing forbids two sets for one type; the first by object name wins,
-		// so repeated runs hit the same object.
-		if _, seen := out[t]; !seen {
-			out[t] = &items[i]
-		}
+		out[t] = append(out[t], &items[i])
 	}
 	return out, nil
+}
+
+// partitionByHolder splits one type's input records across the sets that
+// already hold their owner names, so a record is written where its siblings
+// live rather than duplicated into whichever object sorted first.
+//
+// Names no set holds go to one group together — the first set the import may
+// write to, or a new object when a controller owns them all — so a zone gains
+// one set per type rather than one per record. A group whose set belongs to a
+// controller now contains only the names that controller genuinely holds,
+// which is what lets the Gateway guard fail those records alone instead of the
+// whole type.
+func partitionByHolder(
+	sets []*dnsv1alpha1.DNSRecordSet, group []bind.Record, t dnsv1alpha1.RRType, zoneDomain string,
+) []importGroup {
+	groups := make([]importGroup, 0, len(sets)+1)
+	index := map[*dnsv1alpha1.DNSRecordSet]int{}
+	for _, rs := range sets {
+		index[rs] = len(groups)
+		groups = append(groups, importGroup{set: rs})
+	}
+
+	fresh := -1
+	for i, g := range groups {
+		if gw, _ := gatewayOwned(g.set); !gw {
+			fresh = i
+			break
+		}
+	}
+	if fresh < 0 {
+		fresh = len(groups)
+		groups = append(groups, importGroup{})
+	}
+
+	for _, r := range group {
+		target := fresh
+		if holder := holderOfName(sets, r.Name, t, zoneDomain); holder != nil {
+			target = index[holder]
+		}
+		groups[target].records = append(groups[target].records, r)
+	}
+	return groups
+}
+
+// importGroup is one type's input records bound to the set they belong in. A
+// nil set means the write creates one.
+type importGroup struct {
+	set     *dnsv1alpha1.DNSRecordSet
+	records []bind.Record
+}
+
+// holderOfName returns the set already carrying an owner name, preferring one
+// the import may write to when several do. A Gateway's copy is only chosen when
+// it is the sole holder, so the guard refuses exactly the records that are
+// genuinely the controller's.
+func holderOfName(
+	sets []*dnsv1alpha1.DNSRecordSet, name string, t dnsv1alpha1.RRType, zoneDomain string,
+) *dnsv1alpha1.DNSRecordSet {
+	var managed *dnsv1alpha1.DNSRecordSet
+	for _, rs := range sets {
+		if !setHoldsName(rs, name, t, zoneDomain) {
+			continue
+		}
+		if gw, _ := gatewayOwned(rs); !gw {
+			return rs
+		}
+		if managed == nil {
+			managed = rs
+		}
+	}
+	return managed
+}
+
+// setHoldsName reports whether a set carries any entry for an owner name.
+func setHoldsName(
+	rs *dnsv1alpha1.DNSRecordSet, name string, t dnsv1alpha1.RRType, zoneDomain string,
+) bool {
+	if rs == nil {
+		return false
+	}
+	for _, e := range rs.Spec.Records {
+		if ownerEqual(rdata.EntryFromAPI(t, e).Name, name, zoneDomain) {
+			return true
+		}
+	}
+	return false
 }
 
 // bulkWriteSet is the single write path: create, update or delete the (zone,
@@ -745,7 +843,18 @@ func bulkWriteSet(
 				Records:    stored,
 			},
 		}
-		if err := c.Create(ctx, obj, writeOpts...); err != nil {
+		err := c.Create(ctx, obj, writeOpts...)
+		if apierrors.IsAlreadyExists(err) {
+			// The conventional name is taken by a set this import may not write
+			// to — one it could have written to would have been resolved as the
+			// holder instead. Let the server pick the suffix rather than
+			// guessing one, so two concurrent imports cannot choose the same
+			// name.
+			obj.Name = ""
+			obj.GenerateName = recordSetName(zone.Name, t) + "-"
+			err = c.Create(ctx, obj, writeOpts...)
+		}
+		if err != nil {
 			return classifyWrite(t, zone.Spec.DomainName, err)
 		}
 		return nil

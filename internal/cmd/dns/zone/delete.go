@@ -39,6 +39,7 @@ to run non-interactively without --yes.`,
 
 	cmd.Flags().Bool("dry-run", false, "Submit the deletion for server-side validation without performing it")
 
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -55,7 +56,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	z, err := getZone(ctx, c, project, args[0])
+	z, err := getZone(ctx, c, project, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return util.ClassifyError(err)
 	}

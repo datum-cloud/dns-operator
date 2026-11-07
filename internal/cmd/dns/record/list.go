@@ -144,7 +144,7 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 	if err != nil {
 		return err
 	}
-	zone, err := resolveZone(ctx, c, domain)
+	zone, err := resolveZone(ctx, c, domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -202,7 +202,7 @@ func runList(cmd *cobra.Command, domain string, opts *listOptions) error {
 	}
 
 	if len(rows) == 0 {
-		printEmpty(out, zone.Spec.DomainName, opts, rrTypes, beforeRowFilters > 0)
+		printEmpty(out, zone.Spec.DomainName, util.ZoneArg(zone), opts, rrTypes, beforeRowFilters > 0)
 		return nil
 	}
 
@@ -468,7 +468,7 @@ func printNames(out io.Writer, rows []row) {
 // different situation from a zone with nothing to show and wants the opposite
 // advice: offering to populate a zone that already holds a thousand records
 // reads as though they have been lost.
-func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1alpha1.RRType, excludedByFilters bool) {
+func printEmpty(out io.Writer, domain, zoneArg string, opts *listOptions, rrTypes []dnsv1alpha1.RRType, excludedByFilters bool) {
 	// The headline reports what was asked; the advice below reports what to do
 	// about it, and the two turn on different questions.
 	if listIsFiltered(opts) {
@@ -479,8 +479,8 @@ func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1
 
 	if excludedByFilters {
 		_, _ = fmt.Fprintf(out, "\nNext steps:\n")
-		_, _ = fmt.Fprintf(out, "  Show every record:  datumctl dns record list %s\n", domain)
-		_, _ = fmt.Fprintf(out, "  Widen the filter:   datumctl dns record list %s --help\n", domain)
+		_, _ = fmt.Fprintf(out, "  Show every record:  datumctl dns record list %s\n", zoneArg)
+		_, _ = fmt.Fprintf(out, "  Widen the filter:   datumctl dns record list %s --help\n", zoneArg)
 		return
 	}
 
@@ -491,8 +491,8 @@ func printEmpty(out io.Writer, domain string, opts *listOptions, rrTypes []dnsv1
 		}
 	}
 	_, _ = fmt.Fprintf(out, "\nGet started:\n")
-	_, _ = fmt.Fprintf(out, "  Add a record:   datumctl dns record create %s %s\n", domain, example)
-	_, _ = fmt.Fprintf(out, "  Import a zone:  datumctl dns zone import %s --file zone.txt\n", domain)
+	_, _ = fmt.Fprintf(out, "  Add a record:   datumctl dns record create %s %s\n", zoneArg, example)
+	_, _ = fmt.Fprintf(out, "  Import a zone:  datumctl dns zone import %s --file zone.txt\n", zoneArg)
 }
 
 // warnUnfilterable says so when a row filter was given alongside raw-object

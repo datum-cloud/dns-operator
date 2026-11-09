@@ -82,10 +82,12 @@ func contextCanaryError(answer *dns.Msg) error {
 	if answer.Rcode != dns.RcodeSuccess {
 		return fmt.Errorf("returned %s", dns.RcodeToString[answer.Rcode])
 	}
-	if len(answer.Answer) != 1 {
-		return errors.New("returned no context readiness answer")
+	if len(answer.Answer) == 1 {
+		if txt, ok := answer.Answer[0].(*dns.TXT); ok && len(txt.Txt) == 1 && txt.Txt[0] == contextdns.ReadinessCanaryText {
+			return nil
+		}
 	}
-	return nil
+	return errors.New("returned no context readiness answer")
 }
 
 func resolverSOAError(answer *dns.Msg) error {

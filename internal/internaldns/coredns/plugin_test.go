@@ -828,3 +828,73 @@ func TestPublicUpstreamFallbackWhenFirstIsUnreachable(t *testing.T) {
 		t.Fatal("fallback upstream did not answer", answer)
 	}
 }
+
+func servfailUpstream(t *testing.T) (string, *atomic.Int32) {
+	t.Helper()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := new(atomic.Int32)
+	server := &dns.Server{PacketConn: packet, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		queries.Add(1)
+		answer := new(dns.Msg)
+		answer.SetRcode(r, dns.RcodeServerFailure)
+		_ = w.WriteMsg(answer)
+	})}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown(); _ = packet.Close() })
+	return packet.LocalAddr().String(), queries
+}
+
+func TestPublicUpstreamServfailMovesOnlyThatQueryToTheNextUpstream(t *testing.T) {
+	t.Parallel()
+	first, firstQueries := servfailUpstream(t)
+	second, _ := publicUpstream(t, 2)
+	c := fixture()
+	c.PublicUpstreams = []string{first, second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.example.", "b.example."} {
+		if answer, _ := query(t, p, "fd53::a", name); address(answer) != "198.51.100.2" {
+			t.Fatal("next upstream did not answer", answer)
+		}
+	}
+	if firstQueries.Load() != 2 {
+		t.Fatalf("a SERVFAIL backed off the preferred upstream: %d queries", firstQueries.Load())
+	}
+}
+
+func TestPublicUpstreamFailureFallsBackWithinTheDNSDistTimeout(t *testing.T) {
+	t.Parallel()
+	blackhole, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = blackhole.Close() })
+	second, _ := publicUpstream(t, 2)
+	c := fixture()
+	c.PublicUpstreams = []string{blackhole.LocalAddr().String(), second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	if answer, _ := query(t, p, "fd53::a", "first.example."); address(answer) != "198.51.100.2" {
+		t.Fatal("fallback did not answer", answer)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("fallback took %s", elapsed)
+	}
+	started = time.Now()
+	if answer, _ := query(t, p, "fd53::a", "second.example."); address(answer) != "198.51.100.2" {
+		t.Fatal("fallback did not answer", answer)
+	}
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
+		t.Fatalf("backoff did not skip the failed upstream: %s", elapsed)
+	}
+}

@@ -107,49 +107,90 @@ func (s *snapshot) orderedForward(upstreams []string) plugin.Handler {
 		return s.forward(upstreams)
 	}
 	ordered := make(orderedUpstreams, 0, len(upstreams))
-	for _, upstream := range upstreams {
+	for i, upstream := range upstreams {
 		f := forward.New()
 		p := s.newProxy(upstream)
+		if i < len(upstreams)-1 {
+			p.SetReadTimeout(preferredUpstreamReadTimeout)
+		}
 		f.SetProxy(p)
-		ordered = append(ordered, orderedUpstream{proxy: p, handler: f})
+		ordered = append(ordered, &orderedUpstream{proxy: p, handler: f})
 	}
 	return ordered
 }
 
 func (s *snapshot) newProxy(upstream string) *proxy.Proxy {
 	p := proxy.NewProxy("dnscontext", upstream, "dns")
-	p.Start(upstreamHealthInterval)
 	s.proxies = append(s.proxies, p)
 	return p
 }
 
+// Two attempts at the preferred upstream must leave the last upstream time to
+// answer inside the two-second UDP timeout of the dnsdist in front of CoreDNS.
 const (
-	upstreamHealthInterval = 500 * time.Millisecond
-	upstreamMaxFails       = 2
+	preferredUpstreamReadTimeout = 700 * time.Millisecond
+	preferredUpstreamBackoff     = 5 * time.Second
+	upstreamMaxFails             = 2
 )
 
 type orderedUpstream struct {
-	proxy   *proxy.Proxy
-	handler plugin.Handler
+	proxy      *proxy.Proxy
+	handler    plugin.Handler
+	retryAfter atomic.Int64
 }
 
-type orderedUpstreams []orderedUpstream
+func (u *orderedUpstream) available(now time.Time) bool {
+	return !u.proxy.Down(upstreamMaxFails) && now.UnixNano() >= u.retryAfter.Load()
+}
+
+type orderedUpstreams []*orderedUpstream
 
 func (orderedUpstreams) Name() string { return "dnscontext-public" }
 
+// A SERVFAIL moves only this query along, so one broken public name cannot
+// divert everyone else's traffic. A transport error backs the upstream off.
 func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
-	var rcode int
-	var err error
+	var (
+		rcode int
+		err   error
+		last  *dns.Msg
+	)
 	for i, upstream := range u {
-		if i < len(u)-1 && upstream.proxy.Down(upstreamMaxFails) {
+		now := time.Now()
+		if i < len(u)-1 && !upstream.available(now) {
 			continue
 		}
-		rcode, err = upstream.handler.ServeDNS(ctx, w, r)
-		if err == nil || ctx.Err() != nil {
-			return rcode, err
+		captured := &capturedResponse{ResponseWriter: w}
+		rcode, err = upstream.handler.ServeDNS(ctx, captured, r)
+		if err != nil {
+			upstream.retryAfter.Store(now.Add(preferredUpstreamBackoff).UnixNano())
+		} else {
+			upstream.retryAfter.Store(0)
+		}
+		if captured.response != nil {
+			last = captured.response
+			if last.Rcode != dns.RcodeServerFailure {
+				return last.Rcode, w.WriteMsg(last)
+			}
+		}
+		if ctx.Err() != nil {
+			break
 		}
 	}
+	if last != nil {
+		return last.Rcode, w.WriteMsg(last)
+	}
 	return rcode, err
+}
+
+type capturedResponse struct {
+	dns.ResponseWriter
+	response *dns.Msg
+}
+
+func (c *capturedResponse) WriteMsg(m *dns.Msg) error {
+	c.response = m
+	return nil
 }
 
 func (p *ContextPlugin) Replace(c Config) error {

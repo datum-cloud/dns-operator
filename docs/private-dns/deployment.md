@@ -136,7 +136,9 @@ the same validated publications instead of forwarding private zones to the
 regional destination. Regional control planes still compile and publish the
 records, and regional serving stays in place until the node fleet is validated.
 Set `publicationDNSProbe.server` to that node's protected CoreDNS listener and
-configure `render.nodeCoreDNS.publicUpstreams` for public recursion. Verify both
+configure `render.nodeCoreDNS.publicUpstreams` for public recursion. CoreDNS
+tries the listed upstreams in order and moves on when one fails or answers
+SERVFAIL. Verify both
 before enabling the option. Node publication proof uses the consumer context
 destination; regional proof uses the regional destination.
 
@@ -153,8 +155,9 @@ client caches can retain withdrawn answers for at most that TTL. Static records
 retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
 static RRset must use the same TTL.
 
-A context without private zones proves recursion with the root SOA over UDP and
-TCP. `verifier.publicName` can override this probe. After each daemon restart
+A context without private zones proves its path with a CH canary over UDP and
+TCP, without touching public recursion. `verifier.publicName` replaces this probe
+with a query for that public name. After each daemon restart
 the agent itself performs, and after a failed context probe, the agent waits up
 to 30 seconds for its own daemons to answer the readiness canary before it
 probes, so a probe sent while CoreDNS is still loading does not gate a context

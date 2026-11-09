@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -43,12 +44,12 @@ func (v DNSVerifier) Verify(ctx context.Context, b model.Binding) error {
 	if v.Config.PublicName != "" {
 		names = append(names, model.AbsoluteName(v.Config.PublicName))
 	}
-	if len(names) == 0 {
-		// A recursion-only context has no private SOA to prove. The root SOA
-		// exercises recursive resolution without choosing a product domain.
-		names = append(names, ".")
-	}
 	server := resolverProbeServer(v.Config, b)
+	if len(names) == 0 {
+		// A recursion-only context has no private SOA to prove. Public recursion
+		// health must not decide whether the context stays installed.
+		return verifyPath(ctx, server, []string{contextdns.ContextReadinessCanaryName}, timeout, exchangeContextCanary, contextCanaryError)
+	}
 	return verifyResolverPath(ctx, server, names, timeout, exchangeResolverSOA)
 }
 
@@ -68,7 +69,42 @@ func exchangeResolverSOA(ctx context.Context, network, server, name string, time
 	return answer, err
 }
 
+func exchangeContextCanary(ctx context.Context, network, server, name string, timeout time.Duration) (*dns.Msg, error) {
+	client := &dns.Client{Net: network, Timeout: timeout}
+	msg := new(dns.Msg)
+	msg.SetQuestion(name, dns.TypeTXT)
+	msg.Question[0].Qclass = dns.ClassCHAOS
+	answer, _, err := client.ExchangeContext(ctx, msg, server)
+	return answer, err
+}
+
+func contextCanaryError(answer *dns.Msg) error {
+	if answer.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("returned %s", dns.RcodeToString[answer.Rcode])
+	}
+	if len(answer.Answer) == 1 {
+		if txt, ok := answer.Answer[0].(*dns.TXT); ok && len(txt.Txt) == 1 && txt.Txt[0] == contextdns.ReadinessCanaryText {
+			return nil
+		}
+	}
+	return errors.New("returned no context readiness answer")
+}
+
+func resolverSOAError(answer *dns.Msg) error {
+	if answer.Rcode != dns.RcodeSuccess {
+		return fmt.Errorf("returned %s", dns.RcodeToString[answer.Rcode])
+	}
+	if !hasSOA(answer) {
+		return fmt.Errorf("returned no authoritative SOA (rcode %s)", dns.RcodeToString[answer.Rcode])
+	}
+	return nil
+}
+
 func verifyResolverPath(ctx context.Context, server string, names []string, timeout time.Duration, exchange resolverExchange) error {
+	return verifyPath(ctx, server, names, timeout, exchange, resolverSOAError)
+}
+
+func verifyPath(ctx context.Context, server string, names []string, timeout time.Duration, exchange resolverExchange, answerError func(*dns.Msg) error) error {
 	deadline := time.Now().Add(timeout)
 	for _, network := range []string{networkUDP, networkTCP} {
 		for _, name := range names {
@@ -85,12 +121,8 @@ func verifyResolverPath(ctx context.Context, server string, names []string, time
 					last = fmt.Errorf("exchange: %w", err)
 				case answer == nil:
 					last = errors.New("empty DNS response")
-				case answer.Rcode != dns.RcodeSuccess:
-					last = fmt.Errorf("returned %s", dns.RcodeToString[answer.Rcode])
-				case !hasSOA(answer):
-					last = fmt.Errorf("returned no authoritative SOA (rcode %s)", dns.RcodeToString[answer.Rcode])
 				default:
-					last = nil
+					last = answerError(answer)
 				}
 				if last == nil {
 					break

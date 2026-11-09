@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/cache"
@@ -53,7 +54,7 @@ func compile(c Config) (*snapshot, error) {
 		return nil, err
 	}
 	s := &snapshot{contexts: map[string]*contextState{}}
-	public := s.forward(c.PublicUpstreams)
+	public := s.orderedForward(c.PublicUpstreams)
 	for _, definition := range c.Contexts {
 		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zoneApexes: map[string]struct{}{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}, zoneFiles: map[string]*file.File{}}
 		for _, zone := range definition.Zones {
@@ -93,12 +94,107 @@ func (s *snapshot) forward(upstreams []string) plugin.Handler {
 		return nil
 	}
 	f := forward.New()
-	for _, upstream := range upstreams {
-		p := proxy.NewProxy("dnscontext", upstream, "dns")
-		f.SetProxy(p)
-		s.proxies = append(s.proxies, p)
+	for _, address := range upstreams {
+		f.SetProxy(s.newProxy(address))
 	}
 	return f
+}
+
+// orderedForward tries upstreams in the listed order. CoreDNS forward picks
+// among its proxies at random and has no exported way to change that.
+func (s *snapshot) orderedForward(upstreams []string) plugin.Handler {
+	if len(upstreams) <= 1 {
+		return s.forward(upstreams)
+	}
+	ordered := make(orderedUpstreams, 0, len(upstreams))
+	for i, address := range upstreams {
+		f := forward.New()
+		p := s.newProxy(address)
+		if i < len(upstreams)-1 {
+			p.SetReadTimeout(preferredUpstreamReadTimeout)
+		}
+		f.SetProxy(p)
+		ordered = append(ordered, &orderedUpstream{proxy: p, handler: f})
+	}
+	return ordered
+}
+
+func (s *snapshot) newProxy(address string) *proxy.Proxy {
+	p := proxy.NewProxy("dnscontext", address, "dns")
+	s.proxies = append(s.proxies, p)
+	return p
+}
+
+// Two attempts at the preferred upstream must leave the last upstream time to
+// answer inside the two-second UDP timeout of the dnsdist in front of CoreDNS.
+const (
+	preferredUpstreamReadTimeout = 700 * time.Millisecond
+	preferredUpstreamBackoff     = 5 * time.Second
+	preferredUpstreamFailures    = 3
+	upstreamMaxFails             = 2
+)
+
+type orderedUpstream struct {
+	proxy      *proxy.Proxy
+	handler    plugin.Handler
+	retryAfter atomic.Int64
+	failures   atomic.Int32
+}
+
+func (u *orderedUpstream) available(now time.Time) bool {
+	return !u.proxy.Down(upstreamMaxFails) && now.UnixNano() >= u.retryAfter.Load()
+}
+
+type orderedUpstreams []*orderedUpstream
+
+func (orderedUpstreams) Name() string { return "dnscontext-public" }
+
+// A SERVFAIL moves only this query along. Backing off takes consecutive
+// transport failures, so one slow public name cannot divert everyone else's
+// traffic.
+func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	var (
+		rcode int
+		err   error
+		last  *dns.Msg
+	)
+	for i, candidate := range u {
+		now := time.Now()
+		if i < len(u)-1 && !candidate.available(now) {
+			continue
+		}
+		captured := &capturedResponse{ResponseWriter: w}
+		rcode, err = candidate.handler.ServeDNS(ctx, captured, r)
+		if err != nil && candidate.failures.Add(1) >= preferredUpstreamFailures {
+			candidate.failures.Store(0)
+			candidate.retryAfter.Store(now.Add(preferredUpstreamBackoff).UnixNano())
+		}
+		if captured.response != nil {
+			last = captured.response
+			if last.Rcode != dns.RcodeServerFailure {
+				candidate.failures.Store(0)
+				candidate.retryAfter.Store(0)
+				return dns.RcodeSuccess, w.WriteMsg(last)
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	if last != nil {
+		return dns.RcodeSuccess, w.WriteMsg(last)
+	}
+	return rcode, err
+}
+
+type capturedResponse struct {
+	dns.ResponseWriter
+	response *dns.Msg
+}
+
+func (c *capturedResponse) WriteMsg(m *dns.Msg) error {
+	c.response = m
+	return nil
 }
 
 func (p *ContextPlugin) Replace(c Config) error {
@@ -143,7 +239,8 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
 		return outcomeReadinessCanary, dns.RcodeSuccess, w.WriteMsg(answer)
 	}
-	if len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET {
+	contextCanary := IsContextReadinessCanary(r)
+	if !contextCanary && (len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET) {
 		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
 	}
 	host, destination, outcome := p.destination(ctx, w, r)
@@ -156,6 +253,17 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 	if selected.pending {
 		return outcomeServfailContext, dns.RcodeServerFailure, nil
+	}
+	if contextCanary {
+		if selected.next != nil {
+			rcode, err := selected.next.ServeDNS(ctx, w, r)
+			return outcomeForwardedNext, rcode, err
+		}
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.Authoritative = true
+		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ContextReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
+		return outcomeContextCanary, dns.RcodeSuccess, w.WriteMsg(answer)
 	}
 	if len(r.Question) != 1 || r.Opcode != dns.OpcodeQuery || r.Question[0].Qclass != dns.ClassINET {
 		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
@@ -266,9 +374,17 @@ const (
 	ReadinessCanaryText = "ready"
 )
 
-func IsReadinessCanary(r *dns.Msg) bool {
+// ContextReadinessCanaryName is answered after context selection, so it proves
+// one context is installed and not pending without touching public recursion.
+const ContextReadinessCanaryName = "context-ready.internal-dns."
+
+func IsReadinessCanary(r *dns.Msg) bool { return isCanary(r, ReadinessCanaryName) }
+
+func IsContextReadinessCanary(r *dns.Msg) bool { return isCanary(r, ContextReadinessCanaryName) }
+
+func isCanary(r *dns.Msg, name string) bool {
 	return r.Opcode == dns.OpcodeQuery && len(r.Question) == 1 && r.Question[0].Qclass == dns.ClassCHAOS &&
-		r.Question[0].Qtype == dns.TypeTXT && strings.EqualFold(r.Question[0].Name, ReadinessCanaryName)
+		r.Question[0].Qtype == dns.TypeTXT && strings.EqualFold(r.Question[0].Name, name)
 }
 
 type contextWriter struct {

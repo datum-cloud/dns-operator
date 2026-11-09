@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/coredns/coredns/plugin"
 	"github.com/coredns/coredns/plugin/cache"
@@ -53,7 +54,7 @@ func compile(c Config) (*snapshot, error) {
 		return nil, err
 	}
 	s := &snapshot{contexts: map[string]*contextState{}}
-	public := s.forward(c.PublicUpstreams)
+	public := s.orderedForward(c.PublicUpstreams)
 	for _, definition := range c.Contexts {
 		state := &contextState{pending: definition.Pending, pendingZones: map[string]bool{}, zoneApexes: map[string]struct{}{}, zones: &file.File{Zones: file.Zones{Z: map[string]*file.Zone{}}}, zoneFiles: map[string]*file.File{}}
 		for _, zone := range definition.Zones {
@@ -94,11 +95,61 @@ func (s *snapshot) forward(upstreams []string) plugin.Handler {
 	}
 	f := forward.New()
 	for _, upstream := range upstreams {
-		p := proxy.NewProxy("dnscontext", upstream, "dns")
-		f.SetProxy(p)
-		s.proxies = append(s.proxies, p)
+		f.SetProxy(s.newProxy(upstream))
 	}
 	return f
+}
+
+// orderedForward tries upstreams in the listed order. CoreDNS forward picks
+// among its proxies at random and has no exported way to change that.
+func (s *snapshot) orderedForward(upstreams []string) plugin.Handler {
+	if len(upstreams) <= 1 {
+		return s.forward(upstreams)
+	}
+	ordered := make(orderedUpstreams, 0, len(upstreams))
+	for _, upstream := range upstreams {
+		f := forward.New()
+		p := s.newProxy(upstream)
+		f.SetProxy(p)
+		ordered = append(ordered, orderedUpstream{proxy: p, handler: f})
+	}
+	return ordered
+}
+
+func (s *snapshot) newProxy(upstream string) *proxy.Proxy {
+	p := proxy.NewProxy("dnscontext", upstream, "dns")
+	p.Start(upstreamHealthInterval)
+	s.proxies = append(s.proxies, p)
+	return p
+}
+
+const (
+	upstreamHealthInterval = 500 * time.Millisecond
+	upstreamMaxFails       = 2
+)
+
+type orderedUpstream struct {
+	proxy   *proxy.Proxy
+	handler plugin.Handler
+}
+
+type orderedUpstreams []orderedUpstream
+
+func (orderedUpstreams) Name() string { return "dnscontext-public" }
+
+func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
+	var rcode int
+	var err error
+	for i, upstream := range u {
+		if i < len(u)-1 && upstream.proxy.Down(upstreamMaxFails) {
+			continue
+		}
+		rcode, err = upstream.handler.ServeDNS(ctx, w, r)
+		if err == nil || ctx.Err() != nil {
+			return rcode, err
+		}
+	}
+	return rcode, err
 }
 
 func (p *ContextPlugin) Replace(c Config) error {
@@ -143,7 +194,8 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
 		return outcomeReadinessCanary, dns.RcodeSuccess, w.WriteMsg(answer)
 	}
-	if len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET {
+	contextCanary := IsContextReadinessCanary(r)
+	if !contextCanary && (len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET) {
 		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
 	}
 	host, destination, outcome := p.destination(ctx, w, r)
@@ -156,6 +208,17 @@ func (p *ContextPlugin) serve(ctx context.Context, w dns.ResponseWriter, r *dns.
 	}
 	if selected.pending {
 		return outcomeServfailContext, dns.RcodeServerFailure, nil
+	}
+	if contextCanary {
+		if selected.next != nil {
+			rcode, err := selected.next.ServeDNS(ctx, w, r)
+			return outcomeForwardedNext, rcode, err
+		}
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.Authoritative = true
+		answer.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: ContextReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{ReadinessCanaryText}}}
+		return outcomeContextCanary, dns.RcodeSuccess, w.WriteMsg(answer)
 	}
 	if len(r.Question) != 1 || r.Opcode != dns.OpcodeQuery || r.Question[0].Qclass != dns.ClassINET {
 		return outcomeRefusedUnsupported, dns.RcodeRefused, nil
@@ -266,9 +329,17 @@ const (
 	ReadinessCanaryText = "ready"
 )
 
-func IsReadinessCanary(r *dns.Msg) bool {
+// ContextReadinessCanaryName is answered after context selection, so it proves
+// one context is installed and not pending without touching public recursion.
+const ContextReadinessCanaryName = "context-ready.internal-dns."
+
+func IsReadinessCanary(r *dns.Msg) bool { return isCanary(r, ReadinessCanaryName) }
+
+func IsContextReadinessCanary(r *dns.Msg) bool { return isCanary(r, ContextReadinessCanaryName) }
+
+func isCanary(r *dns.Msg, name string) bool {
 	return r.Opcode == dns.OpcodeQuery && len(r.Question) == 1 && r.Question[0].Qclass == dns.ClassCHAOS &&
-		r.Question[0].Qtype == dns.TypeTXT && strings.EqualFold(r.Question[0].Name, ReadinessCanaryName)
+		r.Question[0].Qtype == dns.TypeTXT && strings.EqualFold(r.Question[0].Name, name)
 }
 
 type contextWriter struct {

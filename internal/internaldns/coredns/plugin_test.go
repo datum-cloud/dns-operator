@@ -721,3 +721,110 @@ func TestNonINQueriesAreRefusedBeforeContextSelection(t *testing.T) {
 		}
 	}
 }
+
+func contextCanary(t *testing.T, p *ContextPlugin, destination string) (*dns.Msg, int) {
+	t.Helper()
+	w := &answerWriter{destination: destination}
+	m := new(dns.Msg)
+	m.SetQuestion(ContextReadinessCanaryName, dns.TypeTXT)
+	m.Question[0].Qclass = dns.ClassCHAOS
+	rcode, err := p.ServeDNS(context.Background(), w, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w.answer, rcode
+}
+
+func TestContextCanaryProvesContextWithoutPublicRecursion(t *testing.T) {
+	t.Parallel()
+	closed, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstream := closed.LocalAddr().String()
+	_ = closed.Close()
+	c := fixture()
+	c.PublicUpstreams = []string{upstream}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	if answer, rcode := contextCanary(t, p, "fd53::a"); rcode != dns.RcodeSuccess || answer == nil || len(answer.Answer) != 1 {
+		t.Fatalf("installed context returned %s: %v", dns.RcodeToString[rcode], answer)
+	}
+	if _, rcode := contextCanary(t, p, "fd53::99"); rcode != dns.RcodeRefused {
+		t.Fatalf("unknown context returned %s", dns.RcodeToString[rcode])
+	}
+	c.Contexts[0].Pending = true
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	if _, rcode := contextCanary(t, p, "fd53::a"); rcode != dns.RcodeServerFailure {
+		t.Fatalf("pending context returned %s", dns.RcodeToString[rcode])
+	}
+}
+
+func publicUpstream(t *testing.T, address byte) (string, *atomic.Int32) {
+	t.Helper()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries := new(atomic.Int32)
+	server := &dns.Server{PacketConn: packet, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		queries.Add(1)
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.RecursionAvailable = true
+		if r.Question[0].Qtype == dns.TypeA {
+			answer.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1}, A: net.IPv4(198, 51, 100, address)}}
+		}
+		_ = w.WriteMsg(answer)
+	})}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown(); _ = packet.Close() })
+	return packet.LocalAddr().String(), queries
+}
+
+func TestPublicUpstreamsAreTriedInOrder(t *testing.T) {
+	t.Parallel()
+	first, firstQueries := publicUpstream(t, 1)
+	second, secondQueries := publicUpstream(t, 2)
+	c := fixture()
+	c.PublicUpstreams = []string{first, second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.example.", "b.example.", "c.example.", "d.example.", "e.example.", "f.example."} {
+		if answer, _ := query(t, p, "fd53::a", name); address(answer) != "198.51.100.1" {
+			t.Fatal("first upstream was not preferred", answer)
+		}
+	}
+	if firstQueries.Load() != 6 || secondQueries.Load() != 0 {
+		t.Fatalf("queries first=%d second=%d", firstQueries.Load(), secondQueries.Load())
+	}
+}
+
+func TestPublicUpstreamFallbackWhenFirstIsUnreachable(t *testing.T) {
+	t.Parallel()
+	closed, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := closed.LocalAddr().String()
+	_ = closed.Close()
+	second, _ := publicUpstream(t, 2)
+	c := fixture()
+	c.PublicUpstreams = []string{dead, second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	if answer, _ := query(t, p, "fd53::a", "public.example."); address(answer) != "198.51.100.2" {
+		t.Fatal("fallback upstream did not answer", answer)
+	}
+}

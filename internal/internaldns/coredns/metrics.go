@@ -30,6 +30,7 @@ const (
 	outcomeServfailZone           = "servfail_zone_pending"
 	outcomeServfailNoUpstream     = "servfail_no_upstream"
 	outcomeReadinessCanary        = "readiness_canary"
+	outcomeContextCanary          = "context_readiness_canary"
 	outcomeServfailCanaryIdentity = "servfail_canary_bad_identity"
 )
 
@@ -59,7 +60,7 @@ func init() {
 	prometheus.MustRegister(contextQueries, snapshotContexts, snapshotReloads, snapshotApplied)
 	for _, outcome := range []string{outcomeServedZone, outcomeForwardedNext, outcomeForwardedPublic, outcomeRefusedUnknownContext,
 		outcomeRefusedBadDestination, outcomeRefusedBadIdentity, outcomeRefusedUnsupported, outcomeRefusedTransfer, outcomeServfailNoState,
-		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary, outcomeServfailCanaryIdentity} {
+		outcomeServfailContext, outcomeServfailZone, outcomeServfailNoUpstream, outcomeReadinessCanary, outcomeContextCanary, outcomeServfailCanaryIdentity} {
 		outcomeQueries[outcome] = contextQueries.WithLabelValues(outcome)
 	}
 	for _, result := range []string{"applied", "rejected"} {

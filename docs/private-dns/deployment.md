@@ -136,7 +136,8 @@ the same validated publications instead of forwarding private zones to the
 regional destination. Regional control planes still compile and publish the
 records, and regional serving stays in place until the node fleet is validated.
 Set `publicationDNSProbe.server` to that node's protected CoreDNS listener and
-configure `render.nodeCoreDNS.publicUpstreams` for public recursion. Verify both
+configure `render.nodeCoreDNS.publicUpstreams` for public recursion. CoreDNS
+tries the listed upstreams in order and moves on only when one fails. Verify both
 before enabling the option. Node publication proof uses the consumer context
 destination; regional proof uses the regional destination.
 

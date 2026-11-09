@@ -94,8 +94,8 @@ func (s *snapshot) forward(upstreams []string) plugin.Handler {
 		return nil
 	}
 	f := forward.New()
-	for _, upstream := range upstreams {
-		f.SetProxy(s.newProxy(upstream))
+	for _, address := range upstreams {
+		f.SetProxy(s.newProxy(address))
 	}
 	return f
 }
@@ -107,9 +107,9 @@ func (s *snapshot) orderedForward(upstreams []string) plugin.Handler {
 		return s.forward(upstreams)
 	}
 	ordered := make(orderedUpstreams, 0, len(upstreams))
-	for i, upstream := range upstreams {
+	for i, address := range upstreams {
 		f := forward.New()
-		p := s.newProxy(upstream)
+		p := s.newProxy(address)
 		if i < len(upstreams)-1 {
 			p.SetReadTimeout(preferredUpstreamReadTimeout)
 		}
@@ -119,8 +119,8 @@ func (s *snapshot) orderedForward(upstreams []string) plugin.Handler {
 	return ordered
 }
 
-func (s *snapshot) newProxy(upstream string) *proxy.Proxy {
-	p := proxy.NewProxy("dnscontext", upstream, "dns")
+func (s *snapshot) newProxy(address string) *proxy.Proxy {
+	p := proxy.NewProxy("dnscontext", address, "dns")
 	s.proxies = append(s.proxies, p)
 	return p
 }
@@ -158,22 +158,22 @@ func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r 
 		err   error
 		last  *dns.Msg
 	)
-	for i, upstream := range u {
+	for i, candidate := range u {
 		now := time.Now()
-		if i < len(u)-1 && !upstream.available(now) {
+		if i < len(u)-1 && !candidate.available(now) {
 			continue
 		}
 		captured := &capturedResponse{ResponseWriter: w}
-		rcode, err = upstream.handler.ServeDNS(ctx, captured, r)
-		if err != nil && upstream.failures.Add(1) >= preferredUpstreamFailures {
-			upstream.failures.Store(0)
-			upstream.retryAfter.Store(now.Add(preferredUpstreamBackoff).UnixNano())
+		rcode, err = candidate.handler.ServeDNS(ctx, captured, r)
+		if err != nil && candidate.failures.Add(1) >= preferredUpstreamFailures {
+			candidate.failures.Store(0)
+			candidate.retryAfter.Store(now.Add(preferredUpstreamBackoff).UnixNano())
 		}
 		if captured.response != nil {
 			last = captured.response
 			if last.Rcode != dns.RcodeServerFailure {
-				upstream.failures.Store(0)
-				upstream.retryAfter.Store(0)
+				candidate.failures.Store(0)
+				candidate.retryAfter.Store(0)
 				return dns.RcodeSuccess, w.WriteMsg(last)
 			}
 		}

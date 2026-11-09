@@ -890,11 +890,74 @@ func TestPublicUpstreamFailureFallsBackWithinTheDNSDistTimeout(t *testing.T) {
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("fallback took %s", elapsed)
 	}
+	for _, name := range []string{"second.example.", "third.example."} {
+		if answer, _ := query(t, p, "fd53::a", name); address(answer) != "198.51.100.2" {
+			t.Fatal("fallback did not answer", answer)
+		}
+	}
 	started = time.Now()
-	if answer, _ := query(t, p, "fd53::a", "second.example."); address(answer) != "198.51.100.2" {
+	if answer, _ := query(t, p, "fd53::a", "fourth.example."); address(answer) != "198.51.100.2" {
 		t.Fatal("fallback did not answer", answer)
 	}
 	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
 		t.Fatalf("backoff did not skip the failed upstream: %s", elapsed)
+	}
+}
+
+func TestPublicUpstreamWrittenAnswersReportSuccessToCoreDNS(t *testing.T) {
+	t.Parallel()
+	first, _ := servfailUpstream(t)
+	second, _ := servfailUpstream(t)
+	c := fixture()
+	c.PublicUpstreams = []string{first, second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	answer, rcode := query(t, p, "fd53::a", "public.example.")
+	if answer == nil || answer.Rcode != dns.RcodeServerFailure {
+		t.Fatal("SERVFAIL was not written", answer)
+	}
+	if rcode != dns.RcodeSuccess {
+		t.Fatalf("written answer returned %s, so CoreDNS would reply twice", dns.RcodeToString[rcode])
+	}
+}
+
+func TestSlowPublicNameDoesNotBackOffPreferredUpstream(t *testing.T) {
+	t.Parallel()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &dns.Server{PacketConn: packet, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		if r.Question[0].Name == "slow.example." {
+			return
+		}
+		answer := new(dns.Msg)
+		answer.SetReply(r)
+		answer.RecursionAvailable = true
+		answer.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1}, A: net.IPv4(198, 51, 100, 1)}}
+		_ = w.WriteMsg(answer)
+	})}
+	go func() { _ = server.ActivateAndServe() }()
+	t.Cleanup(func() { _ = server.Shutdown(); _ = packet.Close() })
+	second, secondQueries := publicUpstream(t, 2)
+	c := fixture()
+	c.PublicUpstreams = []string{packet.LocalAddr().String(), second}
+	p := &ContextPlugin{}
+	defer p.Close()
+	if err := p.Replace(c); err != nil {
+		t.Fatal(err)
+	}
+	if answer, _ := query(t, p, "fd53::a", "slow.example."); address(answer) != "198.51.100.2" {
+		t.Fatal("slow name did not fall back", answer)
+	}
+	before := secondQueries.Load()
+	if answer, _ := query(t, p, "fd53::a", "fast.example."); address(answer) != "198.51.100.1" {
+		t.Fatal("preferred upstream was backed off", answer)
+	}
+	if secondQueries.Load() != before {
+		t.Fatal("unrelated query went to the fallback upstream")
 	}
 }

@@ -130,6 +130,7 @@ func (s *snapshot) newProxy(upstream string) *proxy.Proxy {
 const (
 	preferredUpstreamReadTimeout = 700 * time.Millisecond
 	preferredUpstreamBackoff     = 5 * time.Second
+	preferredUpstreamFailures    = 3
 	upstreamMaxFails             = 2
 )
 
@@ -137,6 +138,7 @@ type orderedUpstream struct {
 	proxy      *proxy.Proxy
 	handler    plugin.Handler
 	retryAfter atomic.Int64
+	failures   atomic.Int32
 }
 
 func (u *orderedUpstream) available(now time.Time) bool {
@@ -147,8 +149,9 @@ type orderedUpstreams []*orderedUpstream
 
 func (orderedUpstreams) Name() string { return "dnscontext-public" }
 
-// A SERVFAIL moves only this query along, so one broken public name cannot
-// divert everyone else's traffic. A transport error backs the upstream off.
+// A SERVFAIL moves only this query along. Backing off takes consecutive
+// transport failures, so one slow public name cannot divert everyone else's
+// traffic.
 func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	var (
 		rcode int
@@ -162,15 +165,16 @@ func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r 
 		}
 		captured := &capturedResponse{ResponseWriter: w}
 		rcode, err = upstream.handler.ServeDNS(ctx, captured, r)
-		if err != nil {
+		if err != nil && upstream.failures.Add(1) >= preferredUpstreamFailures {
+			upstream.failures.Store(0)
 			upstream.retryAfter.Store(now.Add(preferredUpstreamBackoff).UnixNano())
-		} else {
-			upstream.retryAfter.Store(0)
 		}
 		if captured.response != nil {
 			last = captured.response
 			if last.Rcode != dns.RcodeServerFailure {
-				return last.Rcode, w.WriteMsg(last)
+				upstream.failures.Store(0)
+				upstream.retryAfter.Store(0)
+				return dns.RcodeSuccess, w.WriteMsg(last)
 			}
 		}
 		if ctx.Err() != nil {
@@ -178,7 +182,7 @@ func (u orderedUpstreams) ServeDNS(ctx context.Context, w dns.ResponseWriter, r 
 		}
 	}
 	if last != nil {
-		return last.Rcode, w.WriteMsg(last)
+		return dns.RcodeSuccess, w.WriteMsg(last)
 	}
 	return rcode, err
 }

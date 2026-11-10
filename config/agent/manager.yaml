@@ -144,6 +144,16 @@ spec:
           - containerPort: 8082
             name: api
             protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+              - sh
+              - -c
+              - sdig 127.0.0.1 53 . SOA | grep -q '^Rcode:'
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
         volumeMounts:
           - name: lmdb
             mountPath: /lmdb
@@ -196,6 +206,13 @@ spec:
           - containerPort: 8083
             name: recursor
             protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: recursor
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
         command: ["/bin/sh","-c"]
         args:
           - |
@@ -230,6 +247,13 @@ spec:
           - containerPort: 8500
             name: lmdb-metrics
             protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: lmdb-metrics
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
         args: ["--config", "/etc/lightningstream/lightningstream.yaml", "--minimum-pid", "50", "sync"]
         securityContext:
           runAsUser: 953

@@ -484,17 +484,23 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 }
 
 func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time, role string, revision, epoch, authEpoch, authRevision int64) bool {
-	matches := func(member model.Member) bool {
+	matches := func(member model.Member, leased bool) bool {
 		for _, row := range rows {
-			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != dnsValueResolver || row.AccessEpoch == authEpoch && row.AccessSequence == authRevision) && row.Phase == string(model.AckVerified) && row.ValidUntil != nil && row.ValidUntil.After(now) {
+			if row.MemberID == member.MemberID && row.Revision == revision && row.WriterEpoch == epoch && (role != dnsValueResolver || row.AccessEpoch == authEpoch && row.AccessSequence == authRevision) && row.Phase == string(model.AckVerified) && (leased || row.ValidUntil != nil && row.ValidUntil.After(now)) {
 				return true
 			}
 		}
 		return false
 	}
-	live := func(group string, member model.Member) bool {
+	// A member with a lease proves liveness through it, so its verified row
+	// stands without per-zone renewal. A member without one falls back to the
+	// row's own expiry.
+	verifiedBy := func(group string, member model.Member) bool {
 		until, ok := s.leases[memberLeaseKeyFor(group, member.MemberID)]
-		return !ok || until.After(now)
+		if ok {
+			return until.After(now) && matches(member, true)
+		}
+		return matches(member, false)
 	}
 	if role == "publication" {
 		groups := s.publicationGroups()
@@ -504,7 +510,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 			for _, member := range members {
 				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
-					if matches(member) && live(group, member) {
+					if verifiedBy(group, member) {
 						verified++
 					}
 				}
@@ -525,7 +531,7 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 			continue
 		}
 		required++
-		if !matches(member) {
+		if !matches(member, false) {
 			return false
 		}
 	}

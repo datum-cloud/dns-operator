@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -24,6 +25,10 @@ const (
 	ModeResolver Mode = "resolver"
 	ModeCombined Mode = "combined"
 )
+
+// defaultPublicationAckRefresh stays inside the five-minute window in which
+// older control planes renew a verified publication row.
+const defaultPublicationAckRefresh = 4 * time.Minute
 
 type Config struct {
 	Region                    string                       `json:"region"`
@@ -41,6 +46,7 @@ type Config struct {
 	AckInterval               time.Duration                `json:"ackInterval,omitempty"`
 	AckLease                  time.Duration                `json:"ackLease,omitempty"`
 	AckPublishTimeout         time.Duration                `json:"ackPublishTimeout,omitempty"`
+	PublicationAckRefresh     time.Duration                `json:"publicationAckRefresh,omitempty"`
 	MaxBindings               int                          `json:"maxBindings,omitempty"`
 	UnsafeAllowNoFailClosed   bool                         `json:"unsafeAllowNoFailClosed,omitempty"`
 	PublicationDNSProbe       PublicationDNSVerifierConfig `json:"publicationDNSProbe,omitempty"`
@@ -78,6 +84,9 @@ func (c Config) Validate() error {
 	}
 	if c.AckPublishTimeout < 0 || c.AckPublishTimeout > 2*time.Second {
 		return errors.New("ACK publish timeout must be between zero and two seconds")
+	}
+	if c.PublicationAckRefresh < 0 {
+		return errors.New("publication ACK refresh may not be negative")
 	}
 
 	if err := c.HealthCheck.validate(); err != nil {
@@ -207,6 +216,7 @@ type Agent struct {
 	needsActivation       bool
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
+	lastLeaseAck          time.Time
 	installedPublications map[string]installedPublication
 	verifiedPaths         map[string]string
 	verifiedRestarts      uint64
@@ -1407,6 +1417,9 @@ func (a *Agent) emitVerifiedPublicationAck(ctx context.Context, uid string, epoc
 	// proof required by a periodic heartbeat. Remember it so finishEvent checks
 	// other due publications without immediately repeating this proof.
 	a.lastPublicationAck[uid] = a.deps.Clock()
+	if !a.state.Publications[uid].Manifest.Tombstone {
+		a.lastLeaseAck = a.lastPublicationAck[uid]
+	}
 	return nil
 }
 
@@ -1427,6 +1440,11 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 	return nil
 }
 
+// heartbeatPublications renews this member's lease with one verified
+// acknowledgement per ACK interval and re-acknowledges each publication only
+// every publication refresh. The control plane counts a verified publication
+// for as long as the member's lease is live, so steady-state traffic follows
+// members, not zones.
 func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	if a.cfg.NodeAuthoritative {
 		return nil
@@ -1436,25 +1454,43 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
+	refresh := a.cfg.PublicationAckRefresh
+	if refresh <= 0 {
+		refresh = defaultPublicationAckRefresh
+	}
 	type duePublication struct {
 		uid string
 		p   publicationState
 	}
 	var due []duePublication
+	var renewal *duePublication
 	for uid, p := range a.state.Publications {
 		if !p.Verified || p.Retired || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
 			continue
 		}
-		if last := a.lastPublicationAck[uid]; !last.IsZero() && now.Sub(last) < interval {
+		last := a.lastPublicationAck[uid]
+		if last.IsZero() || now.Sub(last) >= refresh {
+			due = append(due, duePublication{uid: uid, p: p})
 			continue
 		}
-		if err := a.verifyPublication(ctx, p); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, err.Error())
-			return fmt.Errorf("reverify publication %s before ACK renewal: %w", uid, err)
+		if p.Manifest.Tombstone {
+			continue
 		}
-		due = append(due, duePublication{uid: uid, p: p})
+		if renewal == nil || last.Before(a.lastPublicationAck[renewal.uid]) || last.Equal(a.lastPublicationAck[renewal.uid]) && uid < renewal.uid {
+			renewal = &duePublication{uid: uid, p: p}
+		}
 	}
-	// Publish acknowledgements within a bounded budget after local DNS verification.
+	leaseDue := a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval
+	if leaseDue && renewal != nil && !slices.ContainsFunc(due, func(d duePublication) bool { return !d.p.Manifest.Tombstone }) {
+		due = append(due, *renewal)
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
+	for _, publication := range due {
+		if err := a.verifyPublication(ctx, publication.p); err != nil {
+			_ = a.emitAck(ctx, model.KindPublicationManifest, publication.uid, publication.p.Fence.Epoch, publication.p.Fence.Revision, model.AckRejected, err.Error())
+			return fmt.Errorf("reverify publication %s before ACK renewal: %w", publication.uid, err)
+		}
+	}
 	for _, publication := range due {
 		p := publication.p
 		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, ""); err != nil {
@@ -1462,6 +1498,9 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			break
 		}
 		a.lastPublicationAck[publication.uid] = now
+		if !p.Manifest.Tombstone {
+			a.lastLeaseAck = now
+		}
 	}
 	return nil
 }

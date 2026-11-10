@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -210,6 +211,61 @@ func TestPublicationAckRefreshIsBounded(t *testing.T) {
 		}, Dependencies{Runner: &recordingRunner{}})
 		if err == nil {
 			t.Fatalf("refresh %v was accepted", refresh)
+		}
+	}
+}
+
+func TestDueWithdrawalsDoNotCrowdOutLiveRenewals(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+	now := start
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	publisher := &fakePublisher{}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, AckInterval: 30 * time.Second, PublicationAckRefresh: 2 * time.Minute,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}, AckPublisher: publisher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.Publications["zone-live"] = publicationState{
+		Fence:    fence{Epoch: 1, Revision: 1},
+		Manifest: model.PublicationManifest{ManifestUID: "pub-live", ZoneUID: "zone-live", Apex: "live.example.", WriterEpoch: 1, Revision: 1},
+		Plan:     model.PublicationPlan{ZoneUID: "zone-live", Apex: "live.example."},
+		Verified: true,
+	}
+	agent.state.Snapshot = &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding", Zones: []model.ZoneAttachment{{ZoneUID: "zone-live", RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1}}}}}
+	agent.lastPublicationAck["zone-live"] = start
+	agent.lastLeaseAck = start
+	for i := 1; i <= 3; i++ {
+		now = start.Add(time.Duration(i) * 30 * time.Second)
+		for j := range 3 {
+			uid := "zone-gone-" + strconv.Itoa(i) + "-" + strconv.Itoa(j)
+			agent.state.Publications[uid] = publicationState{
+				Fence:    fence{Epoch: 1, Revision: 2},
+				Manifest: model.PublicationManifest{ManifestUID: "pub-" + uid, ZoneUID: uid, WriterEpoch: 1, Revision: 2, Tombstone: true},
+				Verified: true,
+			}
+		}
+		before := len(publisher.envs)
+		if err := agent.heartbeatPublications(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		live := false
+		for _, env := range publisher.envs[before:] {
+			if env.ResourceUID == "zone-live" {
+				live = true
+			}
+		}
+		if !live {
+			t.Fatalf("interval %d renewed the lease only with withdrawals", i)
 		}
 	}
 }

@@ -1476,7 +1476,20 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			renewals = append(renewals, duePublication{uid: uid, p: p, last: last})
 		}
 	}
-	if len(due) < leaseRenewalAcks && (a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval) {
+	hasLive := false
+	liveDue := 0
+	for _, d := range due {
+		if !d.p.Manifest.Tombstone {
+			hasLive = true
+			liveDue++
+		}
+	}
+	for _, r := range renewals {
+		if !r.p.Manifest.Tombstone {
+			hasLive = true
+		}
+	}
+	if liveDue < leaseRenewalAcks && (a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval) {
 		sort.Slice(renewals, func(i, j int) bool {
 			if renewals[i].p.Manifest.Tombstone != renewals[j].p.Manifest.Tombstone {
 				return !renewals[i].p.Manifest.Tombstone
@@ -1486,7 +1499,7 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			}
 			return renewals[i].uid < renewals[j].uid
 		})
-		due = append(due, renewals[:min(len(renewals), leaseRenewalAcks-len(due))]...)
+		due = append(due, renewals[:min(len(renewals), leaseRenewalAcks-liveDue)]...)
 	}
 	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
 	var failed error
@@ -1502,7 +1515,9 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			break
 		}
 		a.lastPublicationAck[publication.uid] = now
-		a.lastLeaseAck = now
+		if !hasLive || !p.Manifest.Tombstone {
+			a.lastLeaseAck = now
+		}
 	}
 	return failed
 }

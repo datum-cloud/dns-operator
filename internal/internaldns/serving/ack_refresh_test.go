@@ -5,6 +5,7 @@ package serving
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
-func TestHeartbeatRenewsTheLeaseWithOneAckBetweenRefreshes(t *testing.T) {
+func TestHeartbeatRenewsTheLeaseWithAFewAcksBetweenRefreshes(t *testing.T) {
 	t.Parallel()
 	start := time.Now().UTC()
 	now := start
@@ -33,7 +34,7 @@ func TestHeartbeatRenewsTheLeaseWithOneAckBetweenRefreshes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	zones := []string{"zone-a", "zone-b", "zone-c"}
+	zones := []string{"zone-a", "zone-b", "zone-c", "zone-d", "zone-e", "zone-f"}
 	binding := model.Binding{BindingUID: "binding"}
 	for _, zone := range zones {
 		binding.Zones = append(binding.Zones, model.ZoneAttachment{ZoneUID: zone, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
@@ -77,10 +78,12 @@ func TestHeartbeatRenewsTheLeaseWithOneAckBetweenRefreshes(t *testing.T) {
 	for i := 1; now.Sub(start) < 4*time.Minute-30*time.Second; i++ {
 		now = start.Add(time.Duration(i) * 30 * time.Second)
 		got := acked()
-		if len(got) != 1 {
-			t.Fatalf("lease renewal %d acked %v, want exactly one publication", i, got)
+		if len(got) != leaseRenewalAcks {
+			t.Fatalf("lease renewal %d acked %v, want %d publications", i, got, leaseRenewalAcks)
 		}
-		seen[got[0]] = true
+		for _, uid := range got {
+			seen[uid] = true
+		}
 	}
 	if len(seen) != len(zones) {
 		t.Fatalf("lease renewals rotated through %v, want every publication", seen)
@@ -92,4 +95,63 @@ func TestHeartbeatRenewsTheLeaseWithOneAckBetweenRefreshes(t *testing.T) {
 	if got := acked(); len(got) != len(zones) {
 		t.Fatalf("refresh acked %v, want every publication not acked for a refresh period", got)
 	}
+}
+
+func TestHeartbeatAcksOtherPublicationsWhenOneFailsToVerify(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	publisher := &fakePublisher{}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, AckInterval: 30 * time.Second,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}, AckPublisher: publisher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.publicationVerifier = failingVerifier{zone: "zone-a"}
+	binding := model.Binding{BindingUID: "binding"}
+	for _, zone := range []string{"zone-a", "zone-b"} {
+		binding.Zones = append(binding.Zones, model.ZoneAttachment{ZoneUID: zone, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
+		p := publicationState{
+			Fence:    fence{Epoch: 1, Revision: 1},
+			Manifest: model.PublicationManifest{ManifestUID: "pub-" + zone, ZoneUID: zone, Apex: zone + ".example.", WriterEpoch: 1, Revision: 1},
+			Plan:     model.PublicationPlan{ZoneUID: zone, Apex: zone + ".example."},
+			Verified: true,
+		}
+		agent.state.Publications[zone] = p
+		agent.installedPublications[zone] = installedPublication{Identity: publicationIdentity(p)}
+	}
+	agent.state.Snapshot = &model.ServingSnapshot{Bindings: []model.Binding{binding}}
+
+	if err := agent.heartbeatPublications(context.Background()); err == nil {
+		t.Fatal("a publication that failed verification was not reported")
+	}
+	phases := map[string]model.AckPhase{}
+	for _, env := range publisher.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		phases[ack.ResourceUID] = ack.Phase
+	}
+	if phases["zone-a"] != model.AckRejected || phases["zone-b"] != model.AckVerified {
+		t.Fatalf("acks = %v, want zone-a rejected and zone-b still verified", phases)
+	}
+}
+
+type failingVerifier struct{ zone string }
+
+func (v failingVerifier) VerifyPublication(_ context.Context, plan model.PublicationPlan, _ []PublicationView) error {
+	if plan.ZoneUID == v.zone {
+		return errors.New("probe failed")
+	}
+	return nil
 }

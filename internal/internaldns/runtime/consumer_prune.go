@@ -114,9 +114,9 @@ func (p *consumerPruner) retired(consumers []transport.ConsumerSummary, now time
 }
 
 // orphaned reports a consumer named and filtered like a member feed of a shard
-// this control plane plans, whose member is not configured for that shard. A
-// member's ack feed is always a candidate: members that verify their own
-// publications leave it unread, and the grace period spares one that reads it.
+// this control plane plans, whose member is not configured for that shard, or
+// any member's ack feed: combined members never read it, and a resolver whose
+// feed is pruned while it is away replays recent acks when it returns.
 func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
 	if len(c.FilterSubjects) != 1 {
 		return false
@@ -132,12 +132,9 @@ func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
 			if c.Name == durable(roleControlPlane, planner.Region, planner.Shard, ackFeed) {
 				return false
 			}
-			if feed == ackFeed {
-				return true
-			}
 			for _, m := range planner.Members {
 				if c.Name == durable(m.MemberID, feed) {
-					return false
+					return feed == ackFeed
 				}
 			}
 			return true

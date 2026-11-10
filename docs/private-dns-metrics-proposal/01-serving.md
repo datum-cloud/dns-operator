@@ -84,7 +84,7 @@ Use `increase(internal_dns_transport_udp_socket_drops_total[5m]) > 0` to detect 
 | `internal_dns_agent_checkpoint_timestamp_seconds` | gauge | — |
 | `internal_dns_agent_checkpoint_restored` | gauge | 1 while the agent serves state restored from its checkpoint and has not yet confirmed a fence with the control plane, else 0 |
 | `internal_dns_agent_fence_confirmed_timestamp_seconds` | gauge | —. Last time the control plane confirmed the serving fence. `time() -` this shows how long a member has served without control-plane contact. |
-| `internal_dns_agent_loop_consecutive_failures` | gauge | `loop` ∈ `bootstrap`, `consume_serving`, `consume_records`, `consume_acks`, `step`, the agent's actual loops: the startup bootstrap retry, one consumer per event source, and the reconcile ticker that drives activation; reset to 0 on success |
+| `internal_dns_agent_loop_consecutive_failures` | gauge | `loop` ∈ `bootstrap`, `consume_serving`, `consume_records`, `consume_acks`, `step`, the agent's actual loops: the startup bootstrap retry, one consumer per event source (`consume_acks` only in resolver mode), and the reconcile ticker that drives activation; reset to 0 on success |
 | `internal_dns_agent_bindings` | gauge | `state` ∈ `active`, `pending`, `unverified` (≤ `maxBindings` = 200, count only) |
 | `internal_dns_agent_publications` | gauge | `state` ∈ `verified`, `pending`, `rejected`, `tombstone` |
 | `internal_dns_agent_acks_published_total` | counter | `result` ∈ `success`, `error` |

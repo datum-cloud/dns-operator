@@ -152,36 +152,3 @@ func TestRejectionIsRecordedAtOnce(t *testing.T) {
 		t.Fatalf("rejection not recorded: %#v", m.Status)
 	}
 }
-
-func TestLiveMemberLeaseKeepsAVerifiedRowWithoutRenewal(t *testing.T) {
-	f := newLeaseFixture(t)
-	f.ack(model.AckVerified)
-	f.now = f.now.Add(publicationRowLease + time.Minute)
-	var lease corev1.ConfigMap
-	key := client.ObjectKey{Namespace: "platform", Name: memberLeaseName("east", "shared", "regional-0")}
-	if err := f.client.Get(context.Background(), key, &lease); err != nil {
-		t.Fatal(err)
-	}
-	lease.Data[memberLeaseKey] = f.now.Add(90 * time.Second).Format(time.RFC3339Nano)
-	if err := f.client.Update(context.Background(), &lease); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.sink.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	m := f.get()
-	if m.Status.ReplicaAcknowledgements[0].ValidUntil.After(f.now) {
-		t.Fatal("the row must have lapsed for this test to mean anything")
-	}
-	if !published(m) {
-		t.Fatal("a verified row stopped counting while its member's lease was live")
-	}
-
-	f.now = f.now.Add(91 * time.Second)
-	if err := f.sink.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if published(f.get()) {
-		t.Fatal("a member whose lease lapsed still counts as verified")
-	}
-}

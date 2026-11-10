@@ -27,8 +27,9 @@ const (
 
 // defaultPublicationAckRefresh is also the longest refresh: the control plane
 // renews a verified publication row only in the last five minutes of its
-// ten-minute lease, and a new ack durable replays five minutes.
-const defaultPublicationAckRefresh = 4 * time.Minute
+// ten-minute lease, so two refreshes land in that window and one lost ack
+// cannot let the row lapse.
+const defaultPublicationAckRefresh = 2 * time.Minute
 
 // leaseRenewalAcks is how many publications renew the member lease each ACK
 // interval, so one the control plane ignores, such as a fence it has already
@@ -91,7 +92,7 @@ func (c Config) Validate() error {
 		return errors.New("ACK publish timeout must be between zero and two seconds")
 	}
 	if c.PublicationAckRefresh < 0 || c.PublicationAckRefresh > defaultPublicationAckRefresh {
-		return errors.New("publication ACK refresh must be between zero and four minutes")
+		return errors.New("publication ACK refresh must be between zero and two minutes")
 	}
 
 	if err := c.HealthCheck.validate(); err != nil {
@@ -1422,9 +1423,6 @@ func (a *Agent) emitVerifiedPublicationAck(ctx context.Context, uid string, epoc
 	// proof required by a periodic heartbeat. Remember it so finishEvent checks
 	// other due publications without immediately repeating this proof.
 	a.lastPublicationAck[uid] = a.deps.Clock()
-	if !a.state.Publications[uid].Manifest.Tombstone {
-		a.lastLeaseAck = a.lastPublicationAck[uid]
-	}
 	return nil
 }
 
@@ -1472,27 +1470,23 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			continue
 		}
 		last := a.lastPublicationAck[uid]
-		switch {
-		case last.IsZero() || now.Sub(last) >= refresh:
+		if last.IsZero() || now.Sub(last) >= refresh {
 			due = append(due, duePublication{uid: uid, p: p, last: last})
-		case !p.Manifest.Tombstone:
+		} else {
 			renewals = append(renewals, duePublication{uid: uid, p: p, last: last})
 		}
 	}
-	live := 0
-	for _, d := range due {
-		if !d.p.Manifest.Tombstone {
-			live++
-		}
-	}
-	if live < leaseRenewalAcks && (a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval) {
+	if len(due) < leaseRenewalAcks && (a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval) {
 		sort.Slice(renewals, func(i, j int) bool {
+			if renewals[i].p.Manifest.Tombstone != renewals[j].p.Manifest.Tombstone {
+				return !renewals[i].p.Manifest.Tombstone
+			}
 			if !renewals[i].last.Equal(renewals[j].last) {
 				return renewals[i].last.Before(renewals[j].last)
 			}
 			return renewals[i].uid < renewals[j].uid
 		})
-		due = append(due, renewals[:min(len(renewals), leaseRenewalAcks-live)]...)
+		due = append(due, renewals[:min(len(renewals), leaseRenewalAcks-len(due))]...)
 	}
 	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
 	var failed error
@@ -1508,9 +1502,7 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 			break
 		}
 		a.lastPublicationAck[publication.uid] = now
-		if !p.Manifest.Tombstone {
-			a.lastLeaseAck = now
-		}
+		a.lastLeaseAck = now
 	}
 	return failed
 }

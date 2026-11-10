@@ -116,7 +116,7 @@ func (p *consumerPruner) retired(consumers []transport.ConsumerSummary, now time
 // orphaned reports a consumer named and filtered like a member feed of a shard
 // this control plane plans, whose member is not configured for that shard, or
 // any member's ack feed: combined members never read it, and a resolver whose
-// feed is pruned while it is away replays recent acks when it returns.
+// feed is pruned while it is away relearns each publication within one refresh.
 func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
 	if len(c.FilterSubjects) != 1 {
 		return false

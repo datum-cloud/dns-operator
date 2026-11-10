@@ -29,7 +29,7 @@ func TestHeartbeatRenewsTheLeaseWithAFewAcksBetweenRefreshes(t *testing.T) {
 		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
 		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
 		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
-		AckInterval: 30 * time.Second, PublicationAckRefresh: 4 * time.Minute,
+		AckInterval: 30 * time.Second, PublicationAckRefresh: 2 * time.Minute,
 	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}, AckPublisher: publisher})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestHeartbeatRenewsTheLeaseWithAFewAcksBetweenRefreshes(t *testing.T) {
 		t.Fatalf("a heartbeat inside the ACK interval acked %v", got)
 	}
 	seen := map[string]bool{}
-	for i := 1; now.Sub(start) < 4*time.Minute-30*time.Second; i++ {
+	for i := 1; now.Sub(start) < 2*time.Minute-30*time.Second; i++ {
 		now = start.Add(time.Duration(i) * 30 * time.Second)
 		got := acked()
 		if len(got) != leaseRenewalAcks {
@@ -91,7 +91,7 @@ func TestHeartbeatRenewsTheLeaseWithAFewAcksBetweenRefreshes(t *testing.T) {
 	for _, zone := range zones {
 		agent.lastPublicationAck[zone] = start
 	}
-	now = start.Add(4 * time.Minute)
+	now = start.Add(2 * time.Minute)
 	if got := acked(); len(got) != len(zones) {
 		t.Fatalf("refresh acked %v, want every publication not acked for a refresh period", got)
 	}
@@ -154,4 +154,62 @@ func (v failingVerifier) VerifyPublication(_ context.Context, plan model.Publica
 		return errors.New("probe failed")
 	}
 	return nil
+}
+
+func TestTombstonesRenewTheLeaseWhenNothingElseIsServed(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+	now := start
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	publisher := &fakePublisher{}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, AckInterval: 30 * time.Second,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}, AckPublisher: publisher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.state.Publications["zone-gone"] = publicationState{
+		Fence:    fence{Epoch: 1, Revision: 2},
+		Manifest: model.PublicationManifest{ManifestUID: "pub-gone", ZoneUID: "zone-gone", WriterEpoch: 1, Revision: 2, Tombstone: true},
+		Verified: true,
+	}
+	for i := range 4 {
+		now = start.Add(time.Duration(i) * 30 * time.Second)
+		before := len(publisher.envs)
+		if err := agent.heartbeatPublications(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(publisher.envs)-before != 1 {
+			t.Fatalf("interval %d sent %d acks; a member serving only a withdrawal must still renew its lease", i, len(publisher.envs)-before)
+		}
+	}
+}
+
+func TestPublicationAckRefreshIsBounded(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	for _, refresh := range []time.Duration{-time.Second, defaultPublicationAckRefresh + time.Second} {
+		_, err := NewAgent(Config{
+			Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+			Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+			UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, PublicationAckRefresh: refresh,
+		}, Dependencies{Runner: &recordingRunner{}})
+		if err == nil {
+			t.Fatalf("refresh %v was accepted", refresh)
+		}
+	}
 }

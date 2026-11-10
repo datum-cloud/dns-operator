@@ -837,10 +837,9 @@ func retryLoop(ctx context.Context, interval time.Duration, id loopID, live *loo
 	}
 }
 
-// ackReplay covers the longest serving lease an acknowledgement may carry and
-// the longest gap between two acknowledgements of one publication, so a new
-// durable sees every publication a member currently verifies.
-const ackReplay = 5 * time.Minute
+// ackReplay covers the longest serving lease an acknowledgement may carry;
+// anything older can no longer change readiness.
+const ackReplay = 2 * time.Minute
 
 const ackPrefetch = 32
 

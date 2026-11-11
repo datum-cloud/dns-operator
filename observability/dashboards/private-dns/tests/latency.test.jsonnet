@@ -77,6 +77,28 @@ local window = '1m';
       ],
     },
     {
+      name: 'Heatmap shares divide each cumulative bucket by the cluster total and ignore other clusters',
+      interval: '15s',
+      input_series: series('central', 'node', '0 5 10 20', '0 5 10 18', '0 5 10 19')
+                    + series('east', 'node', '0 500 1000 1500', '0 0 0 0', '0 0 0 0'),
+      promql_expr_test: [
+        check(q.shares('%s,cluster="central",%s' % [selector, q.nodeTiers], window), [
+          bucket('1', 0.9),
+          bucket('10', 0.9),
+          bucket('50', 0.9),
+          bucket('100', 0.9),
+          bucket('1000', 0.95),
+          bucket('+Inf', 1),
+        ]),
+      ],
+    },
+    {
+      name: 'Heatmap shares leave out intervals with no answers',
+      interval: '15s',
+      input_series: series('central', 'node', '0 0 0 0', '0 0 0 0', '0 0 0 0'),
+      promql_expr_test: [check(q.shares('%s,cluster="central",%s' % [selector, q.nodeTiers], window), [])],
+    },
+    {
       name: 'Counter resets do not become a burst of answers',
       interval: '15s',
       input_series: series('central', 'node', '0 5 0 5', '0 4 0 4', '0 5 0 5'),

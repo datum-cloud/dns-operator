@@ -586,7 +586,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; the answer time heatmaps show how many answers landed in each band.",
+         "description": "Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; the answer time heatmaps show what share of answers landed in each band.",
          "fieldConfig": {
             "defaults": {
                "color": {
@@ -3037,7 +3037,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Answered UDP queries at the node resolvers that clients query, node and node-b together, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s); the colour is how many answers landed there, on a compressed scale so a single slow answer still shows. Hover a cell for its count. Includes UDP error responses; excludes TCP and unanswered queries.",
+         "description": "Answered UDP queries at the node resolvers that clients query, node and node-b together, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same 0-100% scale in every cluster: darker means a larger share, and any band with at least one answer is shaded. Hover a cell for its share. Includes UDP error responses; excludes TCP and unanswered queries.",
          "gridPos": {
             "h": 8,
             "w": 24,
@@ -3051,11 +3051,13 @@
             "calculate": false,
             "cellGap": 1,
             "cellValues": {
-               "unit": "short"
+               "decimals": 2,
+               "unit": "percentunit"
             },
             "color": {
-               "exponent": 0.10000000000000001,
+               "exponent": 0.20000000000000001,
                "fill": "orange",
+               "max": 1,
                "min": 0,
                "mode": "opacity",
                "scale": "exponential",
@@ -3089,7 +3091,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=~\"node|node-b\"}[$__interval]))",
+               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=~\"node|node-b\"}[$__interval])) / ignoring (le) group_left () (sum(increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=~\"node|node-b\",le=\"+Inf\"}[$__interval])) > 0)",
                "format": "heatmap",
                "legendFormat": "{{le}}"
             }
@@ -3102,7 +3104,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Answered UDP queries at the regional routers, which only see queries the node resolvers forward, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s); the colour is how many answers landed there, on a compressed scale so a single slow answer still shows. Hover a cell for its count. Includes UDP error responses; excludes TCP and unanswered queries.",
+         "description": "Answered UDP queries at the regional routers, which only see queries the node resolvers forward, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same 0-100% scale in every cluster: darker means a larger share, and any band with at least one answer is shaded. Hover a cell for its share. Includes UDP error responses; excludes TCP and unanswered queries.",
          "gridPos": {
             "h": 8,
             "w": 24,
@@ -3116,11 +3118,13 @@
             "calculate": false,
             "cellGap": 1,
             "cellValues": {
-               "unit": "short"
+               "decimals": 2,
+               "unit": "percentunit"
             },
             "color": {
-               "exponent": 0.10000000000000001,
+               "exponent": 0.20000000000000001,
                "fill": "orange",
+               "max": 1,
                "min": 0,
                "mode": "opacity",
                "scale": "exponential",
@@ -3154,7 +3158,7 @@
                   "uid": "${datasource}"
                },
                "editorMode": "code",
-               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=\"regional-dnsdist\"}[$__interval]))",
+               "expr": "sum by (le) (increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=\"regional-dnsdist\"}[$__interval])) / ignoring (le) group_left () (sum(increase(dnsdist_latency_bucket{container=\"dnsdist\",cluster=~\"$cluster\",internal_dns_datum_net_tier=\"regional-dnsdist\",le=\"+Inf\"}[$__interval])) > 0)",
                "format": "heatmap",
                "legendFormat": "{{le}}"
             }

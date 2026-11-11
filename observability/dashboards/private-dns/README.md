@@ -90,10 +90,11 @@ cluster: node resolvers (node and node-b together) and regional routers
 separately, since a query can pass through both. Each cell is the share of
 one interval's answers that landed in one bucket, so those two tail answers
 appear as 1.3% of that interval rather than as a quantile. Every tile uses the
-same 0–100% colour scale, so clusters with different traffic compare directly.
-The scale is compressed so each tenfold step in share is a similar step in
-shade, and a band with one answer among thousands stays visible; hover a cell
-for its share. Columns are back-to-back `increase()` windows, which count
+same colour scale, so clusters with different traffic compare directly. Shares
+of 5% or more render at full colour, so the busy bands are solid and the tail
+shows as paler cells; a band holding at least 1 in 2,500 answers is shaded.
+Grafana bins values linearly before shading them, which is why the scale stops
+at 5% rather than 100%. Hover a cell for its exact share. Columns are back-to-back `increase()` windows, which count
 each answer once only because VictoriaMetrics does not extrapolate them.
 
 Query fixtures import the same expressions as the dashboards:

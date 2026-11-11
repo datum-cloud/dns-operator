@@ -2361,7 +2361,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Answered UDP queries at the node resolvers that clients query, node and node-b together, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same 0-100% scale in every cluster: darker means a larger share, and any band with at least one answer is shaded. Hover a cell for its share. Includes UDP error responses; excludes TCP and unanswered queries.",
+         "description": "Answered UDP queries at the node resolvers that clients query, node and node-b together, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same scale in every cluster: darker means a larger share, and 5% or more shows as full colour, so the busy fast bands are solid and slow bands stand out as paler cells. A band holding at least 1 in 2,500 answers is shaded. Hover a cell for its exact share. Includes UDP error responses; excludes TCP and unanswered queries.",
          "gridPos": {
             "h": 8,
             "w": 24,
@@ -2381,11 +2381,11 @@
             "color": {
                "exponent": 0.20000000000000001,
                "fill": "orange",
-               "max": 1,
+               "max": 0.050000000000000003,
                "min": 0,
                "mode": "opacity",
                "scale": "exponential",
-               "steps": 64
+               "steps": 128
             },
             "filterValues": {
                "le": 1.0000000000000001e-09
@@ -2428,7 +2428,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
          },
-         "description": "Answered UDP queries at the regional routers, which only see queries the node resolvers forward, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same 0-100% scale in every cluster: darker means a larger share, and any band with at least one answer is shaded. Hover a cell for its share. Includes UDP error responses; excludes TCP and unanswered queries.",
+         "description": "Answered UDP queries at the regional routers, which only see queries the node resolvers forward, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same scale in every cluster: darker means a larger share, and 5% or more shows as full colour, so the busy fast bands are solid and slow bands stand out as paler cells. A band holding at least 1 in 2,500 answers is shaded. Hover a cell for its exact share. Includes UDP error responses; excludes TCP and unanswered queries.",
          "gridPos": {
             "h": 8,
             "w": 24,
@@ -2448,11 +2448,11 @@
             "color": {
                "exponent": 0.20000000000000001,
                "fill": "orange",
-               "max": 1,
+               "max": 0.050000000000000003,
                "min": 0,
                "mode": "opacity",
                "scale": "exponential",
-               "steps": 64
+               "steps": 128
             },
             "filterValues": {
                "le": 1.0000000000000001e-09

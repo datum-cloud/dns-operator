@@ -168,18 +168,20 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
     + heatmap.options.color.withFill('orange')
     + heatmap.options.color.withScale('exponential')
     + heatmap.options.color.withMin(0)
-    + heatmap.options.color.withSteps(64)
     + heatmap.options.filterValues.withLe(1e-9)
     + (if share then
-         // Grafana applies the exponent only in opacity mode. Over a fixed
-         // 0-100% scale, 0.2 gives each tenfold step in share a similar step
-         // in shade, so 0.1%, 1%, 10% and 100% read as distinct.
-         heatmap.options.color.withExponent(0.2)
-         + heatmap.options.color.withMax(1)
+         // Grafana bins values linearly into the steps and applies the
+         // exponent only to each step's opacity, so anything under
+         // max/steps is transparent. A 5% cap keeps 1 answer in 2,500 visible;
+         // larger shares all render at full colour.
+         heatmap.options.color.withSteps(128)
+         + heatmap.options.color.withExponent(0.2)
+         + heatmap.options.color.withMax(0.05)
          + heatmap.options.cellValues.withUnit('percentunit')
          + heatmap.options.cellValues.withDecimals(2)
        else
-         heatmap.options.color.withExponent(0.1)
+         heatmap.options.color.withSteps(64)
+         + heatmap.options.color.withExponent(0.1)
          + heatmap.options.cellValues.withUnit('short'))
     + heatmap.options.tooltip.withMode('single')
     + heatmap.options.tooltip.withYHistogram(true)
@@ -187,7 +189,7 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
 
   udpLatencyHeatmaps(selector, y, repeat='')::
     local description(who) =
-      "Answered UDP queries at %s, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same 0-100%% scale in every cluster: darker means a larger share, and any band with at least one answer is shaded. Hover a cell for its share. Includes UDP error responses; excludes TCP and unanswered queries." % who;
+      "Answered UDP queries at %s, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s). The colour is the share of that interval's answers that landed in the band, on the same scale in every cluster: darker means a larger share, and 5%% or more shows as full colour, so the busy fast bands are solid and slow bands stand out as paler cells. A band holding at least 1 in 2,500 answers is shaded. Hover a cell for its exact share. Includes UDP error responses; excludes TCP and unanswered queries." % who;
     [
       self.heatmap(
         'UDP answer time, node resolvers%s' % (if repeat != '' then ' in $' + repeat else ''),

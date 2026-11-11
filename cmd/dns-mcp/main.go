@@ -28,6 +28,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,6 +47,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -65,6 +67,10 @@ const (
 	// readHeaderTimeout bounds how long a slow client may hold a connection
 	// before sending headers.
 	readHeaderTimeout = 10 * time.Second
+
+	// shutdownTimeout bounds how long in-flight requests may run after the
+	// process is told to stop.
+	shutdownTimeout = 15 * time.Second
 
 	// misconfiguredClientNote closes every error a request can fail with
 	// before a read is attempted. All of them are the calling client's
@@ -96,10 +102,14 @@ func init() {
 }
 
 func main() {
-	var addr string
+	var addr, tlsCertFile, tlsKeyFile string
 
 	flag.StringVar(&addr, "addr", envOr("DNS_MCP_ADDR", ":8080"),
 		"address to serve MCP on")
+	flag.StringVar(&tlsCertFile, "tls-cert-file", os.Getenv("DNS_MCP_TLS_CERT_FILE"),
+		"certificate to serve HTTPS with; requires --tls-key-file. Plain HTTP when both are unset")
+	flag.StringVar(&tlsKeyFile, "tls-key-file", os.Getenv("DNS_MCP_TLS_KEY_FILE"),
+		"private key to serve HTTPS with; requires --tls-cert-file")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -121,7 +131,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := run(addr, baseConfig); err != nil {
+	if err := run(ctrl.SetupSignalHandler(), addr, tlsCertFile, tlsKeyFile, baseConfig); err != nil {
 		setupLog.Error(err, "server failed")
 		os.Exit(1)
 	}
@@ -166,8 +176,37 @@ func sameEndpoint(a, b string) bool {
 	return strings.TrimSuffix(a, "/") == strings.TrimSuffix(b, "/")
 }
 
-func run(addr string, baseConfig *rest.Config) error {
-	handler := mcp.NewStreamableHTTPHandler(
+func run(ctx context.Context, addr, tlsCertFile, tlsKeyFile string, baseConfig *rest.Config) error {
+	if err := checkTLSFiles(tlsCertFile, tlsKeyFile); err != nil {
+		return err
+	}
+
+	handler, err := newHandler(baseConfig)
+	if err != nil {
+		return err
+	}
+
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listening on %s: %w", addr, err)
+	}
+	return serve(ctx, listener, handler, tlsCertFile, tlsKeyFile)
+}
+
+// checkTLSFiles rejects half a TLS configuration. Falling back to plain HTTP
+// when one file is missing would silently drop the transport security the
+// deployment asked for.
+func checkTLSFiles(certFile, keyFile string) error {
+	if (certFile == "") == (keyFile == "") {
+		return nil
+	}
+	return errors.New("--tls-cert-file and --tls-key-file must be set together: " +
+		"set both to serve HTTPS, or neither to serve plain HTTP")
+}
+
+func newHandler(baseConfig *rest.Config) (http.Handler, error) {
+	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			// A server per request, bound to that caller's identity and
 			// project. Nothing is shared between callers.
@@ -187,11 +226,11 @@ func run(addr string, baseConfig *rest.Config) error {
 	// the capability document points the assistant at.
 	docs, err := newKnowledgeHandler()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", handler)
+	mux.Handle("/mcp", mcpHandler)
 	mux.Handle(knowledgePath, docs)
 	mux.Handle(runbookPrefix, docs)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -199,17 +238,79 @@ func run(addr string, baseConfig *rest.Config) error {
 		_, _ = fmt.Fprintln(w, "ok")
 	})
 
+	setupLog.Info("serving", "mcp", "/mcp", "docs", docs.paths())
+	return mux, nil
+}
+
+// serve answers on listener until ctx is done, over HTTPS when a certificate
+// is given and plain HTTP otherwise. The certificate is re-read when its files
+// change, so a rotation needs no restart.
+func serve(ctx context.Context, listener net.Listener, handler http.Handler, tlsCertFile, tlsKeyFile string) error {
+	if err := checkTLSFiles(tlsCertFile, tlsKeyFile); err != nil {
+		_ = listener.Close()
+		return err
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	setupLog.Info("listening", "addr", addr, "mcp", "/mcp", "docs", docs.paths())
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("serving on %s: %w", addr, err)
+	scheme := "http"
+	var watcherDone chan error
+	if tlsCertFile != "" {
+		watcher, err := certwatcher.New(tlsCertFile, tlsKeyFile)
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("loading TLS certificate: %w", err)
+		}
+		server.TLSConfig = &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: watcher.GetCertificate,
+		}
+		scheme = "https"
+		watcherDone = make(chan error, 1)
+		go func() { watcherDone <- watcher.Start(ctx) }()
 	}
-	return nil
+
+	serveDone := make(chan error, 1)
+	go func() {
+		if server.TLSConfig != nil {
+			serveDone <- server.ServeTLS(listener, "", "")
+			return
+		}
+		serveDone <- server.Serve(listener)
+	}()
+
+	setupLog.Info("listening", "scheme", scheme, "addr", listener.Addr().String())
+
+	var failure error
+	select {
+	case err := <-serveDone:
+		failure = fmt.Errorf("serving %s on %s: %w", scheme, listener.Addr(), err)
+	case err := <-watcherDone:
+		watcherDone = nil
+		if err != nil {
+			failure = fmt.Errorf("watching TLS certificate: %w", err)
+		}
+	case <-ctx.Done():
+	}
+
+	cancel()
+	shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer stop()
+	if err := server.Shutdown(shutdownCtx); err != nil && failure == nil {
+		failure = fmt.Errorf("shutting down: %w", err)
+	}
+	if watcherDone != nil {
+		if err := <-watcherDone; err != nil && failure == nil {
+			failure = fmt.Errorf("watching TLS certificate: %w", err)
+		}
+	}
+	return failure
 }
 
 // depsFromRequest returns a DepsFor that resolves the caller's identity and

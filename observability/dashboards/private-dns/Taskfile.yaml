@@ -39,6 +39,7 @@ tasks:
     cmds:
       - hack/test-dashboard-latency.sh
       - hack/check-dashboard-layout.sh
+      - hack/check-dashboard-heatmap-colours.sh
 
   clean:
     desc: Remove the rendered dashboard JSON

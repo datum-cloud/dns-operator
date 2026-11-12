@@ -224,6 +224,7 @@ tasks:
     cmds:
       - hack/test-dashboard-latency.sh
       - hack/check-dashboard-layout.sh
+      - hack/check-dashboard-heatmap-colours.sh
       - hack/test-observability-rules.sh
 
   test:dashboards:

@@ -184,7 +184,7 @@ func runImport(cmd *cobra.Command, domain string, opts importOptions) error {
 		if !util.AssumeYes(cmd) {
 			prompt := fmt.Sprintf(
 				"--replace will discard the existing records of every type in the input for %s. Continue?",
-				zone.Spec.DomainName)
+				util.ZoneLabel(zone))
 			ok, cerr := util.ConfirmYesNo(cmd.InOrStdin(), errOut, prompt, false)
 			if cerr != nil {
 				return cerr

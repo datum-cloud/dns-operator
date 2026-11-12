@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
 )
 
@@ -81,7 +82,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	if !dryRun && !assumeYes {
 		prompt := cascadeWarning(domain, records, countErr) + objectNameNote(args[0], domain, z.Name)
-		confirmed, err := util.ConfirmTyped(cmd.InOrStdin(), cmd.ErrOrStderr(), prompt, domain)
+		confirmAs := domain
+		if z.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+			prompt = cascadeWarning(util.ZoneLabel(z), records, countErr)
+			confirmAs = z.Name
+		}
+		confirmed, err := util.ConfirmTyped(cmd.InOrStdin(), cmd.ErrOrStderr(), prompt, confirmAs)
 		if err != nil {
 			return err
 		}

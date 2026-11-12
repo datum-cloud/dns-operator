@@ -171,7 +171,7 @@ func confirmApply(cmd *cobra.Command, zone *dnsv1alpha1.DNSZone, plan *plan, err
 	}
 	ok, err := util.ConfirmYesNo(cmd.InOrStdin(), errOut,
 		fmt.Sprintf("Apply %d %s to %s?",
-			len(plan.changes), pluralize(len(plan.changes), "change"), zone.Spec.DomainName),
+			len(plan.changes), pluralize(len(plan.changes), "change"), util.ZoneLabel(zone)),
 		false)
 	if err != nil {
 		return err

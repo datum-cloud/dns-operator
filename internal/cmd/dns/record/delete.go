@@ -84,7 +84,7 @@ func runDelete(cmd *cobra.Command, args []string, opts *deleteOptions) error {
 	if err != nil {
 		return err
 	}
-	zone, err := resolveZone(ctx, c, args[0])
+	zone, err := resolveZone(ctx, c, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -103,7 +103,7 @@ func runDelete(cmd *cobra.Command, args []string, opts *deleteOptions) error {
 		return err
 	}
 	if set == nil {
-		return notFoundError(t, ownerName, zoneDomain)
+		return notFoundError(t, ownerName, zoneDomain, util.ZoneArg(zone))
 	}
 	// What is being deleted is established before the managed-record guard, so
 	// a name or value that is simply not there says so rather than being told
@@ -114,9 +114,9 @@ func runDelete(cmd *cobra.Command, args []string, opts *deleteOptions) error {
 			return util.NewCLIError(util.ExitNotFound,
 				fmt.Sprintf("%s has no %s value %q", ownerDisplay(ownerName, zoneDomain), t, rdata.Render(t, *target))).
 				WithFix(fmt.Sprintf("list what is there: datumctl dns record list %s --name %s --type %s",
-					zoneDomain, displayName(ownerName), t))
+					util.ZoneArg(zone), displayName(ownerName), t))
 		}
-		return notFoundError(t, ownerName, zoneDomain)
+		return notFoundError(t, ownerName, zoneDomain, util.ZoneArg(zone))
 	}
 
 	if err := guardMutation(errOut, set, zone, t, ownerName, opts.force); err != nil {
@@ -198,8 +198,8 @@ func deletePrompt(doomed []dnsv1alpha1.RecordEntry, t dnsv1alpha1.RRType, ownerN
 	return fmt.Sprintf("Delete all %d %s records for %s?", len(doomed), t, who)
 }
 
-func notFoundError(t dnsv1alpha1.RRType, ownerName, zoneDomain string) error {
+func notFoundError(t dnsv1alpha1.RRType, ownerName, zoneDomain, zoneArg string) error {
 	return util.NewCLIError(util.ExitNotFound,
 		fmt.Sprintf("no %s records for %s", t, ownerDisplay(ownerName, zoneDomain))).
-		WithFix(fmt.Sprintf("list what is there: datumctl dns record list %s", zoneDomain))
+		WithFix(fmt.Sprintf("list what is there: datumctl dns record list %s", zoneArg))
 }

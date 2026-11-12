@@ -144,11 +144,9 @@ func validateDomain(domain, raw string) error {
 	return nil
 }
 
-// getZone resolves the domain a user typed to the DNSZone object that carries
-// it. The object name is generated at creation and nobody memorises it, so the
-// lookup is by spec.domainName with an object-name fallback for the user who
-// pasted one out of `kubectl get`.
-func getZone(ctx context.Context, c client.Client, project, domain string) (*dnsv1alpha1.DNSZone, error) {
+// getZone resolves what a user typed, a domain or an object name, to one
+// DNSZone.
+func getZone(ctx context.Context, c client.Client, project, domain, vpc string) (*dnsv1alpha1.DNSZone, error) {
 	want := normalizeDomain(domain)
 
 	var list dnsv1alpha1.DNSZoneList
@@ -156,15 +154,27 @@ func getZone(ctx context.Context, c client.Client, project, domain string) (*dns
 		return nil, fmt.Errorf("listing zones: %w", err)
 	}
 
+	var matched []dnsv1alpha1.DNSZone
 	for i := range list.Items {
-		if normalizeDomain(list.Items[i].Spec.DomainName) == want {
-			return &list.Items[i], nil
+		if normalizeDomain(list.Items[i].Spec.DomainName) == want || list.Items[i].Name == domain {
+			matched = append(matched, list.Items[i])
 		}
 	}
-	for i := range list.Items {
-		if list.Items[i].Name == domain {
-			return &list.Items[i], nil
+	if len(matched) > 0 {
+		z, err := util.PickZone(ctx, c, matched, want, vpc)
+		if err != nil {
+			return nil, err
 		}
+		sharing := 0
+		for i := range list.Items {
+			if list.Items[i].Spec.DomainName == z.Spec.DomainName {
+				sharing++
+			}
+		}
+		if sharing > 1 {
+			util.MarkSharedDomain(z)
+		}
+		return z, nil
 	}
 
 	return nil, util.NewCLIError(util.ExitNotFound,

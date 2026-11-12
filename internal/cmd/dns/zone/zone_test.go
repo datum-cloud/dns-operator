@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -318,7 +319,7 @@ func TestValidateDomain(t *testing.T) {
 func TestGetZoneNotFound(t *testing.T) {
 	c := newFakeClient(t, newZone("example-com-abc123", "example.com"))
 
-	_, err := getZone(t.Context(), c, testProject, "missing.com")
+	_, err := getZone(t.Context(), c, testProject, "missing.com", "")
 	if err == nil {
 		t.Fatal("expected an error for a zone that does not exist")
 	}
@@ -336,7 +337,7 @@ func TestGetZoneNotFound(t *testing.T) {
 func TestGetZoneMatchesCaseInsensitively(t *testing.T) {
 	c := newFakeClient(t, newZone("example-com-abc123", "example.com"))
 
-	z, err := getZone(t.Context(), c, testProject, "Example.COM.")
+	z, err := getZone(t.Context(), c, testProject, "Example.COM.", "")
 	if err != nil {
 		t.Fatalf("getZone: %v", err)
 	}
@@ -371,4 +372,73 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func private(z *dnsv1alpha1.DNSZone) {
+	z.Spec.Visibility = dnsv1alpha1.DNSZoneVisibilityPrivate
+}
+
+func twoVPCZones() []client.Object {
+	ctxB := &dnsv1alpha1.DNSResolverContext{
+		ObjectMeta: metav1.ObjectMeta{Name: "ctx-b", Namespace: util.ResourceNamespace},
+		Spec:       dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "project-uid/uid-app-b"},
+	}
+	ctxB.Status.ManagedNamespace.DNSZoneRef.Name = "managed-b"
+	return []client.Object{
+		&networkingv1alpha.Network{ObjectMeta: metav1.ObjectMeta{
+			Name: "app-b", Namespace: util.ResourceNamespace, UID: types.UID("uid-app-b"),
+		}},
+		newZone("managed-a", "datum.internal", private),
+		newZone("managed-b", "datum.internal", private),
+		ctxB,
+	}
+}
+
+func TestGetZoneRefusesSharedDomainWithoutVPC(t *testing.T) {
+	c := newFakeClient(t, twoVPCZones()...)
+
+	_, err := getZone(t.Context(), c, testProject, "datum.internal", "")
+	assertExitCode(t, err, util.ExitUsage)
+
+	z, err := getZone(t.Context(), c, testProject, "datum.internal", "app-b")
+	if err != nil {
+		t.Fatalf("getZone --vpc app-b: %v", err)
+	}
+	if z.Name != "managed-b" {
+		t.Errorf("zone = %q, want managed-b", z.Name)
+	}
+}
+
+func TestDeletePrivateZoneConfirmsByObjectName(t *testing.T) {
+	interactive(t)
+	c := newFakeClient(t, twoVPCZones()...)
+	h := newHarness(t, c)
+	h.in.WriteString("managed-b\n")
+
+	if err := h.run("zone", "delete", "datum.internal", "--vpc", "app-b"); err != nil {
+		t.Fatalf("zone delete: %v", err)
+	}
+	prompt := h.err.String()
+	if !strings.Contains(prompt, "datum.internal (zone managed-b)") || !strings.Contains(prompt, `Type "managed-b" to confirm:`) {
+		t.Errorf("prompt does not name the zone object:\n%s", prompt)
+	}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: util.ResourceNamespace, Name: "managed-a"}, &dnsv1alpha1.DNSZone{}); err != nil {
+		t.Errorf("the other VPC's zone is gone: %v", err)
+	}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: util.ResourceNamespace, Name: "managed-b"}, &dnsv1alpha1.DNSZone{}); err == nil {
+		t.Error("managed-b still exists after a confirmed delete")
+	}
+}
+
+func TestZoneLookupCommandsTakeVPC(t *testing.T) {
+	root := Command()
+	for _, name := range []string{"describe", "delete", "nameservers", "import", "export"} {
+		sub, _, err := root.Find([]string{name})
+		if err != nil || sub.Name() != name {
+			t.Fatalf("finding %s: %v", name, err)
+		}
+		if sub.Flags().Lookup(util.VPCFlag) == nil {
+			t.Errorf("zone %s has no --%s flag", name, util.VPCFlag)
+		}
+	}
 }

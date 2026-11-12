@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
 	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
 )
 
@@ -39,6 +40,7 @@ to run non-interactively without --yes.`,
 
 	cmd.Flags().Bool("dry-run", false, "Submit the deletion for server-side validation without performing it")
 
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -55,7 +57,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	z, err := getZone(ctx, c, project, args[0])
+	z, err := getZone(ctx, c, project, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return util.ClassifyError(err)
 	}
@@ -80,7 +82,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	if !dryRun && !assumeYes {
 		prompt := cascadeWarning(domain, records, countErr) + objectNameNote(args[0], domain, z.Name)
-		confirmed, err := util.ConfirmTyped(cmd.InOrStdin(), cmd.ErrOrStderr(), prompt, domain)
+		confirmAs := domain
+		if z.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
+			prompt = cascadeWarning(util.ZoneLabel(z), records, countErr)
+			confirmAs = z.Name
+		}
+		confirmed, err := util.ConfirmTyped(cmd.InOrStdin(), cmd.ErrOrStderr(), prompt, confirmAs)
 		if err != nil {
 			return err
 		}

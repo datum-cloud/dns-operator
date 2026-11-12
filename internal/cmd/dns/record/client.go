@@ -30,10 +30,9 @@ const (
 // can inject a fake client without a control plane behind it.
 var clientFactory = util.NewClient
 
-// resolveZone finds the DNSZone serving a domain. Users type the domain name,
-// which is a selectable field; the object name is accepted as a fallback so a
-// name copied out of `kubectl get dnszones` also works.
-func resolveZone(ctx context.Context, c client.Client, domain string) (*dnsv1alpha1.DNSZone, error) {
+// resolveZone resolves what a user typed, a domain or an object name, to one
+// DNSZone.
+func resolveZone(ctx context.Context, c client.Client, domain, vpc string) (*dnsv1alpha1.DNSZone, error) {
 	name := normalizeDomain(domain)
 	if name == "" {
 		return nil, util.UsageErrorf("a zone domain is required").
@@ -48,23 +47,54 @@ func resolveZone(ctx context.Context, c client.Client, domain string) (*dnsv1alp
 		return nil, util.ClassifyError(fmt.Errorf("listing zones: %w", err))
 	}
 
-	if len(list.Items) > 0 {
-		sort.Slice(list.Items, func(i, j int) bool { return list.Items[i].Name < list.Items[j].Name })
-		return &list.Items[0], nil
-	}
-
 	var byName dnsv1alpha1.DNSZone
 	err := c.Get(ctx, types.NamespacedName{Namespace: util.ResourceNamespace, Name: name}, &byName)
 	switch {
 	case err == nil:
-		return &byName, nil
-	case apierrors.IsNotFound(err):
+		if !containsZone(list.Items, byName.Name) {
+			list.Items = append(list.Items, byName)
+		}
+	case !apierrors.IsNotFound(err):
+		return nil, util.ClassifyError(fmt.Errorf("getting zone: %w", err))
+	}
+
+	if len(list.Items) == 0 {
 		return nil, util.NewCLIError(util.ExitNotFound, fmt.Sprintf("zone %q not found", name)).
 			WithFix("run `datumctl dns zone list` to see the zones in this project.").
 			WithCause(err)
-	default:
-		return nil, util.ClassifyError(fmt.Errorf("getting zone: %w", err))
 	}
+	zone, err := util.PickZone(ctx, c, list.Items, name, vpc)
+	if err != nil {
+		return nil, err
+	}
+	sharing := 0
+	for i := range list.Items {
+		if list.Items[i].Spec.DomainName == zone.Spec.DomainName {
+			sharing++
+		}
+	}
+	if zone.Spec.DomainName != name {
+		var same dnsv1alpha1.DNSZoneList
+		if err := c.List(ctx, &same,
+			client.InNamespace(util.ResourceNamespace),
+			client.MatchingFields{fieldDomainName: zone.Spec.DomainName},
+		); err == nil {
+			sharing = len(same.Items)
+		}
+	}
+	if sharing > 1 {
+		util.MarkSharedDomain(zone)
+	}
+	return zone, nil
+}
+
+func containsZone(zones []dnsv1alpha1.DNSZone, name string) bool {
+	for i := range zones {
+		if zones[i].Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeDomain folds a domain to the spelling spec.domainName uses: lowercase

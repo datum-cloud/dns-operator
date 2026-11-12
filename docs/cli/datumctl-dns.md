@@ -292,6 +292,19 @@ Drop `--dry-run` to apply the changes. Re-running an unchanged file reports `No 
 
 Datum manages some records for you — the zone's SOA and apex NS records, and records created by a Gateway. `apply` never prunes or modifies them, and reports what it skipped.
 
+## Private zones that share a domain
+
+Private zones in different VPCs can use the same domain. Every VPC's default zone is `datum.internal`, for example. When more than one zone matches what you typed, the plugin refuses rather than guess, and lists each zone's object name and the VPCs that use it.
+
+Pick one with `--vpc <name>`, which uses the zone that VPC resolves, or pass the zone's object name in place of the domain:
+
+```sh
+datumctl dns record create datum.internal db A 10.0.0.5 --vpc app
+datumctl dns record list managed-3f9c2a
+```
+
+`--vpc` works on every `record` command and on `zone describe`, `delete`, `nameservers`, `import`, and `export`. It applies only to private zones. Suggested next steps name a private zone by its object name, and deleting a private zone asks you to confirm with its object name.
+
 ## Output formats and scripting
 
 Every command accepts `-o`:
@@ -352,6 +365,7 @@ Add `--verbose` to see the underlying cause.
 | DNS is not enabled for the project | Run `datumctl services enable dns.networking.miloapis.com --wait`. |
 | The domain doesn't resolve | Run `datumctl dns zone nameservers <domain> --check`. If delegation is `Incomplete` or `Partial`, fix it at your registrar. |
 | A record is stuck at `Pending` | This is normal right after a write. If it lasts, run `datumctl dns record describe <domain> <name>` for the server's message. |
+| `N zones in this project match "<domain>"` | Several zones share the domain. See [Private zones that share a domain](#private-zones-that-share-a-domain). |
 | `Conflict` | Another record occupies that name. Usually the name isn't inside the zone — check for `www.example.com` where `www` was meant. Otherwise see [DNS record conflict troubleshooting](../troubleshooting/dnsrecordset-downstream-orphan.md). |
 | `Not owner` | Another record set owns that name; `describe` names it. Edit the record through that set, or delete the set first. Records Datum manages, such as a Gateway's, revert if you edit them. |
 

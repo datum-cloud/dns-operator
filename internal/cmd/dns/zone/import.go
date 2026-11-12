@@ -103,6 +103,7 @@ func importCommand() *cobra.Command {
 		"Validate against the API server without writing anything")
 	cmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute,
 		"How long to wait for --discover to finish")
+	util.AddVPCFlag(cmd.Flags())
 	return cmd
 }
 
@@ -149,7 +150,7 @@ func runImport(cmd *cobra.Command, domain string, opts importOptions) error {
 		return err
 	}
 
-	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain)
+	zone, err := getZone(ctx, c, util.ProjectFromCmd(cmd), domain, util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -183,7 +184,7 @@ func runImport(cmd *cobra.Command, domain string, opts importOptions) error {
 		if !util.AssumeYes(cmd) {
 			prompt := fmt.Sprintf(
 				"--replace will discard the existing records of every type in the input for %s. Continue?",
-				zone.Spec.DomainName)
+				util.ZoneLabel(zone))
 			ok, cerr := util.ConfirmYesNo(cmd.InOrStdin(), errOut, prompt, false)
 			if cerr != nil {
 				return cerr

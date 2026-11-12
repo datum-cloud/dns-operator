@@ -70,7 +70,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	zone, err := resolveZone(ctx, c, args[0])
+	zone, err := resolveZone(ctx, c, args[0], util.VPCFromCmd(cmd))
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func runDescribe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(owning) == 0 {
-		return describeNotFound(ownerName, zoneDomain, rrTypes)
+		return describeNotFound(ownerName, zoneDomain, util.ZoneArg(zone), rrTypes)
 	}
 
 	switch format {
@@ -190,7 +190,7 @@ func managedBy(p provenance, rs *dnsv1alpha1.DNSRecordSet) string {
 }
 
 func printNextSteps(out io.Writer, zone *dnsv1alpha1.DNSZone, ownerName string, owning []dnsv1alpha1.DNSRecordSet) {
-	domain := zone.Spec.DomainName
+	domain := util.ZoneArg(zone)
 	name := displayName(ownerName)
 	t := string(owning[0].Spec.RecordType)
 
@@ -201,11 +201,11 @@ func printNextSteps(out io.Writer, zone *dnsv1alpha1.DNSZone, ownerName string, 
 	_, _ = fmt.Fprintf(out, "  See the whole zone:  datumctl dns record list %s\n", domain)
 }
 
-func describeNotFound(ownerName, zoneDomain string, rrTypes []dnsv1alpha1.RRType) error {
+func describeNotFound(ownerName, zoneDomain, zoneArg string, rrTypes []dnsv1alpha1.RRType) error {
 	if len(rrTypes) == 1 {
-		return notFoundError(rrTypes[0], ownerName, zoneDomain)
+		return notFoundError(rrTypes[0], ownerName, zoneDomain, zoneArg)
 	}
 	return util.NewCLIError(util.ExitNotFound,
 		fmt.Sprintf("no records for %s", ownerDisplay(ownerName, zoneDomain))).
-		WithFix(fmt.Sprintf("list what is there: datumctl dns record list %s", zoneDomain))
+		WithFix(fmt.Sprintf("list what is there: datumctl dns record list %s", zoneArg))
 }

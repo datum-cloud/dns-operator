@@ -165,7 +165,8 @@ func checkDomainFree(ctx context.Context, c client.Client, project, domain strin
 		return util.ClassifyError(fmt.Errorf("listing zones: %w", err))
 	}
 	for i := range list.Items {
-		if normalizeDomain(list.Items[i].Spec.DomainName) != domain {
+		if normalizeDomain(list.Items[i].Spec.DomainName) != domain ||
+			list.Items[i].Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate {
 			continue
 		}
 		return util.NewCLIError(util.ExitConflict,

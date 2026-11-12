@@ -582,7 +582,7 @@ func runControlPlaneRegion(ctx context.Context, cfg Config, region string, plann
 		for _, planner := range planners {
 			consumer, consumerErr := route.bus.Consumer(ctx, transport.ConsumerConfig{
 				Stream:         route.stream.Name,
-				Durable:        durable(roleControlPlane, planner.Region, planner.Shard, "acks"),
+				Durable:        durable(roleControlPlane, planner.Region, planner.Shard, ackFeed),
 				FilterSubjects: []string{ackFilter(planner.Region, planner.Shard)},
 				AckWait:        30 * time.Second, MaxAckPending: 128,
 				NewDurableReplay: ackReplay, Prefetch: ackPrefetch, AsyncAck: true,
@@ -704,12 +704,7 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 	defer regional.Close()
 	route, _ := regional.route(cfg.Agent.Region)
 	var sources []serving.EventSource
-	for _, feed := range []struct {
-		suffix, filter string
-		replay         time.Duration
-		prefetch       int
-		asyncAck       bool
-	}{{"serving", model.ServingSubject(cfg.Agent.Region, cfg.Agent.Shard), 0, 0, false}, {"records", model.RecordConsumerFilter(cfg.Agent.Region, cfg.Agent.Shard), 0, 0, false}, {"acks", ackFilter(cfg.Agent.Region, cfg.Agent.Shard), ackReplay, ackPrefetch, true}} {
+	for _, feed := range agentFeeds(cfg.Agent) {
 		source, err := route.bus.Consumer(ctx, transport.ConsumerConfig{Stream: route.stream.Name, Durable: durable(cfg.Agent.MemberID, feed.suffix), FilterSubjects: []string{feed.filter}, AckWait: 30 * time.Second, MaxAckPending: 64, NewDurableReplay: feed.replay, Prefetch: feed.prefetch, AsyncAck: feed.asyncAck})
 		if err != nil {
 			return err
@@ -730,6 +725,25 @@ func runAgentTransport(ctx context.Context, cfg Config, agent *serving.Agent, pu
 		agent.SetDeliveryConnected(false)
 	}()
 	return agent.RunTransport(ctx, serving.SnapshotBootstrap{Store: route.store, Region: cfg.Agent.Region, Shard: cfg.Agent.Shard}, sources...)
+}
+
+const ackFeed = "acks"
+
+type agentFeed struct {
+	suffix, filter string
+	replay         time.Duration
+	prefetch       int
+	asyncAck       bool
+}
+
+// agentFeeds are the durable feeds an agent reads. A combined-mode agent
+// verifies its own publications and never reads other members' acks.
+func agentFeeds(c serving.Config) []agentFeed {
+	feeds := []agentFeed{{"serving", model.ServingSubject(c.Region, c.Shard), 0, 0, false}, {"records", model.RecordConsumerFilter(c.Region, c.Shard), 0, 0, false}}
+	if c.Mode != serving.ModeCombined {
+		feeds = append(feeds, agentFeed{ackFeed, ackFilter(c.Region, c.Shard), ackReplay, ackPrefetch, true})
+	}
+	return feeds
 }
 
 func observeAgentDeliveryConnection(ctx context.Context, states <-chan bool, observe func(bool)) {

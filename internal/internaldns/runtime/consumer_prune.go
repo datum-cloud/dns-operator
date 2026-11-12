@@ -29,11 +29,11 @@ const (
 var memberFeedFilter = map[string]func(region, shard string) string{
 	"serving": model.ServingSubject,
 	"records": model.RecordConsumerFilter,
-	"acks":    ackFilter,
+	ackFeed:   ackFilter,
 }
 
-// consumerPruner deletes the durable consumers that removed members leave on
-// the stream, so they stop reporting as unread.
+// consumerPruner deletes the durable consumers that no member reads, so they
+// stop reporting as unread.
 type consumerPruner struct {
 	planners []platform.PlannerConfig
 	mu       sync.Mutex
@@ -114,7 +114,9 @@ func (p *consumerPruner) retired(consumers []transport.ConsumerSummary, now time
 }
 
 // orphaned reports a consumer named and filtered like a member feed of a shard
-// this control plane plans, whose member is not configured for that shard.
+// this control plane plans, whose member is not configured for that shard, or
+// any member's ack feed: combined members never read it, and a resolver whose
+// feed is pruned while it is away relearns each publication within one refresh.
 func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
 	if len(c.FilterSubjects) != 1 {
 		return false
@@ -127,12 +129,12 @@ func (p *consumerPruner) orphaned(c transport.ConsumerSummary) bool {
 			if c.FilterSubjects[0] != filterFor(planner.Region, planner.Shard) {
 				continue
 			}
-			if c.Name == durable(roleControlPlane, planner.Region, planner.Shard, "acks") {
+			if c.Name == durable(roleControlPlane, planner.Region, planner.Shard, ackFeed) {
 				return false
 			}
 			for _, m := range planner.Members {
 				if c.Name == durable(m.MemberID, feed) {
-					return false
+					return feed == ackFeed
 				}
 			}
 			return true

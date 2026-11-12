@@ -23,13 +23,14 @@ func prunerFixture() (*consumerPruner, []string, []string, []string) {
 		[]string{ackFilter("region-a", "shared-0")}
 }
 
-func TestConsumerPrunerSelectsOnlyMemberFeedsOfRemovedMembers(t *testing.T) {
+func TestConsumerPrunerSelectsRemovedMemberFeedsAndMemberAckFeeds(t *testing.T) {
 	p, serving, records, acks := prunerFixture()
 	old := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	consumers := []transport.ConsumerSummary{
 		{Name: "node-a-0-serving", FilterSubjects: serving, LastActive: old},
 		{Name: durable("Regional A/0", "records"), FilterSubjects: records, LastActive: old},
 		{Name: "control-plane-region-a-shared-0-acks", FilterSubjects: acks, LastActive: old},
+		{Name: durable("Regional A/0", "acks"), FilterSubjects: acks, LastActive: old},
 		{Name: "front-a-0-serving", FilterSubjects: serving, LastActive: old},
 		{Name: "front-a-0-records", FilterSubjects: records, LastActive: old},
 		{Name: "front-a-0-acks", FilterSubjects: acks, LastActive: old},
@@ -46,7 +47,8 @@ func TestConsumerPrunerSelectsOnlyMemberFeedsOfRemovedMembers(t *testing.T) {
 		}
 	}
 	slices.Sort(got)
-	want := []string{"front-a-0-acks", "front-a-0-records", "front-a-0-serving"}
+	want := []string{"front-a-0-acks", "front-a-0-records", "front-a-0-serving", durable("Regional A/0", "acks")}
+	slices.Sort(want)
 	if !slices.Equal(got, want) {
 		t.Fatalf("orphaned consumers = %v, want %v", got, want)
 	}

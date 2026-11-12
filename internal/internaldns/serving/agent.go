@@ -25,6 +25,17 @@ const (
 	ModeCombined Mode = "combined"
 )
 
+// defaultPublicationAckRefresh is also the longest refresh: the control plane
+// renews a verified publication row only in the last five minutes of its
+// ten-minute lease, so two refreshes land in that window and one lost ack
+// cannot let the row lapse.
+const defaultPublicationAckRefresh = 2 * time.Minute
+
+// leaseRenewalAcks is how many publications renew the member lease each ACK
+// interval, so one the control plane ignores, such as a fence it has already
+// replaced, cannot let the lease lapse.
+const leaseRenewalAcks = 3
+
 type Config struct {
 	Region                    string                       `json:"region"`
 	Shard                     string                       `json:"shard"`
@@ -41,6 +52,7 @@ type Config struct {
 	AckInterval               time.Duration                `json:"ackInterval,omitempty"`
 	AckLease                  time.Duration                `json:"ackLease,omitempty"`
 	AckPublishTimeout         time.Duration                `json:"ackPublishTimeout,omitempty"`
+	PublicationAckRefresh     time.Duration                `json:"publicationAckRefresh,omitempty"`
 	MaxBindings               int                          `json:"maxBindings,omitempty"`
 	UnsafeAllowNoFailClosed   bool                         `json:"unsafeAllowNoFailClosed,omitempty"`
 	PublicationDNSProbe       PublicationDNSVerifierConfig `json:"publicationDNSProbe,omitempty"`
@@ -78,6 +90,9 @@ func (c Config) Validate() error {
 	}
 	if c.AckPublishTimeout < 0 || c.AckPublishTimeout > 2*time.Second {
 		return errors.New("ACK publish timeout must be between zero and two seconds")
+	}
+	if c.PublicationAckRefresh < 0 || c.PublicationAckRefresh > defaultPublicationAckRefresh {
+		return errors.New("publication ACK refresh must be between zero and two minutes")
 	}
 
 	if err := c.HealthCheck.validate(); err != nil {
@@ -207,6 +222,7 @@ type Agent struct {
 	needsActivation       bool
 	lastServingAck        map[string]servingAckState
 	lastPublicationAck    map[string]time.Time
+	lastLeaseAck          time.Time
 	installedPublications map[string]installedPublication
 	verifiedPaths         map[string]string
 	verifiedRestarts      uint64
@@ -1427,6 +1443,9 @@ func (a *Agent) emitServingAck(ctx context.Context, b model.Binding, phase model
 	return nil
 }
 
+// heartbeatPublications re-acknowledges each publication every publication
+// refresh, and between refreshes renews this member's lease with a few
+// verified acknowledgements per ACK interval instead of one per publication.
 func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	if a.cfg.NodeAuthoritative {
 		return nil
@@ -1436,34 +1455,82 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	type duePublication struct {
-		uid string
-		p   publicationState
+	refresh := a.cfg.PublicationAckRefresh
+	if refresh <= 0 {
+		refresh = defaultPublicationAckRefresh
 	}
-	var due []duePublication
+	type duePublication struct {
+		uid  string
+		p    publicationState
+		last time.Time
+	}
+	var due, renewals []duePublication
 	for uid, p := range a.state.Publications {
 		if !p.Verified || p.Retired || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
 			continue
 		}
-		if last := a.lastPublicationAck[uid]; !last.IsZero() && now.Sub(last) < interval {
-			continue
+		last := a.lastPublicationAck[uid]
+		if last.IsZero() || now.Sub(last) >= refresh {
+			due = append(due, duePublication{uid: uid, p: p, last: last})
+		} else {
+			renewals = append(renewals, duePublication{uid: uid, p: p, last: last})
 		}
-		if err := a.verifyPublication(ctx, p); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, err.Error())
-			return fmt.Errorf("reverify publication %s before ACK renewal: %w", uid, err)
-		}
-		due = append(due, duePublication{uid: uid, p: p})
 	}
-	// Publish acknowledgements within a bounded budget after local DNS verification.
-	for _, publication := range due {
-		p := publication.p
-		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, ""); err != nil {
-			a.report(fmt.Errorf("publish verified publication ACK %s: %w", publication.uid, err))
+	hasLive := false
+	for _, d := range append(due[:len(due):len(due)], renewals...) {
+		if !d.p.Manifest.Tombstone {
+			hasLive = true
 			break
 		}
-		a.lastPublicationAck[publication.uid] = now
 	}
-	return nil
+	leaseDue := a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval
+	var failed error
+	renewed := 0
+	ack := func(publication duePublication) bool {
+		p := publication.p
+		if err := a.verifyPublication(ctx, p); err != nil {
+			_ = a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, err.Error())
+			failed = errors.Join(failed, fmt.Errorf("reverify publication %s before ACK renewal: %w", publication.uid, err))
+			return true
+		}
+		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, ""); err != nil {
+			a.report(fmt.Errorf("publish verified publication ACK %s: %w", publication.uid, err))
+			return false
+		}
+		a.lastPublicationAck[publication.uid] = now
+		if !hasLive || !p.Manifest.Tombstone {
+			a.lastLeaseAck = now
+			renewed++
+		}
+		return true
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
+	for _, publication := range due {
+		if !ack(publication) {
+			return failed
+		}
+	}
+	if !leaseDue || renewed >= leaseRenewalAcks {
+		return failed
+	}
+	sort.Slice(renewals, func(i, j int) bool {
+		if !renewals[i].last.Equal(renewals[j].last) {
+			return renewals[i].last.Before(renewals[j].last)
+		}
+		return renewals[i].uid < renewals[j].uid
+	})
+	for _, publication := range renewals {
+		if renewed >= leaseRenewalAcks {
+			break
+		}
+		if hasLive && publication.p.Manifest.Tombstone {
+			continue
+		}
+		if !ack(publication) {
+			break
+		}
+	}
+	return failed
 }
 
 func hashFiles(files map[string][]byte) string {

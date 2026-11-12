@@ -7,15 +7,15 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 status=0
 checked=0
 for file in "$repo_root"/config/components/dashboards/private-dns-*.json; do
-  shares="$(jq '[.panels[] | select(.type == "heatmap" and .options.cellValues.unit == "percentunit")] | length' "$file")"
+  shares="$(jq '[.. | objects | select(.type? == "heatmap" and .options.cellValues.unit == "percentunit")] | length' "$file")"
   bad="$(jq -r '
-    .panels[]
-    | select(.type == "heatmap" and .options.cellValues.unit == "percentunit")
+    .. | objects
+    | select(.type? == "heatmap" and .options.cellValues.unit == "percentunit")
     | .options.color as $c
-    | select($c.mode != "scheme" or $c.scheme != "Spectral" or ($c.reverse // false) or ($c.min != 0) or ((($c.max // 0) - 0.05) | fabs) > 1e-9)
-    | "\(.title): mode=\($c.mode) scheme=\($c.scheme) reverse=\($c.reverse // false) min=\($c.min) max=\($c.max)"' "$file")"
+    | select($c.mode != "scheme" or $c.scheme != "Spectral" or ($c.reverse // false) or ($c.min != 0) or ($c.steps != 128) or ((($c.max // 0) - 0.05) | fabs) > 1e-9)
+    | "\(.title): mode=\($c.mode) scheme=\($c.scheme) reverse=\($c.reverse // false) steps=\($c.steps) min=\($c.min) max=\($c.max)"' "$file")"
   if [ -n "$bad" ]; then
-    echo "FAIL: $(basename "$file") share heatmaps must use Spectral, unreversed, 0 to 5%" >&2
+    echo "FAIL: $(basename "$file") share heatmaps must use Spectral, unreversed, 0 to 5%, 128 steps" >&2
     echo "$bad" >&2
     status=1
   fi

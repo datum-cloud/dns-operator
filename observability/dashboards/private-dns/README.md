@@ -93,10 +93,11 @@ appear as 1.3% of that interval rather than as a quantile. Every tile uses the
 same colour scale, so clusters with different traffic compare directly. The
 scale runs from blue (a sliver of answers) through green and yellow to red (5%
 or more), so the busy bands are red and the tail shows as blue or green cells.
-Any band with an answer is coloured; 1 in 2,500 or fewer shows the first blue.
-Grafana maps values linearly onto the colours, which is why the scale stops at
-5% rather than 100%. The middle of the scale, around 2.5%, is a pale yellow
-that is faint on the light theme; hover a cell for its exact share. Columns are back-to-back `increase()` windows, which count
+Any band with an answer is coloured; about 1 in 2,500 or fewer shows the first
+blue. Grafana maps values linearly onto the colours, which is why the scale
+stops at 5% rather than 100%. The middle of the scale, around 2.5%, is a pale
+yellow that is faint on the light theme; hover a cell for its exact share.
+Columns are back-to-back `increase()` windows, which count
 each answer once only because VictoriaMetrics does not extrapolate them.
 
 Query fixtures import the same expressions as the dashboards:

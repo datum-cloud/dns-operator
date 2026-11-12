@@ -22,7 +22,7 @@ import (
 // the handler and fail closed.
 func TestInternalDNSWebhookIsRegisteredFailClosed(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "webhook", "manifests.yaml")
-	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path)
+	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path, "vinternaldns.kb.io")
 	if !ok {
 		t.Fatalf("%s registers no validating webhook for %s", path, internaldnsadmission.Path)
 	}
@@ -47,19 +47,55 @@ func TestInternalDNSWebhookIsRegisteredFailClosed(t *testing.T) {
 	}
 }
 
+// Deleting a managed zone, or releasing it from its resolver context, while
+// the context uses it would break the network's names for good, so those
+// writes reach the handler and fail closed.
+func TestInternalDNSWebhookGuardsManagedZones(t *testing.T) {
+	path := filepath.Join("..", "..", "config", "webhook", "manifests.yaml")
+	hook, ok := findValidatingWebhook(t, path, internaldnsadmission.Path, "vinternaldnszones.kb.io")
+	if !ok {
+		t.Fatalf("%s registers no managed zone webhook for %s", path, internaldnsadmission.Path)
+	}
+	if hook.FailurePolicy == nil || *hook.FailurePolicy != admissionregistrationv1.Fail {
+		t.Errorf("failurePolicy = %v, want Fail", hook.FailurePolicy)
+	}
+	if len(hook.Rules) != 1 {
+		t.Fatalf("rules = %d, want 1", len(hook.Rules))
+	}
+	rule := hook.Rules[0]
+	if !slices.Equal(rule.APIGroups, []string{dnsv1alpha1.GroupVersion.Group}) || !slices.Equal(rule.Resources, []string{"dnszones"}) {
+		t.Errorf("rule = %v %v, want dnszones", rule.APIGroups, rule.Resources)
+	}
+	ops := []admissionregistrationv1.OperationType{admissionregistrationv1.Update, admissionregistrationv1.Delete}
+	if !slices.Equal(rule.Operations, ops) {
+		t.Errorf("operations = %v, want %v", rule.Operations, ops)
+	}
+}
+
 // In deployed environments the internal-dns control plane registers the
 // private DNS reference checks. A second fail-closed registration from the
 // control-plane component would block those writes whenever either server is
 // unavailable.
 func TestDeployedComponentLeavesInternalDNSWebhookToControlPlane(t *testing.T) {
 	path := filepath.Join("..", "..", "config", "components", "admission-webhooks", "validating-webhook-configuration.yaml")
-	if _, ok := findValidatingWebhook(t, path, internaldnsadmission.Path); ok {
+	if hooks := validatingWebhooks(t, path, internaldnsadmission.Path); len(hooks) > 0 {
 		t.Fatalf("%s registers %s; the internal-dns control plane owns that registration", path, internaldnsadmission.Path)
 	}
 }
 
-func findValidatingWebhook(t *testing.T, path, servicePath string) (admissionregistrationv1.ValidatingWebhook, bool) {
+func findValidatingWebhook(t *testing.T, path, servicePath, name string) (admissionregistrationv1.ValidatingWebhook, bool) {
 	t.Helper()
+	for _, hook := range validatingWebhooks(t, path, servicePath) {
+		if hook.Name == name {
+			return hook, true
+		}
+	}
+	return admissionregistrationv1.ValidatingWebhook{}, false
+}
+
+func validatingWebhooks(t *testing.T, path, servicePath string) []admissionregistrationv1.ValidatingWebhook {
+	t.Helper()
+	var hooks []admissionregistrationv1.ValidatingWebhook
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -79,12 +115,12 @@ func findValidatingWebhook(t *testing.T, path, servicePath string) (admissionreg
 		found = true
 		for _, hook := range config.Webhooks {
 			if hook.ClientConfig.Service != nil && hook.ClientConfig.Service.Path != nil && *hook.ClientConfig.Service.Path == servicePath {
-				return hook, true
+				hooks = append(hooks, hook)
 			}
 		}
 	}
 	if !found {
 		t.Fatalf("%s contains no ValidatingWebhookConfiguration", path)
 	}
-	return admissionregistrationv1.ValidatingWebhook{}, false
+	return hooks
 }

@@ -260,7 +260,7 @@ func TestEmptyPublicationUsesJSONArraysForRequiredSlices(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &Reconciler{Client: c, Options: ReconcilerOptions{PlatformNamespace: "internal-dns-system", ChunkSize: 1024}}
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "orphan", UID: "zone-orphan"}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "orphan.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
-	manifest, err := r.persistPublication(ctx, zone, "empty", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, time.Now().UTC())
+	manifest, err := r.persistPublication(ctx, zone, "empty", 1, 1, 0, true, nil, model.EmptyContentHash(), nil, nil, nil, nil, nil, nil, time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +334,117 @@ func TestZonePublishesOnlyToBoundRegions(t *testing.T) {
 	}
 	if len(outboxes.Items) != 2 {
 		t.Fatalf("want chunk+activation for east only, got %d", len(outboxes.Items))
+	}
+}
+
+func TestZoneLeavingRegionWithdrawsItThere(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	s := runtime.NewScheme()
+	if err := addReferenceStateToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	network := &dnsv1alpha1.DNSResolverContext{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: "project", UID: "vpc-a"}, Spec: dnsv1alpha1.DNSResolverContextSpec{ConsumerID: "consumer-a"}}
+	zone := fixture(now).Zone.DeepCopy()
+	zone.Namespace = "project"
+	zone.Finalizers = []string{privateZoneFinalizer}
+	assoc := fixture(now).Associations[0].DeepCopy()
+	assoc.Namespace = "project"
+	assoc.Name = "zone-prod"
+	assoc.Spec.ResolverContextRef = dnsv1alpha1.DNSNameReference{Name: "prod"}
+	assoc.Status = dnsv1alpha1.DNSZoneAssociationStatus{}
+	reg := fixture(now).Registrations[0].DeepCopy()
+	reg.Namespace = "project"
+	contrib := fixture(now).Contributions[0].DeepCopy()
+	contrib.Namespace = "project"
+	contrib.Generation = 1
+	accessEast := &dnsv1alpha1.DNSResolverAccessBinding{ObjectMeta: metav1.ObjectMeta{Name: "prod-east", Namespace: "project", UID: "access-east"}, Spec: dnsv1alpha1.DNSResolverAccessBindingSpec{ContextRef: dnsv1alpha1.DNSObjectReference{Name: "prod", UID: "vpc-a"}, Region: "east", DestinationAddress: "fd53::11"}}
+	accessWest := accessEast.DeepCopy()
+	accessWest.Name = "prod-west"
+	accessWest.UID = "access-west"
+	accessWest.Spec.Region = "west"
+	accessWest.Spec.DestinationAddress = "fd53::12"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(network, zone, assoc, reg, contrib, accessEast, accessWest).WithStatusSubresource(&dnsv1alpha1.DNSResolverContext{}, &dnsv1alpha1.DNSResolverAccessBinding{}, &dnsv1alpha1.DNSZoneAssociation{}, &dnsv1alpha1.DNSRegistration{}, &dnsv1alpha1.DNSRecordContribution{}, &dnsv1alpha1.DNSPublicationManifest{}).Build()
+	r := &Reconciler{Client: c, Scheme: s, Options: ReconcilerOptions{ProjectUID: "project-a", ProjectNamespace: "project", PlatformNamespace: "internal-dns-system", Identity: "compiler-a", ServingRegions: []ServingRegion{{Region: "east", Shard: "s1"}, {Region: "west", Shard: "s2"}}, AddressAllocator: testAllocator{}, Now: func() time.Time { return now }}}
+	reconcile := func() {
+		t.Helper()
+		for i := 0; i < 8; i++ {
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "project", Name: "project"}}); err != nil {
+				t.Fatalf("reconcile %d: %v", i, err)
+			}
+		}
+	}
+	active := func() dnsv1alpha1.DNSPublicationManifest {
+		t.Helper()
+		var own dnsv1alpha1.DNSPublicationOwnership
+		if err := c.Get(ctx, client.ObjectKey{Namespace: "internal-dns-system", Name: ownershipName(zone.UID)}, &own); err != nil {
+			t.Fatal(err)
+		}
+		var m dnsv1alpha1.DNSPublicationManifest
+		if err := c.Get(ctx, client.ObjectKey{Namespace: "internal-dns-system", Name: own.Spec.ActiveManifestName}, &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	withdrawal := func(m dnsv1alpha1.DNSPublicationManifest, region, shard string) model.PublicationManifest {
+		t.Helper()
+		var out dnsv1alpha1.DNSTransportOutbox
+		if err := c.Get(ctx, client.ObjectKey{Namespace: "internal-dns-system", Name: model.PublicationActivationName(m.Name, region, shard)}, &out); err != nil {
+			t.Fatalf("no %s activation for %s: %v", region, m.Name, err)
+		}
+		var env model.Envelope
+		if err := json.Unmarshal(out.Spec.Payload, &env); err != nil {
+			t.Fatal(err)
+		}
+		var wire model.PublicationManifest
+		if err := json.Unmarshal(env.Payload, &wire); err != nil {
+			t.Fatal(err)
+		}
+		if err := wire.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if env.Region != region || env.Shard != shard || out.Spec.Subject != model.RecordManifestSubject(region, shard, string(zone.UID)) {
+			t.Fatalf("withdrawal is addressed to the wrong shard: %#v", out.Spec)
+		}
+		return wire
+	}
+
+	reconcile()
+	if m := active(); len(m.Spec.ServingTargets) != 2 {
+		t.Fatalf("a zone bound in east and west must serve both, got %#v", m.Spec.ServingTargets)
+	}
+
+	if err := c.Delete(ctx, accessWest); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	left := active()
+	if len(left.Spec.ServingTargets) != 1 || left.Spec.ServingTargets[0].Region != "east" {
+		t.Fatalf("a zone that left west must serve only east, got %#v", left.Spec.ServingTargets)
+	}
+	if len(left.Spec.WithdrawnTargets) != 1 || left.Spec.WithdrawnTargets[0].Region != "west" {
+		t.Fatalf("west must be withdrawn, got %#v", left.Spec.WithdrawnTargets)
+	}
+	if w := withdrawal(left, "west", "s2"); !w.Tombstone || w.Revision != uint64(left.Spec.Revision) {
+		t.Fatalf("west must receive this revision as a withdrawal, got %#v", w)
+	}
+
+	if err := c.Get(ctx, client.ObjectKeyFromObject(zone), zone); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete(ctx, zone); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	deleted := active()
+	if !deleted.Spec.Tombstone || deleted.Spec.Revision <= left.Spec.Revision {
+		t.Fatalf("zone deletion did not publish a withdrawal: %#v", deleted.Spec)
+	}
+	if w := withdrawal(deleted, "west", "s2"); !w.Tombstone {
+		t.Fatalf("a deletion after leaving west must still reach west, got %#v", w)
+	}
+	if w := withdrawal(deleted, "east", "s1"); !w.Tombstone {
+		t.Fatalf("a deletion must reach east, got %#v", w)
 	}
 }
 

@@ -8,10 +8,13 @@ import (
 	"time"
 
 	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -210,5 +213,73 @@ func TestOneBrokenProjectDoesNotHoldDiscoveryReadiness(t *testing.T) {
 	}
 	if err := discovered.check(nil); err != nil {
 		t.Fatalf("one broken project held readiness: %v", err)
+	}
+}
+
+func TestLocalDiscoveryRunsAProjectPerMappedNamespace(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	mapped := func(name, uid string) *corev1.Namespace {
+		return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{replicatedLabel: "true"}, Annotations: map[string]string{projectUIDAnnotation: uid}}}
+	}
+	unmapped := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}}
+	noIdentity := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns-pending", Labels: map[string]string{replicatedLabel: "true"}}}
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(mapped("ns-a", "project-a"), mapped("ns-b", "project-a"), unmapped, noIdentity).Build()
+	directory := newProjectDirectory(nil)
+	var started []ProjectConfig
+	d := &projectDiscovery{local: true, client: local, directory: directory, rest: &rest.Config{Host: "https://lab.example:6443"}, makeProject: func(config ProjectConfig, sourceREST *rest.Config) (projectRuntime, error) {
+		if sourceREST.Host != "https://lab.example:6443" {
+			t.Fatalf("local project reads %s, not its own cluster", sourceREST.Host)
+		}
+		started = append(started, config)
+		return projectRuntime{config: config, start: func(ctx context.Context) error { <-ctx.Done(); return nil }}, nil
+	}}
+	if err := d.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 2 {
+		t.Fatalf("started %#v, want the two mapped namespaces", started)
+	}
+	for _, p := range started {
+		if p.ProjectUID != "project-a" || p.Namespace != p.Name {
+			t.Fatalf("project config = %#v", p)
+		}
+	}
+	if err := local.Delete(t.Context(), mapped("ns-b", "project-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := directory.projects["ns-b"]; ok || len(started) != 2 {
+		t.Fatalf("a removed namespace kept its project, or a running one restarted: %v", directory.projects)
+	}
+}
+
+func TestDeletingProjectIsReportedToAdmission(t *testing.T) {
+	scheme, err := newScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting := readyDiscoveryProject("deleting", "deleting-uid")
+	deleting.Finalizers = []string{"example.com/hold"}
+	notReady := readyDiscoveryProject("not-ready", "not-ready-uid")
+	notReady.Status.Conditions[0].Status = metav1.ConditionFalse
+	core := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deleting, notReady).Build()
+	if err := core.Delete(context.Background(), deleting); err != nil {
+		t.Fatal(err)
+	}
+	directory := newProjectDirectory(nil)
+	directory.discover = core
+	request := func(project string) kubeadmission.Request {
+		return kubeadmission.Request{AdmissionRequest: admissionv1.AdmissionRequest{Namespace: "default", UserInfo: authenticationv1.UserInfo{Extra: map[string]authenticationv1.ExtraValue{parentNameExtra: {project}}}}}
+	}
+	if _, err := directory.selectProject(context.Background(), request(deleting.Name)); !errors.Is(err, dnsadmission.ErrProjectDeleting) {
+		t.Fatalf("deleting project error = %v, want ErrProjectDeleting", err)
+	}
+	if _, err := directory.selectProject(context.Background(), request(notReady.Name)); err == nil || errors.Is(err, dnsadmission.ErrProjectDeleting) {
+		t.Fatalf("not ready project error = %v, want unavailable", err)
 	}
 }

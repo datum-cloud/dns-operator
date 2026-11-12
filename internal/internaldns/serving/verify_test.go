@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 )
 
@@ -288,7 +289,7 @@ func TestPublicationVerifierRejectsSuccessAfterDeadline(t *testing.T) {
 	}
 }
 
-func TestZeroZoneContextProvesRecursionOverUDPAndTCP(t *testing.T) {
+func TestZeroZoneContextProvesPathWithoutRecursionOverUDPAndTCP(t *testing.T) {
 	tcp, err := net.Listen(networkTCP, "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -300,12 +301,12 @@ func TestZeroZoneContextProvesRecursionOverUDPAndTCP(t *testing.T) {
 	}
 	seen := make(chan string, 2)
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
-		if len(r.Question) != 1 || r.Question[0].Name != "." || r.Question[0].Qtype != dns.TypeSOA {
-			t.Errorf("unsafe recursion probe: %#v", r.Question)
+		if !contextdns.IsContextReadinessCanary(r) {
+			t.Errorf("probe depends on recursion: %#v", r.Question)
 		}
 		reply := new(dns.Msg)
 		reply.SetReply(r)
-		reply.Answer = []dns.RR{&dns.SOA{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 5}, Ns: "a.root-servers.net.", Mbox: "nstld.verisign-grs.com.", Serial: 1, Refresh: 60, Retry: 30, Expire: 3600, Minttl: 5}}
+		reply.Answer = []dns.RR{&dns.TXT{Hdr: dns.RR_Header{Name: contextdns.ContextReadinessCanaryName, Rrtype: dns.TypeTXT, Class: dns.ClassCHAOS}, Txt: []string{contextdns.ReadinessCanaryText}}}
 		if err := w.WriteMsg(reply); err != nil {
 			t.Error(err)
 		}

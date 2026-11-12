@@ -9,6 +9,9 @@ import (
 	"sort"
 	"sync"
 
+	corev1 "k8s.io/api/core/v1"
+
+	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
 	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -49,7 +52,7 @@ func (d *projectDirectory) scopes() []platform.ProjectScope {
 	sort.Strings(names)
 	for _, name := range names {
 		p := d.projects[name]
-		scopes = append(scopes, platform.ProjectScope{ProjectUID: string(p.config.ProjectUID), Client: p.direct, Namespace: p.config.Namespace, RequestTimeout: p.config.KubeAPI.requestTimeout()})
+		scopes = append(scopes, platform.ProjectScope{ProjectUID: string(p.config.ProjectUID), Client: p.direct, Reader: p.cached.get(), Namespace: p.config.Namespace, RequestTimeout: p.config.KubeAPI.requestTimeout()})
 	}
 	return scopes
 }
@@ -74,7 +77,10 @@ func (d *projectDirectory) selectProject(ctx context.Context, req kubeadmission.
 	if err := reader.Get(ctx, client.ObjectKey{Name: parents[0]}, &project); err != nil {
 		return nil, fmt.Errorf("observe authenticated project: %w", err)
 	}
-	if !project.DeletionTimestamp.IsZero() || !apimeta.IsStatusConditionTrue(project.Status.Conditions, resourcemanagerv1alpha1.ProjectReady) {
+	if !project.DeletionTimestamp.IsZero() {
+		return nil, dnsadmission.ErrProjectDeleting
+	}
+	if !apimeta.IsStatusConditionTrue(project.Status.Conditions, resourcemanagerv1alpha1.ProjectReady) {
 		return nil, errors.New("authenticated project is unavailable")
 	}
 	d.mu.RLock()
@@ -87,6 +93,9 @@ func (d *projectDirectory) selectProject(ctx context.Context, req kubeadmission.
 }
 
 type projectDiscovery struct {
+	// local discovers projects from namespaces a federation hub placed in the
+	// control plane's own cluster instead of from the project API.
+	local       bool
 	client      client.Client
 	directory   *projectDirectory
 	rest        *rest.Config
@@ -96,6 +105,9 @@ type projectDiscovery struct {
 }
 
 func (d *projectDiscovery) step(ctx context.Context) error {
+	if d.local {
+		return d.localStep(ctx)
+	}
 	d.directory.mu.Lock()
 	d.directory.discover = d.client
 	d.directory.mu.Unlock()
@@ -155,6 +167,73 @@ func (d *projectDiscovery) step(ctx context.Context) error {
 	}
 	return failures
 }
+
+// localStep runs a project source for every namespace the hub placed here.
+// Each one stands for one project namespace, named and identified by the
+// annotations the replicator wrote on it.
+func (d *projectDiscovery) localStep(ctx context.Context) error {
+	var namespaces corev1.NamespaceList
+	if err := d.client.List(ctx, &namespaces, client.MatchingLabels{replicatedLabel: "true"}); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	var failures error
+	for i := range namespaces.Items {
+		ns := &namespaces.Items[i]
+		uid := types.UID(ns.Annotations[projectUIDAnnotation])
+		if uid == "" {
+			continue
+		}
+		seen[ns.Name] = true
+		// A terminating namespace keeps its source, which withdraws its zones
+		// and releases their finalizers, but a new one does not start.
+		if !ns.DeletionTimestamp.IsZero() {
+			continue
+		}
+		d.directory.mu.RLock()
+		existing, exists := d.directory.projects[ns.Name]
+		d.directory.mu.RUnlock()
+		if exists && existing.config.ProjectUID != uid {
+			d.remove(ns.Name)
+			exists = false
+		}
+		if exists {
+			continue
+		}
+		worker, err := d.makeProject(ProjectConfig{Name: ns.Name, ProjectUID: uid, Namespace: ns.Name, KubeAPI: d.kubeAPI}, d.rest)
+		if err != nil {
+			failures = errors.Join(failures, err)
+			continue
+		}
+		sourceCtx, cancel := context.WithCancel(ctx)
+		d.directory.mu.Lock()
+		d.directory.projects[ns.Name] = directoryProject{projectRuntime: worker, cancel: cancel}
+		d.directory.mu.Unlock()
+		go runProjectSource(sourceCtx, worker)
+	}
+	d.directory.mu.RLock()
+	names := make([]string, 0, len(d.directory.projects))
+	for name := range d.directory.projects {
+		names = append(names, name)
+	}
+	d.directory.mu.RUnlock()
+	for _, name := range names {
+		if !seen[name] {
+			d.remove(name)
+		}
+	}
+	if d.passed != nil {
+		d.passed()
+	}
+	return failures
+}
+
+const (
+	// replicatedLabel and projectUIDAnnotation are written by the private
+	// replicator on the namespaces it maps into the hub.
+	replicatedLabel      = "internal-dns.miloapis.com/replicated"
+	projectUIDAnnotation = "internal-dns.miloapis.com/project-uid"
+)
 
 func (d *projectDiscovery) remove(name string) {
 	d.directory.mu.Lock()

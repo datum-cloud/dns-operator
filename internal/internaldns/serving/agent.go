@@ -29,6 +29,7 @@ type Config struct {
 	Region                    string                       `json:"region"`
 	Shard                     string                       `json:"shard"`
 	MemberID                  string                       `json:"memberID"`
+	MemberIDFrom              *MemberIDSource              `json:"memberIDFrom,omitempty"`
 	ReplicaID                 string                       `json:"replicaID,omitempty"`
 	StateDir                  string                       `json:"stateDir"`
 	Mode                      Mode                         `json:"mode"`
@@ -46,6 +47,7 @@ type Config struct {
 	ResolverDNSProbe          DNSVerifierConfig            `json:"resolverDNSProbe,omitempty"`
 	ResolverVerifyConcurrency int                          `json:"resolverVerifyConcurrency,omitempty"`
 	UnsafeAllowNoDNSVerify    bool                         `json:"unsafeAllowNoDNSVerify,omitempty"`
+	HealthCheck               HealthCheckConfig            `json:"healthCheck,omitempty"`
 }
 
 func (c Config) Validate() error {
@@ -76,6 +78,16 @@ func (c Config) Validate() error {
 	}
 	if c.AckPublishTimeout < 0 || c.AckPublishTimeout > 2*time.Second {
 		return errors.New("ACK publish timeout must be between zero and two seconds")
+	}
+
+	if err := c.HealthCheck.validate(); err != nil {
+		return err
+	}
+	if c.HealthCheck != (HealthCheckConfig{}) && c.Render.Role != RenderNode && c.Render.Role != RenderCluster && c.Render.Role != RenderRegionalCoreDNS {
+		return fmt.Errorf("healthCheck requires a member that runs the serving role, not render role %q", c.Render.Role)
+	}
+	if c.HealthCheck.Address != "" && c.UnsafeAllowNoDNSVerify {
+		return errors.New("healthCheck.address requires live DNS verification")
 	}
 
 	if c.MaxBindings < 0 {
@@ -125,6 +137,7 @@ type Dependencies struct {
 	AckPublisher        transport.ExportPublisher
 	Runner              Runner
 	Verifier            Verifier
+	LocalServing        func(context.Context) error
 	Clock               func() time.Time
 	PublicationVerifier PublicationVerifier
 	OnError             func(error)
@@ -197,6 +210,11 @@ type Agent struct {
 	installedPublications map[string]installedPublication
 	verifiedPaths         map[string]string
 	verifiedRestarts      uint64
+	localServingRestarts  uint64
+	localServingAwaited   bool
+	localServingAnswered  bool
+	localServingExpired   bool
+	localServingWait      time.Duration
 	restoredAt            time.Time
 	bootstrapComplete     bool
 	bootstrapInProgress   bool
@@ -244,6 +262,14 @@ func NewAgent(c Config, d Dependencies) (*Agent, error) {
 			probeConfig.UseClusterAddress = true
 		}
 		d.Verifier = DNSVerifier{Config: probeConfig}
+		if d.LocalServing == nil {
+			render := c.Render
+			d.LocalServing = func(ctx context.Context) error {
+				ctx, cancel := context.WithTimeout(ctx, readinessDeadline)
+				defer cancel()
+				return probeLocalReadiness(ctx, render)
+			}
+		}
 	}
 	publicationVerifier := d.PublicationVerifier
 	if c.Mode == ModeCombined {
@@ -333,10 +359,13 @@ func (a *Agent) Start(ctx context.Context) error {
 
 func (a *Agent) failClosed(ctx context.Context) error {
 	a.needsActivation = true
+	// Readiness rejects the gating phase, and later saves drop the
+	// replaced approval before anything takes the lock again.
+	a.state.Withdrawing = nil
 	a.verifiedPaths = nil
 	gateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return errors.Join(a.tx.beginActivation(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
+	return errors.Join(a.tx.beginGate(), a.tx.FailClosed(gateCtx), a.tx.abandonActivation())
 }
 
 func (a *Agent) bootstrapAndStep(ctx context.Context) error {
@@ -554,8 +583,10 @@ func (a *Agent) applyServingSnapshot(ctx context.Context, snapshot model.Serving
 		a.state.BindingFences = bindingFences
 		a.state.ServingFence = fence{snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision}
 		a.state.Snapshot = &snapshot
-		if !a.canRetainActive() {
-			a.state.Active = nil
+		// Reconciliation withdraws the approval when it installs. Without
+		// it, withdraw now; restart never retains it either way.
+		if !a.canRetainActive() && (a.bootstrapInProgress || a.cfg.NodeAuthoritative && !a.bootstrapComplete) {
+			a.withdrawApproval()
 		}
 		if err := a.store.Save(a.state); err != nil {
 			_ = a.failClosed(ctx)
@@ -630,7 +661,9 @@ func (a *Agent) handleManifest(ctx context.Context, env model.Envelope) error {
 			return errors.New("conflicting publication manifest at the same epoch and revision")
 		}
 		if err := a.verifyPublication(ctx, old); err != nil {
-			_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
+			if !a.cfg.NodeAuthoritative {
+				_ = a.emitAck(ctx, model.KindPublicationManifest, m.ZoneUID, m.WriterEpoch, m.Revision, model.AckRejected, err.Error())
+			}
 			return err
 		}
 		return a.emitVerifiedPublicationAck(ctx, m.ZoneUID, m.WriterEpoch, m.Revision)
@@ -755,14 +788,8 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 	if a.state.Snapshot == nil {
 		return nil
 	}
-	known := false
-	for _, m := range a.state.Snapshot.Members {
-		if m.MemberID == ack.MemberID && m.ReplicaID == ack.ReplicaID {
-			known = true
-			break
-		}
-	}
-	if !known {
+	member, known := model.LookupMember(a.state.Snapshot.Members, a.state.Snapshot.MemberPatterns, ack.MemberID)
+	if !known || member.ReplicaID != ack.ReplicaID {
 		a.report(fmt.Errorf("drop ack from unknown member %q replica %q", ack.MemberID, ack.ReplicaID))
 		return nil
 	}
@@ -809,17 +836,17 @@ func (a *Agent) handleAck(ctx context.Context, env model.Envelope) error {
 	if comparison < 0 || (comparison == 0 && !ack.ObservedAt.After(old.ObservedAt)) {
 		return nil
 	}
-	sameFence := ack.Epoch == old.Fence.Epoch && ack.Revision == old.Fence.Revision
-	if comparison > 0 || (sameFence && ack.ValidUntil.After(old.ValidUntil)) {
-		a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ValidUntil: ack.ValidUntil, ObservedAt: ack.ObservedAt}
-		// A lease refresh at the same fence changes nothing that readiness reads
-		// after a restart, and the next refresh renews it, so only a new fence or
-		// a cleared rejection rewrites the checkpoint.
-		if !sameFence || old.Rejected || old.ObservedAt.IsZero() {
-			if err := a.store.Save(a.state); err != nil {
-				return err
-			}
-		}
+	if comparison == 0 && !ack.ValidUntil.After(old.ValidUntil) {
+		return nil
+	}
+	a.state.Acks[ack.ResourceUID][key] = replicaAck{Fence: fence{ack.Epoch, ack.Revision}, ValidUntil: ack.ValidUntil, ObservedAt: ack.ObservedAt}
+	// Readiness does not read the lease, so a same-fence refresh has nothing
+	// to persist or render.
+	if comparison == 0 && !old.Rejected && !old.ObservedAt.IsZero() {
+		return nil
+	}
+	if err := a.store.Save(a.state); err != nil {
+		return err
 	}
 	if err := a.reconcile(ctx); err != nil {
 		return err
@@ -842,6 +869,9 @@ func (a *Agent) Step(ctx context.Context) error {
 	}
 	if a.state.Snapshot == nil {
 		return errors.New("no verified serving configuration is available")
+	}
+	if err := a.retireTombstones(a.deps.Clock()); err != nil {
+		a.report(fmt.Errorf("retire withdrawn publications: %w", err))
 	}
 	if a.cfg.Mode == ModeResolver {
 		if err := a.retryPendingPublications(ctx); err != nil {
@@ -951,7 +981,15 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 	hash := hashFiles(rendered.Files)
 	if hash != a.state.RenderedHash || a.needsActivation {
 		if !a.canRetainActive() {
-			a.state.Active = nil
+			// Own the activation before readiness can see a new withdrawal.
+			// Without an approval to replace, persist that first instead, so
+			// a replaced approval left by a gated run is never served.
+			if a.state.Active != nil {
+				if err := a.tx.beginActivation(); err != nil {
+					return err
+				}
+			}
+			a.withdrawApproval()
 			if err := a.store.Save(a.state); err != nil {
 				return err
 			}
@@ -973,6 +1011,13 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 			return err
 		}
 		a.needsActivation = false
+	} else if a.state.Active != nil && !a.canRetainActive() {
+		// Nothing to install, so nothing serves from the replaced approval
+		// under a lock; drop it as before.
+		a.withdrawApproval()
+		if err := a.store.Save(a.state); err != nil {
+			return err
+		}
 	}
 	if a.cfg.Mode == ModeCombined {
 		installed := map[string]installedPublication{}
@@ -982,6 +1027,7 @@ func (a *Agent) reconcileDesired(ctx context.Context, retained []byte) error {
 		a.installedPublications = installed
 		for _, p := range a.state.Publications {
 			if p.Verified && !p.Manifest.Tombstone && len(a.publicationViews(p)) > 0 {
+				a.awaitLocalServing(ctx)
 				if err := a.verifyPublication(ctx, p); err != nil {
 					_ = a.failClosed(ctx)
 					a.needsActivation = true
@@ -1087,6 +1133,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 	if len(eligible) == 0 {
 		return false
 	}
+	a.awaitLocalServing(ctx)
 
 	timeout := a.cfg.ResolverDNSProbe.Timeout
 	if timeout <= 0 {
@@ -1138,6 +1185,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s after %s: %w", result.bindingUID, result.duration.Round(time.Millisecond), result.err))
 				delete(active, result.bindingUID)
 				probeFailed = true
+				a.recheckLocalServing()
 			} else {
 				a.verifiedPaths[result.bindingUID] = identities[result.bindingUID]
 			}
@@ -1147,6 +1195,7 @@ func (a *Agent) verifyResolverBindings(ctx context.Context, bindings []model.Bin
 				a.report(fmt.Errorf("verify resolver binding %s within shared %s batch deadline: %w", bindingUID, timeout, probeCtx.Err()))
 				delete(active, bindingUID)
 			}
+			a.recheckLocalServing()
 			return true
 		}
 	}
@@ -1393,7 +1442,7 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 	}
 	var due []duePublication
 	for uid, p := range a.state.Publications {
-		if !p.Verified || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
+		if !p.Verified || p.Retired || (!p.Manifest.Tombstone && len(a.publicationViews(p)) == 0) {
 			continue
 		}
 		if last := a.lastPublicationAck[uid]; !last.IsZero() && now.Sub(last) < interval {

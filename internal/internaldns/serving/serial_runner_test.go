@@ -5,11 +5,15 @@ package serving
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/go-logr/logr"
 	"github.com/go-logr/logr/funcr"
@@ -84,7 +88,7 @@ func waitJoined(t *testing.T, r *serialRunner, n int) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()
-		joined := r.queue[len(r.queue)-1].joined
+		joined := r.queue[len(r.queue)-1].waiters - 1
 		r.mu.Unlock()
 		if joined == n {
 			return
@@ -243,5 +247,157 @@ func TestReloadLogsUpdateSummaryWithoutPayloadByDefault(t *testing.T) {
 		if logged := strings.Contains(joined, "PoolAction"); logged != (verbosity > 0) {
 			t.Fatalf("verbosity %d logged payload=%t:\n%s", verbosity, logged, joined)
 		}
+	}
+}
+
+func TestSerialRunnerHandsACancelledQueuedCallToAJoiner(t *testing.T) {
+	t.Parallel()
+	console := newFakeConsole()
+	runner := newSerialRunner(console)
+	first := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), reloadNode)
+		first <- err
+	}()
+	waitStarted(t, console)
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	owner := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(ownerCtx, gateNode)
+		owner <- err
+	}()
+	waitQueued(t, runner, 2)
+	joiner := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), gateNode)
+		joiner <- err
+	}()
+	waitJoined(t, runner, 1)
+	cancelOwner()
+	if err := <-owner; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled owner returned %v", err)
+	}
+	console.release <- struct{}{}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if name := waitStarted(t, console); name != daemonName(gateNode) {
+		t.Fatalf("started %q, want the joined gate", name)
+	}
+	console.release <- struct{}{}
+	if err := <-joiner; err != nil {
+		t.Fatalf("joiner lost its update with its owner: %v", err)
+	}
+	if _, pushes := console.snapshot(); len(pushes) != 2 {
+		t.Fatalf("pushes = %v, want the reload and one gate", pushes)
+	}
+}
+
+func TestSerialRunnerDropsAQueuedCallEveryCallerCancelled(t *testing.T) {
+	t.Parallel()
+	console := newFakeConsole()
+	runner := newSerialRunner(console)
+	first := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), reloadNode)
+		first <- err
+	}()
+	waitStarted(t, console)
+	ctx, cancel := context.WithCancel(context.Background())
+	abandoned := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := runner.Run(ctx, gateNode)
+			abandoned <- err
+		}()
+	}
+	waitQueued(t, runner, 2)
+	waitJoined(t, runner, 1)
+	cancel()
+	for range 2 {
+		if err := <-abandoned; !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled caller returned %v", err)
+		}
+	}
+	waitQueued(t, runner, 1)
+	later := make(chan error, 1)
+	go func() {
+		_, err := runner.Run(context.Background(), reloadNode)
+		later <- err
+	}()
+	waitQueued(t, runner, 2)
+	console.release <- struct{}{}
+	if name := waitStarted(t, console); name != daemonName(reloadNode) {
+		t.Fatalf("started %q after every caller of the gate left", name)
+	}
+	console.release <- struct{}{}
+	for _, done := range []chan error{first, later} {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestExecRunnerKillsTheWholeCommandOnCancellation(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(t.TempDir(), "child")
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := ExecRunner{}.Run(ctx, Command{Path: "/bin/sh", Args: []string{"-c", `sleep 30 & echo $! > "$0"; wait`, pidFile}})
+	if err == nil {
+		t.Fatal("cancelled command reported success")
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("Run returned after %s, not at cancellation", elapsed)
+	}
+	data, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if convErr != nil {
+		t.Fatal(convErr)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for unix.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d of a cancelled command is still running", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestUpdateSummaryCountsOnlyRuleStatements(t *testing.T) {
+	t.Parallel()
+	data := []byte("rules={}\n-- local function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n" +
+		"local function appendRule(rule,action) rules[#rules+1] = newRuleAction(rule,action) end\n" +
+		"appendRule(AllRule(),PoolAction(\"a\"))\n  appendRule(AllRule(),PoolAction(\"b\"))\n-- appendRule(AllRule(),DropAction())\n")
+	if got := summarizeUpdate("dnsdist.conf", data).Rules; got != 2 {
+		t.Fatalf("Rules = %d, want 2", got)
+	}
+}
+
+func TestExecRunnerKillsChildrenLeftByACompletedCommand(t *testing.T) {
+	t.Parallel()
+	pidFile := filepath.Join(t.TempDir(), "child")
+	out, err := ExecRunner{}.Run(context.Background(), Command{Path: "/bin/sh", Args: []string{"-c", `sleep 30 >/dev/null 2>&1 & echo $! > "$0"; echo applied`, pidFile}})
+	if err != nil || strings.TrimSpace(string(out)) != "applied" {
+		t.Fatalf("Run() = %q, %v", out, err)
+	}
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for unix.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d outlived its completed command", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

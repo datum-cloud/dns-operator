@@ -15,6 +15,9 @@ import (
 const (
 	activationInstalling = "installing"
 	activationVerifying  = "verifying"
+	// activationGating marks a member failing closed. Readiness never
+	// accepts it, even while the agent still holds the lock.
+	activationGating = "gating"
 )
 
 type activationState struct {
@@ -32,6 +35,15 @@ func readActivation(markerPath string) (activationState, error) {
 }
 
 func (t *FileTransaction) beginActivation() error {
+	return t.beginPhase(activationInstalling)
+}
+
+// beginGate takes activation ownership for failing closed.
+func (t *FileTransaction) beginGate() error {
+	return t.beginPhase(activationGating)
+}
+
+func (t *FileTransaction) beginPhase(phase string) error {
 	if t.MarkerPath == "" {
 		return nil
 	}
@@ -52,7 +64,7 @@ func (t *FileTransaction) beginActivation() error {
 	if err := unix.Flock(int(t.activationLock.Fd()), unix.LOCK_EX); err != nil {
 		return err
 	}
-	return t.writeActivation(activationState{Phase: activationInstalling})
+	return t.writeActivation(activationState{Phase: phase})
 }
 
 func (t *FileTransaction) writeActivation(state activationState) error {

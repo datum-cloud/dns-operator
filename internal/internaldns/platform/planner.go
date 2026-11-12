@@ -30,6 +30,7 @@ type PlannerConfig struct {
 	NodeBackends    []model.Backend
 	ClusterBackends []model.Backend
 	Members         []model.Member
+	MemberPatterns  []model.MemberPattern `json:"memberPatterns,omitempty"`
 	// ClusterPrefix gives the shard's region its own regional resolver pool.
 	// Empty shares the control plane's clusterPrefix.
 	ClusterPrefix string `json:"clusterPrefix,omitempty"`
@@ -166,7 +167,7 @@ func (p *Planner) Step(ctx context.Context) error {
 			byZone[string(uid)] = owner
 		}
 	}
-	snapshot := model.ServingSnapshot{Region: c.Region, Shard: c.Shard, ConfigurationEpoch: state.Epoch, ConfigurationRevision: state.NextRevision, GeneratedAt: now, Members: append([]model.Member(nil), c.Members...)}
+	snapshot := model.ServingSnapshot{Region: c.Region, Shard: c.Shard, ConfigurationEpoch: state.Epoch, ConfigurationRevision: state.NextRevision, GeneratedAt: now, Members: append([]model.Member(nil), c.Members...), MemberPatterns: append([]model.MemberPattern(nil), c.MemberPatterns...)}
 	var prior model.ServingSnapshot
 	if state.ActiveOutbox != "" {
 		var err error
@@ -266,6 +267,9 @@ func (p *Planner) Step(ctx context.Context) error {
 	var fitErr error
 	snapshot, rejected, fitErr = fitSnapshot(snapshot, prior, maxBindings, maxBytes)
 	if fitErr != nil {
+		if err := p.reportCapacity(ctx, bindings.Items, rejected, now); err != nil {
+			log.FromContext(ctx).Error(err, "report shard capacity")
+		}
 		return fitErr
 	}
 	dependsOn, err := publicationDependencies(&snapshot, activations)

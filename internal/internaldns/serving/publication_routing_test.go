@@ -186,3 +186,211 @@ func TestRetainedNodeRoutingRequiresUnchangedAuthorization(t *testing.T) {
 		})
 	}
 }
+
+// A shard keeps withdrawn and pending contexts in its snapshot until every
+// member confirms them. The approved configuration serves neither, so their
+// presence must not stop a member keeping that configuration while it
+// installs an unrelated update, such as every zone being republished under a
+// new writer epoch after a control plane takeover.
+func TestRepublishKeepsApprovalBesideWithdrawnAndPendingContexts(t *testing.T) {
+	for _, peer := range []string{"tombstone", "pending"} {
+		t.Run(peer, func(t *testing.T) {
+			now := time.Now().UTC()
+			cfg := nodeAuthoritativeTestConfig(t)
+			cfg.Transaction.Reload = []Command{
+				{Path: "reload-coredns", WhenChanged: []string{cfg.Render.NodeCoreDNS.Path}},
+				{Path: "reload-dnsdist", WhenChanged: []string{cfg.Render.NodeDNSDist.Path}},
+			}
+			runner := &recordingRunner{}
+			a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installTestPublication(t, a, now)
+			ctx := context.Background()
+
+			snapshot := *a.state.Snapshot
+			snapshot.Bindings = append([]model.Binding(nil), snapshot.Bindings...)
+			other := snapshot.Bindings[0]
+			other.BindingUID, other.ContextUID = "binding-b", "vpc-b"
+			other.ConsumerAddress, other.ClusterAddress = "10.253.0.52", "10.253.0.42"
+			other.Zones = nil
+			if peer == "tombstone" {
+				other.Tombstone = true
+			} else {
+				other.ConfigurationPending = true
+			}
+			snapshot.Bindings = append(snapshot.Bindings, other)
+			snapshot.ConfigurationRevision++
+			if err := a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+				t.Fatal(err)
+			}
+			if a.state.Active == nil || !a.canRetainActive() {
+				t.Fatal("approved configuration not retainable beside a context it does not serve")
+			}
+			baseline, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Republish the zone unchanged under a new writer epoch.
+			runner.calls = nil
+			a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+				if a.state.Active == nil {
+					t.Fatal("approved configuration dropped while the republished zone was verified")
+				}
+				return nil
+			})
+			payload, _ := json.Marshal(a.state.Publications["zone-a"].Plan)
+			chunk := model.PublicationChunk{ManifestUID: "manifest-takeover", ZoneUID: "zone-a", WriterEpoch: 3, Revision: 5, Index: 0, SHA256: model.Hash(payload), Payload: payload}
+			manifest := model.PublicationManifest{ManifestUID: chunk.ManifestUID, ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 3, Revision: 5, PreviousRevision: 4, Chunks: []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}, ContentHash: model.Hash(payload), GeneratedAt: now}
+			if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 3, 5, chunk)); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 3, 5, manifest)); err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range runner.calls {
+				if call.Path == "reload-dnsdist" || call.Path == "gate" {
+					t.Fatalf("republish ran %s", call.Path)
+				}
+			}
+			current, err := os.ReadFile(cfg.Render.NodeDNSDist.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(current) != string(baseline) {
+				t.Fatal("republish changed routing")
+			}
+			if a.state.Active == nil || a.state.Active.Publications["zone-a"].Fence.Epoch != 3 {
+				t.Fatal("republished zone not approved")
+			}
+		})
+	}
+}
+
+// hookRunner records commands and calls each hook before its command runs.
+type hookRunner struct {
+	recordingRunner
+	hooks map[string]func()
+}
+
+func (r *hookRunner) Run(ctx context.Context, c Command) ([]byte, error) {
+	if hook := r.hooks[c.Path]; hook != nil {
+		hook()
+	}
+	return r.recordingRunner.Run(ctx, c)
+}
+
+func republishZone(t *testing.T, a *Agent, now time.Time, mutate func(*model.PublicationPlan)) error {
+	t.Helper()
+	b, _ := json.Marshal(a.state.Publications["zone-a"].Plan)
+	var plan model.PublicationPlan
+	if err := json.Unmarshal(b, &plan); err != nil {
+		t.Fatal(err)
+	}
+	mutate(&plan)
+	payload, _ := json.Marshal(plan)
+	chunk := model.PublicationChunk{ManifestUID: "manifest-b", ZoneUID: "zone-a", WriterEpoch: 2, Revision: 5, Index: 0, SHA256: model.Hash(payload), Payload: payload}
+	manifest := model.PublicationManifest{ManifestUID: chunk.ManifestUID, ZoneUID: "zone-a", Apex: plan.Apex, WriterEpoch: 2, Revision: 5, PreviousRevision: 4, Chunks: []model.ChunkRef{{Index: 0, SHA256: chunk.SHA256, Size: len(payload)}}, ContentHash: model.Hash(payload), GeneratedAt: now}
+	ctx := context.Background()
+	if err := a.Handle(ctx, envelope(t, model.KindPublicationChunk, "zone-a", 2, 5, chunk)); err != nil {
+		t.Fatal(err)
+	}
+	return a.Handle(ctx, envelope(t, model.KindPublicationManifest, "zone-a", 2, 5, manifest))
+}
+
+// A withdrawal stops retaining the approved configuration, but the daemons
+// keep answering from it until the withdrawal is installed. Readiness keeps
+// that approval from the moment the withdrawal is saved, so a record or
+// context withdrawal does not close every member's health port at once.
+func TestWithdrawalKeepsReadinessWhileInstalling(t *testing.T) {
+	for _, withdrawal := range []string{"record", "zone-detached"} {
+		t.Run(withdrawal, func(t *testing.T) {
+			now := time.Now().UTC()
+			cfg := nodeAuthoritativeTestConfig(t)
+			runner := &hookRunner{}
+			a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installTestPublication(t, a, now)
+			approved := *a.state.Active
+			validated := false
+			// Validation runs before the transaction takes its own lock.
+			runner.hooks = map[string]func(){"validate": func() {
+				validated = true
+				state, err := a.store.Load()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state.Active != nil {
+					t.Fatal("withdrawal retained the approval it replaces")
+				}
+				served, installing, err := servedApproval(cfg.StateDir)
+				if err != nil || !installing || !equalJSON(*served, approved) {
+					t.Fatalf("withdrawal not served from the replaced approval: installing=%v err=%v", installing, err)
+				}
+			}}
+			ctx := context.Background()
+			if withdrawal == "record" {
+				err = republishZone(t, a, now, func(p *model.PublicationPlan) { p.RRSets = nil })
+			} else {
+				snapshot := *a.state.Snapshot
+				snapshot.Bindings = append([]model.Binding(nil), snapshot.Bindings...)
+				snapshot.Bindings[0].Zones = nil
+				snapshot.Bindings[0].ConfigurationRevision++
+				snapshot.ConfigurationRevision++
+				err = a.Handle(ctx, envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !validated {
+				t.Fatal("withdrawal was not installed")
+			}
+			state, err := a.store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.Active == nil || state.Withdrawing != nil {
+				t.Fatal("installed withdrawal not approved")
+			}
+			if activationPending(cfg.StateDir) {
+				t.Fatal("approved withdrawal left the activation pending")
+			}
+		})
+	}
+}
+
+// A member failing closed is never ready on the approval a withdrawal
+// replaced, even while its agent still holds the activation lock.
+func TestFailedWithdrawalIsNotReadyWhileGating(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	runner := &hookRunner{}
+	a, err := NewAgent(cfg, Dependencies{Runner: runner, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, a, now)
+	gated := false
+	runner.hooks = map[string]func(){"gate": func() {
+		gated = true
+		if _, _, err := servedApproval(cfg.StateDir); err == nil {
+			t.Fatal("gating member served the replaced approval")
+		}
+	}}
+	a.publicationVerifier = publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+		return errors.New("withdrawal probe failed")
+	})
+	if err := republishZone(t, a, now, func(p *model.PublicationPlan) { p.RRSets = nil }); err == nil {
+		t.Fatal("failed withdrawal accepted")
+	}
+	if !gated {
+		t.Fatal("failed withdrawal did not fail closed")
+	}
+	if _, _, err := servedApproval(cfg.StateDir); err == nil {
+		t.Fatal("failed withdrawal ready after gating")
+	}
+}

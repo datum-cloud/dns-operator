@@ -160,6 +160,14 @@ func (o *Outbox) Step(ctx context.Context) error {
 			}
 			continue
 		}
+		now := time.Now().UTC()
+		if o.Now != nil {
+			now = o.Now().UTC()
+		}
+		at := metav1.NewTime(now)
+		if err == nil && env.Kind == model.KindPublicationManifest {
+			err = o.markExported(ctx, out.Spec.ManifestRef.Name, &at)
+		}
 		base := current.DeepCopy()
 		current.Status.Attempts++
 		if err != nil {
@@ -169,11 +177,6 @@ func (o *Outbox) Step(ctx context.Context) error {
 				first = err
 			}
 		} else {
-			now := time.Now().UTC()
-			if o.Now != nil {
-				now = o.Now().UTC()
-			}
-			at := metav1.NewTime(now)
 			current.Status.State = dnsValueAcknowledged
 			current.Status.AcknowledgedAt = &at
 			current.Status.StreamSequence = ack.Sequence
@@ -186,20 +189,27 @@ func (o *Outbox) Step(ctx context.Context) error {
 			}
 			continue
 		}
-		if err == nil && env.Kind == model.KindPublicationManifest {
-			var m dnsv1alpha1.DNSPublicationManifest
-			if getErr := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: out.Spec.ManifestRef.Name}, &m); getErr == nil {
-				base := m.DeepCopy()
-				m.Status.ExportState = dnsValueAcknowledged
-				m.Status.StreamSequence = ack.Sequence
-				m.Status.ExportedAt = current.Status.AcknowledgedAt
-				if patchErr := o.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); patchErr != nil && first == nil {
-					first = patchErr
-				}
-			}
-		}
 	}
 	return first
+}
+
+// markExported records when the manifest was exported, before the outbox is
+// settled, so a failed mark leaves the outbox pending and retried. Each region's
+// outbox keeps its own stream sequence; the manifest keeps one export time, and
+// regions racing to set it may each write theirs. The patch carries no resource
+// version, so acknowledgement writes to the manifest never conflict with it.
+func (o *Outbox) markExported(ctx context.Context, name string, at *metav1.Time) error {
+	var m dnsv1alpha1.DNSPublicationManifest
+	if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: name}, &m); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if m.Status.ExportedAt != nil {
+		return nil
+	}
+	base := m.DeepCopy()
+	m.Status.ExportState = dnsValueAcknowledged
+	m.Status.ExportedAt = at
+	return client.IgnoreNotFound(o.Client.Status().Patch(ctx, &m, client.MergeFrom(base)))
 }
 
 func (o *Outbox) committed(ctx context.Context, out *dnsv1alpha1.DNSTransportOutbox, env model.Envelope) (bool, error) {

@@ -7,6 +7,7 @@ local g = import 'github.com/grafana/grafonnet/gen/grafonnet-v11.4.0/main.libson
 local prometheus = g.query.prometheus;
 local stat = g.panel.stat;
 local timeSeries = g.panel.timeSeries;
+local heatmap = g.panel.heatmap;
 local row = g.panel.row;
 local var = g.dashboard.variable;
 
@@ -133,7 +134,7 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
   udpLatencyEstimate(selector, pos)::
     self.ts(
       'UDP answer time (estimated p50 and p99)',
-      'Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; compare the UDP band shares and counts below.',
+      'Histogram estimates for answered UDP frontend queries, by cluster and tier. Buckets end at 1, 10, 50, 100 and 1000 ms, then +Inf. Interpolation can show 0.5 ms without measuring that exact latency; a quantile in +Inf is capped at 1000 ms, not a measured one-second answer. Includes UDP error responses, readiness and background traffic; excludes TCP frontend answers and unanswered queries. The histogram has no response-code label: use Answers by response code separately. At low volume, one or two tail answers can move p99 sharply; the answer time heatmaps show how many answers landed in each band.',
       [
         self.qRange(latency.quantile(selector, '0.5', '$__rate_interval'), latencyLegend + ' estimated p50'),
         self.qRange(latency.quantile(selector, '0.99', '$__rate_interval'), latencyLegend + ' estimated p99'),
@@ -141,32 +142,63 @@ local latencyLegend = '{{cluster}} {{internal_dns_datum_net_tier}}';
       'ms', pos,
     ),
 
-  udpLatencyShares(selector, pos)::
-    self.ts(
-      'UDP answers by latency threshold, share',
-      'Shares from measured histogram bucket counts, without quantile interpolation: under 1 ms, over 100 ms and over 1 s. Thresholds overlap: over 1 s is a subset of over 100 ms; the lines do not sum to 100%. The denominator is the same UDP histogram population, including error and background answers, not all-protocol queries. Empty when no UDP answers were observed; missing telemetry stays empty.',
-      [
-        self.qRange(latency.share(selector, '1', '$__rate_interval'), latencyLegend + ' under 1 ms'),
-        self.qRange(latency.share(selector, '100', '$__rate_interval', true), latencyLegend + ' over 100 ms'),
-        self.qRange(latency.share(selector, '1000', '$__rate_interval', true), latencyLegend + ' over 1 s'),
-      ],
-      'percentunit', pos,
-    ) + timeSeries.standardOptions.withMax(1),
+  heatmap(title, description, expr, unit, pos, repeat='')::
+    heatmap.new(title)
+    + heatmap.panelOptions.withGridPos(pos.h, pos.w, pos.x, pos.y)
+    + heatmap.panelOptions.withDescription(description)
+    + (if repeat != '' then
+         heatmap.panelOptions.withRepeat(repeat)
+         + heatmap.panelOptions.withRepeatDirection('h')
+         + heatmap.panelOptions.withMaxPerRow(4)
+       else {})
+    + heatmap.queryOptions.withDatasource('prometheus', ds)
+    + heatmap.queryOptions.withTargets([
+      prometheus.new(ds, expr)
+      + prometheus.withFormat('heatmap')
+      + prometheus.withLegendFormat('{{le}}')
+      + { editorMode: 'code' },
+    ])
+    + heatmap.queryOptions.withInterval('1m')
+    + heatmap.options.withCalculate(false)
+    + heatmap.options.withCellGap(1)
+    + heatmap.options.rowsFrame.withLayout('le')
+    + heatmap.options.yAxis.withUnit(unit)
+    + heatmap.options.yAxis.withAxisPlacement('left')
+    + heatmap.options.color.withMode('opacity')
+    + heatmap.options.color.withFill('orange')
+    + heatmap.options.color.withScale('exponential')
+    // Grafana applies the exponent only in opacity mode; 0.1 keeps one slow
+    // answer visible next to thousands of fast ones.
+    + heatmap.options.color.withExponent(0.1)
+    + heatmap.options.color.withMin(0)
+    + heatmap.options.color.withSteps(64)
+    + heatmap.options.filterValues.withLe(1e-9)
+    + heatmap.options.cellValues.withUnit('short')
+    + heatmap.options.tooltip.withMode('single')
+    + heatmap.options.tooltip.withYHistogram(true)
+    + heatmap.options.legend.withShow(true),
 
-  udpLatencyCounts(selector, pos)::
-    self.ts(
-      'UDP answer counts in the lookback window',
-      'Rolling counts over the same Grafana rate interval as the percentile chart: all UDP histogram answers on the right axis, over 100 ms and over 1 s on the left. Slow counts subtract finite buckets from that same population. A large p99 alongside only one or two slow answers is different from sustained high-volume latency. Counts may be fractional because increase() can extrapolate between scrapes; they are not packet-level event logs. Zero means a sampled counter did not increase, while missing telemetry stays empty. Includes error responses; see Answers by response code for their separate breakdown.',
-      [
-        self.qRange(latency.count(selector, '$__rate_interval'), latencyLegend + ' all UDP answers'),
-        self.qRange(latency.over(selector, '100', '$__rate_interval'), latencyLegend + ' over 100 ms'),
-        self.qRange(latency.over(selector, '1000', '$__rate_interval'), latencyLegend + ' over 1 s'),
-      ],
-      'short', pos,
-    ) + { fieldConfig+: { overrides+: [{
-      matcher: { id: 'byRegexp', options: '.* all UDP answers$' },
-      properties: [{ id: 'custom.axisPlacement', value: 'right' }],
-    }] } },
+  udpLatencyHeatmaps(selector, y, repeat='')::
+    local description(who) =
+      "Answered UDP queries at %s, by latency band. Each column is one interval of at least a minute; each row is one of dnsdist's fixed buckets (under 1 ms, 1-10, 10-50, 50-100 and 100-1000 ms, then over 1 s); the colour is how many answers landed there, on a compressed scale so a single slow answer still shows. Hover a cell for its count. Includes UDP error responses; excludes TCP and unanswered queries." % who;
+    [
+      self.heatmap(
+        'UDP answer time, node resolvers%s' % (if repeat != '' then ' in $' + repeat else ''),
+        description('the node resolvers that clients query, node and node-b together'),
+        latency.buckets('%s,%s' % [selector, latency.nodeTiers], '$__interval'),
+        'ms',
+        self.grid(8, 24, 0, y),
+        repeat,
+      ),
+      self.heatmap(
+        'UDP answer time, regional routers%s' % (if repeat != '' then ' in $' + repeat else ''),
+        description('the regional routers, which only see queries the node resolvers forward'),
+        latency.buckets('%s,%s' % [selector, latency.regionalTier], '$__interval'),
+        'ms',
+        self.grid(8, 24, 0, y + 8),
+        repeat,
+      ),
+    ],
 
   // Draws one dot per sample. Load test results are sparse events, not a
   // continuous signal, so lines between them would suggest values that were

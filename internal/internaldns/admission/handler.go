@@ -6,6 +6,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -15,6 +16,7 @@ import (
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +31,7 @@ const namingPolicyResource = "dnsnamingpolicies"
 const resolverAccessResource = "dnsresolveraccessbindings"
 const recordSetResource = "dnsrecordsets"
 const associationResource = "dnszoneassociations"
+const zoneResource = "dnszones"
 
 // Path is where the dns-operator webhook server serves this handler.
 const Path = "/validate-internal-dns"
@@ -50,6 +53,9 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 	if req.Resource.Group != dnsv1alpha1.GroupVersion.Group {
 		return kubeadmission.Denied("unexpected API group")
 	}
+	if req.Resource.Resource == zoneResource && req.SubResource == "" && (req.Operation == admissionv1.Delete || req.Operation == admissionv1.Update) {
+		return h.managedZone(ctx, req)
+	}
 	// The API server authorizes resource and status access through RBAC.
 	if req.Operation == admissionv1.Delete && req.Resource.Resource != registrationResource {
 		return kubeadmission.Allowed("API server authorization applies")
@@ -69,16 +75,9 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 			return kubeadmission.Allowed("resource finalization does not require live references")
 		}
 	}
-	cl := h.Client
-	if h.ClientForRequest != nil {
-		var err error
-		cl, err = h.ClientForRequest(ctx, req)
-		if err != nil {
-			return kubeadmission.Errored(http.StatusServiceUnavailable, err)
-		}
-	}
-	if cl == nil {
-		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("project API client unavailable"))
+	cl, unavailable := h.projectClient(ctx, req)
+	if unavailable != nil {
+		return *unavailable
 	}
 	if req.Resource.Resource == registrationResource {
 		if err := authorizeReservationMutation(ctx, cl, req); err != nil {
@@ -113,6 +112,88 @@ func (h *Handler) Handle(ctx context.Context, req kubeadmission.Request) kubeadm
 		return kubeadmission.Denied(err.Error())
 	}
 	return kubeadmission.Allowed("DNS references are valid")
+}
+
+// ErrProjectDeleting is what a Handler.ClientForRequest returns when the
+// request's project is being deleted. A selector that can't tell returns
+// another error, and managed zone deletes then wait for the context lookup.
+var ErrProjectDeleting = errors.New("authenticated project is being deleted")
+
+func (h *Handler) requestClient(ctx context.Context, req kubeadmission.Request) (client.Client, error) {
+	cl := h.Client
+	if h.ClientForRequest != nil {
+		var err error
+		if cl, err = h.ClientForRequest(ctx, req); err != nil {
+			return nil, err
+		}
+	}
+	if cl == nil {
+		return nil, fmt.Errorf("project API client unavailable")
+	}
+	return cl, nil
+}
+
+func (h *Handler) projectClient(ctx context.Context, req kubeadmission.Request) (client.Client, *kubeadmission.Response) {
+	cl, err := h.requestClient(ctx, req)
+	if err != nil {
+		res := kubeadmission.Errored(http.StatusServiceUnavailable, err)
+		return nil, &res
+	}
+	return cl, nil
+}
+
+// managedZone keeps a managed zone, its owner references, and its managed
+// label while its resolver context exists, so the zone can't be released for
+// an unguarded delete first. Associations and registrations pin the zone's UID, so a
+// recreated zone would never serve the network's names again.
+func (h *Handler) managedZone(ctx context.Context, req kubeadmission.Request) kubeadmission.Response {
+	var old dnsv1alpha1.DNSZone
+	if len(req.OldObject.Raw) == 0 {
+		return kubeadmission.Denied("admission object is missing")
+	}
+	if err := json.Unmarshal(req.OldObject.Raw, &old); err != nil {
+		return kubeadmission.Denied(err.Error())
+	}
+	if !model.IsManagedZone(&old) || !old.DeletionTimestamp.IsZero() {
+		return kubeadmission.Allowed("API server authorization applies")
+	}
+	if req.Operation == admissionv1.Update {
+		var zone dnsv1alpha1.DNSZone
+		if err := decode(req, &zone); err != nil {
+			return kubeadmission.Denied(err.Error())
+		}
+		if equality.Semantic.DeepEqual(zone.OwnerReferences, old.OwnerReferences) && (old.Labels[model.ManagedObjectLabel] != "true" || zone.Labels[model.ManagedObjectLabel] == "true") {
+			return kubeadmission.Allowed("the managed zone keeps its resolver context")
+		}
+	}
+	cl, err := h.requestClient(ctx, req)
+	// Teardown removes every zone in a deleting project, contexts included.
+	if errors.Is(err, ErrProjectDeleting) {
+		return kubeadmission.Allowed("the project is being deleted")
+	}
+	if err != nil {
+		return kubeadmission.Errored(http.StatusServiceUnavailable, err)
+	}
+	owner := metav1.GetControllerOf(&old)
+	var resolverContext dnsv1alpha1.DNSResolverContext
+	err = cl.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: owner.Name}, &resolverContext)
+	if apierrors.IsNotFound(err) {
+		return kubeadmission.Allowed("the managed zone's resolver context is gone")
+	}
+	if err != nil {
+		return kubeadmission.Errored(http.StatusServiceUnavailable, fmt.Errorf("resolver context lookup: %w", err))
+	}
+	if resolverContext.UID != owner.UID || !resolverContext.DeletionTimestamp.IsZero() || managedDomainRefused(&resolverContext) {
+		return kubeadmission.Allowed("the managed zone's resolver context no longer uses it")
+	}
+	return kubeadmission.Denied(fmt.Sprintf("zone %s is the managed zone of resolver context %s and is removed with it", old.Name, resolverContext.Name))
+}
+
+// managedDomainRefused reports that the service has refused the context's
+// managed domain and is withdrawing its zone.
+func managedDomainRefused(c *dnsv1alpha1.DNSResolverContext) bool {
+	ready := apimeta.FindStatusCondition(c.Status.Conditions, "Ready")
+	return ready != nil && ready.Status == metav1.ConditionFalse && ready.Reason == model.InvalidManagedDomainReason && ready.ObservedGeneration == c.Generation
 }
 
 func (h *Handler) resolverAccess(ctx context.Context, cl client.Client, req kubeadmission.Request) error {

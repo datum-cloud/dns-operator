@@ -165,6 +165,8 @@ See the [API Reference](./api-reference.md) for complete field documentation.
   control plane, publication contracts, and shared serving architecture
 - [Private DNS API design](private-dns/README.md#api-design) — Annotated YAML for
   contexts, regional access, private zones, and product publication
+- [Private DNS API contract](private-dns/api-contract.md) — Field ownership,
+  naming rules, permissions, status meanings, and compatibility rules
 - [Node-local Private DNS authority](../enhancements/node-local-private-dns-authority.md)
   — Enable private answers on nodes and validate migration and rollback
 - [Private DNS deployment](../private-dns/deployment.md) — Configure the regional

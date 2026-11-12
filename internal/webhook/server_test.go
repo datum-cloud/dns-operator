@@ -93,7 +93,7 @@ func TestSetupWebhooks_AreServed(t *testing.T) {
 	}
 	zone := &dnsv1alpha1.DNSZone{
 		ObjectMeta: metav1.ObjectMeta{Name: "my-zone", Namespace: "default"},
-		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com"},
+		Spec:       dnsv1alpha1.DNSZoneSpec{DomainName: "example.com", DNSZoneClassName: "powerdns"},
 	}
 	if err := k8sClient.Create(ctx, zone); err != nil {
 		t.Fatalf("creating DNSZone: %v", err)

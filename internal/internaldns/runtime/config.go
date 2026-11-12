@@ -9,6 +9,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -40,7 +42,13 @@ type ProjectConfig struct {
 }
 
 type ProjectDiscoveryConfig struct {
-	Kubeconfig      string              `json:"kubeconfig"`
+	// Kubeconfig reaches the project API whose projects are discovered.
+	// Empty with Local set.
+	Kubeconfig string `json:"kubeconfig,omitempty"`
+	// Local discovers projects from the namespaces a federation hub placed in
+	// this control plane's own cluster, so the control plane reads every input
+	// from its own cluster and needs no connection to the project API.
+	Local           bool                `json:"local,omitempty"`
 	IntervalSeconds int64               `json:"intervalSeconds,omitempty"`
 	KubeAPI         KubeAPIClientConfig `json:"kubeAPI,omitempty"`
 }
@@ -79,6 +87,7 @@ type Config struct {
 	NodeBackends          []model.Backend           `json:"nodeBackends,omitempty"`
 	ClusterBackends       []model.Backend           `json:"clusterBackends,omitempty"`
 	Members               []model.Member            `json:"members,omitempty"`
+	MemberPatterns        []model.MemberPattern     `json:"memberPatterns,omitempty"`
 	ClusterPrefix         string                    `json:"clusterPrefix,omitempty"`
 	NATS                  transport.Config          `json:"nats"`
 	Stream                transport.StreamConfig    `json:"stream"`
@@ -100,6 +109,17 @@ type Config struct {
 	// store. Set it only for a rollout that stops every replica before
 	// starting new ones.
 	SwitchPublicationStore bool `json:"switchPublicationStore,omitempty"`
+	// Regions limits this control plane to the regions it publishes, so each
+	// region can run its own and keep publishing while another is down. Shards
+	// keeps every region, so contexts get the same shard assignment from every
+	// control plane, but this one plans, publishes and acknowledges only these
+	// regions and needs no broker for the rest. It requires a publication store
+	// on one of these regions' brokers that no other region shares. Empty
+	// means this control plane publishes every region.
+	Regions []string `json:"regions,omitempty"`
+	// Feed carries the inputs this region writes itself to the other
+	// regions and to the federation hub.
+	Feed *FeedConfig `json:"feed,omitempty"`
 }
 
 // PublicationStoreConfig moves the control plane's publication records
@@ -133,6 +153,9 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, errors.New("config must contain exactly one JSON object")
 		}
 		return Config{}, fmt.Errorf("decode trailing config data: %w", err)
+	}
+	if err := c.Agent.ResolveMemberID(os.Getenv); err != nil {
+		return Config{}, err
 	}
 	return c, nil
 }
@@ -188,6 +211,10 @@ func validateKubeAPI(name string, c KubeAPIClientConfig) error {
 	}
 	return nil
 }
+
+// privateUseTopLevelDomains are the single-label names reserved from public
+// DNS that may serve as a managed domain suffix on their own.
+var privateUseTopLevelDomains = map[string]bool{"internal": true, "test": true, "example": true}
 
 func (c *Config) Validate(role string) error {
 	c.defaults()
@@ -256,17 +283,32 @@ func (c *Config) Validate(role string) error {
 	if err := c.validatePublicationStore(); err != nil {
 		return err
 	}
+	if err := c.validateRegions(); err != nil {
+		return err
+	}
+	if err := c.validateFeed(); err != nil {
+		return err
+	}
 	for i, suffix := range c.ManagedDomainSuffixes {
 		if len(validation.IsDNS1123Subdomain(suffix)) > 0 {
 			return fmt.Errorf("managedDomainSuffixes[%d] must be a lowercase DNS subdomain: %q", i, suffix)
+		}
+		if !strings.Contains(suffix, ".") && !privateUseTopLevelDomains[suffix] {
+			return fmt.Errorf("managedDomainSuffixes[%d] %q is a single label; only private-use names such as \"internal\" may be one label, so a managed zone cannot shadow a public top-level domain", i, suffix)
 		}
 	}
 	if c.ProjectDiscovery != nil {
 		if len(c.Projects) != 0 {
 			return errors.New("projectDiscovery and projects are mutually exclusive")
 		}
-		if !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
+		if c.ProjectDiscovery.Local != (c.ProjectDiscovery.Kubeconfig == "") {
+			return errors.New("projectDiscovery needs exactly one of kubeconfig and local")
+		}
+		if !c.ProjectDiscovery.Local && !filepath.IsAbs(c.ProjectDiscovery.Kubeconfig) {
 			return errors.New("projectDiscovery.kubeconfig must be absolute")
+		}
+		if c.ProjectDiscovery.Local && (c.Admission.Enabled || c.CachedZoneInputs) {
+			return errors.New("projectDiscovery.local supports neither admission nor cachedZoneInputs yet")
 		}
 		if c.ProjectDiscovery.IntervalSeconds < 1 || c.ProjectDiscovery.IntervalSeconds > 300 {
 			return errors.New("projectDiscovery.intervalSeconds must be between 1 and 300")
@@ -331,6 +373,9 @@ func (c *Config) Validate(role string) error {
 		return err
 	}
 	for _, planner := range c.plannerConfigs() {
+		if !c.publishes(planner.Region) {
+			continue
+		}
 		if _, _, _, err := c.transportForRegion(planner.Region); err != nil {
 			return err
 		}
@@ -389,8 +434,24 @@ func validateMembers(c *Config) error {
 		}
 		return nil
 	}
+	checkPatterns := func(members []model.Member, patterns []model.MemberPattern) error {
+		for _, p := range patterns {
+			if err := p.Validate(); err != nil {
+				return err
+			}
+			for _, m := range members {
+				if p.Matches(m.MemberID) {
+					return fmt.Errorf("member pattern %q admits listed member %s; give pattern members their own prefix", p.IDPrefix, m.MemberID)
+				}
+			}
+		}
+		return nil
+	}
 	if len(c.Shards) == 0 {
-		return check(c.Members)
+		if err := check(c.Members); err != nil {
+			return err
+		}
+		return checkPatterns(c.Members, c.MemberPatterns)
 	}
 	for _, s := range c.Shards {
 		members := s.Members
@@ -398,6 +459,13 @@ func validateMembers(c *Config) error {
 			members = c.Members
 		}
 		if err := check(members); err != nil {
+			return err
+		}
+		patterns := s.MemberPatterns
+		if len(patterns) == 0 {
+			patterns = c.MemberPatterns
+		}
+		if err := checkPatterns(members, patterns); err != nil {
 			return err
 		}
 	}
@@ -470,6 +538,48 @@ func (c Config) validatePublicationStore() error {
 		return fmt.Errorf("publicationStore: %w", err)
 	}
 	return nil
+}
+
+func (c Config) validateRegions() error {
+	if len(c.Regions) == 0 {
+		return nil
+	}
+	configured := map[string]bool{}
+	for _, p := range c.plannerConfigs() {
+		configured[p.Region] = true
+	}
+	seen := map[string]bool{}
+	for i, region := range c.Regions {
+		if region == "" || seen[region] || !configured[region] {
+			return fmt.Errorf("regions[%d] %q must be a configured shard region listed once", i, region)
+		}
+		seen[region] = true
+	}
+	if c.PublicationStore == nil || !seen[c.PublicationStore.Region] {
+		return errors.New("regions requires a publicationStore on one of its regions' brokers")
+	}
+	for _, regional := range c.RegionalTransports {
+		if !seen[regional.Region] {
+			return fmt.Errorf("regional transport %s is outside regions; another region's control plane connects to it", regional.Region)
+		}
+	}
+	return nil
+}
+
+// publishes reports whether this control plane publishes region.
+func (c Config) publishes(region string) bool {
+	return len(c.Regions) == 0 || slices.Contains(c.Regions, region)
+}
+
+// localPlanners are the shards this control plane plans and acknowledges.
+func (c Config) localPlanners() []platform.PlannerConfig {
+	var local []platform.PlannerConfig
+	for _, p := range c.plannerConfigs() {
+		if c.publishes(p.Region) {
+			local = append(local, p)
+		}
+	}
+	return local
 }
 
 func validBucketName(s string) bool {

@@ -34,6 +34,7 @@ type object = map[string]any
 const ns = "internal-dns-system"
 const projectNS = "project-e2e"
 const image = "internal-dns-kubernetes:e2e"
+const nodeLoopback = "127.0.0.1"
 const nodeRole = string(serving.RenderNode)
 const regionalDNSDistRole = string(serving.RenderRegionalDNSDist)
 
@@ -182,7 +183,7 @@ func bootstrap() {
 	items = append(items, broker)
 	public := obj("v1", "Service", "internal-dns-public-recursor", ns)
 	public["spec"] = object{"ipFamilies": []string{"IPv6"}, "ipFamilyPolicy": "SingleStack", "selector": object{"app": "internal-dns-public-recursor"}, "ports": []object{{"name": "dns-udp", "port": 5353, "protocol": "UDP"}, {"name": "dns-tcp", "port": 5353, "protocol": "TCP"}}}
-	items = append(items, public)
+	items = append(items, public, nodeConfigMap())
 	for i, name := range podNames {
 		role := []string{nodeRole, regionalDNSDistRole, "regional-coredns", "regional-coredns"}[i]
 		items = append(items, fleetPod(name, memberNames[i], role))
@@ -259,7 +260,7 @@ func fleetPod(name, member, role string) object {
 	// probe has no ability to write routes or send trusted PROXY traffic.
 	init := []object{}
 	if role == nodeRole || role == regionalDNSDistRole {
-		init = append(init, object{"name": "dnsdist-config", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; exec /internal-dns --role=prepare --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts})
+		init = append(init, object{"name": "dnsdist-config", "image": image, "imagePullPolicy": "Never", "command": []string{"/bin/sh", "-ec", "while [ ! -s /config/config.json ]; do sleep 1; done; echo config-visible; exec /internal-dns --role=prepare --config=/config/config.json"}, "securityContext": security(), "volumeMounts": mounts})
 	}
 	if role == nodeRole || role == regionalDNSDistRole {
 		prefix := "fd53::/64"
@@ -410,6 +411,24 @@ func configMap(name string, cfg runtime.Config) object {
 	o["data"] = object{"config.json": string(raw)}
 	return o
 }
+
+func nodeBackends() []model.Backend {
+	return []model.Backend{{MemberID: "node-coredns-0", Address: nodeLoopback, Port: 5300}}
+}
+
+func nodeConfigMap() object {
+	c := exampleConfigs("fleet.example.yaml")["internal-dns-node-0-config"]
+	c.Agent.Render.NodeDNSDist.Backends = nodeBackends()
+	c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
+	c.Agent.Render.NodeDNSDist.MetricsAddress = dnsdistMetricsAddress
+	c.Agent.Render.NodeDNSDist.MetricsACLs = dnsdistMetricsACLs
+	c.Agent.Render.NodeCoreDNS.ListenAddress = nodeLoopback
+	c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{nodeLoopback}
+	must(c.Validate("agent"))
+	must(c.Validate("readiness"))
+	return configMap(podNames[0]+"-config", c)
+}
+
 func configure() {
 	cl := client(platform)
 	nodeIP := ipv6(cl, podNames[0])
@@ -439,7 +458,7 @@ func configure() {
 	cfg.OwnershipLeaseSeconds = 10
 	cfg.Stream.MaxBytes = 128 << 20
 	configureProjectSources(&cfg)
-	cfg.NodeBackends = []model.Backend{{MemberID: "node-coredns-0", Address: "127.0.0.1", Port: 5300}}
+	cfg.NodeBackends = nodeBackends()
 	cfg.ClusterBackends = []model.Backend{{MemberID: memberNames[2], Address: bindIP[0], Port: 5300}, {MemberID: memberNames[3], Address: bindIP[1], Port: 5300}}
 	for _, name := range []string{"control-a", "control-b"} {
 		c := cfg
@@ -449,31 +468,22 @@ func configure() {
 		items = append(items, configMap(name+"-config", c))
 	}
 	configs := exampleConfigs("fleet.example.yaml")
-	for i, key := range []string{"internal-dns-node-0-config", "internal-dns-regional-front-0-config", "internal-dns-regional-coredns-0-config", "internal-dns-regional-coredns-1-config"} {
+	for i, key := range []string{"internal-dns-regional-front-0-config", "internal-dns-regional-coredns-0-config", "internal-dns-regional-coredns-1-config"} {
 		c := configs[key]
 		if i == 0 {
-			c.Agent.Render.NodeDNSDist.Backends = cfg.NodeBackends
-			c.Agent.Render.NodeDNSDist.ACLs = []string{"fd00::/8", "::1/128"}
-			c.Agent.Render.NodeDNSDist.MetricsAddress = dnsdistMetricsAddress
-			c.Agent.Render.NodeDNSDist.MetricsACLs = dnsdistMetricsACLs
-			c.Agent.Render.NodeCoreDNS.ListenAddress = "127.0.0.1"
-			c.Agent.Render.NodeCoreDNS.ProxyPeers = []string{"127.0.0.1"}
-		}
-		if i == 1 {
 			c.Agent.Render.ClusterDNSDist.Backends = cfg.ClusterBackends
 			c.Agent.Render.ClusterDNSDist.ACLs = []string{nodeIP + "/128", frontIP + "/128", "::1/128"}
 			c.Agent.Render.ClusterDNSDist.MetricsAddress = dnsdistMetricsAddress
 			c.Agent.Render.ClusterDNSDist.MetricsACLs = dnsdistMetricsACLs
-		}
-		if i >= 2 {
-			c.Agent.Render.ClusterCoreDNS.ListenAddress = bindIP[i-2]
-			c.Agent.Render.ClusterCoreDNS.ProxyPeers = []string{frontIP, bindIP[i-2]}
+		} else {
+			c.Agent.Render.ClusterCoreDNS.ListenAddress = bindIP[i-1]
+			c.Agent.Render.ClusterCoreDNS.ProxyPeers = []string{frontIP, bindIP[i-1]}
 			c.Agent.Render.ClusterCoreDNS.PublicUpstreams = []string{"[" + publicRecursorIP(cl) + "]:5353"}
-			c.Agent.PublicationDNSProbe.Server = "[" + bindIP[i-2] + "]:5300"
+			c.Agent.PublicationDNSProbe.Server = "[" + bindIP[i-1] + "]:5300"
 		}
 		must(c.Validate("agent"))
 		must(c.Validate("readiness"))
-		items = append(items, configMap(podNames[i]+"-config", c))
+		items = append(items, configMap(podNames[i+1]+"-config", c))
 	}
 	routes := obj("v1", "Pod", "internal-dns-network-fixture", ns)
 	// Kind's default masquerading would erase the pod peer identity for service

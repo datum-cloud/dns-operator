@@ -719,6 +719,37 @@ func TestZoneUpdateKeepsServingMembersOnPreviousPublication(t *testing.T) {
 	assertServing("writer epoch bump", "regional-0", "regional-1")
 	ack("regional-0", fence{3, 1})
 	assertServing("first member on new epoch", "regional-0", "regional-1")
+
+	// A raised required publication, as a binding change makes, drops the
+	// members below it. Once none meets it the zone answers SERVFAIL rather
+	// than older data until a member catches up.
+	require := func(f fence) {
+		snapshot.Bindings[0].Zones[0].RequiredPublicationEpoch = f.Epoch
+		snapshot.Bindings[0].Zones[0].RequiredPublicationRevision = f.Revision
+		b = snapshot.Bindings[0]
+	}
+	assertPaused := func(step string) {
+		t.Helper()
+		ready := a.eligibleRegionalMembers(b)
+		if len(ready) != 0 {
+			t.Fatalf("%s: ready members %#v, want none", step, ready)
+		}
+		c.ReadyZoneMembers = map[string]map[string]map[string]bool{b.BindingUID: {"zone-a": ready}}
+		rendered, err := Render(c, snapshot, map[string]bool{b.BindingUID: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(rendered.Files[c.ClusterDNSDist.Path]), servfail) {
+			t.Fatalf("%s: zone keeps answering below the required publication", step)
+		}
+	}
+	require(fence{3, 1})
+	assertServing("required publication reaches one member", "regional-0")
+	require(fence{3, 2})
+	assertPaused("required publication above every member")
+	a.state.Publications["zone-a"] = publicationState{Fence: fence{3, 2}, Verified: true}
+	ack("regional-1", fence{3, 2})
+	assertServing("member catches up with the requirement", "regional-1")
 }
 func TestMissingOrStalePrivatePublicationHasNoPublicFallback(t *testing.T) {
 	t.Parallel()
@@ -1050,4 +1081,70 @@ func TestCoreDNSTombstoneAckFailureDoesNotGateDurableWithdrawal(t *testing.T) {
 		t.Fatal("failed tombstone ACK invalidated safely withdrawn zone")
 	}
 	assertAppliedCheckpoint(t, a)
+}
+
+func TestWithdrawalReachesShardThatNeverHadTheZone(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	cfg := regionalTestConfig(t)
+	a, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := testSnapshot(now)
+	snapshot.Bindings[0].Zones = nil
+	if err := a.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", 1, 1, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := model.PublicationManifest{ManifestUID: "live-elsewhere", ZoneUID: "zone-a", Apex: "prod.internal", WriterEpoch: 2, Revision: 7, PreviousRevision: 6, ContentHash: model.EmptyContentHash(), GeneratedAt: now, Tombstone: true}
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 7, withdrawal)); err != nil {
+		t.Fatalf("a shard that never had the zone rejected its withdrawal: %v", err)
+	}
+	p := a.state.Publications["zone-a"]
+	if !p.Verified || !p.Manifest.Tombstone || p.Fence.Revision != 7 {
+		t.Fatalf("withdrawal not recorded: %#v", p)
+	}
+	_, old := testPublication(t, now)
+	if err := a.Handle(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, old)); err != nil {
+		t.Fatal(err)
+	}
+	if !a.state.Publications["zone-a"].Manifest.Tombstone {
+		t.Fatal("a delayed older revision replaced the withdrawal")
+	}
+}
+
+func TestNodeAuthoritativeVerificationFailureSendsNoPublicationAck(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := nodeAuthoritativeTestConfig(t)
+	pub := &fakePublisher{}
+	fail := false
+	verifier := publicationVerifierFunc(func(context.Context, model.PublicationPlan, []PublicationView) error {
+		if fail {
+			return errors.New("local verification failed")
+		}
+		return nil
+	})
+	agent, err := NewAgent(cfg, Dependencies{Runner: &recordingRunner{}, Clock: func() time.Time { return now }, AckPublisher: pub, PublicationVerifier: verifier})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installTestPublication(t, agent, now)
+	if !agent.state.Publications["zone-a"].Verified {
+		t.Fatal("publication was not verified")
+	}
+	fail = true
+	pub.envs = nil
+	_, manifest := testPublication(t, now)
+	if err := agent.handleManifest(context.Background(), envelope(t, model.KindPublicationManifest, "zone-a", 2, 4, manifest)); err == nil {
+		t.Fatal("a failed local verification must be reported")
+	}
+	for _, env := range pub.envs {
+		var ack model.MemberAck
+		if err := json.Unmarshal(env.Payload, &ack); err != nil {
+			t.Fatal(err)
+		}
+		if ack.Kind == model.KindPublicationManifest {
+			t.Fatalf("node authority sent a publication acknowledgement: %#v", ack)
+		}
+	}
 }

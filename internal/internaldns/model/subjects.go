@@ -21,3 +21,7 @@ func RecordConsumerFilter(region, shard string) string {
 func AckSubject(region, shard, memberID string) string {
 	return fmt.Sprintf("dns.private.acks.%s.%s.%s", SafeToken(region), SafeToken(shard), OpaqueToken(memberID))
 }
+
+// MemberLeasePrefix names the ConfigMaps holding one serving member's
+// readiness lease.
+const MemberLeasePrefix = "dns-member-lease-"

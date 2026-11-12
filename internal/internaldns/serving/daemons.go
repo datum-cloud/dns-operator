@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -26,6 +27,35 @@ type daemonProcess struct {
 	args   []string
 	cmd    *exec.Cmd
 	done   chan error
+	// allowFile is the start permission the fail-closed gate removes before
+	// it stops the process; an exit without it is planned.
+	allowFile string
+	exits     exitLog
+}
+
+// exitLog writes one line per unexpected exit, but a process that keeps
+// exiting the same way is summarized once a minute instead of every restart.
+type exitLog struct {
+	status     string
+	logged     time.Time
+	suppressed int
+}
+
+func (l *exitLog) record(name, status string, now time.Time) {
+	if status == l.status && now.Sub(l.logged) < time.Minute {
+		l.suppressed++
+		return
+	}
+	if l.suppressed > 0 && status != l.status {
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s) %d more times before this\n", name, l.status, l.suppressed)
+		l.suppressed = 0
+	}
+	if l.suppressed > 0 {
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s); %d more times since the last report\n", name, status, l.suppressed)
+	} else {
+		_, _ = fmt.Fprintf(daemonLog, "DNS process %s exited unexpectedly (%s)\n", name, status)
+	}
+	*l = exitLog{status: status, logged: now}
 }
 
 func (p *daemonProcess) start() error {
@@ -40,8 +70,33 @@ func (p *daemonProcess) start() error {
 	return nil
 }
 
-func (p *daemonProcess) stop() error {
+// daemonLog receives unexpected exits so a crash loop leaves a reason behind.
+var daemonLog io.Writer = os.Stderr
+
+// reap clears a process that has exited and logs how it exited, unless the
+// fail-closed gate stopped it. It reports whether the process had exited.
+func (p *daemonProcess) reap() bool {
 	if p.cmd == nil {
+		return false
+	}
+	select {
+	case err := <-p.done:
+		if p.allowFile == "" || fileExists(p.allowFile) {
+			status := "exit status 0"
+			if err != nil {
+				status = err.Error()
+			}
+			p.exits.record(p.name, status, time.Now())
+		}
+		p.cmd, p.done = nil, nil
+		return true
+	default:
+		return false
+	}
+}
+
+func (p *daemonProcess) stop() error {
+	if p.cmd == nil || p.reap() {
 		return nil
 	}
 	_ = p.cmd.Process.Signal(unix.SIGTERM)
@@ -60,6 +115,11 @@ func (p *daemonProcess) stop() error {
 }
 
 const daemonRuntimeDir = "/run/internal-dns"
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
 
 // A gate persists as an activation marker, so only an approved, fully
 // installed configuration with no activation pending regains start permission.
@@ -85,6 +145,16 @@ func approvedConfigurationInstalled(stateDir string) bool {
 // RunDaemons owns query processes independently of the configuration agent.
 // Only incomplete or abandoned activation blocks their lifecycle.
 func RunDaemons(ctx context.Context, config Config) error {
+	return runDaemons(ctx, config, func(ctx context.Context) error { return Readiness(ctx, config) })
+}
+
+// On shutdown the health port closes first, then the daemons keep answering
+// for the drain time before they stop.
+func runDaemons(ctx context.Context, config Config, ready func(context.Context) error) error {
+	healthAddress, err := config.HealthCheck.listenAddress()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health check address %q: %v; the health port stays closed\n", config.HealthCheck.Address, err)
+	}
 	if err := os.MkdirAll(config.StateDir, 0o750); err != nil {
 		return err
 	}
@@ -93,7 +163,7 @@ func RunDaemons(ctx context.Context, config Config) error {
 	addBind := func(bind CoreDNSRenderConfig) {
 		args, err := coreDNSArgs(bind)
 		bindErr = err
-		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args})
+		processes = append(processes, &daemonProcess{name: "coredns", config: bind.Path, args: args, allowFile: filepath.Join(daemonRuntimeDir, "allow-coredns")})
 	}
 
 	switch config.Render.Role {
@@ -121,18 +191,19 @@ func RunDaemons(ctx context.Context, config Config) error {
 	if err := restoreDaemonPermissions(config.StateDir, daemonRuntimeDir, names); err != nil {
 		fmt.Fprintf(os.Stderr, "restore approved DNS process permission: %v\n", err)
 	}
+	var health *healthPort
+	if healthAddress != "" {
+		health = startHealthPort(healthAddress, healthCheckInterval, ready)
+	}
+	defer health.Close()
+	stopping := ctx.Done()
+	var drained <-chan time.Time
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		start, retain, release := daemonPermission(config.StateDir)
 		for _, p := range processes {
-			if p.cmd != nil {
-				select {
-				case <-p.done:
-					p.cmd, p.done = nil, nil
-				default:
-				}
-			}
+			p.reap()
 			if !retain {
 				if err := p.stop(); err != nil {
 					release()
@@ -156,7 +227,16 @@ func RunDaemons(ctx context.Context, config Config) error {
 		}
 		release()
 		select {
-		case <-ctx.Done():
+		case <-stopping:
+			stopping = nil
+			health.Close()
+			drain := config.HealthCheck.drain()
+			if drain == 0 || config.HealthCheck.Address != "" && !health.everOpen() {
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "draining for %s before stopping DNS processes\n", drain)
+			drained = time.After(drain)
+		case <-drained:
 			return nil
 		case <-ticker.C:
 		}
@@ -192,7 +272,7 @@ func metricsListenAddress(address string) (string, error) {
 	ip, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(address[:i], "["), "]"))
 	ip = ip.Unmap()
 	if err != nil || ip.IsUnspecified() {
-		return "", fmt.Errorf("%q must name the pod's IP address", address)
+		return "", fmt.Errorf("%q must name a specific IP address", address)
 	}
 	if port, err := strconv.ParseUint(address[i+1:], 10, 16); err != nil || port == 0 {
 		return "", fmt.Errorf("%q has an invalid port", address)

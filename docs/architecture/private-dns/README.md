@@ -179,6 +179,12 @@ Regional compilation and update delivery still apply.
 If a private zone is pending, the node returns SERVFAIL for that zone instead
 of falling back to regional serving or public recursion.
 
+Each binding names the oldest publication of each zone it may serve. A new
+binding generation, a first attachment or an apex change raises that
+requirement to the zone's current publication on purpose. Until a member has
+verified a publication at least that new, the zone answers SERVFAIL rather
+than older records, so a brief pause in serving that zone may follow.
+
 ![Node-local private answers and a separate public query path](diagrams/node-authority-query-path.svg)
 
 | Behavior | Forwarding node (default) | Authoritative node (opt-in) |
@@ -362,17 +368,74 @@ region; it does not represent separate regional control planes.
 
 **The home broker remains a shared dependency.** A region's planner, exporter,
 and acknowledgment handler can continue when an unrelated regional broker is
-down. Committing or delivering zone updates still requires the home broker.
-Independent publication by region remains a
-[separate proposal](https://github.com/datum-cloud/dns-operator/pull/342).
+down. Committing or delivering zone updates still requires the home broker,
+unless each region runs its own control plane, as described below.
 
 Queries use applied serving state without contacting these stores. Delivery
 outages delay updates and withdrawals; DNS TTLs limit client caching, not how
 long a running member retains records. After restart, a saved checkpoint can
 serve for up to 15 minutes without a validated bootstrap.
 
+#### Recovery and history
+
+Each zone's writer stamps every publication with a writer epoch and a revision.
+A takeover starts a higher epoch, and a revision is reserved before anything is
+written, so a restarted or replaced writer never reuses an identity and an
+interrupted publish is retried at a new revision. Members persist each accepted
+publication and contribution fence before applying it. After a restart or a
+broker replay, a member ignores any publication older than the one it applied
+and rejects one built from an older record observation.
+
+History is retained as follows:
+
+| Where | Kept | Removed |
+| --- | --- | --- |
+| Member checkpoint | The latest publication or withdrawal of each zone, and every contribution fence, without limit | Chunks of superseded publications |
+| Publication store | Ownership records, which hold each zone's epoch; the active manifest with its chunks and outboxes; chunks and outboxes staged by a publish that stopped before writing its manifest | A superseded manifest with its chunks and outboxes ten minutes after a newer one was first exported, unless a pending outbox depends on them; settled serving outboxes older than a shard's active one, after ten minutes |
+| Broker streams | Events within the configured stream age and size | Older events; consumers of removed members after six hours idle |
+
+A withdrawal or deletion stays in the member checkpoint as the zone's fence, so
+a delayed copy of the zone cannot return.
+
 See the deployment guide for [store configuration and ownership](../../private-dns/deployment.md#publication-storage)
 and [activation and outage recovery](../../private-dns/deployment.md#transactions-health-and-outage-recovery).
+
+#### A control plane per region
+
+The `regions` option runs one control plane per region, so a region keeps
+publishing while another region, its broker or its control plane is down. Each
+control plane lists every region's shards, so a context gets the same shard
+assignment everywhere, but it plans, publishes and acknowledges only its own
+regions and connects only to their brokers. Its publication store lives on its
+own region's broker, and the bucket records which regions own it, so a control
+plane for other regions refuses to start on it.
+
+Each region's control plane holds its own lease for every zone, compiles the
+zone and commits a manifest with only its own serving targets. Writer epochs
+and revisions are ordered within a region; members only see their own region's.
+A manifest also names every region the zone is served in, so project status can
+wait for all of them: zones, registrations and contributions report each
+region's publication in `status.regions`, and `Published` names the regions
+still pending instead of one region's outage hiding the others' progress.
+Access bindings, resolver bindings and destination claims are handled by the
+control plane of the binding's region; access in a region no control plane
+serves is rejected by all of them. Before a region first publishes a zone, it
+adds a finalizer for every region the zone is served in, so a zone is not
+removed while any region still serves it, even one whose control plane is
+down. Each region removes its own finalizer once it has withdrawn the zone. A
+region taken out of service leaves its finalizers on zones it served, and they
+must be removed by hand.
+
+The project API stays shared: every region reads its inputs from it and writes
+status to it. Moving to regional control planes uses the stopped rollout in the deployment guide,
+with `data.store` set to `jetstream-regional`; serving members keep answering
+from their checkpoints during the switch, and each region's first writer epoch
+is above the shared writer's. Serving outboxes for other regions left in a
+region's bucket by the shared writer are collected. Until each region first
+compiles a zone, its project status may briefly read not published, and a
+zone deleted in that window is withdrawn from a region that has not compiled it
+yet only when its resolver bindings drop the zone. Switching back to a control
+plane for every region is not supported.
 
 ### API design
 
@@ -381,6 +444,56 @@ object UIDs and generations. Reference identities and addresses below are
 illustrative. `status` examples show controller output and
 are not fields consumers submit when creating resources.
 
+
+##### Inputs through a federation hub
+
+The `private-replicator` role copies every project's private DNS objects
+(private zones and their record sets, associations, naming policies,
+registrations, contributions, resolver contexts and access bindings) into a
+federation hub such as Karmada, under the project namespace's mapped
+`ns-<uid>` namespace. The hub places them in each region's cluster, so a
+regional control plane can read its inputs from its own cluster. Status is
+never copied down; each region writes its own `status.regions` entry, and the
+role merges every region's entry, as the hub collected them, back into the
+project object.
+
+Every copied object carries its origin in `internal-dns.miloapis.com/origin`:
+`project` for the project API, or a region's name for an object that region
+wrote itself. The replicator never copies a region's object down, and the
+role's mirror copies a region's registrations and contributions from the hub
+into the project, refusing to replace an object from another origin.
+
+With `projectDiscovery.local`, a regional control plane runs a project source
+for every namespace the hub placed in its own cluster, identified by the
+project UID the replicator recorded on it. Every input, status write and
+platform record is then in the region's own cluster. Region entries report
+the object's generation at its origin, so entries from every region compare
+against the same project object.
+
+##### Inputs a region writes itself
+
+A producer in a region, such as a compute service naming its instances,
+writes registrations and contributions into the region's own cluster with the
+region as their origin. The region's control plane publishes them at once.
+With `feed` set, it also keeps one key per such object in the region's input
+bucket on its own broker, and copies each object into the federation hub,
+where the replicator's mirror records it in the project. The hub copy carries
+no replicated label, so the hub does not place it in any region.
+
+Every other region's broker mirrors that bucket over a JetStream domain link
+(`feed.peers`), and that region's control plane keeps a local copy of each
+object, marked with the writing region as its origin. A mirror carries deletes
+as well as writes, the applier removes copies whose key is gone after each
+replay, and it never replaces an object of another origin. Regions exchange
+their own writes this way without the project API or the hub in between.
+
+A region accepts another region's object only in a project namespace whose
+project has resolver access in the writing region, and removes its copies
+from a project once that access is gone. It also requires that no other
+object of the same kind in the namespace already hold its origin UID. When
+a copy from another region and an object from the project API or this region
+end up sharing a UID anyway, the control plane reads only the latter; when
+only copies from other regions share one, it reads none of them.
 #### Ownership and validation
 
 Customers select zones and contexts by name within their project namespace. DNS
@@ -478,8 +591,6 @@ spec:
   visibility: Private
   # Different contexts can associate separate zones with this same apex.
   domainName: prod.internal
-  # Select private backend policy; users do not choose fleet instances.
-  dnsZoneClassName: datum-internal-dns
 ---
 apiVersion: dns.networking.miloapis.com/v1alpha1
 kind: DNSZoneAssociation
@@ -514,6 +625,13 @@ DNS pins each association's resolved zone and context lifetimes. A replacement
 with the same name does not inherit the association; recreate the association
 to attach it. Customers cannot change the resolved identities in status.
 
+A zone is published to the regions where any of its contexts has access. A
+region the zone leaves, because access there or an association was removed,
+receives a withdrawal and stops serving the zone, and a later deletion reaches
+that region too. A zone whose contexts have no access anywhere yet waits in the
+regions assigned to those contexts. A zone with no associations is published
+nowhere.
+
 A context can use several zones. Reject duplicate apexes within a context and
 conflicts between static records and reserved names. Select parent and child
 zones by longest suffix. Separate contexts can explicitly share a zone or use
@@ -531,8 +649,12 @@ context labels named, comma separated, in the context's
 creates the context can tag what the zone is for, such as the network it
 serves. The context's `kubernetes.io/description` annotation is copied too, so
 clients can show what the zone is for. Copied labels and the description are
-added or corrected, never removed. A naming policy
-adds custom names without a zone choice on each Compute or Connect resource.
+added or corrected, never removed.
+
+A naming policy is meant to add custom names without a zone choice on each
+Compute or Connect resource. No product applies naming policies yet, so they
+are outside the [customer contract](api-contract.md) and customer roles can
+only read them.
 
 ```yaml
 apiVersion: dns.networking.miloapis.com/v1alpha1
@@ -733,7 +855,8 @@ Their storage schemas can be reviewed with the implementation.
 Schemas, transport, and checkpoints must preserve object lifetimes and ordered
 configuration versions. Review naming conflicts, record withdrawal, field
 ownership, outage recovery, regional readiness, and snapshot limits before
-stabilizing the APIs.
+stabilizing the APIs. The [API contract](api-contract.md) states the
+supported rules and the gaps that remain.
 
 ### Integration boundaries
 

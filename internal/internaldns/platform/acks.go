@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,8 +30,13 @@ const dnsValueNode = "node"
 // to its own AckSubject. It also verifies membership, region, resource lifetime,
 // revision and freshness before changing project-facing publication status.
 type ProjectScope struct {
-	ProjectUID     string
-	Client         client.Client
+	ProjectUID string
+	Client     client.Client
+	// Reader, when set, serves the zone and registration reads of a status
+	// projection, typically from the project's watch cache, so the status
+	// refresh reads memory instead of listing the project API. Writes always
+	// go through Client.
+	Reader         client.Reader
 	Namespace      string
 	RequestTimeout time.Duration
 }
@@ -44,7 +51,45 @@ type AckSink struct {
 	Region             string
 	Shard              string
 	Members            []model.Member
-	Now                func() time.Time
+	MemberPatterns     []model.MemberPattern
+	// Regions, when set, are the regions this sink's control plane publishes
+	// while every other region runs its own. Project status then records each
+	// region's verdict separately.
+	Regions []string
+	// LocalInputs marks project objects as hub copies: entries report the
+	// origin's generation, and conditions wait only for this sink's regions.
+	LocalInputs bool
+	Now         func() time.Time
+
+	// leases holds the member leases read for one decision, keyed
+	// region/shard/member.
+	leases map[string]time.Time
+}
+
+func (s *AckSink) withLeases(leases map[string]time.Time) *AckSink {
+	scoped := *s
+	scoped.leases = leases
+	return &scoped
+}
+
+func (s *AckSink) entryGeneration(obj metav1.Object) int64 {
+	if s.LocalInputs {
+		return projectstatus.OriginGeneration(obj)
+	}
+	return obj.GetGeneration()
+}
+
+func (s *AckSink) conditionRegions(expected []string) []string {
+	if !s.LocalInputs {
+		return expected
+	}
+	var local []string
+	for _, region := range expected {
+		if slices.Contains(s.Regions, region) {
+			local = append(local, region)
+		}
+	}
+	return local
 }
 
 func (s *AckSink) Apply(ctx context.Context, subject string, env model.Envelope) error {
@@ -67,14 +112,9 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 	if subject != model.AckSubject(s.Region, s.Shard, a.MemberID) || env.ResourceUID != a.ResourceUID || env.Epoch != a.Epoch || env.Revision != a.Revision {
 		return fmt.Errorf("ack subject or envelope identity mismatch")
 	}
-	var member *model.Member
-	for i := range s.Members {
-		if s.Members[i].MemberID == a.MemberID {
-			member = &s.Members[i]
-			break
-		}
-	}
-	if member == nil || member.ReplicaID != a.ReplicaID {
+	found, ok := model.LookupMember(s.Members, s.MemberPatterns, a.MemberID)
+	member := &found
+	if !ok || member.ReplicaID != a.ReplicaID {
 		log.FromContext(ctx).Error(errors.New("ack member identity is not assigned to this shard"), "dropping acknowledgement", "member", a.MemberID, "replica", a.ReplicaID, "region", s.Region, "shard", s.Shard)
 		return nil
 	}
@@ -104,7 +144,13 @@ func (s *AckSink) apply(ctx context.Context, subject string, env model.Envelope)
 	switch a.Kind {
 	case model.KindPublicationManifest:
 		if member.Role != dnsValueRegional && member.Role != dnsValueCluster {
-			return fmt.Errorf("publication ack is not from a regional resolver")
+			// Only regional resolvers verify publications for readiness. A node
+			// member still reports a local verification failure, which is worth
+			// a log line, but retrying it can never succeed: the broker would
+			// redeliver it forever.
+			log.FromContext(ctx).V(1).Info("ignoring a publication acknowledgement from a member that does not verify publications",
+				"member", a.MemberID, "role", member.Role, "zone", a.ResourceUID, "epoch", a.Epoch, "revision", a.Revision, "phase", a.Phase, "detail", a.Error)
+			return nil
 		}
 		return s.publication(ctx, a, row, now)
 	case model.KindServingSnapshot:
@@ -131,13 +177,32 @@ func (s *AckSink) publication(ctx context.Context, a model.MemberAck, row dnsv1a
 	if err := s.Client.Get(ctx, client.ObjectKey{Namespace: s.Namespace, Name: owner.Spec.ActiveManifestName}, &m); err != nil {
 		return err
 	}
-	if uint64(m.Spec.WriterEpoch) != a.Epoch || uint64(m.Spec.Revision) != a.Revision {
+	if uint64(m.Spec.WriterEpoch) != a.Epoch || uint64(m.Spec.Revision) != a.Revision || !servedBy(&m, s.Region, s.Shard) {
 		return nil
 	}
 	row.WriterEpoch = int64(a.Epoch)
+	renewed := false
+	if a.Phase == model.AckVerified {
+		var err error
+		if renewed, err = s.renewMemberLease(ctx, a.MemberID, a.ValidUntil, a.ValidUntil.Sub(a.ObservedAt)); err != nil {
+			return err
+		}
+	}
 	base := m.DeepCopy()
-	m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
-	complete := s.publicationVerified(&m, now)
+	if publicationRowChanged(m.Status.ReplicaAcknowledgements, row, now) {
+		if a.Phase == model.AckVerified {
+			until := metav1.NewTime(a.ObservedAt.Add(publicationRowLease))
+			row.ValidUntil = &until
+		}
+		m.Status.ReplicaAcknowledgements = upsertAck(m.Status.ReplicaAcknowledgements, row)
+	} else if !renewed {
+		return nil
+	}
+	leases, leaseErr := s.loadMemberLeases(ctx, manifestGroups(&m))
+	if leaseErr != nil {
+		log.FromContext(ctx).Error(leaseErr, "member leases unreadable; their rows decide")
+	}
+	complete := s.withLeases(leases).publicationVerified(&m, now)
 	condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
 	if jsonEqualStatus(base.Status, m.Status) {
 		return nil
@@ -156,13 +221,14 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 	if err != nil {
 		return err
 	}
-	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
-		return nil
-	}
 	var bindings dnsv1alpha1.DNSResolverBindingList
+	if e == nil || e.Epoch != a.Epoch || e.Revision != a.Revision {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	if err := s.Client.List(ctx, &bindings, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
+	recorded := false
 	for _, b := range snapshot.Bindings {
 		if b.BindingUID != a.ResourceUID {
 			continue
@@ -172,7 +238,9 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			if string(binding.UID) != b.BindingUID || binding.Spec.Configuration.Generation != int64(b.BindingGeneration) || binding.Spec.Configuration.Revision != int64(b.ConfigurationRevision) || binding.Spec.Version.Sequence != int64(b.Version.Sequence) || binding.Spec.Version.Epoch != int64(b.Version.Epoch) {
 				continue
 			}
+			recorded = true
 			base := binding.DeepCopy()
+			binding.Status.MemberAcknowledgements = s.withoutRetired(binding.Status.MemberAcknowledgements, now)
 			bindingRow := row
 			bindingRow.Revision = binding.Spec.Configuration.Revision
 			bindingRow.WriterEpoch = int64(a.Epoch)
@@ -199,7 +267,60 @@ func (s *AckSink) serving(ctx context.Context, a model.MemberAck, row dnsv1alpha
 			}
 		}
 	}
+	if !recorded {
+		return s.recordPatternPresence(ctx, &bindings, a, row)
+	}
 	return nil
+}
+
+// recordPatternPresence gives a pattern member a row on a binding it
+// acknowledged at a revision that could not be recorded, so the member is
+// required for the binding's withdrawal even if it never acknowledges the
+// committed revision. The row proves nothing, because its revision is zero.
+func (s *AckSink) recordPatternPresence(ctx context.Context, bindings *dnsv1alpha1.DNSResolverBindingList, a model.MemberAck, row dnsv1alpha1.DNSApplyAcknowledgement) error {
+	if len(s.MemberPatterns) == 0 || slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == a.MemberID }) {
+		return nil
+	}
+	if _, ok := model.LookupMember(nil, s.MemberPatterns, a.MemberID); !ok {
+		return nil
+	}
+	if bindings.Items == nil {
+		if err := s.Client.List(ctx, bindings, client.InNamespace(s.Namespace)); err != nil {
+			return err
+		}
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if string(binding.UID) != a.ResourceUID {
+			continue
+		}
+		if slices.ContainsFunc(binding.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == a.MemberID }) {
+			return nil
+		}
+		base := binding.DeepCopy()
+		presence := row
+		presence.Revision = 0
+		presence.WriterEpoch = int64(a.Epoch)
+		presence.SnapshotRevision = int64(a.Revision)
+		binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, presence)
+		return s.Client.Status().Patch(ctx, binding, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	}
+	return nil
+}
+
+// withoutRetired drops the rows of pattern members past
+// patternMemberRetireAfter, so members that scaled away stop accumulating.
+func (s *AckSink) withoutRetired(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []dnsv1alpha1.DNSApplyAcknowledgement {
+	if len(s.MemberPatterns) == 0 {
+		return rows
+	}
+	return slices.DeleteFunc(slices.Clone(rows), func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+		if slices.ContainsFunc(s.Members, func(m model.Member) bool { return m.MemberID == r.MemberID }) {
+			return false
+		}
+		_, pattern := model.LookupMember(nil, s.MemberPatterns, r.MemberID)
+		return pattern && (r.ValidUntil == nil || !r.ValidUntil.Add(patternMemberRetireAfter).After(now))
+	})
 }
 
 func (s *AckSink) projectPublication(ctx context.Context, m *dnsv1alpha1.DNSPublicationManifest, complete bool, now time.Time) error {
@@ -241,10 +362,14 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 	if projectClient == nil {
 		return fmt.Errorf("project %s status client unavailable", ns)
 	}
+	var reader client.Reader = projectClient
+	if project.Reader != nil {
+		reader = project.Reader
+	}
 	var projectErrors error
 	{
 		var zones dnsv1alpha1.DNSZoneList
-		if err := projectClient.List(ctx, &zones, client.InNamespace(ns)); err != nil {
+		if err := reader.List(ctx, &zones, client.InNamespace(ns)); err != nil {
 			return fmt.Errorf("project %s list zones: %w", ns, err)
 		}
 		for i := range zones.Items {
@@ -253,15 +378,28 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 				continue
 			}
 			base := z.DeepCopy()
-			projectstatus.Published(&z.Status.Conditions, complete, z.Generation, now)
-			projectstatus.Programmed(&z.Status.Conditions, hasApplied(m.Status.ReplicaAcknowledgements, m.Spec.WriterEpoch, m.Spec.Revision), z.Generation, now)
+			applied := hasApplied(m.Status.ReplicaAcknowledgements, m.Spec.WriterEpoch, m.Spec.Revision)
+			if len(s.Regions) == 0 {
+				projectstatus.Published(&z.Status.Conditions, complete, z.Generation, now)
+				projectstatus.Programmed(&z.Status.Conditions, applied, z.Generation, now)
+			} else {
+				projectstatus.RecordRegions(&z.Status.Regions, s.Regions, m.Spec.ExpectedRegions, s.entryGeneration(z), m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+					e.Published, e.Programmed = complete, applied
+				})
+				projectstatus.PublishedForRegions(&z.Status.Conditions, z.Status.Regions, s.conditionRegions(m.Spec.ExpectedRegions), complete, s.entryGeneration(z), z.Generation, now)
+				programmed := applied
+				if len(m.Spec.ExpectedRegions) > 0 {
+					programmed = projectstatus.AnyRegion(z.Status.Regions, m.Spec.ExpectedRegions, s.entryGeneration(z), func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Programmed })
+				}
+				projectstatus.Programmed(&z.Status.Conditions, programmed, z.Generation, now)
+			}
 			if !jsonEqualStatus(base.Status, z.Status) {
 				if err := projectClient.Status().Patch(ctx, z, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 					projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s update zone %s status: %w", ns, z.Name, err))
 				}
 			}
 			var regs dnsv1alpha1.DNSRegistrationList
-			if err := projectClient.List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
+			if err := reader.List(ctx, &regs, client.InNamespace(z.Namespace)); err != nil {
 				projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s list registrations: %w", ns, err))
 				continue
 			}
@@ -318,10 +456,22 @@ func (s *AckSink) projectPublicationForScope(ctx context.Context, project Projec
 					}
 				}
 				base := r.DeepCopy()
-				r.Status.PublicationWriterEpoch = m.Spec.WriterEpoch
-				r.Status.PublicationRevision = m.Spec.Revision
-				projectstatus.Published(&r.Status.Conditions, complete, r.Generation, now)
-				projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				if len(s.Regions) == 0 {
+					r.Status.PublicationWriterEpoch = m.Spec.WriterEpoch
+					r.Status.PublicationRevision = m.Spec.Revision
+					projectstatus.Published(&r.Status.Conditions, complete, r.Generation, now)
+					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				} else {
+					r.Status.PublicationWriterEpoch, r.Status.PublicationRevision = 0, 0
+					projectstatus.RecordRegions(&r.Status.Regions, s.Regions, m.Spec.ExpectedRegions, s.entryGeneration(r), m.Spec.WriterEpoch, m.Spec.Revision, func(e *dnsv1alpha1.DNSRegionPublicationStatus) {
+						e.Published, e.Available = complete, available
+					})
+					projectstatus.PublishedForRegions(&r.Status.Conditions, r.Status.Regions, s.conditionRegions(m.Spec.ExpectedRegions), complete, s.entryGeneration(r), r.Generation, now)
+					if len(m.Spec.ExpectedRegions) > 0 {
+						available = projectstatus.AnyRegion(r.Status.Regions, m.Spec.ExpectedRegions, s.entryGeneration(r), func(e dnsv1alpha1.DNSRegionPublicationStatus) bool { return e.Available })
+					}
+					projectstatus.Available(&r.Status.Conditions, available, r.Generation, now)
+				}
 				if !jsonEqualStatus(base.Status, r.Status) {
 					if err := projectClient.Status().Patch(ctx, r, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 						projectErrors = errors.Join(projectErrors, fmt.Errorf("project %s update registration %s status: %w", ns, r.Name, err))
@@ -342,22 +492,19 @@ func (s *AckSink) verified(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.
 		}
 		return false
 	}
+	live := func(group string, member model.Member) bool {
+		until, ok := s.leases[memberLeaseKeyFor(group, member.MemberID)]
+		return !ok || until.After(now)
+	}
 	if role == "publication" {
-		groups := s.PublicationRegions
-		if len(groups) == 0 {
-			members := s.PublicationMembers
-			if len(members) == 0 {
-				members = s.Members
-			}
-			groups = map[string][]model.Member{"local": members}
-		}
-		for _, members := range groups {
+		groups := s.publicationGroups()
+		for group, members := range groups {
 			required := 0
 			verified := 0
 			for _, member := range members {
 				if member.Role == dnsValueRegional || member.Role == dnsValueCluster {
 					required++
-					if matches(member) {
+					if matches(member) && live(group, member) {
 						verified++
 					}
 				}
@@ -405,6 +552,18 @@ func condition(rows *[]metav1.Condition, name string, value bool, reason string,
 	apimeta.SetStatusCondition(rows, metav1.Condition{Type: name, Status: status, Reason: reason, Message: reason, ObservedGeneration: generation, LastTransitionTime: metav1.NewTime(now)})
 }
 
+// servedBy reports whether a shard serves the manifest. A shard the manifest
+// withdraws from acknowledges the withdrawal, which says nothing about the
+// shards that serve it.
+func servedBy(m *dnsv1alpha1.DNSPublicationManifest, region, shard string) bool {
+	for _, target := range m.Spec.ServingTargets {
+		if target.Region == region && target.Shard == shard {
+			return true
+		}
+	}
+	return false
+}
+
 func hasApplied(rows []dnsv1alpha1.DNSApplyAcknowledgement, epoch, revision int64) bool {
 	for _, row := range rows {
 		if row.WriterEpoch == epoch && row.Revision == revision && (row.Phase == string(model.AckApplied) || row.Phase == string(model.AckVerified)) {
@@ -437,6 +596,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		base := b.DeepCopy()
+		b.Status.MemberAcknowledgements = s.withoutRetired(b.Status.MemberAcknowledgements, now)
 		complete := s.bindingVerified(b, envelope, snapshot, now)
 		s.bindingConditions(b, envelope, snapshot, now, complete)
 		if complete {
@@ -458,6 +618,9 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 	if err := s.Client.List(ctx, &owners, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
+	leases, err := s.loadMemberLeases(ctx, nil)
+	refreshErrors = errors.Join(refreshErrors, err)
+	leased := s.withLeases(leases)
 	type projection struct {
 		manifest *dnsv1alpha1.DNSPublicationManifest
 		complete bool
@@ -476,7 +639,7 @@ func (s *AckSink) Refresh(ctx context.Context) error {
 			continue
 		}
 		base := m.DeepCopy()
-		complete := s.publicationVerified(&m, now)
+		complete := leased.publicationVerified(&m, now)
 		condition(&m.Status.Conditions, "Published", complete, "ReplicaVerification", m.Generation, now)
 		if !jsonEqualStatus(base.Status, m.Status) {
 			if err := s.Client.Status().Patch(ctx, &m, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -629,11 +792,17 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 			rows = append(rows, row)
 		}
 	}
+	members := s.bindingMembers(b.Status.MemberAcknowledgements, now)
+	if len(s.MemberPatterns) > 0 && !slices.ContainsFunc(members, func(m model.Member) bool { return m.Role == dnsValueNode }) {
+		return false
+	}
 	if all {
-		return s.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
+		scoped := *s
+		scoped.Members, scoped.MemberPatterns = members, nil
+		return scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 	}
 	tiers := map[string][]model.Member{}
-	for _, member := range s.Members {
+	for _, member := range members {
 		role := member.Role
 		if role == dnsValueCluster {
 			role = dnsValueRegional
@@ -646,7 +815,7 @@ func (s *AckSink) bindingProof(b *dnsv1alpha1.DNSResolverBinding, envelope *mode
 		ready := false
 		for _, member := range members {
 			scoped := *s
-			scoped.Members = []model.Member{member}
+			scoped.Members, scoped.MemberPatterns = []model.Member{member}, nil
 			ready = ready || scoped.verified(rows, now, dnsValueResolver, b.Spec.Configuration.Revision, int64(envelope.Epoch), b.Spec.Version.Epoch, b.Spec.Version.Sequence)
 		}
 		if !ready {
@@ -663,4 +832,35 @@ func (s *AckSink) bindingConditions(b *dnsv1alpha1.DNSResolverBinding, envelope 
 	if !available && !b.Spec.Tombstone && b.Status.ObservedConfigurationRevision == b.Spec.Configuration.Revision {
 		apimeta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: dnsValueServing, Status: metav1.ConditionUnknown, Reason: "ObservationUnavailable", Message: "Current serving health is unavailable", ObservedGeneration: b.Generation, LastTransitionTime: metav1.NewTime(now)})
 	}
+}
+
+// patternMemberRetireAfter is how long a pattern member stays required after
+// its last acknowledgement expired. Until then a binding cannot be finalized
+// without it, so a member that is only lagging or partitioned still holds
+// back the release of an address it may serve.
+const patternMemberRetireAfter = 6 * time.Hour
+
+// bindingMembers is the listed members plus every pattern member that has
+// acknowledged the binding at any revision within patternMemberRetireAfter.
+func (s *AckSink) bindingMembers(rows []dnsv1alpha1.DNSApplyAcknowledgement, now time.Time) []model.Member {
+	if len(s.MemberPatterns) == 0 {
+		return s.Members
+	}
+	members := append([]model.Member(nil), s.Members...)
+	seen := map[string]bool{}
+	for _, m := range s.Members {
+		seen[m.MemberID] = true
+	}
+	var admitted []model.Member
+	for _, row := range rows {
+		if seen[row.MemberID] || row.ValidUntil == nil || !row.ValidUntil.Add(patternMemberRetireAfter).After(now) {
+			continue
+		}
+		if m, ok := model.LookupMember(nil, s.MemberPatterns, row.MemberID); ok {
+			seen[row.MemberID] = true
+			admitted = append(admitted, m)
+		}
+	}
+	sort.Slice(admitted, func(i, j int) bool { return admitted[i].MemberID < admitted[j].MemberID })
+	return append(members, admitted...)
 }

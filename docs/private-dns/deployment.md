@@ -136,7 +136,9 @@ the same validated publications instead of forwarding private zones to the
 regional destination. Regional control planes still compile and publish the
 records, and regional serving stays in place until the node fleet is validated.
 Set `publicationDNSProbe.server` to that node's protected CoreDNS listener and
-configure `render.nodeCoreDNS.publicUpstreams` for public recursion. Verify both
+configure `render.nodeCoreDNS.publicUpstreams` for public recursion. CoreDNS
+tries the listed upstreams in order and moves on when one fails or answers
+SERVFAIL. Verify both
 before enabling the option. Node publication proof uses the consumer context
 destination; regional proof uses the regional destination.
 
@@ -153,10 +155,16 @@ client caches can retain withdrawn answers for at most that TTL. Static records
 retain their explicit RRset TTL, or the default of 300 seconds. Entries in one
 static RRset must use the same TTL.
 
-A context without private zones proves recursion with the root SOA over UDP and
-TCP. `verifier.publicName` can override this probe. CoreDNS members need a
-writable
-`/tmp` runtime volume even when the image root filesystem is read-only.
+A context without private zones proves its path with a CH canary over UDP and
+TCP, without touching public recursion. `verifier.publicName` replaces this probe
+with a query for that public name. After each daemon restart
+the agent itself performs, and after a failed context probe, the agent waits up
+to 30 seconds for its own daemons to answer the readiness canary before it
+probes, so a probe sent while CoreDNS is still loading does not gate a context
+that would have answered. If the daemons do not answer within that time, the
+agent probes anyway, and later checks probe the canary once without waiting
+until it answers again. CoreDNS members need a writable `/tmp` runtime volume
+even when the image root filesystem is read-only.
 
 Private packet caching stays disabled in dnsdist and CoreDNS. The context plugin
 answers private queries from the accepted in-memory zone data. Endpoint changes
@@ -265,11 +273,12 @@ before it selects a context, with NOERROR once a snapshot is loaded, so a member
 with no contexts is still ready. With an identity key, CoreDNS answers it only
 when the query carries that key. dnsdist forwards the canary from loopback, or
 from its own listen address, to its backend pool over UDP and TCP, and answers
-SERVFAIL when no backend is available. Only NOERROR with the expected TXT answer
-is ready. Readiness finishes within 1.5 seconds, inside the example probes'
-2-second timeout, and names the daemon that was slow. Any client that reaches a
-context can also read the canary; it says only that a CoreDNS process has loaded
-state. After a restart the agent waits for its daemons to answer the root SOA
+NXDOMAIN when no backend is available, so its own probes are not counted as
+SERVFAIL. Only NOERROR with the expected TXT answer is ready. Readiness
+finishes within 1.5 seconds, inside the example probes' 2-second timeout,
+and names the daemon that was slow. Any client that reaches a context can also
+read the canary; it says only that a CoreDNS process has loaded state. After a
+restart the agent waits for its daemons to answer the root SOA
 without SERVFAIL, not for the canary, so it does not gate daemons still running
 rules from an earlier release. dnsdist adds the canary to retained rules when
 it starts; if it cannot place the canary, it starts with startup rules that
@@ -400,10 +409,11 @@ Regional CoreDNS members from before the readiness canary refuse it. Until
 every regional CoreDNS answers the canary, a regional front treats a REFUSED
 canary as a live backend and logs that it did, so fronts and CoreDNS members can
 upgrade in either order. This is temporary: once every regional CoreDNS has
-the canary, a REFUSED canary should fail front readiness too. A SERVFAIL
-canary, which means no backend is available or a backend has no state or the
-wrong identity key, is never ready. A node member's dnsdist and CoreDNS run in
-one pod and upgrade together, so node readiness requires NOERROR.
+the canary, a REFUSED canary should fail front readiness too. An NXDOMAIN
+canary, which means no backend is available, and a SERVFAIL canary, which means
+a backend has no state or the wrong identity key, are never ready. A node
+member's dnsdist and CoreDNS run in one pod and upgrade together, so node
+readiness requires NOERROR.
 
 The checkpoint retains desired version fences and the activated configuration
 separately. Restart can restore the activated configuration during a rejected
@@ -422,6 +432,64 @@ reports `CapacityAvailable=False` for the affected binding while healthy
 contexts and withdrawals continue. A pending zone fails only queries beneath
 its private apex; its names never fall through to public recursion. Bindings,
 publication targets, and context status use the same stable shard assignment.
+
+### Draining a member before it stops
+
+A member that runs `--role=serving` (node and regional CoreDNS members) can
+expose a TCP health port for a network load balancer and keep answering for a
+drain time after it is told to stop, so the load balancer moves lookups to
+other members first. Both are off by default. Regional dnsdist fronts have no
+serving container, so their configuration rejects `healthCheck`.
+
+```json
+"agent": {
+  "healthCheck": {"address": "[${LISTENER_ADDRESS}]:8053", "drainSeconds": 15}
+}
+```
+
+- `healthCheck.address`: where the health port listens. The serving process
+  expands environment references, so set the variable on the serving
+  container. The host must be a specific IP address, usually the member's
+  interface address, not a wildcard. Bracket an IPv6 host. Omitted means no
+  health port. If the expanded address is unusable, the serving process logs
+  it, keeps the port closed, and keeps serving DNS.
+- `healthCheck.drainSeconds`: how long the DNS processes keep answering after
+  shutdown begins. Between 0 and 300; the default 0 stops them at once.
+
+The serving process runs the same checks as `--role=readiness` about once a
+second. The port opens when a check passes and closes when one fails, within
+about two seconds of the change. It also stays closed until the address is
+present on the interface, because it cannot bind before then. The port accepts
+connections and closes them without sending data, so a probe passes when the
+TCP handshake completes. Set the load balancer's failure and success
+thresholds to absorb a single slow check. Readiness must use live DNS
+verification: `healthCheck.address` with `unsafeAllowNoDNSVerify` is rejected.
+
+On SIGTERM the serving process closes the health port, keeps CoreDNS and its
+supervision running for `drainSeconds`, then stops CoreDNS and exits. A member
+whose health port never opened has nothing to drain and stops at once.
+
+To deploy it:
+
+- Delay SIGTERM to the agent and dnsdist containers by `drainSeconds`, for
+  example with `lifecycle: {preStop: {sleep: {seconds: 15}}}` on each
+  (Kubernetes 1.30 or later). dnsdist runs in its own container and would
+  otherwise stop at once. An agent interrupted mid-installation fails closed,
+  which gates the draining member's DNS processes.
+- Set `terminationGracePeriodSeconds` above `drainSeconds`, with a few seconds
+  to spare. The grace period covers the preStop sleep and each process's
+  shutdown; Kubernetes kills whatever is still running when it ends.
+- Allow TCP to the health port from the load balancer's probe source. If
+  probes come from the host's link-local address and a traffic policy is
+  enforced on the member interface, allow `fe80::/10` to the health port.
+- Make `drainSeconds` longer than the load balancer's probe interval times its
+  failure threshold, plus its idle timeout for existing flows. A load balancer
+  stops sending new flows after failed probes, but UDP flows that reuse a
+  source port and open TCP connections keep arriving until they go idle.
+- Draining only moves lookups when another member serving the same address is
+  ready to take them.
+- Roll out an image that knows the field before setting it: older processes
+  reject unknown configuration fields.
 
 ### Control-plane and agent monitoring
 

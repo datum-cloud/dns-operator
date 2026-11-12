@@ -870,3 +870,204 @@ func TestSameFenceAckRefreshDoesNotRewriteCheckpoint(t *testing.T) {
 		t.Fatal("a verified ack after a rejection at the same fence was not persisted")
 	}
 }
+
+func TestResolverVerificationWaitsForLocalServing(t *testing.T) {
+	t.Parallel()
+	servingAfter, checks := 2, 0
+	var probedAt []int
+	agent := &Agent{
+		cfg: Config{ResolverDNSProbe: DNSVerifierConfig{Timeout: time.Second}},
+		deps: Dependencies{
+			LocalServing: func(context.Context) error {
+				checks++
+				if checks <= servingAfter {
+					return errors.New("returned SERVFAIL, want NOERROR")
+				}
+				return nil
+			},
+			Verifier: resolverVerifierFunc(func(context.Context, model.Binding) error {
+				probedAt = append(probedAt, checks)
+				return nil
+			}),
+		},
+	}
+	bindings := []model.Binding{{BindingUID: "binding-0"}}
+	active := map[string]bool{"binding-0": true}
+
+	if failed := agent.verifyResolverBindings(context.Background(), bindings, active); failed || !active["binding-0"] {
+		t.Fatalf("verification after local serving failed=%v active=%v", failed, active)
+	}
+	if len(probedAt) != 1 || probedAt[0] != servingAfter+1 {
+		t.Fatalf("binding probed after %v local checks, want only after check %d passed", probedAt, servingAfter+1)
+	}
+
+	bindings[0].Version.Sequence++
+	before := checks
+	if agent.verifyResolverBindings(context.Background(), bindings, active); checks != before {
+		t.Fatalf("local serving checked %d more times without a daemon restart", checks-before)
+	}
+
+	agent.tx.restarts++
+	servingAfter = checks + 1
+	bindings[0].Version.Sequence++
+	probedAt = nil
+	if agent.verifyResolverBindings(context.Background(), bindings, active); len(probedAt) != 1 || probedAt[0] != servingAfter+1 {
+		t.Fatalf("after a daemon restart, binding probed after %v local checks, want after check %d", probedAt, servingAfter+1)
+	}
+}
+
+func TestResolverAgentChecksLocalServing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true,
+	}, Dependencies{Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.deps.LocalServing == nil {
+		t.Fatal("a resolver agent verifies contexts without first checking its own daemons")
+	}
+}
+
+func TestResolverVerificationRechecksLocalServingAfterAFailedProbe(t *testing.T) {
+	t.Parallel()
+	checks, serving, failing := 0, true, true
+	var reported []error
+	agent := &Agent{
+		cfg: Config{ResolverDNSProbe: DNSVerifierConfig{Timeout: time.Second}},
+		deps: Dependencies{
+			LocalServing: func(context.Context) error {
+				checks++
+				if !serving {
+					return errors.New("no DNS response")
+				}
+				return nil
+			},
+			Verifier: resolverVerifierFunc(func(context.Context, model.Binding) error {
+				if failing {
+					return errors.New("returned SERVFAIL")
+				}
+				return nil
+			}),
+			OnError: func(err error) { reported = append(reported, err) },
+		},
+		localServingWait: 300 * time.Millisecond,
+	}
+	bindings := []model.Binding{{BindingUID: "binding-0"}}
+	verify := func() bool {
+		return agent.verifyResolverBindings(context.Background(), bindings, map[string]bool{"binding-0": true})
+	}
+
+	if !verify() || checks != 1 {
+		t.Fatalf("failing probe after local serving: checks=%d", checks)
+	}
+	if verify(); checks != 2 {
+		t.Fatalf("local serving was not checked again after a failed probe: checks=%d", checks)
+	}
+
+	serving = false
+	before := checks
+	verify()
+	if checks-before < 2 {
+		t.Fatalf("local serving that stopped answering was not retried within the wait: %d checks", checks-before)
+	}
+	if !slices.ContainsFunc(reported, func(err error) bool { return strings.Contains(err.Error(), "did not answer the readiness canary") }) {
+		t.Fatalf("an expired wait was not reported: %v", reported)
+	}
+	before = checks
+	if !verify() || checks != before {
+		t.Fatalf("an expired wait was repeated before the daemons restarted: %d more checks", checks-before)
+	}
+	agent.tx.restarts++
+	before = checks
+	started := time.Now()
+	if verify(); checks-before != 1 || time.Since(started) >= agent.localServingWait {
+		t.Fatalf("after an expired wait, a restart waited again: %d checks in %s", checks-before, time.Since(started))
+	}
+	serving = true
+	agent.tx.restarts++
+	before = checks
+	if verify(); checks-before != 1 || agent.localServingExpired {
+		t.Fatalf("daemons answering again did not end the expired state: %d checks", checks-before)
+	}
+}
+
+func TestSameFenceAckRefreshDoesNotReconcile(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	renderConfig, snapshot := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	snapshot.Members = []model.Member{{MemberID: "regional-0", ReplicaID: "regional-0", Role: "regional"}}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "node-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Handle(context.Background(), envelope(t, model.KindServingSnapshot, "shard", snapshot.ConfigurationEpoch, snapshot.ConfigurationRevision, snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	renders := 0
+	agent.render = func(c RenderConfig, s model.ServingSnapshot, active map[string]bool, p map[string]publicationState) (Rendered, error) {
+		renders++
+		return renderPublications(c, s, active, p)
+	}
+	handle := func(ack model.MemberAck) int {
+		t.Helper()
+		before := renders
+		if err := agent.Handle(context.Background(), envelope(t, model.KindMemberAck, ack.ResourceUID, ack.Epoch, ack.Revision, ack)); err != nil {
+			t.Fatal(err)
+		}
+		return renders - before
+	}
+
+	ack := model.MemberAck{MemberID: "regional-0", ReplicaID: "regional-0", ResourceUID: "zone-a", Kind: model.KindPublicationManifest, Epoch: 2, Revision: 4, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	if handle(ack) == 0 {
+		t.Fatal("the first verified ack for a member did not reconcile")
+	}
+	for i := 1; i <= 3; i++ {
+		ack.ObservedAt, ack.ValidUntil = now.Add(time.Duration(i)*time.Second), now.Add(time.Minute+time.Duration(i)*time.Second)
+		if n := handle(ack); n != 0 {
+			t.Fatalf("same-fence lease refresh %d reconciled %d times", i, n)
+		}
+	}
+	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"].ValidUntil; !got.Equal(ack.ValidUntil) {
+		t.Fatalf("refresh did not extend the lease in memory: %s", got)
+	}
+	stored := agent.state.Acks["zone-a"]["regional-0/regional-0"]
+	unchangedLease := ack
+	unchangedLease.ObservedAt = now.Add(3*time.Second + time.Millisecond)
+	if n := handle(unchangedLease); n != 0 {
+		t.Fatalf("a refresh that does not extend the lease reconciled %d times", n)
+	}
+	if got := agent.state.Acks["zone-a"]["regional-0/regional-0"]; got != stored {
+		t.Fatalf("a refresh that does not extend the lease changed the stored ack: %+v", got)
+	}
+
+	ack.Revision, ack.ObservedAt = 5, now.Add(4*time.Second)
+	if handle(ack) == 0 {
+		t.Fatal("a verified ack at a new fence did not reconcile")
+	}
+
+	rejected := ack
+	rejected.Phase, rejected.ObservedAt, rejected.ValidUntil = model.AckRejected, now.Add(5*time.Second), now.Add(time.Minute+5*time.Second)
+	if handle(rejected) == 0 {
+		t.Fatal("a rejection did not reconcile")
+	}
+	ack.ObservedAt, ack.ValidUntil = now.Add(6*time.Second), now.Add(time.Minute+6*time.Second)
+	if handle(ack) == 0 {
+		t.Fatal("a verified ack that clears a rejection did not reconcile")
+	}
+}

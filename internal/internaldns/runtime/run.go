@@ -82,8 +82,60 @@ func Run(ctx context.Context, role string, cfg Config, opts Options) error {
 type projectRuntime struct {
 	config ProjectConfig
 	direct client.Client
+	// cached serves status reads from the project manager's watch cache once
+	// it has synced.
+	cached *syncedReader
 	start  func(context.Context) error
 	starts *rate.Limiter
+}
+
+// syncedReader holds a project's watch cache once its zones and registrations
+// have synced, and nothing before that or after that manager stops. Each
+// manager start takes a token, so a late install from a stopped manager is
+// refused.
+type syncedReader struct {
+	mu     sync.RWMutex
+	reader client.Reader
+	token  uint64
+}
+
+func (r *syncedReader) get() client.Reader {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.reader
+}
+
+// begin starts a new manager run and returns its token.
+func (r *syncedReader) begin() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.token++
+	r.reader = nil
+	return r.token
+}
+
+// install sets the reader if the run it belongs to is still current.
+func (r *syncedReader) install(token uint64, reader client.Reader) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if token != r.token {
+		return false
+	}
+	r.reader = reader
+	return true
+}
+
+// end clears the reader of a run that stopped and refuses its late install.
+func (r *syncedReader) end(token uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if token == r.token {
+		r.token++
+		r.reader = nil
+	}
 }
 
 func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
@@ -104,6 +156,9 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	storeName := publicationStoreKubernetes
 	if cfg.PublicationStore != nil {
 		storeName = publicationStoreJetStream
+	}
+	if len(cfg.Regions) > 0 {
+		storeName = publicationStoreRegional
 	}
 	if err := claimPublicationStore(ctx, platformClient, cfg.PlatformNamespace, storeName, cfg.SwitchPublicationStore); err != nil {
 		return err
@@ -127,12 +182,14 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		}
 		return publicationStore.View(model.SafeToken(region))
 	}
-	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient}
-	planners := cfg.plannerConfigs()
-	regions := make([]controlplane.ServingRegion, 0, len(planners))
-	for _, p := range planners {
+	allocator := &platform.Allocator{Client: platformClient, Namespace: cfg.PlatformNamespace, ClusterPrefix: cfg.ClusterPrefix, RegionalPrefixes: regionalPrefixes, RegionClient: regionalClient, Regions: cfg.Regions}
+	// Every region's shards keep contexts on one assignment; this control
+	// plane runs only the planners of the regions it publishes.
+	regions := make([]controlplane.ServingRegion, 0, len(cfg.plannerConfigs()))
+	for _, p := range cfg.plannerConfigs() {
 		regions = append(regions, controlplane.ServingRegion{Region: p.Region, Shard: p.Shard})
 	}
+	planners := cfg.localPlanners()
 
 	identity := holderIdentity()
 	// stopping is set when the process is told to exit, so reconcilers stop
@@ -159,7 +216,11 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			return projectRuntime{}, fmt.Errorf("create project %q direct client: %w", p.Name, err)
 		}
 		direct = &deadlineClient{Client: direct, Timeout: p.KubeAPI.requestTimeout()}
+		if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+			direct = originUIDClient{Client: direct}
+		}
 		project := p
+		cached := &syncedReader{}
 		start := func(startCtx context.Context) error {
 			mgr, err := ctrl.NewManager(projectREST, ctrl.Options{
 				Scheme:                 scheme,
@@ -186,7 +247,8 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 				Region: cfg.Region, Shard: cfg.Shard, Identity: identity,
 				LeaseDuration:        cfg.ownershipLease(),
 				AddressAllocator:     allocator,
-				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions,
+				PrivateZoneClassName: cfg.PrivateZoneClassName, ServingRegions: regions, Regions: cfg.Regions,
+				LocalInputs:           cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local,
 				ManagedDomainSuffixes: cfg.ManagedDomainSuffixes,
 				PerZoneReconcile:      cfg.PerZoneReconcile,
 				CachedZoneInputs:      cfg.CachedZoneInputs,
@@ -195,9 +257,33 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 			if err := reconciler.SetupWithManager(mgr); err != nil {
 				return fmt.Errorf("setup reconciler: %w", err)
 			}
-			return mgr.Start(startCtx)
+			// Status reads come from the watch cache once it holds the
+			// project's zones and registrations; until then and after this
+			// run stops they list the project API directly.
+			runCtx, cancel := context.WithCancel(startCtx)
+			defer cancel()
+			token := cached.begin()
+			defer cached.end(token)
+			go func() {
+				projectCache := mgr.GetCache()
+				if !projectCache.WaitForCacheSync(runCtx) {
+					return
+				}
+				// GetInformer blocks until each informer has synced.
+				for _, obj := range []client.Object{&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}} {
+					if _, err := projectCache.GetInformer(runCtx, obj); err != nil {
+						return
+					}
+				}
+				var reader client.Reader = projectCache
+				if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+					reader = originUIDReader{reader}
+				}
+				cached.install(token, reader)
+			}()
+			return mgr.Start(runCtx)
 		}
-		return projectRuntime{config: project, direct: direct, start: start, starts: projectStarts}, nil
+		return projectRuntime{config: project, direct: direct, cached: cached, start: start, starts: projectStarts}, nil
 	}
 	projects := make([]projectRuntime, 0, len(cfg.Projects))
 	for _, p := range cfg.Projects {
@@ -209,7 +295,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 	}
 	directory := newProjectDirectory(projects)
 	var discovery *projectDiscovery
-	if cfg.ProjectDiscovery != nil {
+	if cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local {
+		localClient, clientErr := client.New(platformREST, client.Options{Scheme: scheme})
+		if clientErr != nil {
+			return fmt.Errorf("create local project discovery client: %w", clientErr)
+		}
+		discovery = &projectDiscovery{local: true, client: &deadlineClient{Client: localClient, Timeout: cfg.PlatformKubeAPI.requestTimeout()}, directory: directory, rest: platformREST, kubeAPI: cfg.ProjectDiscovery.KubeAPI, makeProject: makeProject}
+	} else if cfg.ProjectDiscovery != nil {
 		discoveryREST, loadErr := restConfig(cfg.ProjectDiscovery.Kubeconfig)
 		if loadErr != nil {
 			return fmt.Errorf("load project discovery kubeconfig: %w", loadErr)
@@ -306,9 +398,13 @@ func runControlPlane(ctx context.Context, cfg Config, opts Options) error {
 		shardPlanners = append(shardPlanners, planner)
 		go retryLoop(ctx, plannerInterval(pc.LeaseDuration), loopID{Loop: "planner", Region: pc.Region, Shard: pc.Shard}, live, planner.Step, errCh)
 		sink := &platform.AckSink{Client: regionalClient(pc.Region), Namespace: cfg.PlatformNamespace, ProjectScopes: directory.scopes,
-			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members}
+			PublicationMembers: publicationMembers, PublicationRegions: publicationRegions, Region: pc.Region, Shard: pc.Shard, Members: pc.Members, MemberPatterns: pc.MemberPatterns, Regions: cfg.Regions,
+			LocalInputs: cfg.ProjectDiscovery != nil && cfg.ProjectDiscovery.Local}
 		sinks[pc.Region+"/"+pc.Shard] = sink
 		go retryLoop(ctx, 2*time.Second, loopID{Loop: "ack refresh", Region: pc.Region, Shard: pc.Shard}, live, whileLeading(sink.Refresh, regionLeases[pc.Region]), errCh)
+	}
+	if cfg.Feed != nil {
+		go runFeed(ctx, cfg, scheme, platformREST, live, errCh)
 	}
 	startRegionalWorkers(planners, func(region string, regionalPlanners []platform.PlannerConfig) error {
 		return runControlPlaneRegion(ctx, cfg, region, regionalPlanners, regionalClient(region), sinks, live, regionLeases[region])
@@ -815,6 +911,9 @@ func (c Config) plannerConfigs() []platform.PlannerConfig {
 
 		if len(p.Members) == 0 {
 			p.Members = append([]model.Member(nil), c.Members...)
+		}
+		if len(p.MemberPatterns) == 0 {
+			p.MemberPatterns = append([]model.MemberPattern(nil), c.MemberPatterns...)
 		}
 	}
 	return configs

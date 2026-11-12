@@ -83,12 +83,16 @@ and cannot turn this histogram into success-only latency.
 A sub-millisecond estimate is interpolation within the first bucket. A p99 at
 1000 ms can mean the quantile fell in +Inf, not that an answer took exactly one
 second. Low volume also matters: 150 UDP answers with 148 at or below 100 ms and
-two in the 100–1000 ms bucket yield an estimated p99 of 325 ms. The companion
-threshold-share and count panels show those two tail answers and their volume.
-They use the histogram's own count, retain cluster and tier, and leave shares
-empty when no UDP answers were observed. Counts use the same rolling rate
-interval and may be extrapolated between scrapes. Over 1 s is included within
-over 100 ms; the threshold shares do not sum to one.
+two in the 100–1000 ms bucket yield an estimated p99 of 325 ms.
+
+The answer time heatmaps show the measured buckets instead, one tile per
+cluster: node resolvers (node and node-b together) and regional routers
+separately, since a query can pass through both. Each cell is the number of
+answers in one bucket over one interval, so those two tail answers appear as
+two answers rather than as a quantile. The colour scale is steeply compressed
+so a single slow answer stays visible beside thousands of fast ones; hover a
+cell for its count. Columns are back-to-back `increase()` windows, which count
+each answer once only because VictoriaMetrics does not extrapolate them.
 
 Query fixtures import the same expressions as the dashboards:
 
@@ -97,7 +101,7 @@ task -d observability/dashboards/private-dns test
 ```
 
 They cover low-volume tails, overflow-bucket caps, sub-millisecond estimates,
-cluster/tier isolation, counter resets, empty windows and missing telemetry.
+which tiers each heatmap adds together, counter resets and missing telemetry.
 The test needs jsonnet and promtool; CI runs it with the alert-rule checks.
 See [dnsdist latency statistics](https://www.dnsdist.org/statistics.html#latency-bucket)
 for the measured protocol and histogram population.

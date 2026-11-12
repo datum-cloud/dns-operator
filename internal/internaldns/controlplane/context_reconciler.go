@@ -12,6 +12,7 @@ import (
 	"maps"
 	"net/netip"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -173,11 +174,6 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 			}
 		}
 		ready := valid && !c.Spec.ManagedNamespace.Enabled
-		if invalidDomain {
-			if err := r.withdrawManagedZone(ctx, c); err != nil {
-				return err
-			}
-		}
 		if !c.Spec.ManagedNamespace.Enabled || invalidDomain {
 			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 		}
@@ -195,7 +191,7 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 				reason, msg = dnsValueDuplicateConsumerID, "another live resolver context owns this consumerID"
 			}
 			if invalidDomain {
-				reason, msg = "InvalidManagedDomain", "an enabled managed namespace requires a domainSuffix below a permitted suffix"
+				reason, msg = model.InvalidManagedDomainReason, "an enabled managed namespace requires a domainSuffix below a permitted suffix"
 			}
 		}
 		if valid && !ready {
@@ -204,6 +200,12 @@ func (r *Reconciler) reconcileResolverContexts(ctx context.Context, ns string, n
 		setCondition(&c.Status.Conditions, "Ready", status, reason, msg, c.Generation, now)
 		if !jsonEqual(base.Status, c.Status) {
 			if err := r.Status().Patch(ctx, c, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				return err
+			}
+		}
+		// Admission releases the zone only once the context reports the refusal.
+		if invalidDomain {
+			if err := r.withdrawManagedZone(ctx, c); err != nil {
 				return err
 			}
 		}
@@ -241,9 +243,14 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 	owners := map[apexKey]types.UID{}
 	reservations := map[string][]dnsv1alpha1.DNSRegistration{}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	bases := make([]*dnsv1alpha1.DNSZoneAssociation, len(items))
+	// Associations that pass every other check, by context, so the zone
+	// limit can be applied once all of them are known.
+	candidates := map[types.UID][]zoneCandidate{}
 	for i := range items {
 		a := &items[i]
 		base := a.DeepCopy()
+		bases[i] = base
 		if _, ok := reservations[a.Namespace]; !ok {
 			var regs dnsv1alpha1.DNSRegistrationList
 			if err := r.sourceReader().List(ctx, &regs, client.InNamespace(a.Namespace)); err != nil {
@@ -288,15 +295,119 @@ func (r *Reconciler) reconcileAssociations(ctx context.Context, items []dnsv1alp
 			msg = "another zone owns this apex in the DNS context"
 		} else {
 			owners[apexKey{contextPin.UID, canonicalName(z.Spec.DomainName)}] = z.UID
+			candidates[contextPin.UID] = append(candidates[contextPin.UID], zoneCandidate{index: i, zone: z.UID, managed: metav1.IsControlledBy(a, &resolverContext)})
+			// Written once the zone limit is known, so a refused association
+			// doesn't flip to accepted and back, restamping its condition.
+			continue
 		}
 		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
-		if !jsonEqual(base.Status, a.Status) {
-			if err := r.Status().Patch(ctx, a, client.MergeFrom(base)); err != nil {
+	}
+	for _, list := range candidates {
+		refused := map[int]bool{}
+		for _, i := range overZoneLimit(items, bases, list) {
+			refused[i] = true
+		}
+		for _, c := range list {
+			a := &items[c.index]
+			if refused[c.index] {
+				setCondition(&a.Status.Conditions, dnsValueAccepted, metav1.ConditionFalse, "ZoneLimitExceeded", fmt.Sprintf("a resolver context can have at most %d zones; remove an association to make room", maxZonesPerResolverContext), a.Generation, now)
+			} else {
+				setCondition(&a.Status.Conditions, dnsValueAccepted, metav1.ConditionTrue, dnsValueAccepted, "association accepted", a.Generation, now)
+			}
+		}
+	}
+	for i := range items {
+		if !jsonEqual(bases[i].Status, items[i].Status) {
+			if err := r.Status().Patch(ctx, &items[i], client.MergeFrom(bases[i])); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// maxZonesPerResolverContext matches the MaxItems limit on
+// DNSResolverBindingConfiguration.ZoneRefs.
+const maxZonesPerResolverContext = 256
+
+type zoneCandidate struct {
+	index   int
+	zone    types.UID
+	managed bool
+}
+
+// overZoneLimit returns the associations, out of one context's candidates,
+// whose zones do not fit within maxZonesPerResolverContext. The context's own
+// managed zone always fits, because the context is not ready without it.
+// Zones that were already accepted keep their place, earliest accepted first,
+// so a new association never displaces a working one. The rest are admitted
+// oldest first.
+func overZoneLimit(items []dnsv1alpha1.DNSZoneAssociation, bases []*dnsv1alpha1.DNSZoneAssociation, list []zoneCandidate) []int {
+	type zoneRank struct {
+		uid      types.UID
+		managed  bool
+		accepted bool
+		since    time.Time
+		created  time.Time
+		name     string
+	}
+	ranks := map[types.UID]*zoneRank{}
+	byZone := map[types.UID][]int{}
+	for _, c := range list {
+		i, zone := c.index, c.zone
+		byZone[zone] = append(byZone[zone], i)
+		rank := ranks[zone]
+		if rank == nil {
+			rank = &zoneRank{uid: zone, created: items[i].CreationTimestamp.Time, name: items[i].Name}
+			ranks[zone] = rank
+		}
+		rank.managed = rank.managed || c.managed
+		if associationAccepted(bases[i]) {
+			since := apimeta.FindStatusCondition(bases[i].Status.Conditions, dnsValueAccepted).LastTransitionTime.Time
+			if !rank.accepted || since.Before(rank.since) {
+				rank.since = since
+			}
+			rank.accepted = true
+		}
+		if items[i].CreationTimestamp.Time.Before(rank.created) {
+			rank.created = items[i].CreationTimestamp.Time
+		}
+		if items[i].Name < rank.name {
+			rank.name = items[i].Name
+		}
+	}
+	if len(ranks) <= maxZonesPerResolverContext {
+		return nil
+	}
+	ordered := make([]*zoneRank, 0, len(ranks))
+	for _, rank := range ranks {
+		ordered = append(ordered, rank)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if a.managed != b.managed {
+			return a.managed
+		}
+		if a.accepted != b.accepted {
+			return a.accepted
+		}
+		if a.accepted && !a.since.Equal(b.since) {
+			return a.since.Before(b.since)
+		}
+		if !a.created.Equal(b.created) {
+			return a.created.Before(b.created)
+		}
+		if a.name != b.name {
+			return a.name < b.name
+		}
+		return a.uid < b.uid
+	})
+	var refused []int
+	for _, rank := range ordered[maxZonesPerResolverContext:] {
+		refused = append(refused, byZone[rank.uid]...)
+	}
+	sort.Ints(refused)
+	return refused
 }
 
 func (r *Reconciler) reconcileBindings(ctx context.Context, ns string, assocs []dnsv1alpha1.DNSZoneAssociation, zones map[string]*dnsv1alpha1.DNSZone, now time.Time) error {
@@ -320,10 +431,14 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 	for _, a := range assocs {
 		z := zones[a.Spec.DNSZoneRef.Name]
 		refs := associationPins[a.UID]
-		if associationMatchesZone(&a, z, refs) {
+		if associationMatchesZone(&a, z, refs) && !slices.Contains(zonesByContext[refs.Context.UID], z.UID) {
 			zonesByContext[refs.Context.UID] = append(zonesByContext[refs.Context.UID], z.UID)
 		}
 	}
+	// Another region's control plane claims, binds and reports on access in
+	// its region. Every control plane rejects a region none of them serves,
+	// with the same status.
+	accesses.Items = slices.DeleteFunc(accesses.Items, r.otherRegionsAccess)
 	sort.Slice(accesses.Items, func(i, j int) bool { return accesses.Items[i].Name < accesses.Items[j].Name })
 	destinations := map[string]types.UID{}
 	held := map[string]bool{}
@@ -362,7 +477,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else {
 			destination = parsed.Unmap().String()
 		}
-		if _, ok := r.targetForRegion(spec.Region); !ok {
+		if !r.servesRegion(spec.Region) {
 			valid = false
 		}
 		key := spec.Region + "\x00" + spec.DestinationAddress
@@ -474,7 +589,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, existing []dnsv1alpha1.DNSResolverBinding, desired map[string]bool) error {
 	for i := range existing {
 		b := &existing[i]
-		if b.Spec.Source.ProjectUID != r.Options.ProjectUID || desired[b.Name] {
+		if !r.ownsBinding(b) || desired[b.Name] {
 			continue
 		}
 		if b.Spec.Tombstone {
@@ -526,7 +641,18 @@ func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, exist
 	return nil
 }
 
+// ownsBinding reports whether b is this project's binding in a region this
+// control plane publishes, or in a region no control plane serves any more.
+func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
+	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && (r.Options.local(b.Spec.Placement.Region) || !r.servesRegion(b.Spec.Placement.Region))
+}
+
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {
+	// A local source covers one namespace of the project, and release works
+	// across the project's claims, so it would free another namespace's.
+	if r.Options.LocalInputs {
+		return nil
+	}
 	if r.Options.AddressAllocator == nil {
 		return nil
 	}
@@ -565,7 +691,7 @@ func (r *Reconciler) confirmAccessWithdrawal(ctx context.Context, namespace stri
 		return false, nil
 	}
 	if ready.Status != metav1.ConditionTrue {
-		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == "InvalidManagedDomain", nil
+		return ready.Reason == "InvalidIdentity" || ready.Reason == dnsValueDuplicateConsumerID || ready.Reason == model.InvalidManagedDomainReason, nil
 	}
 	if access.Generation < binding.Spec.Source.AccessBindingRef.Generation {
 		return false, nil
@@ -583,13 +709,19 @@ func (r *Reconciler) shardForContextRegion(contextUID types.UID, region string, 
 	return ""
 }
 
-func (r *Reconciler) targetForRegion(region string) (ServingRegion, bool) {
+func (r *Reconciler) servesRegion(region string) bool {
 	for _, s := range r.Options.servingRegions() {
 		if s.Region == region {
-			return s, true
+			return true
 		}
 	}
-	return ServingRegion{}, false
+	return false
+}
+
+// otherRegionsAccess reports whether a belongs to another region's control
+// plane. Access in a region nobody serves is rejected by every control plane.
+func (r *Reconciler) otherRegionsAccess(a dnsv1alpha1.DNSResolverAccessBinding) bool {
+	return r.servesRegion(a.Spec.Region) && !r.Options.local(a.Spec.Region)
 }
 
 func bindingAckCurrent(binding *dnsv1alpha1.DNSResolverBinding, now time.Time) bool {
@@ -753,6 +885,9 @@ func managedZoneName(c *dnsv1alpha1.DNSResolverContext) string {
 }
 
 func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) error {
+	if r.Options.LocalInputs {
+		return nil
+	}
 	zoneName := managedZoneName(c)
 	for _, obj := range []client.Object{
 		&dnsv1alpha1.DNSZoneAssociation{ObjectMeta: metav1.ObjectMeta{Namespace: c.Namespace, Name: zoneName + "-context"}},
@@ -778,7 +913,7 @@ func (r *Reconciler) withdrawManagedZone(ctx context.Context, c *dnsv1alpha1.DNS
 }
 
 const (
-	managedObjectLabel = "dns.networking.miloapis.com/managed"
+	managedObjectLabel = model.ManagedObjectLabel
 	managedObjectValue = "true"
 	// managedByLabel is the Kubernetes well-known label naming the manager.
 	managedByLabel = "app.kubernetes.io/managed-by"
@@ -870,6 +1005,9 @@ func (r *Reconciler) syncManagedMetadata(ctx context.Context, c *dnsv1alpha1.DNS
 }
 
 func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
+	if r.Options.LocalInputs {
+		return r.observeManagedZone(ctx, c)
+	}
 	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
 	zoneName := managedZoneName(c)
 	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: zoneName, Namespace: c.Namespace, Labels: managedObjectLabels(c), Annotations: managedObjectAnnotations(c)}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: suffix, DNSZoneClassName: r.Options.PrivateZoneClassName, Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
@@ -906,6 +1044,39 @@ func (r *Reconciler) reconcileManagedZone(ctx context.Context, c *dnsv1alpha1.DN
 	if ready {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Suffix: suffix}
 	} else if !zoneCurrent || !known {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+	}
+	return ready, nil
+}
+
+// observeManagedZone reports a context's managed zone ready from the copies a
+// federation hub placed here. Copies carry no owner references, so it matches
+// the zone and association by name and spec instead.
+func (r *Reconciler) observeManagedZone(ctx context.Context, c *dnsv1alpha1.DNSResolverContext) (bool, error) {
+	suffix := canonicalName(c.Spec.ManagedNamespace.DomainSuffix)
+	zoneName := managedZoneName(c)
+	var zone dnsv1alpha1.DNSZone
+	var association dnsv1alpha1.DNSZoneAssociation
+	for _, obj := range []client.Object{&zone, &association} {
+		name := zoneName
+		if obj == &association {
+			name = zoneName + "-context"
+		}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: c.Namespace, Name: name}, obj); apierrors.IsNotFound(err) {
+			c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
+			return false, nil
+		} else if err != nil {
+			return false, err
+		}
+	}
+	accepted := apimeta.FindStatusCondition(association.Status.Conditions, dnsValueAccepted)
+	managed := zone.Labels[managedObjectLabel] == managedObjectValue && association.Labels[managedObjectLabel] == managedObjectValue
+	ready := managed && zone.Spec.Visibility == dnsv1alpha1.DNSZoneVisibilityPrivate && zone.Spec.DomainName == suffix && zone.DeletionTimestamp.IsZero() &&
+		association.Spec.DNSZoneRef.Name == zone.Name && association.Spec.ResolverContextRef.Name == c.Name &&
+		accepted != nil && accepted.Status == metav1.ConditionTrue && accepted.ObservedGeneration == association.Generation
+	if ready {
+		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Suffix: suffix}
+	} else {
 		c.Status.ManagedNamespace = dnsv1alpha1.DNSResolverContextManagedNamespaceStatus{}
 	}
 	return ready, nil

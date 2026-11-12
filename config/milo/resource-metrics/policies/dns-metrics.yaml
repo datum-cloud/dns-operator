@@ -60,7 +60,8 @@ spec:
                   value: |
                     has(object.spec.visibility) ? object.spec.visibility : 'Public'
                 - name: dns_zone_class_name
-                  value: "object.spec.dnsZoneClassName"
+                  value: |
+                    has(object.spec.dnsZoneClassName) ? object.spec.dnsZoneClassName : ''
 
     - name: dns-zone-created
       resource:

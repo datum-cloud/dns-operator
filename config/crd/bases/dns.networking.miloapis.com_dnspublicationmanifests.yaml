@@ -94,6 +94,15 @@ spec:
                   - uid
                   type: object
                 type: array
+              expectedRegions:
+                description: |-
+                  ExpectedRegions names every region the zone is served in, including
+                  regions another control plane publishes. Set only when a control plane
+                  runs in each region; ServingTargets then lists only this one's targets.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               generatedAt:
                 format: date-time
                 type: string
@@ -135,6 +144,21 @@ spec:
                 type: array
               tombstone:
                 type: boolean
+              withdrawnTargets:
+                description: |-
+                  WithdrawnTargets lists shards that served an earlier revision and are not
+                  serving targets now. Each receives this revision as a withdrawal.
+                items:
+                  properties:
+                    region:
+                      type: string
+                    shard:
+                      type: string
+                  required:
+                  - region
+                  - shard
+                  type: object
+                type: array
               writerEpoch:
                 format: int64
                 minimum: 1

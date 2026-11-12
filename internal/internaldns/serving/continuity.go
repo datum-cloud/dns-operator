@@ -41,6 +41,15 @@ func (a *Agent) canRetainActive() bool {
 		next[binding.BindingUID] = binding
 	}
 	for _, binding := range old.Snapshot.Bindings {
+		// The approved configuration answers nothing for a withdrawn or
+		// pending context, so whatever the snapshot now says about it
+		// withdraws nothing. Shards carry such contexts until every member
+		// confirms them, which would otherwise drop approval on every update.
+		// A pending context carries no zones (Snapshot.Validate), so it has
+		// no zone data to withdraw either.
+		if binding.Tombstone || binding.ConfigurationPending {
+			continue
+		}
 		candidate, ok := next[binding.BindingUID]
 		if !ok || candidate.Tombstone || candidate.ConfigurationPending || bindingIdentity(binding) != bindingIdentity(candidate) || binding.Version != candidate.Version {
 			return false
@@ -98,8 +107,15 @@ func (a *Agent) retainedNodeRouting() []byte {
 	renderConfig.NodeAuthoritative = true
 	renderConfig.ReadyZoneMembers = map[string]map[string]map[string]bool{}
 	ready := map[string]bool{}
+	// Render withdrawn contexts the way reconciliation does: not at all.
+	served := active.Snapshot
+	served.Bindings = nil
 	for _, binding := range active.Snapshot.Bindings {
-		ready[binding.BindingUID] = !binding.Tombstone && !binding.ConfigurationPending
+		if binding.Tombstone {
+			continue
+		}
+		served.Bindings = append(served.Bindings, binding)
+		ready[binding.BindingUID] = !binding.ConfigurationPending
 		renderConfig.ReadyZoneMembers[binding.BindingUID] = map[string]map[string]bool{}
 		for _, zone := range binding.Zones {
 			publication, ok := active.Publications[zone.ZoneUID]
@@ -109,11 +125,22 @@ func (a *Agent) retainedNodeRouting() []byte {
 			renderConfig.ReadyZoneMembers[binding.BindingUID][zone.ZoneUID] = map[string]bool{a.cfg.MemberID: true}
 		}
 	}
-	rendered, err := renderPublications(renderConfig, active.Snapshot, ready, active.Publications)
+	rendered, err := renderPublications(renderConfig, served, ready, active.Publications)
 	if err != nil || string(rendered.Files[renderConfig.NodeDNSDist.Path]) != string(active.Files[renderConfig.NodeDNSDist.Path]) {
 		return nil
 	}
 	return active.Files[renderConfig.NodeDNSDist.Path]
+}
+
+// withdrawApproval stops retaining the approved configuration because the
+// desired state withdraws something it serves. The daemons keep answering
+// from it until the withdrawal is installed, so readiness keeps it while this
+// agent holds the activation lock. Restart and retention never use it.
+func (a *Agent) withdrawApproval() {
+	if a.state.Active != nil {
+		a.state.Withdrawing = a.state.Active
+	}
+	a.state.Active = nil
 }
 
 func (a *Agent) approveConfiguration(files map[string][]byte) error {
@@ -126,13 +153,13 @@ func (a *Agent) approveConfiguration(files map[string][]byte) error {
 	if err := json.Unmarshal(data, &active); err != nil {
 		return err
 	}
-	if a.state.Active != nil && equalJSON(*a.state.Active, active) {
+	if a.state.Active != nil && a.state.Withdrawing == nil && equalJSON(*a.state.Active, active) {
 		return a.tx.commitActivation()
 	}
-	previous := a.state.Active
-	a.state.Active = &active
+	previous, withdrawing := a.state.Active, a.state.Withdrawing
+	a.state.Active, a.state.Withdrawing = &active, nil
 	if err := a.store.Save(a.state); err != nil {
-		a.state.Active = previous
+		a.state.Active, a.state.Withdrawing = previous, withdrawing
 		return err
 	}
 	return a.tx.commitActivation()
@@ -168,6 +195,60 @@ func (a *Agent) awaitLocalDaemons(ctx context.Context) error {
 		if !waitRetry(ctx, 200*time.Millisecond) {
 			return ctx.Err()
 		}
+	}
+}
+
+const localServingWait = 30 * time.Second
+
+// awaitLocalServing holds query verification until the member's own daemons
+// answer the readiness canary, once per agent-driven daemon restart and again
+// after a failed context probe while they last answered. After a wait runs
+// out, later checks probe once without waiting until the daemons answer again.
+// A probe answered before CoreDNS loads would otherwise gate every context it
+// checks. It holds the agent lock, so the wait is bounded.
+func (a *Agent) awaitLocalServing(ctx context.Context) {
+	if a.deps.LocalServing == nil {
+		return
+	}
+	if a.localServingRestarts != a.tx.restarts {
+		a.localServingAwaited = false
+		a.localServingRestarts = a.tx.restarts
+	}
+	if a.localServingAwaited {
+		return
+	}
+	a.localServingAwaited = true
+	wait := a.localServingWait
+	if wait <= 0 {
+		wait = localServingWait
+	}
+	if a.localServingExpired {
+		wait = 0
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	for {
+		err := a.deps.LocalServing(ctx)
+		a.localServingAnswered = err == nil
+		if err == nil {
+			a.localServingExpired = false
+			return
+		}
+		if waitCtx.Err() != nil || !waitRetry(waitCtx, 250*time.Millisecond) {
+			if ctx.Err() == nil && !a.localServingExpired {
+				a.localServingExpired = true
+				a.report(fmt.Errorf("local daemons did not answer the readiness canary within %s, verifying anyway: %w", wait, err))
+			}
+			return
+		}
+	}
+}
+
+// recheckLocalServing makes the next verification check local serving again,
+// unless the last check already ran out its wait without an answer.
+func (a *Agent) recheckLocalServing() {
+	if a.localServingAnswered {
+		a.localServingAwaited = false
 	}
 }
 

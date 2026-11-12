@@ -149,6 +149,58 @@ type Member struct {
 	Role      string `json:"role"`
 }
 
+// MemberPattern admits every member whose ID extends IDPrefix, so a member
+// set can grow without listing each member. A pattern member's replica ID is
+// its member ID.
+type MemberPattern struct {
+	Role     string `json:"role"`
+	IDPrefix string `json:"idPrefix"`
+}
+
+func (p MemberPattern) Validate() error {
+	if p.Role != "node" {
+		return fmt.Errorf("member pattern %q must have role node, not %q", p.IDPrefix, p.Role)
+	}
+	if p.IDPrefix == "" {
+		return errors.New("member pattern ID prefix is required")
+	}
+	return nil
+}
+
+// Matches reports whether memberID is IDPrefix followed by an ordinal.
+func (p MemberPattern) Matches(memberID string) bool {
+	return p.IDPrefix != "" && strings.HasPrefix(memberID, p.IDPrefix) && IsOrdinal(memberID[len(p.IDPrefix):])
+}
+
+// IsOrdinal reports whether s is a non-negative decimal without leading zeros.
+func IsOrdinal(s string) bool {
+	if s == "" || len(s) > 1 && s[0] == '0' {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// LookupMember returns the listed member with memberID, or else the member a
+// pattern admits under that ID.
+func LookupMember(members []Member, patterns []MemberPattern, memberID string) (Member, bool) {
+	for _, m := range members {
+		if m.MemberID == memberID {
+			return m, true
+		}
+	}
+	for _, p := range patterns {
+		if p.Matches(memberID) {
+			return Member{MemberID: memberID, ReplicaID: memberID, Role: p.Role}, true
+		}
+	}
+	return Member{}, false
+}
+
 type PublicationRequirement struct {
 	ZoneUID  string `json:"zoneUID"`
 	Epoch    uint64 `json:"epoch"`
@@ -164,6 +216,7 @@ type ServingSnapshot struct {
 	ConfigurationRevision uint64                   `json:"configurationRevision"`
 	Bindings              []Binding                `json:"bindings"`
 	Members               []Member                 `json:"members"`
+	MemberPatterns        []MemberPattern          `json:"memberPatterns,omitempty"`
 	RequiredPublications  []PublicationRequirement `json:"requiredPublications,omitempty"`
 	GeneratedAt           time.Time                `json:"generatedAt"`
 }
@@ -185,6 +238,11 @@ func (s ServingSnapshot) Validate() error {
 			return fmt.Errorf("duplicate serving member %q replica %q", member.MemberID, member.ReplicaID)
 		}
 		seenMembers[key] = struct{}{}
+	}
+	for _, pattern := range s.MemberPatterns {
+		if err := pattern.Validate(); err != nil {
+			return err
+		}
 	}
 	seenRequirements := map[string]struct{}{}
 	for _, requirement := range s.RequiredPublications {

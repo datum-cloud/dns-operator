@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns-operator/internal/internaldns/platform"
 	"go.miloapis.com/dns-operator/internal/internaldns/serving"
 	"go.miloapis.com/dns-operator/internal/internaldns/transport"
 	"k8s.io/client-go/rest"
@@ -277,6 +278,16 @@ func TestControlPlaneProjectDiscoveryValidation(t *testing.T) {
 	if err := relative.Validate(roleControlPlane); err == nil {
 		t.Fatal("relative discovery credential accepted")
 	}
+	local := base
+	local.ProjectDiscovery = &ProjectDiscoveryConfig{Local: true}
+	if err := local.Validate(roleControlPlane); err != nil {
+		t.Fatalf("local discovery rejected: %v", err)
+	}
+	both := base
+	both.ProjectDiscovery = &ProjectDiscoveryConfig{Local: true, Kubeconfig: "/var/run/discovery/kubeconfig"}
+	if err := both.Validate(roleControlPlane); err == nil {
+		t.Fatal("local discovery accepted a project API credential too")
+	}
 }
 
 func TestLocalServingRolesDoNotRequireDeliveryConfiguration(t *testing.T) {
@@ -299,14 +310,14 @@ func TestManagedDomainSuffixesValidation(t *testing.T) {
 		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
 		Members:  []model.Member{{MemberID: "regional-1", Role: "regional"}},
 	}
-	for _, suffixes := range [][]string{nil, {"internal"}, {"internal", "corp.example"}} {
+	for _, suffixes := range [][]string{nil, {"internal"}, {"internal", "corp.example"}, {"test", "example", "corp.example.com"}} {
 		valid := base
 		valid.ManagedDomainSuffixes = suffixes
 		if err := valid.Validate(roleControlPlane); err != nil {
 			t.Fatalf("suffixes %q rejected: %v", suffixes, err)
 		}
 	}
-	for _, suffix := range []string{"", ".internal", "Internal", "bad..internal", "*.internal"} {
+	for _, suffix := range []string{"", ".internal", "Internal", "bad..internal", "*.internal", "com", "net", "io", "local"} {
 		invalid := base
 		invalid.ManagedDomainSuffixes = []string{suffix}
 		if err := invalid.Validate(roleControlPlane); err == nil {
@@ -344,6 +355,117 @@ func TestReservedScopesConfigurationMigration(t *testing.T) {
 		}
 		if err := cfg.Validate(roleControlPlane); err == nil || !strings.Contains(err.Error(), "service-owned DNSRegistrations") {
 			t.Fatalf("obsolete policy silently ignored: %s: %v", input, err)
+		}
+	}
+}
+func TestRegionsValidation(t *testing.T) {
+	base := Config{
+		Region: "central", Shard: "one",
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Shards: []platform.PlannerConfig{
+			{Region: "central", Shard: "one", Members: []model.Member{{MemberID: "regional-central", Role: "regional"}}},
+			{Region: "east", Shard: "one", Members: []model.Member{{MemberID: "regional-east", Role: "regional"}}},
+		},
+	}
+	valid := base
+	valid.Regions = []string{"east"}
+	valid.PublicationStore = &PublicationStoreConfig{Region: "east", Bucket: "PUBLICATIONS"}
+	if err := valid.Validate(roleControlPlane); err != nil {
+		t.Fatalf("one region's control plane rejected: %v", err)
+	}
+	if got := valid.localPlanners(); len(got) != 1 || got[0].Region != "east" {
+		t.Fatalf("local planners = %#v", got)
+	}
+	for name, change := range map[string]func(*Config){
+		"no store":              func(c *Config) { c.PublicationStore = nil },
+		"store in other region": func(c *Config) { c.PublicationStore.Region = "central" },
+		"unknown region":        func(c *Config) { c.Regions = []string{"west"} },
+		"duplicate region":      func(c *Config) { c.Regions = []string{"east", "east"} },
+		"other region's broker": func(c *Config) {
+			c.RegionalTransports = []RegionalTransportConfig{{Region: "central", NATS: base.NATS, Stream: base.Stream}, {Region: "east", NATS: base.NATS, Stream: base.Stream}}
+		},
+	} {
+		invalid := valid
+		store := *valid.PublicationStore
+		invalid.PublicationStore = &store
+		change(&invalid)
+		if err := invalid.Validate(roleControlPlane); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}
+
+func TestControlPlaneValidatesMemberPatterns(t *testing.T) {
+	base := Config{
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{ProjectUID: "p1", Namespace: "n1"}},
+	}
+	for name, patterns := range map[string][]model.MemberPattern{
+		"regional role": {{Role: "regional", IDPrefix: "regional-east-"}},
+		"empty prefix":  {{Role: "node"}},
+		"admits listed": {{Role: "node", IDPrefix: "regional-east-"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := base
+			c.Members = []model.Member{{MemberID: "regional-east-0", Role: "regional"}}
+			c.MemberPatterns = patterns
+			if err := c.Validate("control-plane"); err == nil {
+				t.Fatal("invalid member pattern was accepted")
+			}
+		})
+	}
+}
+
+func TestConfigLoaderResolvesMemberIDFromPod(t *testing.T) {
+	t.Setenv("POD_NAME", "private-dns-node-4")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"agent":{"memberIDFrom":{"env":"POD_NAME","prefix":"node-east-"}}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Agent.MemberID != "node-east-4" || loaded.Agent.ReplicaID != "node-east-4" {
+		t.Fatalf("member %q replica %q", loaded.Agent.MemberID, loaded.Agent.ReplicaID)
+	}
+}
+
+func TestFeedValidation(t *testing.T) {
+	base := Config{
+		Region: "central", Shard: "one",
+		NATS:     transport.Config{URL: "nats://fixture:4222", AllowInsecure: true},
+		Stream:   transport.StreamConfig{Name: "DNS", SnapshotsBucket: "DNS_BOOTSTRAP"},
+		Projects: []ProjectConfig{{Name: "project", ProjectUID: "p1", Namespace: "project"}},
+		Shards: []platform.PlannerConfig{
+			{Region: "central", Shard: "one", Members: []model.Member{{MemberID: "regional-central", Role: "regional"}}},
+			{Region: "east", Shard: "one", Members: []model.Member{{MemberID: "regional-east", Role: "regional"}}},
+		},
+		Regions:          []string{"east"},
+		PublicationStore: &PublicationStoreConfig{Region: "east", Bucket: "PUBLICATIONS"},
+	}
+	valid := base
+	valid.Feed = &FeedConfig{Bucket: "DNS_PRIVATE_INPUTS", Peers: []FeedPeer{{Region: "central", Domain: "central", Bucket: "DNS_PRIVATE_INPUTS", Mirror: "DNS_PRIVATE_INPUTS_CENTRAL"}}}
+	if err := valid.Validate(roleControlPlane); err != nil {
+		t.Fatalf("feed rejected: %v", err)
+	}
+	for name, change := range map[string]func(*Config){
+		"no single region": func(c *Config) { c.Regions = nil; c.PublicationStore = nil },
+		"own region as peer": func(c *Config) {
+			c.Feed = &FeedConfig{Bucket: "IN", Peers: []FeedPeer{{Region: "east", Bucket: "IN", Mirror: "IN_EAST"}}}
+		},
+		"mirror over own bucket": func(c *Config) {
+			c.Feed = &FeedConfig{Bucket: "IN", Peers: []FeedPeer{{Region: "central", Bucket: "IN", Mirror: "IN"}}}
+		},
+		"bad bucket": func(c *Config) { c.Feed = &FeedConfig{Bucket: "in.puts"} },
+	} {
+		invalid := valid
+		change(&invalid)
+		if err := invalid.Validate(roleControlPlane); err == nil {
+			t.Fatalf("%s: accepted", name)
 		}
 	}
 }

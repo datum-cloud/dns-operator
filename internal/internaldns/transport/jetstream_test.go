@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.miloapis.com/dns-operator/internal/internaldns/model"
@@ -29,6 +33,23 @@ func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {
 	base.Username, base.Password = "also", "configured"
 	if err := base.validate(); err == nil {
 		t.Fatal("multiple authentication methods accepted")
+	}
+}
+
+func TestClientCertificateAloneAuthenticates(t *testing.T) {
+	t.Parallel()
+	for name, tls := range map[string]*TLSConfig{
+		"CA only":          {ServerName: "nats.example", CAFile: "/tls/ca.crt"},
+		"cert without key": {ServerName: "nats.example", CertificateFile: "/tls/tls.crt"},
+		"key without cert": {ServerName: "nats.example", KeyFile: "/tls/tls.key"},
+	} {
+		if err := (Config{URL: "nats://example:4222", Name: "agent", TLS: tls}).validate(); err == nil {
+			t.Errorf("%s was accepted as authentication", name)
+		}
+	}
+	certOnly := Config{URL: "nats://example:4222", Name: "agent", TLS: &TLSConfig{ServerName: "nats.example", CertificateFile: "/tls/tls.crt", KeyFile: "/tls/tls.key"}}
+	if err := certOnly.validate(); err != nil {
+		t.Fatalf("a client certificate alone was rejected: %v", err)
 	}
 }
 
@@ -182,5 +203,92 @@ func TestNewDurableStartsWithinReplayWindow(t *testing.T) {
 	c.NewDurableReplay = 0
 	if full := consumerConfig(c, nil, now); full.DeliverPolicy != jetstream.DeliverAllPolicy || full.OptStartTime != nil {
 		t.Fatalf("durable without a replay window does not replay the stream: %v %v", full.DeliverPolicy, full.OptStartTime)
+	}
+}
+
+func TestPasswordFileIsReadAgainOnEachConnect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "password")
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("first\n")
+	userInfo, err := passwordFileUserInfo("member", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user, password := userInfo(); user != "member" || password != "first" {
+		t.Fatalf("userInfo() = %q, %q", user, password)
+	}
+	write("rotated")
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("rotated password not used: %q", password)
+	}
+	// A Secret update briefly empties or removes the file; keep the last good one.
+	write("")
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("empty file replaced the password with %q", password)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, password := userInfo(); password != "rotated" {
+		t.Fatalf("missing file replaced the password with %q", password)
+	}
+}
+
+func TestPasswordFileMustBeReadableAtStart(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := passwordFileUserInfo("member", filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("missing password file accepted")
+	}
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := passwordFileUserInfo("member", empty); err == nil {
+		t.Fatal("empty password file accepted")
+	}
+}
+
+// Not parallel: it swaps the package logger.
+func TestUnreadablePasswordFileIsLoggedOnceAMinute(t *testing.T) {
+	var lines []string
+	previous := credentialLog
+	credentialLog = funcr.New(func(prefix, args string) { lines = append(lines, args) }, funcr.Options{})
+	t.Cleanup(func() { credentialLog = previous })
+	path := filepath.Join(t.TempDir(), "password")
+	if err := os.WriteFile(path, []byte("secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userInfo, err := passwordFileUserInfo("member", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		userInfo()
+	}
+	if len(lines) != 1 {
+		t.Fatalf("logged %d lines for repeated failures, want 1: %v", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], path) || strings.Contains(lines[0], "secret-value") {
+		t.Fatalf("log line must name the path and never the password: %s", lines[0])
+	}
+	// A good read resets the limit, so the next failure is reported at once.
+	if err := os.WriteFile(path, []byte("secret-value"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	userInfo()
+	if len(lines) != 2 {
+		t.Fatalf("logged %d lines after the file recovered and broke again, want 2", len(lines))
 	}
 }

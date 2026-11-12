@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -739,7 +740,7 @@ func TestConcurrentAckProjectionPreservesNewerObservation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	now := time.Now().UTC()
-	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, WriterEpoch: 1, Revision: 2}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, WriterEpoch: 1, Revision: 2, ServingTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: "east", Shard: "shared"}}}}
 	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone")[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone", WriterEpoch: 1, ActiveManifestName: manifest.Name}}
 	cl := testClient(t, owner, manifest)
 	held := &heldManifestRead{Client: cl, read: make(chan struct{}), release: make(chan struct{})}
@@ -784,10 +785,248 @@ func TestConcurrentAckProjectionPreservesNewerObservation(t *testing.T) {
 	}
 }
 
+func TestWithdrawnShardAckIsNotRecordedOnTheManifest(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, WriterEpoch: 1, Revision: 2,
+		ServingTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: "east", Shard: "shared"}}, WithdrawnTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: "west", Shard: "shared"}}}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone")[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone", WriterEpoch: 1, ActiveManifestName: manifest.Name}}
+	cl := testClient(t, owner, manifest)
+	sink := AckSink{Client: cl, Namespace: "platform", Region: "west", Shard: "shared", Members: []model.Member{{MemberID: "west-auth", ReplicaID: "replica", Role: "regional"}}, Now: func() time.Time { return now }}
+	ack := model.MemberAck{MemberID: "west-auth", ReplicaID: "replica", ResourceUID: "zone", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 2, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	env, err := model.NewEnvelope(model.KindMemberAck, "withdrawn", "west", "shared", "zone", 1, 2, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Apply(ctx, model.AckSubject("west", "shared", "west-auth"), env); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(ctx, client.ObjectKeyFromObject(manifest), manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Status.ReplicaAcknowledgements) != 0 || hasApplied(manifest.Status.ReplicaAcknowledgements, 1, 2) {
+		t.Fatalf("a withdrawn shard's acknowledgement was recorded with the serving shards' acknowledgements: %+v", manifest.Status.ReplicaAcknowledgements)
+	}
+}
+
 func TestPublicationProjectionReportsMissingProjectIdentity(t *testing.T) {
 	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"internal-dns.miloapis.com/project-uid": "project-owner"}}}
 	sink := AckSink{Projects: []ProjectScope{{Namespace: "default"}}}
 	if err := sink.projectPublication(context.Background(), manifest, true, time.Now()); err == nil {
 		t.Fatal("missing projection identity was silently skipped")
+	}
+}
+
+func TestWithdrawalToAShardTheManifestDoesNotServeIsExported(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone"}, ZoneApex: "prod.internal", WriterEpoch: 1, Revision: 2,
+		ServingTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: "east", Shard: "shared"}}, WithdrawnTargets: []dnsv1alpha1.DNSPublicationTarget{{Region: "west", Shard: "shared"}}}}
+	owner := &dnsv1alpha1.DNSPublicationOwnership{ObjectMeta: metav1.ObjectMeta{Name: "owner-" + model.OpaqueToken("zone")[:20], Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationOwnershipSpec{ZoneUID: "zone", WriterEpoch: 1, ActiveManifestName: manifest.Name}}
+	withdrawal := model.PublicationManifest{ManifestUID: manifest.Name, ZoneUID: "zone", Apex: "prod.internal", WriterEpoch: 1, Revision: 2, PreviousRevision: 1, Tombstone: true, Chunks: []model.ChunkRef{}, ContentHash: model.EmptyContentHash(), GeneratedAt: now}
+	env, err := model.NewEnvelope(model.KindPublicationManifest, "west:manifest", "west", "shared", "zone", 1, 2, now, withdrawal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(env)
+	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: model.PublicationActivationName(manifest.Name, "west", "shared"), Namespace: "platform"}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{Subject: model.RecordManifestSubject("west", "shared", "zone"), ResourceUID: "zone", WriterEpoch: 1, Revision: 2, ManifestRef: dnsv1alpha1.DNSObjectReference{Name: manifest.Name}, Activation: true, Payload: payload, PayloadHash: model.Hash(payload)}}
+	cl := testClient(t, owner, manifest, out)
+	worker := Outbox{Client: cl, Namespace: "platform"}
+	if out.Spec.Subject != expectedSubject(env) {
+		t.Fatalf("withdrawal subject %q does not match its payload", out.Spec.Subject)
+	}
+	committed, err := worker.committed(ctx, out, env)
+	if err != nil || !committed {
+		t.Fatalf("a withdrawal of the active revision must be exportable: %v %v", committed, err)
+	}
+}
+
+func TestNodePublicationAckIsDroppedNotRetried(t *testing.T) {
+	now := time.Now().UTC()
+	a := model.MemberAck{MemberID: "node-a", ReplicaID: "node-a", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckRejected, Error: "local verification failed", ObservedAt: now}
+	env, err := model.NewEnvelope(model.KindMemberAck, "ack-node", "east", "shared", "zone-uid", 1, 1, now, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared", Members: []model.Member{{MemberID: "node-a", ReplicaID: "node-a", Role: "node"}}}
+	if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", "node-a"), env); err != nil {
+		t.Fatalf("a node member's publication acknowledgement must be settled, not retried: %v", err)
+	}
+}
+
+func TestPatternMemberAckIsAccepted(t *testing.T) {
+	now := time.Now().UTC()
+	patterns := []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}
+	sink := AckSink{Client: testClient(t), Namespace: "platform", Region: "east", Shard: "shared",
+		Members:        []model.Member{{MemberID: "cluster", Role: "cluster"}},
+		MemberPatterns: patterns,
+	}
+	for _, a := range []model.MemberAck{
+		{MemberID: "node-east-3", ReplicaID: "node-east-3", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+		{MemberID: "node-east-3", ReplicaID: "other", ResourceUID: "zone-uid", Kind: model.KindPublicationManifest, Epoch: 1, Revision: 1, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(30 * time.Second)},
+	} {
+		env, err := model.NewEnvelope(model.KindMemberAck, "ack-1", "east", "shared", "zone-uid", 1, 1, now, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Apply(context.Background(), model.AckSubject("east", "shared", a.MemberID), env); err != nil {
+			t.Fatalf("acknowledgement from %s/%s: %v", a.MemberID, a.ReplicaID, err)
+		}
+	}
+
+}
+
+func TestPatternMembersHoldWithdrawalUntilRetired(t *testing.T) {
+	now := time.Now().UTC()
+	fresh := metav1.NewTime(now.Add(time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{UID: "binding-uid", Generation: 2}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Tombstone: true, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}}}
+	sink := AckSink{Members: []model.Member{{MemberID: "regional-a", Role: "regional"}}, MemberPatterns: []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}}
+	envelope := &model.Envelope{Epoch: 7, Revision: 11}
+	snapshot := &model.ServingSnapshot{Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}, Tombstone: true}}}
+	ack := func(member string, snapshotRevision int64, until metav1.Time) dnsv1alpha1.DNSApplyAcknowledgement {
+		return dnsv1alpha1.DNSApplyAcknowledgement{MemberID: member, WriterEpoch: 7, SnapshotRevision: snapshotRevision, Revision: 2, AccessEpoch: 1, AccessSequence: 2, Phase: string(model.AckVerified), ValidUntil: &until}
+	}
+	fullyReplicated := func() bool {
+		sink.bindingConditions(binding, envelope, snapshot, now, true)
+		return apimeta.IsStatusConditionTrue(binding.Status.Conditions, "FullyReplicated")
+	}
+
+	binding.Status.MemberAcknowledgements = []dnsv1alpha1.DNSApplyAcknowledgement{ack("regional-a", 11, fresh)}
+	if sink.bindingVerified(binding, envelope, snapshot, now) || fullyReplicated() {
+		t.Fatal("a withdrawal was proven before any node member applied it")
+	}
+
+	binding.Status.MemberAcknowledgements = append(binding.Status.MemberAcknowledgements, ack("node-east-2", 11, fresh), ack("node-east-3", 10, fresh))
+	if !sink.bindingVerified(binding, envelope, snapshot, now) {
+		t.Fatal("one verified node member did not report the applied withdrawal while another lagged")
+	}
+	if fullyReplicated() {
+		t.Fatal("a pattern member on an older snapshot did not hold back full replication")
+	}
+
+	expired := metav1.NewTime(now.Add(-time.Hour))
+	binding.Status.MemberAcknowledgements[2] = ack("node-east-3", 10, expired)
+	if fullyReplicated() {
+		t.Fatal("a pattern member silent for an hour stopped holding back full replication")
+	}
+
+	retired := metav1.NewTime(now.Add(-patternMemberRetireAfter - time.Minute))
+	binding.Status.MemberAcknowledgements[2] = ack("node-east-3", 10, retired)
+	if !fullyReplicated() {
+		t.Fatal("a retired pattern member still held back full replication")
+	}
+}
+
+func TestPatternMemberAckAtStaleRevisionStillRequiresIt(t *testing.T) {
+	now := time.Now().UTC()
+	const namespace, region, shard = "platform", "east", "shared"
+	snapshot := model.ServingSnapshot{Region: region, Shard: shard, ConfigurationEpoch: 1, ConfigurationRevision: 7, GeneratedAt: now,
+		Bindings: []model.Binding{{BindingUID: "binding-uid", BindingGeneration: 1, ConfigurationRevision: 2, Version: model.AccessVersion{Epoch: 1, Sequence: 2}}}}
+	envelope, err := model.NewEnvelope(model.KindServingSnapshot, "serving-1-7", region, shard, "owner-uid", 1, 7, now, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &dnsv1alpha1.DNSTransportOutbox{ObjectMeta: metav1.ObjectMeta{Name: envelope.EventID, Namespace: namespace}, Spec: dnsv1alpha1.DNSTransportOutboxSpec{WriterEpoch: 1, Revision: 7, Payload: payload, PayloadHash: model.Hash(payload)}}
+	state, err := json.Marshal(shardState{Epoch: 1, ActiveOutbox: out.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-shard-owner-" + model.OpaqueToken(region+"/"+shard), Namespace: namespace}, Data: map[string]string{"state": string(state)}}
+	retired := metav1.NewTime(now.Add(-patternMemberRetireAfter - time.Minute))
+	binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: "binding", Namespace: namespace, UID: "binding-uid", Labels: map[string]string{"internal-dns.miloapis.com/region": model.SafeToken(region), "internal-dns.miloapis.com/shard": model.SafeToken(shard)}},
+		Spec:   dnsv1alpha1.DNSResolverBindingSpec{Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 2}, Version: dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 2}},
+		Status: dnsv1alpha1.DNSResolverBindingStatus{MemberAcknowledgements: []dnsv1alpha1.DNSApplyAcknowledgement{{MemberID: "node-east-9", Phase: string(model.AckVerified), ValidUntil: &retired}}}}
+	c := testClient(t, owner, out, binding)
+	sink := AckSink{Client: c, Namespace: namespace, Region: region, Shard: shard,
+		Members: []model.Member{{MemberID: "regional-a", Role: "regional"}}, MemberPatterns: []model.MemberPattern{{Role: "node", IDPrefix: "node-east-"}}}
+
+	ack := model.MemberAck{MemberID: "node-east-4", ReplicaID: "node-east-4", ResourceUID: "binding-uid", Kind: model.KindServingSnapshot, Epoch: 1, Revision: 6, Phase: model.AckVerified, ObservedAt: now, ValidUntil: now.Add(time.Minute)}
+	env, err := model.NewEnvelope(model.KindMemberAck, "ack-1", region, shard, "binding-uid", 1, 6, now, ack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.Apply(context.Background(), model.AckSubject(region, shard, ack.MemberID), env); err != nil {
+		t.Fatal(err)
+	}
+	var got dnsv1alpha1.DNSResolverBinding
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(binding), &got); err != nil {
+		t.Fatal(err)
+	}
+	rows := got.Status.MemberAcknowledgements
+	if !slices.ContainsFunc(rows, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool {
+		return r.MemberID == "node-east-4" && r.Revision == 0 && r.SnapshotRevision == 6
+	}) {
+		t.Fatalf("a stale acknowledgement left the pattern member without a presence row: %#v", rows)
+	}
+	members := sink.bindingMembers(rows, now)
+	if !slices.ContainsFunc(members, func(m model.Member) bool { return m.MemberID == "node-east-4" }) {
+		t.Fatalf("the present pattern member is not required: %#v", members)
+	}
+
+	if err := sink.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(binding), &got); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(got.Status.MemberAcknowledgements, func(r dnsv1alpha1.DNSApplyAcknowledgement) bool { return r.MemberID == "node-east-9" }) {
+		t.Fatal("a retired pattern member's row was kept")
+	}
+}
+
+type listCounter struct {
+	client.Client
+	mu    sync.Mutex
+	lists int
+}
+
+func (c *listCounter) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	c.mu.Lock()
+	c.lists++
+	c.mu.Unlock()
+	return c.Client.List(ctx, list, opts...)
+}
+
+// With a watch cache the projection reads the project's zones and
+// registrations from it and only writes through the project API client.
+func TestProjectionReadsFromTheProjectReader(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 5, 18, 0, 0, 0, time.UTC)
+	plan := model.PublicationPlan{ZoneUID: "zone-a", Apex: "a.internal", Registrations: []model.RegistrationFence{{UID: "registration-a", Generation: 1}}, RRSets: []model.RRSet{}}
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := &dnsv1alpha1.DNSPublicationChunk{ObjectMeta: metav1.ObjectMeta{Name: "chunk", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationChunkSpec{WriterEpoch: 1, Revision: 3, Index: 0, SHA256: model.Hash(payload), Payload: payload}}
+	manifest := &dnsv1alpha1.DNSPublicationManifest{ObjectMeta: metav1.ObjectMeta{Name: "manifest", Namespace: "platform"}, Spec: dnsv1alpha1.DNSPublicationManifestSpec{
+		ZoneRef: dnsv1alpha1.DNSObjectReference{UID: "zone-a"}, ZoneApex: "a.internal", WriterEpoch: 1, Revision: 3,
+		Chunks: []dnsv1alpha1.DNSPublicationChunkReference{{Name: chunk.Name, SHA256: chunk.Spec.SHA256, Size: int32(len(payload))}}, ContentHash: model.Hash(payload), GeneratedAt: metav1.NewTime(now),
+	}}
+	scheme := runtime.NewScheme()
+	if err := dnsv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	zone := &dnsv1alpha1.DNSZone{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "project", UID: "zone-a", Generation: 2}, Spec: dnsv1alpha1.DNSZoneSpec{DomainName: "a.internal", Visibility: dnsv1alpha1.DNSZoneVisibilityPrivate}}
+	registration := &dnsv1alpha1.DNSRegistration{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "project", UID: "registration-a", Generation: 1}, Spec: dnsv1alpha1.DNSRegistrationSpec{DNSZoneRef: dnsv1alpha1.DNSNameReference{Name: zone.Name}, Name: "api"}}
+	backing := fake.NewClientBuilder().WithScheme(scheme).WithObjects(zone, registration).WithStatusSubresource(&dnsv1alpha1.DNSZone{}, &dnsv1alpha1.DNSRegistration{}).Build()
+	api := &listCounter{Client: backing}
+	watchCache := &listCounter{Client: backing}
+	sink := AckSink{Client: testClient(t, chunk), Namespace: "platform", Projects: []ProjectScope{{Client: api, Reader: watchCache, Namespace: "project"}}}
+	if err := sink.projectPublication(ctx, manifest, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if api.lists != 0 || watchCache.lists == 0 {
+		t.Fatalf("project API lists = %d, watch cache lists = %d; want reads from the cache only", api.lists, watchCache.lists)
+	}
+	var updated dnsv1alpha1.DNSZone
+	if err := backing.Get(ctx, client.ObjectKeyFromObject(zone), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if c := apimeta.FindStatusCondition(updated.Status.Conditions, "Published"); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("zone status was not written through the project client: %#v", updated.Status.Conditions)
 	}
 }

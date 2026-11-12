@@ -1477,46 +1477,57 @@ func (a *Agent) heartbeatPublications(ctx context.Context) error {
 		}
 	}
 	hasLive := false
-	liveDue := 0
-	for _, d := range due {
+	for _, d := range append(due[:len(due):len(due)], renewals...) {
 		if !d.p.Manifest.Tombstone {
 			hasLive = true
-			liveDue++
+			break
 		}
 	}
-	for _, r := range renewals {
-		if !r.p.Manifest.Tombstone {
-			hasLive = true
-		}
-	}
-	if liveDue < leaseRenewalAcks && (a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval) {
-		sort.Slice(renewals, func(i, j int) bool {
-			if renewals[i].p.Manifest.Tombstone != renewals[j].p.Manifest.Tombstone {
-				return !renewals[i].p.Manifest.Tombstone
-			}
-			if !renewals[i].last.Equal(renewals[j].last) {
-				return renewals[i].last.Before(renewals[j].last)
-			}
-			return renewals[i].uid < renewals[j].uid
-		})
-		due = append(due, renewals[:min(len(renewals), leaseRenewalAcks-liveDue)]...)
-	}
-	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
+	leaseDue := a.lastLeaseAck.IsZero() || now.Sub(a.lastLeaseAck) >= interval
 	var failed error
-	for _, publication := range due {
+	renewed := 0
+	ack := func(publication duePublication) bool {
 		p := publication.p
 		if err := a.verifyPublication(ctx, p); err != nil {
 			_ = a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckRejected, err.Error())
 			failed = errors.Join(failed, fmt.Errorf("reverify publication %s before ACK renewal: %w", publication.uid, err))
-			continue
+			return true
 		}
 		if err := a.emitAck(ctx, model.KindPublicationManifest, publication.uid, p.Fence.Epoch, p.Fence.Revision, model.AckVerified, ""); err != nil {
 			a.report(fmt.Errorf("publish verified publication ACK %s: %w", publication.uid, err))
-			break
+			return false
 		}
 		a.lastPublicationAck[publication.uid] = now
 		if !hasLive || !p.Manifest.Tombstone {
 			a.lastLeaseAck = now
+			renewed++
+		}
+		return true
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].uid < due[j].uid })
+	for _, publication := range due {
+		if !ack(publication) {
+			return failed
+		}
+	}
+	if !leaseDue || renewed >= leaseRenewalAcks {
+		return failed
+	}
+	sort.Slice(renewals, func(i, j int) bool {
+		if !renewals[i].last.Equal(renewals[j].last) {
+			return renewals[i].last.Before(renewals[j].last)
+		}
+		return renewals[i].uid < renewals[j].uid
+	})
+	for _, publication := range renewals {
+		if renewed >= leaseRenewalAcks {
+			break
+		}
+		if hasLive && publication.p.Manifest.Tombstone {
+			continue
+		}
+		if !ack(publication) {
+			break
 		}
 	}
 	return failed

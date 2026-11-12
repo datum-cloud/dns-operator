@@ -269,3 +269,64 @@ func TestDueWithdrawalsDoNotCrowdOutLiveRenewals(t *testing.T) {
 		}
 	}
 }
+
+func TestFailingPublicationsDoNotStarveLeaseRenewal(t *testing.T) {
+	t.Parallel()
+	start := time.Now().UTC()
+	now := start
+	dir := t.TempDir()
+	renderConfig, _ := renderFixture(t)
+	renderConfig.Role = RenderNode
+	renderConfig.NodeDNSDist.Path = filepath.Join(dir, "runtime", "node-dnsdist.conf")
+	renderConfig.NodeCoreDNS.Path = filepath.Join(dir, "runtime", "node-coredns.json")
+	renderConfig.ClusterDNSDist = DNSDistRenderConfig{}
+	renderConfig.ClusterCoreDNS = CoreDNSRenderConfig{}
+	publisher := &fakePublisher{}
+	agent, err := NewAgent(Config{
+		Region: "east", Shard: "s1", MemberID: "regional-0", StateDir: filepath.Join(dir, "state"), Mode: ModeResolver,
+		Render: renderConfig, Transaction: TransactionConfig{StageDir: filepath.Join(dir, "stage"), FailClosed: []Command{{Path: "gate"}}},
+		UnsafeAllowNoFailClosed: true, UnsafeAllowNoDNSVerify: true, AckInterval: 30 * time.Second, PublicationAckRefresh: 2 * time.Minute,
+	}, Dependencies{Clock: func() time.Time { return now }, Runner: &recordingRunner{}, AckPublisher: publisher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := map[string]bool{"zone-bad-0": true, "zone-bad-1": true, "zone-bad-2": true}
+	agent.publicationVerifier = publicationVerifierFunc(func(_ context.Context, plan model.PublicationPlan, _ []PublicationView) error {
+		if failing[plan.ZoneUID] {
+			return errors.New("probe failed")
+		}
+		return nil
+	})
+	binding := model.Binding{BindingUID: "binding"}
+	for _, zone := range []string{"zone-bad-0", "zone-bad-1", "zone-bad-2", "zone-good"} {
+		binding.Zones = append(binding.Zones, model.ZoneAttachment{ZoneUID: zone, RequiredPublicationEpoch: 1, RequiredPublicationRevision: 1})
+		p := publicationState{
+			Fence:    fence{Epoch: 1, Revision: 1},
+			Manifest: model.PublicationManifest{ManifestUID: "pub-" + zone, ZoneUID: zone, Apex: zone + ".example.", WriterEpoch: 1, Revision: 1},
+			Plan:     model.PublicationPlan{ZoneUID: zone, Apex: zone + ".example."},
+			Verified: true,
+		}
+		agent.state.Publications[zone] = p
+		agent.installedPublications[zone] = installedPublication{Identity: publicationIdentity(p)}
+	}
+	agent.state.Snapshot = &model.ServingSnapshot{Bindings: []model.Binding{binding}}
+
+	for i := range 7 {
+		now = start.Add(time.Duration(i) * 30 * time.Second)
+		before := len(publisher.envs)
+		_ = agent.heartbeatPublications(context.Background())
+		renewed := false
+		for _, env := range publisher.envs[before:] {
+			var ack model.MemberAck
+			if err := json.Unmarshal(env.Payload, &ack); err != nil {
+				t.Fatal(err)
+			}
+			if ack.ResourceUID == "zone-good" && ack.Phase == model.AckVerified {
+				renewed = true
+			}
+		}
+		if !renewed {
+			t.Fatalf("interval %d sent no verified ack for the healthy zone, so the member lease would lapse", i)
+		}
+	}
+}

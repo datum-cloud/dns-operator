@@ -87,11 +87,14 @@ two in the 100–1000 ms bucket yield an estimated p99 of 325 ms.
 
 The answer time heatmaps show the measured buckets instead, one tile per
 cluster: node resolvers (node and node-b together) and regional routers
-separately, since a query can pass through both. Each cell is the number of
-answers in one bucket over one interval, so those two tail answers appear as
-two answers rather than as a quantile. The colour scale is steeply compressed
-so a single slow answer stays visible beside thousands of fast ones; hover a
-cell for its count. Columns are back-to-back `increase()` windows, which count
+separately, since a query can pass through both. Each cell is the share of
+one interval's answers that landed in one bucket, so those two tail answers
+appear as 1.3% of that interval rather than as a quantile. Every tile uses the
+same colour scale, so clusters with different traffic compare directly. Shares
+of 5% or more render at full colour, so the busy bands are solid and the tail
+shows as paler cells; a band holding at least 1 in 2,500 answers is shaded.
+Grafana bins values linearly before shading them, which is why the scale stops
+at 5% rather than 100%. Hover a cell for its exact share. Columns are back-to-back `increase()` windows, which count
 each answer once only because VictoriaMetrics does not extrapolate them.
 
 Query fixtures import the same expressions as the dashboards:

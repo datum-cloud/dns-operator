@@ -710,3 +710,113 @@ func TestRetimedNeighboursAreNotReportedAsCreated(t *testing.T) {
 		}
 	}
 }
+
+// --- which record set a write lands in ---------------------------------------
+//
+// A (zone, type) pair can be spread over several DNSRecordSet objects, and a
+// live zone routinely is: the CLI's own bucket beside one per Gateway. The
+// owner name is the key the backend collides on, so these fix which object a
+// write chooses — getting it wrong either fragments a name across two sets,
+// which surfaces as the Conflict and Not owner statuses `record list` reports,
+// or writes into a set a controller reverts.
+
+// A controller owns the names inside its set, not the type. A zone whose only A
+// set belongs to one must still accept a record at an unrelated name.
+func TestCreateAtAFreeNameIsNotBlockedByAManagedSet(t *testing.T) {
+	gw := withLabels(recordSet(dnsv1alpha1.RRTypeA, aEntry("edge", "203.0.113.1", nil)),
+		map[string]string{util.LabelSourceKind: "Gateway", util.LabelSourceName: "edge-gw"})
+
+	h := newHarness(t, testZone(), gw)
+	if err := h.run("record", "create", testDomain, "blog", "A", "203.0.113.9"); err != nil {
+		t.Fatalf("creating blog A was refused: %v\nstderr: %s", err, h.stderr())
+	}
+
+	// The controller's set is left exactly as it was.
+	got := h.getSet(t, gw.Name)
+	if len(got.Spec.Records) != 1 || got.Spec.Records[0].Name != "edge" {
+		t.Errorf("the managed set was modified: %+v", got.Spec.Records)
+	}
+
+	// ...and the record went somewhere, under a name that did not collide.
+	var sets dnsv1alpha1.DNSRecordSetList
+	if err := h.client.List(context.Background(), &sets); err != nil {
+		t.Fatal(err)
+	}
+	var holder *dnsv1alpha1.DNSRecordSet
+	for i := range sets.Items {
+		if sets.Items[i].Name != gw.Name && sets.Items[i].Spec.RecordType == dnsv1alpha1.RRTypeA {
+			holder = &sets.Items[i]
+		}
+	}
+	if holder == nil {
+		t.Fatalf("no new A set was created; sets: %d", len(sets.Items))
+	}
+	if len(holder.Spec.Records) != 1 || holder.Spec.Records[0].Name != "blog" {
+		t.Errorf("new set holds %+v, want one entry for blog", holder.Spec.Records)
+	}
+}
+
+// The set already holding the name wins over the one that merely sorts first,
+// so a second value joins the values it belongs with rather than starting a
+// rival entry for the same key in another object.
+func TestCreateJoinsTheSetThatAlreadyHoldsTheName(t *testing.T) {
+	first := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.1", nil))
+	second := recordSet(dnsv1alpha1.RRTypeA, aEntry("blog", "203.0.113.2", nil))
+	second.Name = first.Name + "-extra" // sorts after, holds the name we write
+
+	h := newHarness(t, testZone(), first, second)
+	if err := h.run("record", "create", testDomain, "blog", "A", "203.0.113.3"); err != nil {
+		t.Fatalf("create: %v\nstderr: %s", err, h.stderr())
+	}
+
+	if got := h.getSet(t, second.Name); len(got.Spec.Records) != 2 {
+		t.Errorf("the set holding blog has %d entries, want 2: %+v", len(got.Spec.Records), got.Spec.Records)
+	}
+	if got := h.getSet(t, first.Name); len(got.Spec.Records) != 1 {
+		t.Errorf("the set that merely sorted first was written to: %+v", got.Spec.Records)
+	}
+}
+
+// A name absent from every set of its type joins an existing writable bucket
+// rather than starting a second one, so a zone does not accumulate an object
+// per record.
+func TestCreateAtANewNameJoinsTheExistingBucket(t *testing.T) {
+	existing := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.1", nil))
+
+	h := newHarness(t, testZone(), existing)
+	if err := h.run("record", "create", testDomain, "blog", "A", "203.0.113.9"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got := h.getSet(t, existing.Name)
+	if len(got.Spec.Records) != 2 {
+		t.Errorf("bucket has %d entries, want 2 — the record started a new set instead of joining", len(got.Spec.Records))
+	}
+	var sets dnsv1alpha1.DNSRecordSetList
+	if err := h.client.List(context.Background(), &sets); err != nil {
+		t.Fatal(err)
+	}
+	if len(sets.Items) != 1 {
+		t.Errorf("zone has %d record sets, want 1", len(sets.Items))
+	}
+}
+
+// Type is the other half of the key: a write must never land in a set of a
+// different type, however that set is named or ordered.
+func TestCreateNeverLandsInAnotherType(t *testing.T) {
+	txt := recordSet(dnsv1alpha1.RRTypeTXT, dnsv1alpha1.RecordEntry{
+		Name: "blog", TXT: &dnsv1alpha1.TXTRecordSpec{Content: "hello"},
+	})
+
+	h := newHarness(t, testZone(), txt)
+	if err := h.run("record", "create", testDomain, "blog", "A", "203.0.113.9"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if got := h.getSet(t, txt.Name); len(got.Spec.Records) != 1 {
+		t.Errorf("the TXT set was written to by an A create: %+v", got.Spec.Records)
+	}
+	if got := h.getSet(t, testZoneObject+"-a"); got.Spec.RecordType != dnsv1alpha1.RRTypeA {
+		t.Errorf("new set has type %q, want A", got.Spec.RecordType)
+	}
+}

@@ -760,3 +760,32 @@ func TestShortenedNote(t *testing.T) {
 		}
 	}
 }
+
+// The RECORD SET column is what makes a split name diagnosable. Two sets of the
+// same type can each carry an entry for one name — the shape behind the Conflict
+// and Not owner statuses — and every other column renders those two rows
+// identically. Without the object name there is no way to tell from the CLI
+// which set to go and edit.
+func TestListWideNamesTheSetEachRecordCameFrom(t *testing.T) {
+	mine := recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.1", nil))
+	theirs := withLabels(recordSet(dnsv1alpha1.RRTypeA, aEntry("www", "203.0.113.2", nil)),
+		map[string]string{util.LabelSourceKind: "Gateway", util.LabelSourceName: "edge-gw"})
+	theirs.Name = "example-com-gateway-a"
+
+	h := newHarness(t, testZone(), mine, theirs)
+
+	requireNoError(t, h.run("record", "list", testDomain, "-o", "wide"))
+	wide := h.stdout()
+	mustContain(t, wide, "RECORD SET")
+	for _, want := range []string{mine.Name, theirs.Name} {
+		if !strings.Contains(wide, want) {
+			t.Errorf("-o wide does not name the set %q:\n%s", want, wide)
+		}
+	}
+
+	// The default table stays narrow; the set is the escape hatch's job.
+	requireNoError(t, h.run("record", "list", testDomain))
+	if strings.Contains(h.stdout(), "RECORD SET") {
+		t.Errorf("the default table grew a RECORD SET column:\n%s", h.stdout())
+	}
+}

@@ -270,21 +270,29 @@ func fileError(where string, err error, fix string) error {
 // The plan
 // ---------------------------------------------------------------------------
 
-// plan is the whole diff, worked out per record type before anything is
-// written. Each type is one API object, so the unit of work is a type and the
-// unit the user reads is a record.
+// plan is the whole diff, worked out before anything is written. The unit of
+// work is one API object and the unit the user reads is a record.
+//
+// A type is NOT one object. Nothing forbids several DNSRecordSets of the same
+// type in a zone and a live zone routinely has them — the CLI writes to its
+// own, a Gateway gets one per listener — so the desired records of one type are
+// partitioned across the sets that already hold their names. Treating a type as
+// a single object wrote every name into whichever set sorted first, which left
+// the set that really held the name stale and gave the zone two entries for one
+// key: the shape the backend reports back as Conflict and Not owner.
 type plan struct {
 	zone    *dnsv1alpha1.DNSZone
 	prune   bool
-	types   []dnsv1alpha1.RRType
-	byType  map[dnsv1alpha1.RRType]*typePlan
+	units   []*typePlan
 	changes []change
 	skipped []change
 }
 
+// typePlan is one type's work against ONE record set.
 type typePlan struct {
 	rrType dnsv1alpha1.RRType
-	set    *dnsv1alpha1.DNSRecordSet
+	// set is the object this unit writes; nil means one must be created.
+	set *dnsv1alpha1.DNSRecordSet
 	// file holds the records the zone file declares for this type.
 	file []dnsv1alpha1.RecordEntry
 	// next is what spec.records becomes, with platform-managed entries kept.
@@ -297,20 +305,16 @@ func newPlan(
 	zone *dnsv1alpha1.DNSZone, desired []bind.Record,
 	sets []dnsv1alpha1.DNSRecordSet, prune bool,
 ) *plan {
-	p := &plan{zone: zone, prune: prune, byType: map[dnsv1alpha1.RRType]*typePlan{}}
+	p := &plan{zone: zone, prune: prune}
 
-	setByType := map[dnsv1alpha1.RRType]*dnsv1alpha1.DNSRecordSet{}
+	setsByType := map[dnsv1alpha1.RRType][]*dnsv1alpha1.DNSRecordSet{}
 	for i := range sets {
 		t := sets[i].Spec.RecordType
-		// Nothing forbids two sets for one type; the first by object name wins,
-		// deterministically, the same way findSet chooses.
-		if _, seen := setByType[t]; !seen {
-			setByType[t] = &sets[i]
-		}
+		setsByType[t] = append(setsByType[t], &sets[i])
 	}
 
 	present := map[dnsv1alpha1.RRType]bool{}
-	for t := range setByType {
+	for t := range setsByType {
 		present[t] = true
 	}
 	for _, r := range desired {
@@ -321,27 +325,28 @@ func newPlan(
 		if !present[t] {
 			continue
 		}
-		tp := &typePlan{rrType: t, set: setByType[t]}
+		var file []dnsv1alpha1.RecordEntry
 		for _, r := range desired {
 			if r.Type == t {
-				tp.file = append(tp.file, r.Entry)
+				file = append(file, r.Entry)
 			}
 		}
 
-		current := currentEntries(tp.set, t)
-		tp.next = p.resolve(tp, current, true)
-		tp.changes = diffEntries(t, current, tp.next, zone.Spec.DomainName)
+		for _, tp := range p.partition(t, setsByType[t], file) {
+			current := currentEntries(tp.set, t)
+			tp.next = p.resolve(tp, current, true)
+			tp.changes = diffEntries(t, current, tp.next, zone.Spec.DomainName)
 
-		// The same resolution with protection switched off says what the file
-		// asked for; the difference between the two is exactly what was held
-		// back, which is the only honest way to report it.
-		wanted := diffEntries(t, current, p.resolve(tp, current, false), zone.Spec.DomainName)
-		p.skipped = append(p.skipped, withheld(wanted, tp.changes, p.reasonFor(tp))...)
+			// The same resolution with protection switched off says what the
+			// file asked for; the difference between the two is exactly what
+			// was held back, which is the only honest way to report it.
+			wanted := diffEntries(t, current, p.resolve(tp, current, false), zone.Spec.DomainName)
+			p.skipped = append(p.skipped, withheld(wanted, tp.changes, p.reasonFor(tp))...)
 
-		if len(tp.changes) > 0 {
-			p.types = append(p.types, t)
-			p.byType[t] = tp
-			p.changes = append(p.changes, tp.changes...)
+			if len(tp.changes) > 0 {
+				p.units = append(p.units, tp)
+				p.changes = append(p.changes, tp.changes...)
+			}
 		}
 	}
 
@@ -352,6 +357,75 @@ func newPlan(
 
 // resolve computes what spec.records becomes for one type.
 //
+// partition splits one type's desired records across the sets that already
+// hold their owner names, so a record is written where its siblings live rather
+// than duplicated into whichever object happened to sort first.
+//
+// Names no set holds yet go to one unit together — the first set this command
+// may write to, or a new object when a controller owns them all — so a zone
+// gains one set per type rather than one per record.
+func (p *plan) partition(
+	t dnsv1alpha1.RRType, sets []*dnsv1alpha1.DNSRecordSet, file []dnsv1alpha1.RecordEntry,
+) []*typePlan {
+	units := make([]*typePlan, 0, len(sets)+1)
+	index := map[*dnsv1alpha1.DNSRecordSet]*typePlan{}
+	for _, rs := range sets {
+		tp := &typePlan{rrType: t, set: rs}
+		units = append(units, tp)
+		index[rs] = tp
+	}
+
+	// Where a name nothing holds goes. A controller's set is never it: the
+	// controller owns the names inside its set, not the type, and an entry
+	// added there is reverted on the next reconcile.
+	var fresh *typePlan
+	for _, tp := range units {
+		if !isMachineOwned(tp.set) {
+			fresh = tp
+			break
+		}
+	}
+	if fresh == nil {
+		fresh = &typePlan{rrType: t}
+		units = append(units, fresh)
+	}
+
+	for _, e := range file {
+		target := fresh
+		if holder := holderOf(sets, e.Name, p.zone.Spec.DomainName); holder != nil {
+			target = index[holder]
+		}
+		target.file = append(target.file, e)
+	}
+	return units
+}
+
+// holderOf returns the set already carrying an owner name, preferring one the
+// user may write to when several do.
+//
+// The preference is the opposite of findSet's, and deliberately. findSet picks
+// for a single-record write, where resolving to the controller's copy makes the
+// guard refuse — the safe answer for a command that would otherwise write into
+// a set the controller reverts. apply reconciles a whole file, so refusing to
+// update the copy the user does own would block legitimate work; the
+// controller's copy is left alone by resolve's own protection instead, and
+// reported as skipped.
+func holderOf(sets []*dnsv1alpha1.DNSRecordSet, ownerName, zoneDomain string) *dnsv1alpha1.DNSRecordSet {
+	var managed *dnsv1alpha1.DNSRecordSet
+	for _, rs := range sets {
+		if !setHasOwner(rs, ownerName, zoneDomain) {
+			continue
+		}
+		if !isMachineOwned(rs) {
+			return rs
+		}
+		if managed == nil {
+			managed = rs
+		}
+	}
+	return managed
+}
+
 // With protection on, entries the platform owns survive untouched and the file
 // cannot add to a set a Gateway controls — writing there would be reverted, so
 // reporting success would be a lie. Without --prune the live entries stay and
@@ -504,8 +578,8 @@ func (p *plan) converge(ctx context.Context, c client.Client, dryRun bool, out, 
 	var failures []string
 	applied := 0
 
-	for _, t := range p.types {
-		tp := p.byType[t]
+	for _, tp := range p.units {
+		t := tp.rrType
 
 		// The backend applies the FIRST entry's TTL to a whole owner name and
 		// drops the rest silently, and a file merged into live records is how an

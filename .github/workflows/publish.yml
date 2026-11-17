@@ -31,7 +31,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.26.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.27.1
     with:
       bundle-name: ghcr.io/datum-cloud/dns-operator-kustomize
       bundle-path: config
@@ -53,7 +53,7 @@ jobs:
       contents: read
       packages: write
       attestations: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.26.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.27.1
     with:
       image-name: internal-dns-perf
       context: test/internaldns/perf

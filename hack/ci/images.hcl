@@ -17,7 +17,7 @@ target "public" {
   target = "public"
   cache-from = CACHE_FROM != "" ? ["type=local,src=${CACHE_FROM}/public"] : []
   cache-to = CACHE_TO != "" ? ["type=local,dest=${CACHE_TO}/public,mode=min"] : []
-  tags = ["ghcr.io/datum-cloud/dns-operator:latest"]
+  tags = ["ghcr.io/datum-cloud/dns:latest"]
 }
 target "private" {
   inherits = ["common"]

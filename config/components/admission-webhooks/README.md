@@ -12,7 +12,7 @@ control-plane apiserver.
 ## Why a separate path
 
 The MWC must version with the image that serves it. Shipping it in
-`dns-operator-kustomize` under this path means an old tag (for example
+the `dns-kustomize` bundle under this path means an old tag (for example
 `v0.6.4`, which has no webhook server) cannot carry a registration Flux can
 apply. Hand-authoring the MWC in infra decoupled those versions and caused a
 production write outage when `failurePolicy: Fail` hit a build with nothing

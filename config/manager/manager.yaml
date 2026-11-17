@@ -68,7 +68,7 @@ spec:
           - --leader-elect=$(LEADER_ELECT)
           - --health-probe-bind-address=:8081
           - --server-config=/config/server-config.yaml
-        image: ghcr.io/datum-cloud/dns-operator:latest
+        image: ghcr.io/datum-cloud/dns:latest
         imagePullPolicy: IfNotPresent
         name: manager
         # POD_NAME is used as the reportingInstance on emitted events.k8s.io/v1

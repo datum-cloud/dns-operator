@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	"k8s.io/apimachinery/pkg/types"
 )
 

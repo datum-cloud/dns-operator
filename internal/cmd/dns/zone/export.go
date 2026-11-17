@@ -11,9 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/bind"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/bind"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // exportTTL is the $TTL written at the top of an exported file. It is the

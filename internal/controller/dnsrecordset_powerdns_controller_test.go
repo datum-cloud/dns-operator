@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/controller"
-	"go.miloapis.com/dns-operator/internal/dns"
-	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/controller"
+	"go.miloapis.com/dns/internal/dns"
+	pdnsclient "go.miloapis.com/dns/internal/dns/pdns"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	fakedns "go.miloapis.com/dns-operator/internal/dns/fake"
+	fakedns "go.miloapis.com/dns/internal/dns/fake"
 )
 
 const ns = "default"

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"

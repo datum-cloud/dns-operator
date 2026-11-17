@@ -17,8 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // Waiting for nameserver assignment. The interval is a variable so tests do not

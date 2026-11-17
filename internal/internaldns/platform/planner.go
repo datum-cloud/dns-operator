@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

@@ -12,7 +12,7 @@ import (
 	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	internaldnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
+	internaldnsadmission "go.miloapis.com/dns/internal/internaldns/admission"
 )
 
 // The private DNS reference checks fail closed: a write that skipped them

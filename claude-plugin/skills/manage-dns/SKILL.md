@@ -11,7 +11,7 @@ this plugin (start with `zone-not-resolving`), which read status through the
 datum-mcp DNS tools.
 
 The full command reference is
-https://github.com/datum-cloud/dns-operator/blob/main/docs/cli/datumctl-dns.md.
+https://github.com/datum-cloud/dns/blob/main/docs/cli/datumctl-dns.md.
 
 ## Before anything else
 

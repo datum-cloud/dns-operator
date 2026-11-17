@@ -12,7 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/projectdiscovery/dnsx/libs/dnsx"
 	"github.com/projectdiscovery/retryabledns"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 const (

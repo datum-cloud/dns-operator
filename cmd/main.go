@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/privatereplication"
+	"go.miloapis.com/dns/internal/privatereplication"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -46,11 +46,11 @@ import (
 	mcsingle "sigs.k8s.io/multicluster-runtime/providers/single"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/config"
-	"go.miloapis.com/dns-operator/internal/controller"
-	"go.miloapis.com/dns-operator/internal/dns"
-	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/config"
+	"go.miloapis.com/dns/internal/controller"
+	"go.miloapis.com/dns/internal/dns"
+	dnswebhook "go.miloapis.com/dns/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 

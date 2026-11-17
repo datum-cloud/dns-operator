@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // publicationSerial proves the exact publication and eligible record content.

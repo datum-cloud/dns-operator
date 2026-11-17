@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // Per-nameserver annotations in the describe and nameservers views.

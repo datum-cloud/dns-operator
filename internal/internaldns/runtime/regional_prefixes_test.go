@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/platform"
+	"go.miloapis.com/dns/internal/internaldns/platform"
 )
 
 func TestRegionalPrefixes(t *testing.T) {

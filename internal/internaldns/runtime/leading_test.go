@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/platform"
+	"go.miloapis.com/dns/internal/internaldns/platform"
 )
 
 func TestWhileLeadingSkipsStepsWithoutTheRegionLease(t *testing.T) {

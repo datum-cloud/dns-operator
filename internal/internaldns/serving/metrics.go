@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 

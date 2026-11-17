@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"

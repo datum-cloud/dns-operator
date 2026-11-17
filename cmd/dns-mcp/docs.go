@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	agentdocs "go.miloapis.com/dns-operator/docs/agent"
+	agentdocs "go.miloapis.com/dns/docs/agent"
 )
 
 const (

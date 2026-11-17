@@ -10,8 +10,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
 const (

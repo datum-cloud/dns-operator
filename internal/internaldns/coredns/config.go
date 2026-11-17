@@ -15,7 +15,7 @@ import (
 
 	"github.com/coredns/coredns/plugin/file"
 	"github.com/miekg/dns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 type Config struct {

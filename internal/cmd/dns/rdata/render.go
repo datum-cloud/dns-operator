@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // nowFunc is time.Now, indirected so the SOA serial default is testable.

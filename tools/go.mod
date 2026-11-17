@@ -1,4 +1,4 @@
-module go.miloapis.com/dns-operator/tools
+module go.miloapis.com/dns/tools
 
 go 1.26.0
 

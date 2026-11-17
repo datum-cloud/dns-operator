@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 type DNSDistRenderConfig struct {

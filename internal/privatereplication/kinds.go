@@ -12,7 +12,7 @@
 package privatereplication
 
 import (
-	"go.miloapis.com/dns-operator/internal/internaldns/projectstatus"
+	"go.miloapis.com/dns/internal/internaldns/projectstatus"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 

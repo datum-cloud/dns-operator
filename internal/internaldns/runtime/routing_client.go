@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"

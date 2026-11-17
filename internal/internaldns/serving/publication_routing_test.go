@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestNodePublicationUpdateAvoidsRoutingChurn(t *testing.T) {

@@ -18,7 +18,7 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/proxy"
 	"github.com/coredns/coredns/plugin/pkg/upstream"
 	"github.com/miekg/dns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 type contextState struct {

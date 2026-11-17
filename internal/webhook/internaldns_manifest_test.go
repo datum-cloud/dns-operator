@@ -14,8 +14,8 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	internaldnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	internaldnsadmission "go.miloapis.com/dns/internal/internaldns/admission"
 )
 
 // The kind and e2e registration must send every private DNS reference write to

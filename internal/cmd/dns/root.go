@@ -13,9 +13,9 @@ import (
 	"github.com/spf13/cobra"
 	"go.datum.net/datumctl/plugin"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/record"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/zone"
+	"go.miloapis.com/dns/internal/cmd/dns/record"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/zone"
 )
 
 const short = "Manage DNS zones and records on Datum Cloud"

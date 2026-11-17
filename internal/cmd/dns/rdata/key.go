@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // Key returns a stable identity for the *value* of e — its owner name and TTL

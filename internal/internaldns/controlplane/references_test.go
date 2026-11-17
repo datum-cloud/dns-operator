@@ -3,7 +3,7 @@ package controlplane
 import (
 	"testing"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 func TestReferenceRequiresExactLifetime(t *testing.T) {

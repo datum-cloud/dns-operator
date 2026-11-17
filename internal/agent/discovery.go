@@ -9,7 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // ToolZoneDiscoveryGet reads a DNSZoneDiscovery snapshot: what a domain

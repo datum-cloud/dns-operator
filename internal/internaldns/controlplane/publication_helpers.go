@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

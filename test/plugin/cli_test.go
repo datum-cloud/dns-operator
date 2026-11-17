@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // result is the observable behaviour of one plugin invocation: what automation

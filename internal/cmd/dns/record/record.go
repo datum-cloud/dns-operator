@@ -13,7 +13,7 @@ package record
 import (
 	"github.com/spf13/cobra"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // Command builds the `dns record` noun and its verbs.

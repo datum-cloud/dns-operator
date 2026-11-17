@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // Error is an actionable validation error. Msg is the one-line problem

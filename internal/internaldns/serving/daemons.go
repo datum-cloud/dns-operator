@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
 )
 
 type daemonProcess struct {

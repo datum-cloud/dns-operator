@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // entry parses value and attaches an owner name, the shape Validate sees.

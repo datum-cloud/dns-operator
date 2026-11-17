@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"go.miloapis.com/dns-operator/pkg/dnsagent"
+	"go.miloapis.com/dns/pkg/dnsagent"
 )
 
 // A server outside this module mounts exactly the tools the assistant gets.

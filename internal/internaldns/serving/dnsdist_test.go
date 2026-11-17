@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
 )
 
 func TestDNSDistKeyPersistsAcrossAgentRestarts(t *testing.T) {

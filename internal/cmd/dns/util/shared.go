@@ -3,10 +3,10 @@
 package util
 
 import (
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
-// The identifiers below re-export go.miloapis.com/dns-operator/internal/dns/util
+// The identifiers below re-export go.miloapis.com/dns/internal/dns/util
 // so the CLI's existing call sites keep compiling unchanged after the pure
 // zone/record/delegation/ownership logic moved to a package the dns-mcp
 // server can also import. internal/dns/util is the one definition; this file
@@ -54,7 +54,7 @@ const (
 )
 
 // Delegation is the client-side comparison of assigned versus observed
-// nameservers. See go.miloapis.com/dns-operator/internal/dns/util.Delegation.
+// nameservers. See go.miloapis.com/dns/internal/dns/util.Delegation.
 type Delegation = sharedutil.Delegation
 
 var (

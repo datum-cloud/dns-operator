@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	appsv1 "k8s.io/api/apps/v1"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 )

@@ -5,7 +5,7 @@ package bind
 import (
 	"fmt"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // Error is a parse failure tied to the line that caused it.

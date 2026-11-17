@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // Flag names. Structured types are taught with these because

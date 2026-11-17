@@ -145,7 +145,7 @@ comparison misses.
 
 > [!NOTE]
 > Closing the gap on the write path is proposed in
-> https://github.com/datum-cloud/dns-operator/pull/117, which refuses a claim on
+> https://github.com/datum-cloud/dns/pull/117, which refuses a claim on
 > a name another record set already holds and matches every spelling
 > case-insensitively.
 

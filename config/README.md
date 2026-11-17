@@ -38,8 +38,8 @@ Registration failing closed is not a safety net here. It only fires once
 registration exists, which is exactly the case a missing registration is not.
 The reverse mistake has its own cost: registration that reaches an API server
 ahead of a binary that can serve it blocks writes outright, which is what
-https://github.com/datum-cloud/dns-operator/issues/69 records.
+https://github.com/datum-cloud/dns/issues/69 records.
 
 For the matching test-side gap, keeping a webhook that is registered but not
 served from passing CI, see
-https://github.com/datum-cloud/dns-operator/issues/68.
+https://github.com/datum-cloud/dns/issues/68.

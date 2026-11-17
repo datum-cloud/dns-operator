@@ -5,8 +5,8 @@ package record
 import (
 	"testing"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 func gatewaySet(t dnsv1alpha1.RRType, entries ...dnsv1alpha1.RecordEntry) *dnsv1alpha1.DNSRecordSet {

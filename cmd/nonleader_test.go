@@ -35,11 +35,11 @@ import (
 
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/config"
-	"go.miloapis.com/dns-operator/internal/controller"
-	"go.miloapis.com/dns-operator/internal/display"
-	dnswebhook "go.miloapis.com/dns-operator/internal/webhook"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/config"
+	"go.miloapis.com/dns/internal/controller"
+	"go.miloapis.com/dns/internal/display"
+	dnswebhook "go.miloapis.com/dns/internal/webhook"
 )
 
 const (

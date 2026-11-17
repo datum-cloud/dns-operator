@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	internruntime "go.miloapis.com/dns-operator/internal/internaldns/runtime"
+	internruntime "go.miloapis.com/dns/internal/internaldns/runtime"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"

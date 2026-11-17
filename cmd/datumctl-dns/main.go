@@ -11,8 +11,8 @@ import (
 
 	"go.datum.net/datumctl/plugin"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // version is set at build time via ldflags.

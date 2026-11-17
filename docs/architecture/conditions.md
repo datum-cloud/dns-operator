@@ -24,7 +24,7 @@ The record set's own `Programmed` condition aggregates those entries. On current
 only one level down.
 
 > [!NOTE]
-> https://github.com/datum-cloud/dns-operator/pull/116 changes the aggregate to
+> https://github.com/datum-cloud/dns/pull/116 changes the aggregate to
 > carry the blocked record's own reason and name it in the message. The rule in
 > [Reading an unfamiliar reason](#reading-an-unfamiliar-reason) is written so it
 > holds either way.

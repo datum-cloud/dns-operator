@@ -11,7 +11,7 @@
 // re-export it.
 //
 // The knowledge and skills that go with these tools are already importable from
-// go.miloapis.com/dns-operator/docs/agent.
+// go.miloapis.com/dns/docs/agent.
 package dnsagent
 
 import (
@@ -22,8 +22,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/agent"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/agent"
 )
 
 // The tool names RegisterTools adds. Each carries the dns_ prefix so they can

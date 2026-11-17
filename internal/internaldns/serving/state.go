@@ -14,7 +14,7 @@ import (
 	"slices"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 type contributionFence struct {

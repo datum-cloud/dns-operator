@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // Command-level cases for the wave-2 surface.

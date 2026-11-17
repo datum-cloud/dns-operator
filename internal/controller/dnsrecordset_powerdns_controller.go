@@ -24,11 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	operatorconfig "go.miloapis.com/dns-operator/internal/config"
-	"go.miloapis.com/dns-operator/internal/dns"
-	"go.miloapis.com/dns-operator/internal/dns/ownername"
-	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	operatorconfig "go.miloapis.com/dns/internal/config"
+	"go.miloapis.com/dns/internal/dns"
+	"go.miloapis.com/dns/internal/dns/ownername"
+	pdnsclient "go.miloapis.com/dns/internal/dns/pdns"
 )
 
 // conflictRequeueInterval is how long to wait before re-attempting a record

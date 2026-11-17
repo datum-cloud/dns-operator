@@ -22,7 +22,7 @@ import (
 
 	multiclusterproviders "go.miloapis.com/milo/pkg/multicluster-runtime"
 
-	"go.miloapis.com/dns-operator/internal/config"
+	"go.miloapis.com/dns/internal/config"
 )
 
 // TestReplicatorProviderLifecycle exercises the replicator startup path from

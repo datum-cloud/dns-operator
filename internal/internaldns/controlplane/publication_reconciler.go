@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"go.miloapis.com/dns-operator/internal/internaldns/projectstatus"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/projectstatus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

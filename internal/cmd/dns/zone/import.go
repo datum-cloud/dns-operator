@@ -19,10 +19,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/bind"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/bind"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // discoveryTypes is what the DNSZoneDiscovery controller queries. It is

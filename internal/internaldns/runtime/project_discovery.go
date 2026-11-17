@@ -11,8 +11,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
-	"go.miloapis.com/dns-operator/internal/internaldns/platform"
+	dnsadmission "go.miloapis.com/dns/internal/internaldns/admission"
+	"go.miloapis.com/dns/internal/internaldns/platform"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"

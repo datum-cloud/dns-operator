@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestAgentPublicationLagMetricsAggregateZones(t *testing.T) {

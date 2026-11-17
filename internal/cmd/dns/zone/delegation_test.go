@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // The delegation views make a claim about a third party's configuration, so

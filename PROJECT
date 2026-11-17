@@ -7,14 +7,14 @@ domain: networking.miloapis.com
 layout:
 - go.kubebuilder.io/v4
 projectName: dns-operator
-repo: go.miloapis.com/dns-operator
+repo: go.miloapis.com/dns
 resources:
 - api:
     crdVersion: v1
   domain: networking.miloapis.com
   group: dns
   kind: DNSZoneClass
-  path: go.miloapis.com/dns-operator/api/v1alpha1
+  path: go.miloapis.com/dns/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -23,7 +23,7 @@ resources:
   domain: networking.miloapis.com
   group: dns
   kind: DNSZone
-  path: go.miloapis.com/dns-operator/api/v1alpha1
+  path: go.miloapis.com/dns/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -32,7 +32,7 @@ resources:
   domain: networking.miloapis.com
   group: dns
   kind: DNSRecordSet
-  path: go.miloapis.com/dns-operator/api/v1alpha1
+  path: go.miloapis.com/dns/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -41,6 +41,6 @@ resources:
   domain: networking.miloapis.com
   group: dns
   kind: DNSZoneDiscovery
-  path: go.miloapis.com/dns-operator/api/v1alpha1
+  path: go.miloapis.com/dns/api/v1alpha1
   version: v1alpha1
 version: "3"

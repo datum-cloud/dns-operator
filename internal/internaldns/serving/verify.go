@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 const (

@@ -22,9 +22,9 @@ This enhancement is based on changes between feat/support-dnszone-classes and fe
 ### Problem references
 
 - Issue #59: controller design and reconcile amplification concerns
-  - https://github.com/datum-cloud/dns-operator/issues/59
+  - https://github.com/datum-cloud/dns/issues/59
 - Issue #58: orphaned recordsets when delete/finalization races failures or restarts
-  - https://github.com/datum-cloud/dns-operator/issues/58
+  - https://github.com/datum-cloud/dns/issues/58
 - Kubebuilder guidance on avoiding one controller managing multiple CRD responsibilities:
   - https://book.kubebuilder.io/reference/good-practices?utm_source=chatgpt.com#why-should-one-avoid-a-system-design-where-a-single-controller-is-responsible-for-managing-multiple-crds-custom-resource-definitionsfor-example-an-install_all_controllergo
 

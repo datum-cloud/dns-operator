@@ -3,8 +3,8 @@
 package bind
 
 import (
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // RecordsFromSet flattens one DNSRecordSet into the Record shape the diff, the

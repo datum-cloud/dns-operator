@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 func TestRecordContentPreservesTypedRDATA(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	dns "go.miloapis.com/dns/api/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"

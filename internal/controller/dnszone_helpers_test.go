@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	dnsutils "go.miloapis.com/dns/internal/dns/utils"
 )
 
 func TestNormalizeStringSlice(t *testing.T) {

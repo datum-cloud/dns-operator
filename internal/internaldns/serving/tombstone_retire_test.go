@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestVerifiedTombstoneStopsRenewingAfterRetention(t *testing.T) {

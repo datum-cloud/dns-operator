@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/discovery"
+	"go.miloapis.com/dns/internal/discovery"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // DNSZoneDiscoveryReplicator performs a one-shot discovery of records for a DNSZone on the upstream cluster.

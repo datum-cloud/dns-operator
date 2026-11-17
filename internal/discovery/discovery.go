@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/miekg/dns"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // mapAnswersToEntries converts a slice of dns.RR answers of a single RR type into

@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // defaultEmitTTL is the $TTL written when the caller supplies none. It matches

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func effectivePlanHash(plan model.PublicationPlan) string {

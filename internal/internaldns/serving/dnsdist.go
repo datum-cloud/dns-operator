@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
 )
 
 const DNSDistKeyPath = "/run/internal-dns/dnsdist.key"

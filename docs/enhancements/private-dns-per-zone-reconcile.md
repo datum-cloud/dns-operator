@@ -105,7 +105,7 @@ setting it.
 Compare publication latency and API request rates before and after the change.
 In the test deployment reported in
 [the per-zone
-implementation](https://github.com/datum-cloud/dns-operator/pull/345),
+implementation](https://github.com/datum-cloud/dns/pull/345),
 p50 update latency fell from 1.4 seconds to 0.8–1.2 seconds, and p50 delete
 latency fell from 1.1 seconds to 0.7–0.9 seconds. These measurements describe
 that

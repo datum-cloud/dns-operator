@@ -91,7 +91,7 @@ spec:
           value: http://localhost:8082
         - name: PDNS_API_KEY_FILE
           value: /run/pdns/api-key
-        image: ghcr.io/datum-cloud/dns-operator:latest
+        image: ghcr.io/datum-cloud/dns:latest
         imagePullPolicy: IfNotPresent
         name: manager
         ports:

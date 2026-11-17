@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	dnsadmission "go.miloapis.com/dns-operator/internal/internaldns/admission"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
+	dnsadmission "go.miloapis.com/dns/internal/internaldns/admission"
 	resourcemanagerv1alpha1 "go.miloapis.com/milo/pkg/apis/resourcemanager/v1alpha1"
 	admissionv1 "k8s.io/api/admission/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"

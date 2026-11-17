@@ -5,7 +5,7 @@ package display
 import (
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // Activity annotation keys describe the logical hostname-level change on a

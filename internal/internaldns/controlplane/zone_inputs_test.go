@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"testing"
 
-	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	dns "go.miloapis.com/dns/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

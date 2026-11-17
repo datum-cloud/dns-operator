@@ -33,9 +33,9 @@ jobs:
       packages: write
     uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.27.1
     with:
-      bundle-name: ghcr.io/datum-cloud/dns-operator-kustomize
+      bundle-name: ghcr.io/datum-cloud/dns-kustomize
       bundle-path: config
-      image-name: ghcr.io/datum-cloud/dns-operator
+      image-name: ghcr.io/datum-cloud/dns
       # Every path here gets the built tag stamped into it. A path left out
       # keeps whatever its manifests say, and components/dns-mcp says
       # :latest, which docker/metadata-action only moves on a release. The

@@ -12,7 +12,7 @@ import (
 
 	"runtime/debug"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	"go.miloapis.com/dns/internal/internaldns/coredns"
 )
 
 func main() {

@@ -2,7 +2,7 @@
 
 package utils
 
-import dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+import dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 
 // ClassNameservers returns the nameservers a DNSZoneClass assigns to its zones,
 // normalized. It returns nil when the class assigns none.

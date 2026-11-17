@@ -9,7 +9,7 @@ package agent
 import (
 	"time"
 
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
 // Actionability says who has to do something about a condition.
@@ -119,7 +119,7 @@ const (
 )
 
 // catalog is the full reason vocabulary. Entries key off
-// go.miloapis.com/dns-operator/internal/dns/util's exported reason constants
+// go.miloapis.com/dns/internal/dns/util's exported reason constants
 // rather than string literals so the two cannot drift silently;
 // TestCatalogCoversEveryKnownReason enforces completeness.
 var catalog = []ReasonInfo{

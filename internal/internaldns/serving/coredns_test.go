@@ -16,8 +16,8 @@ import (
 
 	"github.com/miekg/dns"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 )
 
 func regionalTestConfig(t *testing.T) Config {

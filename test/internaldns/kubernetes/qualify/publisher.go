@@ -5,7 +5,7 @@ package main
 import (
 	"context"
 
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

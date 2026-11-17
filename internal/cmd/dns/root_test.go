@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // falseDefault is the string form of a bool flag's zero default.

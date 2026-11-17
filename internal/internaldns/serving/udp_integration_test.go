@@ -17,8 +17,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // Run in Linux with the serving image's dnsdist binary. This exercises the

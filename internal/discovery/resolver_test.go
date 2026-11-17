@@ -10,7 +10,7 @@ import (
 	"github.com/projectdiscovery/dnsx/libs/dnsx"
 	"github.com/stretchr/testify/require"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 func TestDiscoverZoneRecordsContinuesAfterTimeout(t *testing.T) {

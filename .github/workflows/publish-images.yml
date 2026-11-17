@@ -46,7 +46,7 @@ jobs:
         id: operator
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/datum-cloud/dns-operator
+          images: ghcr.io/datum-cloud/dns
           tags: |
             type=ref,event=pr,suffix=-{{commit_date 'YYYYMMDD-HHmmss'}},prefix=v0.0.0-
             type=ref,event=pr,prefix=v0.0.0-

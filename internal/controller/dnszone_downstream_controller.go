@@ -5,7 +5,7 @@ package controller
 import (
 	"context"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"go.miloapis.com/dns-operator/internal/dns"
-	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
+	"go.miloapis.com/dns/internal/dns"
+	dnsutils "go.miloapis.com/dns/internal/dns/utils"
 )
 
 // DNSZoneReconciler reconciles a DNSZone object

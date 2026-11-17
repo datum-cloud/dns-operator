@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // The round trip is the contract behind `zone export | edit | record apply`: a

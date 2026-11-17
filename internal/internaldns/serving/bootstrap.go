@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 type SnapshotLister interface {

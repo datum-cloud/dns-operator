@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // bindingFence retains mapping lifetime and order independently of shard snapshots.

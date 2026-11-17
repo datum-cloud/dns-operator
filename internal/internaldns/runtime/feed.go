@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/feed"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/feed"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"

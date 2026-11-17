@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	runtime "go.miloapis.com/dns-operator/internal/internaldns/runtime"
-	"go.miloapis.com/dns-operator/internal/internaldns/serving"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	runtime "go.miloapis.com/dns/internal/internaldns/runtime"
+	"go.miloapis.com/dns/internal/internaldns/serving"
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"

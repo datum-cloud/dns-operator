@@ -5,7 +5,7 @@ package rdata
 import (
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // TXT has two representations and the package is strict about which is which.

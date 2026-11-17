@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // runVersion executes `version` through a real root, so the -o flag resolves

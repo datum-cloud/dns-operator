@@ -7,7 +7,7 @@
 #
 # NOT composed into config/default or operator overlays. Consume with the same
 # OCIRepository semver as the manager image so registration cannot outrun the
-# binary that serves the webhook (see github.com/datum-cloud/dns-operator#69).
+# binary that serves the webhook (see github.com/datum-cloud/dns#69).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

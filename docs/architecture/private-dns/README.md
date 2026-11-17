@@ -922,9 +922,9 @@ SERVFAIL, and product eligibility for NODATA.
 ## Implementation history
 
 2026-10-08: Architecture proposal
-[#229](https://github.com/datum-cloud/dns-operator/pull/229) and initial
+[#229](https://github.com/datum-cloud/dns/pull/229) and initial
 private-zone
-boundary [#230](https://github.com/datum-cloud/dns-operator/pull/230).
+boundary [#230](https://github.com/datum-cloud/dns/pull/230).
 
 ## Drawbacks
 

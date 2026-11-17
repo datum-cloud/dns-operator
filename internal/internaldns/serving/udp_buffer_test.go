@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
 )
 
 func TestRenderUDPReadBuffer(t *testing.T) {

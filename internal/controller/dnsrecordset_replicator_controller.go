@@ -23,9 +23,9 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/display"
-	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/display"
+	downstreamclient "go.miloapis.com/dns/internal/downstreamclient"
 )
 
 type DNSRecordSetReplicator struct {

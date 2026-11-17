@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/bind"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/bind"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // exportFixture is a zone with something of every shape export has to get

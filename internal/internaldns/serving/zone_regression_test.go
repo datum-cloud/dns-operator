@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func parseRenderedZone(t *testing.T, zone []byte) []dns.RR {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
 // TestCatalogCoversEveryKnownReason pins the catalog against the reason

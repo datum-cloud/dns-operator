@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	dns "go.miloapis.com/dns/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )

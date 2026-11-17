@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/pflag"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 )
 
 // Regression tests for the findings of the adversarial review. Each one fails

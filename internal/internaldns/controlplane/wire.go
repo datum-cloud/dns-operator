@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // WirePlan converts the compiler's API-rich records to the deliberately small,

@@ -10,6 +10,6 @@ configMapGenerator:
   - server-config.yaml
 
 images:
-- name: ghcr.io/datum-cloud/dns-operator
-  newName: ghcr.io/datum-cloud/dns-operator
+- name: ghcr.io/datum-cloud/dns
+  newName: ghcr.io/datum-cloud/dns
   newTag: latest

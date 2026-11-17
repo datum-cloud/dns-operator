@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	agentdocs "go.miloapis.com/dns-operator/docs/agent"
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	agentdocs "go.miloapis.com/dns/docs/agent"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
 // The copy in this package is read by a customer, not by whoever wrote the

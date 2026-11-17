@@ -5,7 +5,7 @@
 Two `DNSRecordSet` objects can claim the same owner name in one zone. The agent writes records one record
 set at a time, so it never sees both claims together, and it cannot decide between them. When one of the
 two lets the name go, the agent deletes the name, although the other still claims it
-([#188](https://github.com/datum-cloud/dns-operator/issues/188)). We propose that the agent writes one
+([#188](https://github.com/datum-cloud/dns/issues/188)). We propose that the agent writes one
 zone at a time instead: it reads every record set of the zone, picks one holder for each name, and writes
 the difference in one pass.
 
@@ -19,28 +19,28 @@ the difference in one pass.
 
 ## Motivation
 
-[`record-ownership.md`](https://github.com/datum-cloud/dns-operator/blob/main/docs/architecture/record-ownership.md) states the rule. When a record set releases
+[`record-ownership.md`](https://github.com/datum-cloud/dns/blob/main/docs/architecture/record-ownership.md) states the rule. When a record set releases
 a name, *"the remaining claimants are re-elected … If no claimant remains, the backend record set for
 that name is deleted."* Until `v0.7.0` an agent reconciler handled one name at a time, applied this rule,
 and told each record set that lost the election `NotOwner`.
 
-[#82](https://github.com/datum-cloud/dns-operator/pull/82) replaced it with one reconcile per record set
-([design](https://github.com/datum-cloud/dns-operator/blob/main/docs/enhancements/dnsrecordset-reconcile-consolidation.md)). That fixed a delete that did not survive a restart
-([#58](https://github.com/datum-cloud/dns-operator/issues/58)) and a queue that fanned every zone event out
-to every name ([#59](https://github.com/datum-cloud/dns-operator/issues/59)). But a reconcile that sees
+[#82](https://github.com/datum-cloud/dns/pull/82) replaced it with one reconcile per record set
+([design](https://github.com/datum-cloud/dns/blob/main/docs/enhancements/dnsrecordset-reconcile-consolidation.md)). That fixed a delete that did not survive a restart
+([#58](https://github.com/datum-cloud/dns/issues/58)) and a queue that fanned every zone event out
+to every name ([#59](https://github.com/datum-cloud/dns/issues/59)). But a reconcile that sees
 one record set cannot choose among several. So three behaviours went with the old reconciler: only the
 holder's records are written, the others report `NotOwner`, and a released name passes to the next
-claimant. [#86](https://github.com/datum-cloud/dns-operator/issues/86) proposes removing the old
+claimant. [#86](https://github.com/datum-cloud/dns/issues/86) proposes removing the old
 reconciler, which nothing runs.
 
 The admission webhook refuses a second claim on a name. It cannot make duplicates impossible:
 
-- it fails open on purpose: in the outage of [#69](https://github.com/datum-cloud/dns-operator/issues/69),
+- it fails open on purpose: in the outage of [#69](https://github.com/datum-cloud/dns/issues/69),
   a webhook set to fail closed refused every record set write while no running release could serve it;
 - two creates at the same moment both pass it;
 - it does not see claims that existed before it.
 
-[#83](https://github.com/datum-cloud/dns-operator/issues/83) found such pairs in production. So the agent
+[#83](https://github.com/datum-cloud/dns/issues/83) found such pairs in production. So the agent
 still has to decide what gets through, as a Gateway API controller does for conflicting routes.
 
 ## Goals
@@ -51,7 +51,7 @@ still has to decide what gets through, as a Gateway API controller does for conf
   most one thing that users see, so a problem points at one step.
 - In a zone without two claims on one name, the records served do not change, with one exception:
   records that carry an ownership note although no record set claims them any more. These are leftovers
-  of failures such as [#58](https://github.com/datum-cloud/dns-operator/issues/58), and the first pass removes them, within a limit.
+  of failures such as [#58](https://github.com/datum-cloud/dns/issues/58), and the first pass removes them, within a limit.
 
 ## Non-Goals
 
@@ -63,7 +63,7 @@ still has to decide what gets through, as a Gateway API controller does for conf
   the agent may delete.
 - Who sets the SOA serial. A zone's SOA and NS records are record sets, which the pass writes like any
   other; the zone controller writes them only when it creates the zone. The serial the SOA carries is a
-  separate change ([#101](https://github.com/datum-cloud/dns-operator/issues/101)).
+  separate change ([#101](https://github.com/datum-cloud/dns/issues/101)).
 
 ## Background
 
@@ -88,7 +88,7 @@ still has to decide what gets through, as a Gateway API controller does for conf
 4. **One reconcile per zone.** Chosen. The rule is about several record sets, so the unit of work holds
    them all. A prototype built on 2026-09-29 passed every unit, integration and end-to-end suite, and
    added about as many lines of code as it removed (+288 / −295). On that date the old reconciler
-   ([#86](https://github.com/datum-cloud/dns-operator/issues/86)) held about 1,350 more lines, which
+   ([#86](https://github.com/datum-cloud/dns/issues/86)) held about 1,350 more lines, which
    step 5 removes.
 
 ## Design
@@ -96,7 +96,7 @@ still has to decide what gets through, as a Gateway API controller does for conf
 **What is queued.** A zone is queued when one of its record sets is created, deleted, changes its spec,
 or starts deleting, and when the zone itself becomes programmed. When a record set moves to another zone,
 both zones are queued, so the old zone releases its names. Writes to status and metadata are not queued:
-a reconcile that queued its own status writes would run in a loop, the churn behind [#59](https://github.com/datum-cloud/dns-operator/issues/59).
+a reconcile that queued its own status writes would run in a loop, the churn behind [#59](https://github.com/datum-cloud/dns/issues/59).
 
 **One pass over a zone:**
 
@@ -165,8 +165,8 @@ production.
    leftovers are removed. A new end-to-end scenario, `claimed-names`, fails before this step and passes
    after it.
 5. **Removal of what step 4 made unused:** the per-record-set calls, the old reconciler
-   ([#86](https://github.com/datum-cloud/dns-operator/issues/86)), and the ownership parameters on the
-   backend interface ([#88](https://github.com/datum-cloud/dns-operator/issues/88)).
+   ([#86](https://github.com/datum-cloud/dns/issues/86)), and the ownership parameters on the
+   backend interface ([#88](https://github.com/datum-cloud/dns/issues/88)).
 
 Before step 4 reaches staging or production, a dry run of the pass counts, in that environment, the names
 claimed twice, the domains that more than one project holds, and the leftovers it would delete. Names
@@ -176,7 +176,7 @@ claimed twice in production are removed by hand first, with their owners.
 
 - **Scale.** Every change to a record set queues a full pass over its zone, so the largest zone sets the
   cost. Step 4 is load-tested locally with at least as many record sets as production's largest zone,
-  and twice its largest burst of new ones, each programmed within the 60-second target of [#59](https://github.com/datum-cloud/dns-operator/issues/59). It then
+  and twice its largest burst of new ones, each programmed within the 60-second target of [#59](https://github.com/datum-cloud/dns/issues/59). It then
   runs on staging's largest zone. On 2026-09-29 the largest production zone, which holds gateway
   addresses, had 2,399 record sets, its largest burst in 30 days was 100 new ones in five minutes, and
   staging's largest zone had 1,556. A local test of the prototype on 2026-09-29 met the target: with

@@ -5,7 +5,7 @@ package serving
 import (
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestResolveMemberIDFromPodOrdinal(t *testing.T) {

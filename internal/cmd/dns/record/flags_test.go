@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // TestMutationCommandsCarryTheUnionOfRdataFlags — the record type is a

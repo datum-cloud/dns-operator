@@ -3,7 +3,7 @@ package model
 import (
 	"testing"
 
-	dns "go.miloapis.com/dns-operator/api/v1alpha1"
+	dns "go.miloapis.com/dns/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

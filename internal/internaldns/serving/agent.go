@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 )
 
 type Mode string

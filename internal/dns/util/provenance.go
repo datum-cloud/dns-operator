@@ -2,7 +2,7 @@
 
 package util
 
-import dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
+import dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
 
 // Labels the iroh DNS controller (network-services-operator's
 // iroh_dns_controller.go) stamps on every DNSRecordSet it creates for a

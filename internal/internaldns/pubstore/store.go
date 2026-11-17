@@ -16,9 +16,9 @@ import (
 	"time"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"

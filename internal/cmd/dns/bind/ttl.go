@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strconv"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/rdata"
+	"go.miloapis.com/dns/internal/cmd/dns/rdata"
 )
 
 // looksLikeTTL reports whether tok occupies the TTL slot rather than the class

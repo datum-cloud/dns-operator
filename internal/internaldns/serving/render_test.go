@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	contextdns "go.miloapis.com/dns-operator/internal/internaldns/coredns"
+	contextdns "go.miloapis.com/dns/internal/internaldns/coredns"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func renderFixture(t *testing.T) (RenderConfig, model.ServingSnapshot) {

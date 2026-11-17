@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // MemberIDSource derives a member's ID from its Pod, so every member of a

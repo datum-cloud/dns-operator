@@ -18,8 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	"go.miloapis.com/dns-operator/internal/display"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/display"
 )
 
 // DNSRecordSetMutator stamps display-name / display-value annotations at

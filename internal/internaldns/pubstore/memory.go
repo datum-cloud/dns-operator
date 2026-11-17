@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 )
 
 // MemoryKV is an in-process KV with the bucket's revision and watch semantics,

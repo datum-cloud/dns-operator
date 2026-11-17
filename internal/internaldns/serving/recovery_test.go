@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func revisedPublication(t *testing.T, now time.Time, revision uint64, generation uint64, address string) (model.PublicationChunk, model.PublicationManifest) {

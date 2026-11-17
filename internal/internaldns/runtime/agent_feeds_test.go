@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/serving"
+	"go.miloapis.com/dns/internal/internaldns/serving"
 )
 
 func TestOnlyResolverAgentsReadTheAckFeed(t *testing.T) {

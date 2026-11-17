@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // testDelegationSource stands in for the "as delegated by the com nameservers"

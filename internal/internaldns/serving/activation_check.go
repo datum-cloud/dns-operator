@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // CheckActivation requires the latest locally accepted state to be fully

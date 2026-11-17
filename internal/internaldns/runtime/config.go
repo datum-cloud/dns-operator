@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
-	"go.miloapis.com/dns-operator/internal/internaldns/platform"
-	"go.miloapis.com/dns-operator/internal/internaldns/serving"
-	"go.miloapis.com/dns-operator/internal/internaldns/transport"
+	"go.miloapis.com/dns/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/platform"
+	"go.miloapis.com/dns/internal/internaldns/serving"
+	"go.miloapis.com/dns/internal/internaldns/transport"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )

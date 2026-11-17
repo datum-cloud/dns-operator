@@ -6,7 +6,7 @@ trap 'rm -rf "$work"' EXIT
 cd "$work"
 export RUNNER_TEMP="$work" GITHUB_OUTPUT="$work/output" GITHUB_SHA=0123456789012345678901234567890123456789
 export IMAGE_GROUP=internal
-export OPERATOR_METADATA='{"tags":["ghcr.io/datum-cloud/dns-operator:v0.0.0-test"],"labels":{"test":"operator"}}'
+export OPERATOR_METADATA='{"tags":["ghcr.io/datum-cloud/dns:v0.0.0-test"],"labels":{"test":"operator"}}'
 export RUNTIME_METADATA='{"tags":["ghcr.io/datum-cloud/internal-dns:v0.0.0-test"],"labels":{"test":"runtime"}}'
 export SERVING_METADATA='{"tags":["ghcr.io/datum-cloud/internal-dns-serving:v0.0.0-test"],"labels":{"test":"serving"}}'
 bash "$root/hack/ci/publish-images.sh" prepare

@@ -11,8 +11,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	sharedutil "go.miloapis.com/dns-operator/internal/dns/util"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	sharedutil "go.miloapis.com/dns/internal/dns/util"
 )
 
 // The tools this package publishes to an assistant. All read-only.

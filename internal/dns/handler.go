@@ -3,8 +3,8 @@ package dns
 import (
 	"fmt"
 
-	"go.miloapis.com/dns-operator/internal/dns/fake"
-	"go.miloapis.com/dns-operator/internal/dns/pdns"
+	"go.miloapis.com/dns/internal/dns/fake"
+	"go.miloapis.com/dns/internal/dns/pdns"
 )
 
 type DNSHandler struct {

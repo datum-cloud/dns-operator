@@ -6,7 +6,7 @@ import (
 	"maps"
 	"time"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 // tombstoneAckRetention bounds how long a verified withdrawal keeps renewing

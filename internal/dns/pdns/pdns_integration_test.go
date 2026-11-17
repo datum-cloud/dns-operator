@@ -24,9 +24,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	dnserrors "go.miloapis.com/dns-operator/internal/dns/errors"
-	"go.miloapis.com/dns-operator/internal/dns/ownername"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	dnserrors "go.miloapis.com/dns/internal/dns/errors"
+	"go.miloapis.com/dns/internal/dns/ownername"
 )
 
 func writePDNSAuthWithSQLite(t *testing.T, dir, apiKey string) {

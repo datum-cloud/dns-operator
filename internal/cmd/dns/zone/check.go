@@ -14,7 +14,7 @@ import (
 
 	"github.com/miekg/dns"
 
-	"go.miloapis.com/dns-operator/internal/cmd/dns/util"
+	"go.miloapis.com/dns/internal/cmd/dns/util"
 )
 
 // defaultCheckTimeout bounds each live query. --check must never be the reason

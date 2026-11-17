@@ -16,8 +16,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	pdnsclient "go.miloapis.com/dns-operator/internal/dns/pdns"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	pdnsclient "go.miloapis.com/dns/internal/dns/pdns"
 )
 
 func retryTestZone() *dnsv1alpha1.DNSZone {

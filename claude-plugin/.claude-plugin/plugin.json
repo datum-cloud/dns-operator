@@ -7,7 +7,7 @@
     "url": "https://github.com/datum-cloud"
   },
   "homepage": "https://www.datum.net/docs/domain-dns/dns",
-  "repository": "https://github.com/datum-cloud/dns-operator",
+  "repository": "https://github.com/datum-cloud/dns",
   "license": "AGPL-3.0",
   "keywords": [
     "dns",

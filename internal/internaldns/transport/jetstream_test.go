@@ -13,7 +13,7 @@ import (
 	"github.com/go-logr/logr/funcr"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestProductionTransportRequiresTLSAndOneAuthMethod(t *testing.T) {

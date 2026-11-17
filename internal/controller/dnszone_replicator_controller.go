@@ -32,9 +32,9 @@ import (
 	mcsource "sigs.k8s.io/multicluster-runtime/pkg/source"
 
 	networkingv1alpha "go.datum.net/network-services-operator/api/v1alpha"
-	dnsv1alpha1 "go.miloapis.com/dns-operator/api/v1alpha1"
-	dnsutils "go.miloapis.com/dns-operator/internal/dns/utils"
-	downstreamclient "go.miloapis.com/dns-operator/internal/downstreamclient"
+	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	dnsutils "go.miloapis.com/dns/internal/dns/utils"
+	downstreamclient "go.miloapis.com/dns/internal/downstreamclient"
 )
 
 type DNSZoneReplicator struct {

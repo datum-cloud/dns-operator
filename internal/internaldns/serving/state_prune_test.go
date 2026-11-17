@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"go.miloapis.com/dns-operator/internal/internaldns/model"
+	"go.miloapis.com/dns/internal/internaldns/model"
 )
 
 func TestCheckpointDropsChunksOlderThanTheAppliedPublication(t *testing.T) {

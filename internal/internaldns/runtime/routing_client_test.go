@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	dnsv1 "go.miloapis.com/dns-operator/api/v1alpha1"
+	dnsv1 "go.miloapis.com/dns/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"

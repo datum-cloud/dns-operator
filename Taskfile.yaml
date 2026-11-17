@@ -21,7 +21,7 @@ vars:
   UPSTREAM_CLUSTER_NAME: 'dns-upstream'
   CONTROL_CLUSTER_NAME: 'dns-control'
   EDGE_CLUSTER_NAME: 'dns-edge'
-  IMG: 'ghcr.io/datum-cloud/dns-operator:latest'
+  IMG: 'ghcr.io/datum-cloud/dns:latest'
   RUSTFS_BUCKET: 'lightningstream'
   RUSTFS_NODEPORT_FILE: 'dev/rustfs.nodeport'
   # In-cluster-rewritten kubeconfig for the control cluster, mounted into the
@@ -33,7 +33,7 @@ vars:
   MILO_ADMIN_KUBECONFIG: 'dev/milo.admin.kubeconfig'
   # dns-operator image used by the replicator on dns-upstream. Loaded into the
   # kind node; the overlays reference :latest with imagePullPolicy IfNotPresent.
-  DNSOP_IMG: 'ghcr.io/datum-cloud/dns-operator:latest'
+  DNSOP_IMG: 'ghcr.io/datum-cloud/dns:latest'
   # Cross-cluster kubeconfig the replicator uses to reach milo-apiserver on
   # dns-control, via the envoy gateway NodePort on the control node's IP.
   MILO_UPSTREAM_KUBECONFIG: 'dev/milo.upstream.kubeconfig'

@@ -123,13 +123,10 @@ func TestSingleReplicaWithoutLeaderElection(t *testing.T) {
 	defer cancel()
 	p := startPlanes(t)
 	downstream := newCluster(t, p.deployment)
-	zoneReplicator := func(mcmgr mcmanager.Manager) error {
-		return (&controller.DNSZoneReplicator{DownstreamClient: downstream.GetClient()}).SetupWithManager(mcmgr, downstream)
-	}
 	mcmgr := startReplica(ctx, t, p, false, downstream, ctrl.Options{
 		HealthProbeBindAddress: freeAddress(t),
 		WebhookServer:          neverServing{webhook.NewServer(webhook.Options{})},
-	}, zoneReplicator, setupReplicatorWebhook)
+	}, zoneReplicator(downstream), setupReplicatorWebhook)
 
 	if !finalizedWithin(ctx, t, newClient(t, p.project), 60*time.Second) {
 		t.Fatal("the replicator never reconciled the project's DNSZone")
@@ -137,6 +134,14 @@ func TestSingleReplicaWithoutLeaderElection(t *testing.T) {
 	mutator := &dnswebhook.DNSRecordSetMutator{Manager: mcmgr, Client: mcmgr.GetLocalManager().GetClient()}
 	if !annotatedWithin(ctx, t, mutator, 60*time.Second) {
 		t.Fatal("the webhook admitted a DNSRecordSet without its display annotations")
+	}
+}
+
+// zoneReplicator sets up the DNSZone replicator, which finalizes each project
+// DNSZone it reconciles.
+func zoneReplicator(downstream cluster.Cluster) func(mcmanager.Manager) error {
+	return func(mcmgr mcmanager.Manager) error {
+		return (&controller.DNSZoneReplicator{DownstreamClient: downstream.GetClient()}).SetupWithManager(mcmgr, downstream)
 	}
 }
 
@@ -192,7 +197,7 @@ func startReplica(
 	if contended {
 		holdLease(ctx, t, deploymentClient)
 	}
-	createReadyProject(ctx, t, deploymentClient)
+	createReadyProject(ctx, t, deploymentClient, testProject)
 	createZone(ctx, t, newClient(t, p.project))
 
 	serverConfig := config.DNSOperator{Discovery: config.DiscoveryConfig{
@@ -282,21 +287,21 @@ func annotatedWithin(ctx context.Context, t *testing.T, m *dnswebhook.DNSRecordS
 }
 
 // goUntilCleanup runs run in the background and, when the test ends, waits for
-// it to return. The caller cancels run's context before cleanup. A manager
-// still running when envtest stops its API server keeps watches and lease
-// renewals open, and the API server then outlasts envtest's stop timeout.
-// Cleanups run in reverse order, so every caller after startEnvtest is waited
-// for before its API server stops.
+// it to return and logs its error. The caller cancels run's context before
+// cleanup. A manager still running when envtest stops its API server keeps
+// watches and lease renewals open, and the API server then outlasts envtest's
+// stop timeout. Cleanups run in reverse order, so every caller after
+// startEnvtest is waited for before its API server stops.
 func goUntilCleanup(t *testing.T, run func() error) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = run()
-	}()
+	done := make(chan error, 1)
+	go func() { done <- run() }()
 	t.Cleanup(func() {
 		select {
-		case <-done:
+		case err := <-done:
+			if err != nil {
+				t.Logf("a manager stopped with an error: %v", err)
+			}
 		case <-time.After(30 * time.Second):
 			t.Error("a manager did not stop within 30 s of its context ending")
 		}
@@ -401,14 +406,11 @@ func holdLease(ctx context.Context, t *testing.T, c client.Client) {
 	}
 }
 
-// createReadyProject creates the test Project in the deployment cluster and
+// createReadyProject creates the named Project in the deployment cluster and
 // marks it Ready, which is what makes the Milo provider register it.
-func createReadyProject(ctx context.Context, t *testing.T, c client.Client) {
+func createReadyProject(ctx context.Context, t *testing.T, c client.Client, name string) {
 	t.Helper()
-	project := &unstructured.Unstructured{}
-	project.SetAPIVersion("resourcemanager.miloapis.com/v1alpha1")
-	project.SetKind("Project")
-	project.SetName(testProject)
+	project := projectObject(name)
 	project.Object["spec"] = map[string]any{"ownerRef": map[string]any{"kind": "Organization", "name": "org"}}
 	if err := c.Create(ctx, project); err != nil {
 		t.Fatalf("creating the project: %v", err)
@@ -420,6 +422,15 @@ func createReadyProject(ctx context.Context, t *testing.T, c client.Client) {
 	if err := c.Status().Update(ctx, project); err != nil {
 		t.Fatalf("marking the project ready: %v", err)
 	}
+}
+
+// projectObject returns the named Milo Project, with no spec or status.
+func projectObject(name string) *unstructured.Unstructured {
+	project := &unstructured.Unstructured{}
+	project.SetAPIVersion("resourcemanager.miloapis.com/v1alpha1")
+	project.SetKind("Project")
+	project.SetName(name)
+	return project
 }
 
 // createZone creates the record set's DNSZone in the project control plane.

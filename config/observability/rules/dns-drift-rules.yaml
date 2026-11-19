@@ -166,6 +166,7 @@ spec:
           labels:
             severity: warning
             service: dns
+            team: delivery
           annotations:
             summary: "Orphaned downstream DNSRecordSet (no upstream owner)"
             description: >-
@@ -182,6 +183,7 @@ spec:
           labels:
             severity: warning
             service: dns
+            team: delivery
           annotations:
             summary: "Upstream DNSRecordSet not replicated downstream"
             description: >-
@@ -209,6 +211,7 @@ spec:
           labels:
             severity: info
             service: dns
+            team: delivery
           annotations:
             summary: "DNSRecordSet stuck not-Accepted for 15m"
             description: >-

@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# The service catalog's DNS query product on staging's price list, priced
+# per million queries, with the first 500K a month free. Both bands are at 0
+# for now, until finance sets the price, and its tax code comes later.
+#
+# Pricings can't be changed once created: to change a price, add a new
+# version (-v2) and leave the old one, which published Offers and contracts
+# may still use.
+---
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: dns-queries-v1
+  namespace: milo-system
+spec:
+  displayName: "DNS Requests"
+  sku: NET-DNS
+  chargeType: Usage
+  currency: USD
+  serviceRef: dns.networking.miloapis.com
+  metric: dns.networking.miloapis.com/zone/queries
+  pricingUnit: million-queries
+  unitConversion:
+    description: Queries are metered one by one and priced per million.
+    meterUnitsPerPricingUnit: "1000000"
+  rates:
+    - tiered:
+        - upTo: "0.5"
+          rate: "0"
+        - rate: "0"

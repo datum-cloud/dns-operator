@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Staging's DNS prices. Staging's infra enables this component on the DNS
+# service catalog; production doesn't, so production has no DNS prices
+# until someone adds them deliberately.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - service-pricing.yaml

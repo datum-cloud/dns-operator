@@ -114,11 +114,22 @@ type DNSResolverAccessBindingSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="destinationAddress must be an IP address"
 	DestinationAddress string `json:"destinationAddress"`
+	// RegionalAddress is the address the node resolver forwards this
+	// context's queries to in the region. It must be inside the region's
+	// regional resolver range and used by no other binding. Unset, the
+	// control plane allocates one, unless it is configured to require it.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="regionalAddress must be an IP address"
+	RegionalAddress string `json:"regionalAddress,omitempty"`
 }
 
 type DNSResolverAccessBindingStatus struct {
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+	// RegionalAddress is the regional address the binding is served on.
+	// +optional
+	RegionalAddress string `json:"regionalAddress,omitempty"`
 }
 
 // +kubebuilder:object:root=true

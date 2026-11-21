@@ -78,6 +78,57 @@ func (a *Allocator) Allocate(ctx context.Context, projectUID, contextUID types.U
 	return lease.ClusterAddress, nil
 }
 
+// ValidateRegional refuses a supplied regional address outside the region's
+// regional resolver pool, since the region's router routes only that pool.
+func (a *Allocator) ValidateRegional(region, address string) error {
+	prefix, err := a.prefixFor(region)
+	if err != nil {
+		return err
+	}
+	parsed, err := netip.ParseAddr(address)
+	if err != nil || parsed.Zone() != "" || !prefix.Contains(parsed.Unmap()) {
+		return fmt.Errorf("%w: regional address %q must be inside the region's regional resolver pool %s", model.ErrDestinationRefused, address, prefix)
+	}
+	return nil
+}
+
+// ClaimRegional reserves a supplied regional address for the context, under
+// the claim the allocator itself would hold, so the allocator never hands the
+// address to another context.
+func (a *Allocator) ClaimRegional(ctx context.Context, projectUID, contextUID types.UID, region, address string) error {
+	if a.Client == nil || a.Namespace == "" || projectUID == "" || contextUID == "" {
+		return fmt.Errorf("allocator requires a client, namespace, and immutable project/context identities")
+	}
+	if err := a.ValidateRegional(region, address); err != nil {
+		return err
+	}
+	address = netip.MustParseAddr(address).Unmap().String()
+	owner := string(projectUID) + "/" + string(contextUID)
+	if _, own := a.RegionalPrefixes[region]; own {
+		owner += "/" + region
+	}
+	claim := a.regionalClaim(owner, address)
+	var existing corev1.ConfigMap
+	switch err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); {
+	case err == nil:
+	case apierrors.IsNotFound(err):
+		if err := a.Client.Create(ctx, claim); err == nil {
+			return nil
+		} else if !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+		if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	if existing.Data["owner"] != owner || existing.Data["address"] != address {
+		return fmt.Errorf("%w: regional address is already reserved", model.ErrDestinationRefused)
+	}
+	return nil
+}
+
 // ClaimDestination atomically reserves an integration-selected service
 // destination across every project sharing this platform control plane.
 func (a *Allocator) ClaimDestination(ctx context.Context, projectUID, contextUID types.UID, region, address string, port int32) error {
@@ -287,7 +338,7 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 		candidate := AddressLease{Owner: owner, ProjectUID: projectUID, ContextUID: contextUID, CreatedAt: time.Now().UTC()}
 
 		candidate.ClusterAddress = addressInPrefix(parsed, owner+"/cluster", salt)
-		claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(candidate.ClusterAddress), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": candidate.ClusterAddress}}
+		claim := a.regionalClaim(owner, candidate.ClusterAddress)
 		if err := a.Client.Create(ctx, claim); apierrors.IsAlreadyExists(err) {
 			if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
 				return AddressLease{}, err
@@ -327,6 +378,10 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 		return candidate, nil
 	}
 	return AddressLease{}, fmt.Errorf("address collision budget exhausted")
+}
+
+func (a *Allocator) regionalClaim(owner, address string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
 }
 
 func decodeLease(stored corev1.ConfigMap, owner string) (AddressLease, error) {

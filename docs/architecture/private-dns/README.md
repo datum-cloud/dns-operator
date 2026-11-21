@@ -563,6 +563,21 @@ spec:
 and DNS neither allocates nor rewrites it. DNS reserves the address when it
 accepts the binding and reports the result in status conditions.
 
+`regionalAddress` is optional. It is the address the node resolver forwards
+the context's queries to in the region. When the integration supplies it, DNS
+checks that it is inside the region's regional resolver range and not used by
+another binding, and serves it. Changing it moves the binding to the new
+address with a new configuration revision. When it is unset, DNS allocates one.
+`status.regionalAddress` reports the address in use either way, so an
+integration can adopt an address DNS allocated.
+
+An integration that supplies every address sets `requireSuppliedAddresses` in
+the control-plane configuration. DNS then refuses access bindings without
+`regionalAddress`, makes no address or destination claims, and checks both
+addresses against the other resolver bindings when a binding first uses them.
+A binding moved onto an address another binding serves keeps its previous
+addresses and reports `AddressesApplied=False`.
+
 Access reports `Accepted` after validation and `Ready` after required members
 apply the current access mapping and configuration. Zone publication readiness
 is

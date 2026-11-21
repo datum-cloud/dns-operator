@@ -61,6 +61,14 @@ func (testAllocator) ReleaseDestinations(context.Context, types.UID, map[string]
 	return nil
 }
 
+func (testAllocator) ValidateRegional(string, string) error {
+	return nil
+}
+
+func (testAllocator) ClaimRegional(context.Context, types.UID, types.UID, string, string) error {
+	return nil
+}
+
 func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)

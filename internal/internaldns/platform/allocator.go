@@ -24,6 +24,7 @@ import (
 
 const leaseLabel = "internal-dns.miloapis.com/address-lease"
 const destinationProjectLabel = "internal-dns.miloapis.com/destination-project"
+const leaseAllocatedAnnotation = "internal-dns.miloapis.com/allocated-at"
 
 type AddressLease struct {
 	Owner          string    `json:"owner"`
@@ -34,8 +35,8 @@ type AddressLease struct {
 }
 
 // Allocator reserves all generated addresses through atomic, globally named Kubernetes address claims.
-// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional leases are retained after revocation: those addresses
-// are never reused by another resolver context lifetime. Service destination claims are released once no binding routes them.
+// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional claims and leases are released by
+// ReleaseRegionalAddresses, and service destination claims by ReleaseDestinations, once no binding or committed serving snapshot routes them.
 type Allocator struct {
 	Client        client.Client
 	Namespace     string
@@ -279,7 +280,13 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 	key := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}
 	var stored corev1.ConfigMap
 	if err := a.Client.Get(ctx, key, &stored); err == nil {
-		return decodeLease(stored, owner)
+		lease, err := decodeLease(stored, owner)
+		if err != nil {
+			return lease, err
+		}
+		if reused, err := a.reuseLease(ctx, &stored, lease); err != nil || reused {
+			return lease, err
+		}
 	} else if !apierrors.IsNotFound(err) {
 		return AddressLease{}, err
 	}
@@ -294,6 +301,9 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 			}
 			if claim.Data["owner"] != owner || claim.Data["address"] != candidate.ClusterAddress {
 				continue
+			}
+			if err := a.stamp(ctx, claim); err != nil {
+				return AddressLease{}, err
 			}
 		} else if err != nil {
 			return AddressLease{}, err
@@ -327,6 +337,76 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 		return candidate, nil
 	}
 	return AddressLease{}, fmt.Errorf("address collision budget exhausted")
+}
+
+// reuseLease stamps an existing lease as just allocated, so a release sweep
+// that read it before this allocation fails its versioned delete, and one that
+// reads it after treats it as new. The lease's claim is recreated if missing.
+// A lease whose address another owner has claimed is dropped, and false is
+// returned so a new address is reserved.
+func (a *Allocator) reuseLease(ctx context.Context, stored *corev1.ConfigMap, lease AddressLease) (bool, error) {
+	if err := a.stamp(ctx, stored); err != nil {
+		return false, err
+	}
+	switch claimed, err := a.holdClaim(ctx, lease.Owner, lease.ClusterAddress); {
+	case err != nil:
+		return false, err
+	case claimed:
+		return true, nil
+	default:
+		return false, a.deleteClaim(ctx, stored)
+	}
+}
+
+// holdClaim creates the owner's claim on address, or stamps the owner's
+// existing one, and reports false when another owner holds it.
+func (a *Allocator) holdClaim(ctx context.Context, owner, address string) (bool, error) {
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
+	err := a.Client.Create(ctx, claim)
+	if err == nil {
+		return true, nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return false, err
+	}
+	if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+		return false, err
+	}
+	if claim.Data["owner"] != owner || claim.Data["address"] != address {
+		return false, nil
+	}
+	return true, a.stamp(ctx, claim)
+}
+
+// stamp marks a claim or lease as just allocated, so a release sweep that
+// read it earlier fails its versioned delete and a later one sees it inside
+// the grace period.
+func (a *Allocator) stamp(ctx context.Context, obj *corev1.ConfigMap) error {
+	base := obj.DeepCopy()
+	if obj.Annotations == nil {
+		obj.Annotations = map[string]string{}
+	}
+	obj.Annotations[leaseAllocatedAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	return a.Client.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// Reclaim keeps a revived binding on its previous address when its claim is
+// still the context's, or can be taken back, and allocates again only when
+// another context now holds it.
+func (a *Allocator) Reclaim(ctx context.Context, projectUID, contextUID types.UID, region, address string) (string, error) {
+	if parsed, err := netip.ParseAddr(address); err == nil {
+		address = parsed.Unmap().String()
+		owner := string(projectUID) + "/" + string(contextUID)
+		if prefix, own := a.RegionalPrefixes[region]; own {
+			if pool, err := ParseRegionalPrefix(prefix); err == nil && pool.Contains(parsed.Unmap()) {
+				owner += "/" + region
+			}
+		}
+		if claimed, err := a.holdClaim(ctx, owner, address); err != nil || claimed {
+			return address, err
+		}
+	}
+	return a.Allocate(ctx, projectUID, contextUID, region)
 }
 
 func decodeLease(stored corev1.ConfigMap, owner string) (AddressLease, error) {

@@ -469,3 +469,12 @@ func TestFeedValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRegionalAddressReleaseModes(t *testing.T) {
+	for mode, valid := range map[string]bool{"": true, "enabled": true, "dryRun": true, "disabled": true, "on": false} {
+		cfg := Config{PlatformNamespace: "platform", Projects: []ProjectConfig{{ProjectUID: "p1", Namespace: "n1"}}, RegionalAddressRelease: mode}
+		if err := cfg.validateRegionalAddressRelease(); (err == nil) != valid {
+			t.Fatalf("mode %q: valid=%v, got %v", mode, valid, err)
+		}
+	}
+}

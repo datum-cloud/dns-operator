@@ -120,7 +120,17 @@ type Config struct {
 	// Feed carries the inputs this region writes itself to the other
 	// regions and to the federation hub.
 	Feed *FeedConfig `json:"feed,omitempty"`
+	// RegionalAddressRelease controls the sweep that frees regional resolver
+	// address claims nothing routes any more: "enabled" (the default),
+	// "dryRun", which only counts and logs what it would free, or "disabled".
+	RegionalAddressRelease string `json:"regionalAddressRelease,omitempty"`
 }
+
+const (
+	regionalAddressReleaseEnabled  = "enabled"
+	regionalAddressReleaseDryRun   = "dryRun"
+	regionalAddressReleaseDisabled = "disabled"
+)
 
 // PublicationStoreConfig moves the control plane's publication records
 // (ownership leases, manifests, chunks, outboxes and shard ownership) from the
@@ -284,6 +294,9 @@ func (c *Config) Validate(role string) error {
 		return err
 	}
 	if err := c.validateRegions(); err != nil {
+		return err
+	}
+	if err := c.validateRegionalAddressRelease(); err != nil {
 		return err
 	}
 	if err := c.validateFeed(); err != nil {
@@ -538,6 +551,15 @@ func (c Config) validatePublicationStore() error {
 		return fmt.Errorf("publicationStore: %w", err)
 	}
 	return nil
+}
+
+func (c Config) validateRegionalAddressRelease() error {
+	switch c.RegionalAddressRelease {
+	case "", regionalAddressReleaseEnabled, regionalAddressReleaseDryRun, regionalAddressReleaseDisabled:
+		return nil
+	default:
+		return fmt.Errorf("regionalAddressRelease must be %q, %q or %q: %q", regionalAddressReleaseEnabled, regionalAddressReleaseDryRun, regionalAddressReleaseDisabled, c.RegionalAddressRelease)
+	}
 }
 
 func (c Config) validateRegions() error {

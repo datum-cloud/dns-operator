@@ -34,8 +34,8 @@ type AddressLease struct {
 }
 
 // Allocator reserves all generated addresses through atomic, globally named Kubernetes address claims.
-// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional leases are retained after revocation: those addresses
-// are never reused by another resolver context lifetime. Service destination claims are released once no binding routes them.
+// Each owner has its own lease, avoiding a fleet-wide size limit or write lock. Regional claims and leases are released by
+// ReleaseRegionalAddresses, and service destination claims by ReleaseDestinations, once no binding or committed serving snapshot routes them.
 type Allocator struct {
 	Client        client.Client
 	Namespace     string

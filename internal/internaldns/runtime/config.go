@@ -120,6 +120,11 @@ type Config struct {
 	// Feed carries the inputs this region writes itself to the other
 	// regions and to the federation hub.
 	Feed *FeedConfig `json:"feed,omitempty"`
+	// RequireSuppliedAddresses is for an integration that assigns every
+	// access binding's regional address itself. The allocator is not used,
+	// no address claims are made, and an access binding without
+	// regionalAddress is refused.
+	RequireSuppliedAddresses bool `json:"requireSuppliedAddresses,omitempty"`
 }
 
 // PublicationStoreConfig moves the control plane's publication records

@@ -71,6 +71,17 @@ spec:
                 maxLength: 253
                 minLength: 1
                 type: string
+              regionalAddress:
+                description: |-
+                  RegionalAddress is the address the node resolver forwards this
+                  context's queries to in the region. It must be inside the region's
+                  regional resolver range and used by no other binding. Unset, the
+                  control plane allocates one, unless it is configured to require it.
+                maxLength: 253
+                type: string
+                x-kubernetes-validations:
+                - message: regionalAddress must be an IP address
+                  rule: isIP(self)
             required:
             - contextRef
             - destinationAddress
@@ -145,6 +156,10 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              regionalAddress:
+                description: RegionalAddress is the regional address the binding is
+                  served on.
+                type: string
             type: object
         required:
         - spec

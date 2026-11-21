@@ -71,6 +71,7 @@ delete the resource and create a new one.
 | `DNSResolverContext` | `spec.consumerID` | Network integration | Immutable and unique per project |
 | `DNSResolverContext` | `spec.managedNamespace.domainSuffix` | Network integration | Immutable once set. Must end in a permitted private suffix, `internal` by default |
 | `DNSResolverAccessBinding` | `spec.contextRef`, `spec.region`, `spec.destinationAddress` | Network integration | Immutable |
+| `DNSResolverAccessBinding` | `spec.regionalAddress` (optional) | Network integration | Mutable; a change moves the binding |
 | `DNSRegistration` | `spec.dnsZoneRef`, `spec.name` | Service | Immutable |
 | `DNSRegistration` | `spec.recordTypes`, `spec.ttlSeconds`, `spec.reservedDescendants` | Service | Mutable. In a managed zone, any change to a registration that declares `reservedDescendants` needs the `reserve` permission |
 | `DNSRecordContribution` | `spec.registrationRef` name and UID | Service | Immutable |

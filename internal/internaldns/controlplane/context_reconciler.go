@@ -471,11 +471,43 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		contextReady := resolverContextReady(contextObject)
 		valid := a.DeletionTimestamp.IsZero() && contextObject != nil && contextObject.DeletionTimestamp.IsZero() && contextObject.Name == spec.ContextRef.Name && contextReady
+		reason, msg := "InvalidOrStaleAccess", "context lifetime and destination must be current"
 		destination := ""
 		if parsed, err := netip.ParseAddr(spec.DestinationAddress); err != nil {
 			valid = false
 		} else {
 			destination = parsed.Unmap().String()
+		}
+		regional := ""
+		if spec.RegionalAddress != "" {
+			if parsed, err := netip.ParseAddr(spec.RegionalAddress); err != nil {
+				valid = false
+			} else {
+				regional = parsed.Unmap().String()
+			}
+		}
+		name := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
+		var old dnsv1alpha1.DNSResolverBinding
+		err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}, &old)
+		exists := err == nil
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		live := exists && !old.Spec.Tombstone && old.DeletionTimestamp.IsZero()
+		served := old.Spec.Configuration.Query
+		// A refused address change on a live binding keeps the addresses it
+		// serves rather than withdrawing it.
+		addressRefusal := ""
+		refuseAddress := func(why, message string) {
+			if live {
+				addressRefusal, msg = why, message
+				return
+			}
+			valid, reason, msg = false, why, message
+		}
+		supplied := r.Options.RequireSuppliedAddresses
+		if valid && supplied && regional == "" {
+			refuseAddress("RegionalAddressRequired", "regionalAddress is required")
 		}
 		if !r.servesRegion(spec.Region) {
 			valid = false
@@ -486,22 +518,62 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else if valid {
 			if r.Options.AddressAllocator == nil {
 				valid = false
-			} else if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, destination, 53); errors.Is(err, model.ErrDestinationRefused) {
-				valid = false
-			} else if err != nil {
-				// A transient API failure is not a refusal: retry rather
-				// than flip an accepted binding to AccessRejected.
-				return fmt.Errorf("claim service destination: %w", err)
-			} else {
+			} else if regional != "" && addressRefusal == "" {
+				if err := r.Options.AddressAllocator.ValidateRegional(spec.Region, regional); err != nil {
+					refuseAddress("RegionalAddressRefused", "regionalAddress must be inside the region's regional resolver range")
+				}
+			}
+			if valid && !supplied {
+				if err := r.Options.AddressAllocator.ClaimDestination(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, destination, 53); errors.Is(err, model.ErrDestinationRefused) {
+					valid = false
+				} else if err != nil {
+					// A transient API failure is not a refusal: retry rather
+					// than flip an accepted binding to AccessRejected.
+					return fmt.Errorf("claim service destination: %w", err)
+				} else {
+					held[model.DestinationKey(spec.Region, destination)] = true
+				}
+			}
+			if valid && !supplied && regional != "" && addressRefusal == "" {
+				if err := r.Options.AddressAllocator.ClaimRegional(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, regional); errors.Is(err, model.ErrDestinationRefused) {
+					refuseAddress("AddressInUse", "regionalAddress is used by another context")
+				} else if err != nil {
+					return fmt.Errorf("claim regional address: %w", err)
+				}
+			}
+			// Without claims, uniqueness is checked against the other bindings
+			// and any allocator claim left from before the switch. It is checked
+			// again until the access is Ready, and the older binding keeps a
+			// shared address.
+			changed := regional != served.RegionalAddress || destination != served.NodeAddress
+			if valid && supplied && regional != "" && addressRefusal == "" && (!live || changed || !accessReady(a)) {
+				var since *metav1.Time
+				if live && !changed {
+					since = &old.CreationTimestamp
+				}
+				inUse, err := r.addressesInUse(ctx, contextObject.UID, spec.Region, destination, regional, since, name)
+				if err == nil && !inUse {
+					inUse, err = r.Options.AddressAllocator.RegionalClaimedByOther(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, regional)
+				}
+				if err != nil {
+					return err
+				}
+				switch {
+				case inUse && live && changed:
+					refuseAddress("AddressInUse", "destinationAddress or regionalAddress is used by another binding")
+				case inUse:
+					valid, reason, msg = false, "AddressInUse", "destinationAddress or regionalAddress is used by another binding"
+				}
+			}
+			if valid {
 				destinations[key] = a.UID
-				held[model.DestinationKey(spec.Region, destination)] = true
 			}
 		}
-		status, reason, msg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
+		status, condReason, condMsg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
 		if !valid {
-			status, reason, msg = metav1.ConditionFalse, "InvalidOrStaleAccess", "context lifetime and destination must be current"
+			status, condReason, condMsg = metav1.ConditionFalse, reason, msg
 		}
-		setCondition(&a.Status.Conditions, dnsValueAccepted, status, reason, msg, a.Generation, now)
+		setCondition(&a.Status.Conditions, dnsValueAccepted, status, condReason, condMsg, a.Generation, now)
 		if !valid {
 			setCondition(&a.Status.Conditions, "Ready", metav1.ConditionFalse, "AccessRejected", "access binding is not accepted", a.Generation, now)
 			if !jsonEqual(base.Status, a.Status) {
@@ -513,15 +585,12 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		}
 		zids := append([]types.UID(nil), zonesByContext[contextObject.UID]...)
 		sort.Slice(zids, func(i, j int) bool { return zids[i] < zids[j] })
-		name := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
 		desired[name] = true
-		var old dnsv1alpha1.DNSResolverBinding
-		err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}, &old)
-		exists := err == nil
-		if err != nil && !apierrors.IsNotFound(err) {
-			return err
+		cluster := regional
+		nodeAddress := spec.DestinationAddress
+		if addressRefusal != "" {
+			cluster, nodeAddress = served.RegionalAddress, served.NodeAddress
 		}
-		cluster := ""
 		generation, revision := int64(1), int64(1)
 		version := dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}
 		if exists {
@@ -529,16 +598,18 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if old.Spec.Tombstone {
 				version.Sequence++
 			}
-			cluster = old.Spec.Configuration.Query.RegionalAddress
+			if cluster == "" {
+				cluster = old.Spec.Configuration.Query.RegionalAddress
+			}
 			generation = old.Spec.Configuration.Generation
 			revision = old.Spec.Configuration.Revision
 			if !zoneUIDsEqual(old.Spec.Configuration.ZoneRefs, zids) {
 				generation++
 				revision++
-			} else if old.Spec.Tombstone {
+			} else if old.Spec.Tombstone || cluster != old.Spec.Configuration.Query.RegionalAddress {
 				revision++
 			}
-		} else {
+		} else if cluster == "" {
 			if r.Options.AddressAllocator == nil {
 				return errors.New("address allocator is required for context binding")
 			}
@@ -547,7 +618,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				return err
 			}
 		}
-		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: map[string]string{referenceProjectLabel: string(r.Options.ProjectUID), "internal-dns.miloapis.com/source-namespace": ns, "internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: spec.DestinationAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
+		bindingLabels := map[string]string{referenceProjectLabel: string(r.Options.ProjectUID), "internal-dns.miloapis.com/source-namespace": ns, "internal-dns.miloapis.com/context-uid": string(contextObject.UID), "internal-dns.miloapis.com/access-uid": string(a.UID), "internal-dns.miloapis.com/region": model.SafeToken(spec.Region), "internal-dns.miloapis.com/shard": model.SafeToken(r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items))}
+		addressLabels(bindingLabels, spec.Region, nodeAddress, cluster)
+		binding := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.Options.PlatformNamespace, Labels: bindingLabels}, Spec: dnsv1alpha1.DNSResolverBindingSpec{Source: dnsv1alpha1.DNSResolverBindingSource{ProjectUID: r.Options.ProjectUID, ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: contextObject.Name, UID: contextObject.UID}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: a.Name, UID: a.UID, Generation: a.Generation}}, Placement: dnsv1alpha1.DNSResolverBindingPlacement{Region: spec.Region, Shard: r.shardForContextRegion(contextObject.UID, spec.Region, existing.Items)}, Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: generation, Revision: revision, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: nodeAddress, RegionalAddress: cluster}, ZoneRefs: zoneReferences(zids, zones), ZoneApices: zoneApices(zids, zones)}, Version: version}}
 		if !exists {
 			if err := r.Create(ctx, binding); err != nil {
 				return err
@@ -555,7 +628,7 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if err := r.Get(ctx, client.ObjectKeyFromObject(binding), binding); err != nil {
 				return err
 			}
-		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns || old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) {
+		} else if !bindingEqual(old.Spec, binding.Spec) || old.Labels["internal-dns.miloapis.com/source-namespace"] != ns || old.Labels[referenceProjectLabel] != string(r.Options.ProjectUID) || old.Labels[regionalAddressLabel] != bindingLabels[regionalAddressLabel] || old.Labels[nodeAddressLabel] != bindingLabels[nodeAddressLabel] {
 			baseOld := old.DeepCopy()
 			old.Spec = binding.Spec
 			old.Labels = binding.Labels
@@ -565,6 +638,12 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			binding = &old
 		} else {
 			binding = &old
+		}
+		a.Status.RegionalAddress = binding.Spec.Configuration.Query.RegionalAddress
+		if addressRefusal != "" {
+			setCondition(&a.Status.Conditions, "AddressesApplied", metav1.ConditionFalse, addressRefusal, msg+"; the previous addresses are still served", a.Generation, now)
+		} else {
+			apimeta.RemoveStatusCondition(&a.Status.Conditions, "AddressesApplied")
 		}
 		a.Status.ObservedGeneration = a.Generation
 		if c := apimeta.FindStatusCondition(binding.Status.Conditions, "Serving"); c != nil && c.Status == metav1.ConditionTrue && binding.Status.ObservedConfigurationRevision == binding.Spec.Configuration.Revision && bindingAckCurrent(binding, now) {
@@ -645,6 +724,84 @@ func (r *Reconciler) retireContextBindings(ctx context.Context, ns string, exist
 // control plane publishes, or in a region no control plane serves any more.
 func (r *Reconciler) ownsBinding(b *dnsv1alpha1.DNSResolverBinding) bool {
 	return b.Spec.Source.ProjectUID == r.Options.ProjectUID && (r.Options.local(b.Spec.Placement.Region) || !r.servesRegion(b.Spec.Placement.Region))
+}
+
+const (
+	regionalAddressLabel = "internal-dns.miloapis.com/regional-address"
+	nodeAddressLabel     = "internal-dns.miloapis.com/node-address"
+)
+
+func addressLabels(into map[string]string, region, node, regional string) {
+	if parsed, err := netip.ParseAddr(node); err == nil {
+		into[nodeAddressLabel] = model.OpaqueToken(region + "/" + parsed.Unmap().String())
+	}
+	if parsed, err := netip.ParseAddr(regional); err == nil {
+		into[regionalAddressLabel] = model.OpaqueToken(parsed.Unmap().String())
+	}
+}
+
+// addressesInUse reports whether another context's binding holds the
+// destination in the region or the regional address. One context may share
+// its regional address across regions, as the allocator gives it. A tombstone
+// holds its addresses until every member has withdrawn it. With since set,
+// only bindings created before it count, so the older of two duplicates
+// keeps the address. Bindings from before address labels are matched by spec.
+func (r *Reconciler) addressesInUse(ctx context.Context, contextUID types.UID, region, node, regional string, since *metav1.Time, self string) (bool, error) {
+	want := map[string]string{}
+	addressLabels(want, region, node, regional)
+	var candidates []dnsv1alpha1.DNSResolverBinding
+	for label, value := range want {
+		var bindings dnsv1alpha1.DNSResolverBindingList
+		if err := r.List(ctx, &bindings, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{label: value}); err != nil {
+			return false, err
+		}
+		candidates = append(candidates, bindings.Items...)
+	}
+	unlabelled, err := labels.NewRequirement(regionalAddressLabel, selection.DoesNotExist, nil)
+	if err != nil {
+		return false, err
+	}
+	var legacy dnsv1alpha1.DNSResolverBindingList
+	if err := r.List(ctx, &legacy, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*unlabelled)}); err != nil {
+		return false, err
+	}
+	for _, b := range legacy.Items {
+		query := b.Spec.Configuration.Query
+		if sameAddressText(query.RegionalAddress, regional) || b.Spec.Placement.Region == region && sameAddressText(query.NodeAddress, node) {
+			candidates = append(candidates, b)
+		}
+	}
+	for i := range candidates {
+		b := &candidates[i]
+		if b.Name == self || b.Spec.Source.ProjectUID == r.Options.ProjectUID && b.Spec.Source.ResolverContextRef.UID == contextUID {
+			continue
+		}
+		if since != nil && (since.Before(&b.CreationTimestamp) || since.Equal(&b.CreationTimestamp) && self < b.Name) {
+			continue
+		}
+		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() {
+			return true, nil
+		}
+		fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
+		if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != "Withdrawn" || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func sameAddressText(a, b string) bool {
+	left, err := netip.ParseAddr(a)
+	if err != nil {
+		return false
+	}
+	right, err := netip.ParseAddr(b)
+	return err == nil && left.Unmap() == right.Unmap()
+}
+
+func accessReady(a *dnsv1alpha1.DNSResolverAccessBinding) bool {
+	ready := apimeta.FindStatusCondition(a.Status.Conditions, "Ready")
+	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == a.Generation
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

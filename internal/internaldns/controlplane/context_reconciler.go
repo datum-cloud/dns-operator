@@ -530,10 +530,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				version.Sequence++
 			}
 			cluster = old.Spec.Configuration.Query.RegionalAddress
-			// A withdrawn tombstone's address may have been released, so a
-			// revived binding is allocated again.
+			// A withdrawn tombstone's address may have been released.
 			if old.Spec.Tombstone && r.Options.AddressAllocator != nil {
-				if cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region); err != nil {
+				if cluster, err = r.Options.AddressAllocator.Reclaim(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, cluster); err != nil {
 					return err
 				}
 			}

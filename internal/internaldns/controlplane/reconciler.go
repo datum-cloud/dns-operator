@@ -85,6 +85,9 @@ type AddressAllocator interface {
 	Allocate(ctx context.Context, projectUID, contextUID types.UID, region string) (cluster string, err error)
 	ClaimDestination(context.Context, types.UID, types.UID, string, string, int32) error
 	ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error
+	// Reclaim keeps a revived binding's address while its claim is the
+	// context's, and allocates again otherwise.
+	Reclaim(ctx context.Context, projectUID, contextUID types.UID, region, address string) (string, error)
 }
 
 func (o *ReconcilerOptions) defaults() {

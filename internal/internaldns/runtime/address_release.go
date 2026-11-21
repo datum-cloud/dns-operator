@@ -40,17 +40,19 @@ func init() {
 func regionalAddressRelease(allocator *platform.Allocator, dryRun bool) func(context.Context) error {
 	return func(ctx context.Context) error {
 		result, err := allocator.ReleaseRegionalAddresses(ctx, time.Now(), regionalAddressGrace, dryRun)
-		// A sweep that could not list anything has nothing to report.
-		if err == nil || result != (platform.RegionalRelease{}) {
+		// A sweep with errors saw only part of the claims.
+		if err == nil {
 			regionalAddressClaims.WithLabelValues("in_use").Set(float64(result.InUse))
 			regionalAddressConflicts.Set(float64(result.Conflicts))
 			if dryRun {
 				regionalAddressClaims.WithLabelValues("releasable").Set(float64(result.Released))
 			} else {
 				regionalAddressClaims.WithLabelValues("releasable").Set(0)
-				regionalAddressReleases.WithLabelValues("released").Add(float64(result.Released))
-				regionalAddressReleases.WithLabelValues("restored").Add(float64(result.Restored))
 			}
+		}
+		if !dryRun {
+			regionalAddressReleases.WithLabelValues("released").Add(float64(result.Released))
+			regionalAddressReleases.WithLabelValues("restored").Add(float64(result.Restored))
 		}
 		if result.Released > 0 || result.Restored > 0 || result.Conflicts > 0 {
 			ctrl.LoggerFrom(ctx).WithName("internal-dns").Info("regional address release sweep", "dryRun", dryRun, "inUse", result.InUse, "released", result.Released, "restored", result.Restored, "conflicts", result.Conflicts)

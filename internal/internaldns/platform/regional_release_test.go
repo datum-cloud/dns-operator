@@ -295,8 +295,8 @@ func TestRegionalReleaseLosesToAConcurrentReuse(t *testing.T) {
 		return c.Delete(ctx, obj, opts...)
 	}})
 	sweeper := &Allocator{Client: cl, Namespace: "platform"}
-	if _, err := sweeper.ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false); err == nil {
-		t.Fatal("a sweep deleted a lease reused after it was read")
+	if result, err := sweeper.ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false); err != nil || result.Released != 0 {
+		t.Fatalf("a sweep that lost to a reuse reported %+v, %v", result, err)
 	}
 	claims, leases := regionalState(t, base)
 	if claims[address] != "project-a/context-a" || leases["project-a/context-a"] != address {
@@ -336,5 +336,55 @@ func TestRegionalReleaseKeepsClaimsWhenSnapshotsFail(t *testing.T) {
 	}
 	if claims, _ := regionalState(t, base); len(claims) != 4 {
 		t.Fatalf("claims were freed without the snapshot: %v", claims)
+	}
+}
+
+func TestRegionalReleaseLosesToAReuseBetweenItsDeletes(t *testing.T) {
+	ctx := context.Background()
+	base := testClient(t)
+	allocator := &Allocator{Client: base, Namespace: "platform"}
+	address, err := allocator.Allocate(ctx, "project-a", "context-a", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletes := 0
+	cl := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+		err := c.Delete(ctx, obj, opts...)
+		if deletes++; deletes == 1 {
+			if again, err := allocator.Allocate(ctx, "project-a", "context-a", "east"); err != nil || again != address {
+				t.Fatalf("reuse changed the address: %v", err)
+			}
+		}
+		return err
+	}})
+	if _, err := (&Allocator{Client: cl, Namespace: "platform"}).ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	claims, leases := regionalState(t, base)
+	if claims[address] != "project-a/context-a" || leases["project-a/context-a"] != address {
+		t.Fatalf("an allocation made between the sweep's deletes lost its claim: %v %v", claims, leases)
+	}
+}
+
+func TestReclaimKeepsAnAddressStillHeldOrFree(t *testing.T) {
+	ctx := context.Background()
+	cl := testClient(t)
+	shared := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96"}
+	address, err := shared.Allocate(ctx, "project-a", "context-a", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := &Allocator{Client: cl, Namespace: "platform", ClusterPrefix: "fd70:200::/96", RegionalPrefixes: map[string]string{"east": "fd70:300::/96"}}
+	if got, err := own.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
+		t.Fatalf("a region given its own pool later moved a revived binding: %s %v", got, err)
+	}
+	if err := cl.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "platform", Name: regionalClaimPrefix + model.OpaqueToken(address)}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := own.Reclaim(ctx, "project-a", "context-a", "east", address); err != nil || got != address {
+		t.Fatalf("a freed address was not taken back: %s %v", got, err)
+	}
+	if got, err := own.Reclaim(ctx, "project-b", "context-b", "east", address); err != nil || got == address {
+		t.Fatalf("another context's address was reclaimed: %s %v", got, err)
 	}
 }

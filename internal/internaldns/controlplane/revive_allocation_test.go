@@ -25,7 +25,12 @@ func (a countingAllocator) Allocate(context.Context, types.UID, types.UID, strin
 	return "fd54::20", nil
 }
 
-func TestRevivedTombstoneIsAllocatedAgain(t *testing.T) {
+func (a countingAllocator) Reclaim(context.Context, types.UID, types.UID, string, string) (string, error) {
+	*a.calls++
+	return "fd54::20", nil
+}
+
+func TestRevivedTombstoneReclaimsItsAddress(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	s := runtime.NewScheme()

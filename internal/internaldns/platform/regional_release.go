@@ -37,19 +37,17 @@ type RegionalRelease struct {
 type addressIndex struct {
 	bindings map[string][]*dnsv1alpha1.DNSResolverBinding
 	shards   map[string]map[string]bool
-	shared   []string
+	regions  []string
 }
 
-func (a *Allocator) indexBindings(bindings []dnsv1alpha1.DNSResolverBinding) addressIndex {
+func indexBindings(bindings []dnsv1alpha1.DNSResolverBinding) addressIndex {
 	index := addressIndex{bindings: map[string][]*dnsv1alpha1.DNSResolverBinding{}, shards: map[string]map[string]bool{}}
 	for i := range bindings {
 		b := &bindings[i]
 		region := b.Spec.Placement.Region
 		if index.shards[region] == nil {
 			index.shards[region] = map[string]bool{}
-			if _, own := a.RegionalPrefixes[region]; !own {
-				index.shared = append(index.shared, region)
-			}
+			index.regions = append(index.regions, region)
 		}
 		index.shards[region][b.Spec.Placement.Shard] = true
 		if address, ok := normalAddress(b.Spec.Configuration.Query.RegionalAddress); ok {
@@ -89,7 +87,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 	if err := a.Client.List(ctx, &bindings, client.InNamespace(a.Namespace)); err != nil {
 		return result, err
 	}
-	index := a.indexBindings(bindings.Items)
+	index := indexBindings(bindings.Items)
 	claims := map[string]*corev1.ConfigMap{}
 	leases := map[string]*corev1.ConfigMap{}
 	for i := range maps.Items {
@@ -103,6 +101,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			leases[cm.Name] = cm
 		}
 	}
+	conflicted := map[string]bool{}
 	cache := &snapshotCache{snapshots: map[string]*model.ServingSnapshot{}, failed: map[string]error{}}
 	var errs error
 	routed := func(owner, address string) (bool, bool) {
@@ -136,14 +135,22 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		}
 		// Lease first: an orphaned lease would hand out an unreserved
 		// address, an orphaned claim is freed by the next sweep.
+		// A conflict means an allocation reused the claim or lease since it
+		// was read.
 		if lease != nil && leaseAddress(lease) == address {
-			if err := a.deleteClaim(ctx, lease); err != nil {
+			if err := a.deleteClaim(ctx, lease); apierrors.IsConflict(err) {
+				result.InUse++
+				continue
+			} else if err != nil {
 				errs = errors.Join(errs, err)
 				continue
 			}
 			delete(leases, lease.Name)
 		}
-		if err := a.deleteClaim(ctx, claim); err != nil {
+		if err := a.deleteClaim(ctx, claim); apierrors.IsConflict(err) {
+			result.InUse++
+			continue
+		} else if err != nil {
 			errs = errors.Join(errs, err)
 			continue
 		}
@@ -158,7 +165,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		}
 		if claim := claims[address]; claim != nil {
 			if claim.Data[claimOwnerKey] != owner {
-				result.Conflicts++
+				conflicted[address] = true
 			}
 			continue
 		}
@@ -181,7 +188,9 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			continue
 		}
 		if !dryRun {
-			if err := a.deleteClaim(ctx, lease); err != nil {
+			if err := a.deleteClaim(ctx, lease); apierrors.IsConflict(err) {
+				continue
+			} else if err != nil {
 				errs = errors.Join(errs, err)
 				continue
 			}
@@ -208,7 +217,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		}
 		if claim := claims[address]; claim != nil {
 			if claim.Data[claimOwnerKey] != owner {
-				result.Conflicts++
+				conflicted[address] = true
 			}
 			continue
 		}
@@ -221,6 +230,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		claims[address] = &corev1.ConfigMap{Data: map[string]string{claimOwnerKey: owner}}
 		result.Restored++
 	}
+	result.Conflicts = len(conflicted)
 	return result, errs
 }
 
@@ -248,7 +258,8 @@ func (a *Allocator) ownerRegions(owner string, index addressIndex) []string {
 	if parts := strings.Split(owner, "/"); len(parts) == 3 {
 		return []string{parts[2]}
 	}
-	return index.shared
+	// A region given its own pool later may still serve shared-pool addresses.
+	return index.regions
 }
 
 func (a *Allocator) regionalRouted(ctx context.Context, index addressIndex, cache *snapshotCache, regions []string, address string) (bool, error) {

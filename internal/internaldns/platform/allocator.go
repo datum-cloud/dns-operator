@@ -302,6 +302,9 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 			if claim.Data["owner"] != owner || claim.Data["address"] != candidate.ClusterAddress {
 				continue
 			}
+			if err := a.stamp(ctx, claim); err != nil {
+				return AddressLease{}, err
+			}
 		} else if err != nil {
 			return AddressLease{}, err
 		}
@@ -342,15 +345,23 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 // A lease whose address another owner has claimed is dropped, and false is
 // returned so a new address is reserved.
 func (a *Allocator) reuseLease(ctx context.Context, stored *corev1.ConfigMap, lease AddressLease) (bool, error) {
-	base := stored.DeepCopy()
-	if stored.Annotations == nil {
-		stored.Annotations = map[string]string{}
-	}
-	stored.Annotations[leaseAllocatedAnnotation] = time.Now().UTC().Format(time.RFC3339)
-	if err := a.Client.Patch(ctx, stored, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	if err := a.stamp(ctx, stored); err != nil {
 		return false, err
 	}
-	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(lease.ClusterAddress), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": lease.Owner, "address": lease.ClusterAddress}}
+	switch claimed, err := a.holdClaim(ctx, lease.Owner, lease.ClusterAddress); {
+	case err != nil:
+		return false, err
+	case claimed:
+		return true, nil
+	default:
+		return false, a.deleteClaim(ctx, stored)
+	}
+}
+
+// holdClaim creates the owner's claim on address, or stamps the owner's
+// existing one, and reports false when another owner holds it.
+func (a *Allocator) holdClaim(ctx context.Context, owner, address string) (bool, error) {
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(address), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": owner, "address": address}}
 	err := a.Client.Create(ctx, claim)
 	if err == nil {
 		return true, nil
@@ -361,10 +372,41 @@ func (a *Allocator) reuseLease(ctx context.Context, stored *corev1.ConfigMap, le
 	if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
 		return false, err
 	}
-	if claim.Data["owner"] == lease.Owner && claim.Data["address"] == lease.ClusterAddress {
-		return true, nil
+	if claim.Data["owner"] != owner || claim.Data["address"] != address {
+		return false, nil
 	}
-	return false, a.deleteClaim(ctx, stored)
+	return true, a.stamp(ctx, claim)
+}
+
+// stamp marks a claim or lease as just allocated, so a release sweep that
+// read it earlier fails its versioned delete and a later one sees it inside
+// the grace period.
+func (a *Allocator) stamp(ctx context.Context, obj *corev1.ConfigMap) error {
+	base := obj.DeepCopy()
+	if obj.Annotations == nil {
+		obj.Annotations = map[string]string{}
+	}
+	obj.Annotations[leaseAllocatedAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	return a.Client.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// Reclaim keeps a revived binding on its previous address when its claim is
+// still the context's, or can be taken back, and allocates again only when
+// another context now holds it.
+func (a *Allocator) Reclaim(ctx context.Context, projectUID, contextUID types.UID, region, address string) (string, error) {
+	if parsed, err := netip.ParseAddr(address); err == nil {
+		address = parsed.Unmap().String()
+		owner := string(projectUID) + "/" + string(contextUID)
+		if prefix, own := a.RegionalPrefixes[region]; own {
+			if pool, err := ParseRegionalPrefix(prefix); err == nil && pool.Contains(parsed.Unmap()) {
+				owner += "/" + region
+			}
+		}
+		if claimed, err := a.holdClaim(ctx, owner, address); err != nil || claimed {
+			return address, err
+		}
+	}
+	return a.Allocate(ctx, projectUID, contextUID, region)
 }
 
 func decodeLease(stored corev1.ConfigMap, owner string) (AddressLease, error) {

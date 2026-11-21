@@ -61,6 +61,10 @@ func (testAllocator) ReleaseDestinations(context.Context, types.UID, map[string]
 	return nil
 }
 
+func (testAllocator) Reclaim(_ context.Context, _, _ types.UID, _, address string) (string, error) {
+	return address, nil
+}
+
 func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)

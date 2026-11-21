@@ -8,11 +8,13 @@ import (
 	"time"
 
 	dnsv1alpha1 "go.miloapis.com/dns/api/v1alpha1"
+	"go.miloapis.com/dns/internal/internaldns/model"
 	"go.miloapis.com/dns/internal/internaldns/platform"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -178,5 +180,72 @@ func TestRequiredSuppliedAddressInUseIsRefused(t *testing.T) {
 	applied := apimeta.FindStatusCondition(access.Status.Conditions, "AddressesApplied")
 	if len(bindings) != 1 || bindings[0].Spec.Configuration.Query.RegionalAddress != "fd54::98" || access.Status.RegionalAddress != "fd54::98" || applied == nil || applied.Reason != "AddressInUse" {
 		t.Fatalf("a taken address replaced a served one: %#v %#v", bindings, access.Status)
+	}
+}
+
+func otherBinding(name, project, contextUID, region, node, regional string, labelled bool) *dnsv1alpha1.DNSResolverBinding {
+	b := &dnsv1alpha1.DNSResolverBinding{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "platform", Labels: map[string]string{}}, Spec: dnsv1alpha1.DNSResolverBindingSpec{
+		Source:        dnsv1alpha1.DNSResolverBindingSource{ProjectUID: types.UID(project), ResolverContextRef: dnsv1alpha1.DNSObjectReference{Name: "ctx", UID: types.UID(contextUID)}, AccessBindingRef: dnsv1alpha1.DNSObjectReference{Name: "access", UID: types.UID(name + "-access")}},
+		Placement:     dnsv1alpha1.DNSResolverBindingPlacement{Region: region, Shard: "shared"},
+		Configuration: dnsv1alpha1.DNSResolverBindingConfiguration{Generation: 1, Revision: 1, Query: dnsv1alpha1.DNSResolverBindingQuery{NodeAddress: node, RegionalAddress: regional}},
+	}}
+	if labelled {
+		addressLabels(b.Labels, region, node, regional)
+	}
+	return b
+}
+
+func TestRequiredSuppliedAddressChecksLegacyHolders(t *testing.T) {
+	legacy := otherBinding("legacy", "other-project", "other-context", "central", "fd70:100::77", "fd54::99", false)
+	if access, bindings := newSuppliedFixture(t, "fd54::99", true, legacy).reconcile(); len(bindings) != 0 || accepted(access).Reason != "AddressInUse" {
+		t.Fatalf("an address an unlabelled binding serves was accepted: %#v", access.Status.Conditions)
+	}
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken("fd54::99"), Namespace: "platform", Labels: map[string]string{"internal-dns.miloapis.com/address-lease": "true"}}, Data: map[string]string{"owner": "other-project/other-context", "address": "fd54::99"}}
+	if access, bindings := newSuppliedFixture(t, "fd54::99", true, claim).reconcile(); len(bindings) != 0 || accepted(access).Reason != "AddressInUse" {
+		t.Fatalf("an address the allocator gave another context was accepted: %#v", access.Status.Conditions)
+	}
+}
+
+func TestRequiredSuppliedAddressIsSharedWithinAContext(t *testing.T) {
+	sameContext := otherBinding("east", "project-uid", "context-uid", "east", "fd70:100::77", "fd54::99", true)
+	if access, bindings := newSuppliedFixture(t, "fd54::99", true, sameContext).reconcile(); len(bindings) != 1 || accepted(access).Status != metav1.ConditionTrue {
+		t.Fatalf("a context's own address in another region was refused: %#v", access.Status.Conditions)
+	}
+}
+
+func TestRevivedTombstoneRechecksItsAddress(t *testing.T) {
+	f := newSuppliedFixture(t, "fd54::99", true)
+	_, bindings := f.reconcile()
+	tombstone := bindings[0]
+	tombstone.Spec.Tombstone = true
+	if err := f.client.Update(context.Background(), &tombstone); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Create(context.Background(), otherBinding("taker", "other-project", "other-context", "central", "fd70:100::77", "fd54::99", true)); err != nil {
+		t.Fatal(err)
+	}
+	access, bindings := f.reconcile()
+	if accepted(access).Reason != "AddressInUse" || !bindings[0].Spec.Tombstone {
+		t.Fatalf("a tombstone was revived onto an address another binding took: %#v", access.Status.Conditions)
+	}
+}
+
+func TestRefusedAddressChangeKeepsServing(t *testing.T) {
+	f := newSuppliedFixture(t, "fd54::99", false)
+	access, _ := f.reconcile()
+	if err := (&platform.Allocator{Client: f.client, Namespace: "platform", ClusterPrefix: "fd54::/64"}).ClaimRegional(context.Background(), "other-project", "other-context", "central", "fd54::98"); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []string{"fd54::98", "fd99::1"} {
+		access.Spec.RegionalAddress = change
+		if err := f.client.Update(context.Background(), access); err != nil {
+			t.Fatal(err)
+		}
+		var bindings []dnsv1alpha1.DNSResolverBinding
+		access, bindings = f.reconcile()
+		applied := apimeta.FindStatusCondition(access.Status.Conditions, "AddressesApplied")
+		if len(bindings) != 1 || bindings[0].Spec.Tombstone || bindings[0].Spec.Configuration.Query.RegionalAddress != "fd54::99" || accepted(access).Status != metav1.ConditionTrue || applied == nil || applied.Status != metav1.ConditionFalse {
+			t.Fatalf("refused change to %s withdrew or moved the binding: %#v %#v", change, bindings, access.Status.Conditions)
+		}
 	}
 }

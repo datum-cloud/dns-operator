@@ -91,6 +91,7 @@ type AddressAllocator interface {
 	ReleaseDestinations(ctx context.Context, projectUID types.UID, held map[string]bool) error
 	ValidateRegional(region, address string) error
 	ClaimRegional(ctx context.Context, projectUID, contextUID types.UID, region, address string) error
+	RegionalClaimedByOther(ctx context.Context, projectUID, contextUID types.UID, region, address string) (bool, error)
 }
 
 func (o *ReconcilerOptions) defaults() {

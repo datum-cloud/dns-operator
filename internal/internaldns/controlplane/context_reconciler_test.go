@@ -69,6 +69,10 @@ func (testAllocator) ClaimRegional(context.Context, types.UID, types.UID, string
 	return nil
 }
 
+func (testAllocator) RegionalClaimedByOther(context.Context, types.UID, types.UID, string, string) (bool, error) {
+	return false, nil
+}
+
 func TestContextAccessPersistsUntilExplicitWithdrawal(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)

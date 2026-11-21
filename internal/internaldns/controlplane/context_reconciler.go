@@ -486,9 +486,28 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 				regional = parsed.Unmap().String()
 			}
 		}
+		name := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
+		var old dnsv1alpha1.DNSResolverBinding
+		err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}, &old)
+		exists := err == nil
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		live := exists && !old.Spec.Tombstone && old.DeletionTimestamp.IsZero()
+		served := old.Spec.Configuration.Query
+		// A refused address change on a live binding keeps the addresses it
+		// serves rather than withdrawing it.
+		addressRefusal := ""
+		refuseAddress := func(why, message string) {
+			if live {
+				addressRefusal, msg = why, message
+				return
+			}
+			valid, reason, msg = false, why, message
+		}
 		supplied := r.Options.RequireSuppliedAddresses
 		if valid && supplied && regional == "" {
-			valid, reason, msg = false, "RegionalAddressRequired", "regionalAddress is required"
+			refuseAddress("RegionalAddressRequired", "regionalAddress is required")
 		}
 		if !r.servesRegion(spec.Region) {
 			valid = false
@@ -499,9 +518,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		} else if valid {
 			if r.Options.AddressAllocator == nil {
 				valid = false
-			} else if regional != "" {
+			} else if regional != "" && addressRefusal == "" {
 				if err := r.Options.AddressAllocator.ValidateRegional(spec.Region, regional); err != nil {
-					valid, reason, msg = false, "RegionalAddressRefused", "regionalAddress must be inside the region's regional resolver range"
+					refuseAddress("RegionalAddressRefused", "regionalAddress must be inside the region's regional resolver range")
 				}
 			}
 			if valid && !supplied {
@@ -515,37 +534,40 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 					held[model.DestinationKey(spec.Region, destination)] = true
 				}
 			}
-			if valid && !supplied && regional != "" {
+			if valid && !supplied && regional != "" && addressRefusal == "" {
 				if err := r.Options.AddressAllocator.ClaimRegional(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, regional); errors.Is(err, model.ErrDestinationRefused) {
-					valid, reason, msg = false, "RegionalAddressRefused", "regionalAddress is already in use"
+					refuseAddress("AddressInUse", "regionalAddress is used by another context")
 				} else if err != nil {
 					return fmt.Errorf("claim regional address: %w", err)
+				}
+			}
+			// Without claims, uniqueness is checked against the other bindings
+			// and any allocator claim left from before the switch. It is checked
+			// again until the access is Ready, and the older binding keeps a
+			// shared address.
+			changed := regional != served.RegionalAddress || destination != served.NodeAddress
+			if valid && supplied && regional != "" && addressRefusal == "" && (!live || changed || !accessReady(a)) {
+				var since *metav1.Time
+				if live && !changed {
+					since = &old.CreationTimestamp
+				}
+				inUse, err := r.addressesInUse(ctx, contextObject.UID, spec.Region, destination, regional, since, name)
+				if err == nil && !inUse {
+					inUse, err = r.Options.AddressAllocator.RegionalClaimedByOther(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region, regional)
+				}
+				if err != nil {
+					return err
+				}
+				switch {
+				case inUse && live && changed:
+					refuseAddress("AddressInUse", "destinationAddress or regionalAddress is used by another binding")
+				case inUse:
+					valid, reason, msg = false, "AddressInUse", "destinationAddress or regionalAddress is used by another binding"
 				}
 			}
 			if valid {
 				destinations[key] = a.UID
 			}
-		}
-		name := "binding-" + model.OpaqueToken(string(r.Options.ProjectUID) + "/" + string(a.UID))[:20]
-		var old dnsv1alpha1.DNSResolverBinding
-		err := r.Get(ctx, client.ObjectKey{Namespace: r.Options.PlatformNamespace, Name: name}, &old)
-		exists := err == nil
-		if err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		// Without claims, uniqueness is checked against other bindings when an
-		// address is first used. A changed address that is taken keeps the
-		// binding on the address it already serves.
-		addressConflict := false
-		if valid && supplied && (!exists || old.Spec.Configuration.Query.RegionalAddress != regional || old.Spec.Configuration.Query.NodeAddress != spec.DestinationAddress) {
-			inUse, err := r.addressesInUse(ctx, a.UID, spec.Region, destination, regional)
-			if err != nil {
-				return err
-			}
-			if inUse && !exists {
-				valid, reason, msg = false, "AddressInUse", "destinationAddress or regionalAddress is used by another binding"
-			}
-			addressConflict = inUse && exists
 		}
 		status, condReason, condMsg := metav1.ConditionTrue, dnsValueAccepted, "access binding is current"
 		if !valid {
@@ -566,6 +588,9 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 		desired[name] = true
 		cluster := regional
 		nodeAddress := spec.DestinationAddress
+		if addressRefusal != "" {
+			cluster, nodeAddress = served.RegionalAddress, served.NodeAddress
+		}
 		generation, revision := int64(1), int64(1)
 		version := dnsv1alpha1.DNSResolverAccessVersion{Epoch: 1, Sequence: 1}
 		if exists {
@@ -573,18 +598,8 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			if old.Spec.Tombstone {
 				version.Sequence++
 			}
-			if cluster == "" || addressConflict {
+			if cluster == "" {
 				cluster = old.Spec.Configuration.Query.RegionalAddress
-			}
-			// A withdrawn tombstone's address may have been released, so a
-			// revived binding without a supplied address is allocated again.
-			if old.Spec.Tombstone && regional == "" && !supplied {
-				if cluster, err = r.Options.AddressAllocator.Allocate(ctx, r.Options.ProjectUID, contextObject.UID, spec.Region); err != nil {
-					return err
-				}
-			}
-			if addressConflict {
-				nodeAddress = old.Spec.Configuration.Query.NodeAddress
 			}
 			generation = old.Spec.Configuration.Generation
 			revision = old.Spec.Configuration.Revision
@@ -625,8 +640,8 @@ func (r *Reconciler) reconcileContextBindings(ctx context.Context, ns string, as
 			binding = &old
 		}
 		a.Status.RegionalAddress = binding.Spec.Configuration.Query.RegionalAddress
-		if addressConflict {
-			setCondition(&a.Status.Conditions, "AddressesApplied", metav1.ConditionFalse, "AddressInUse", "the requested addresses are used by another binding; the previous addresses are still served", a.Generation, now)
+		if addressRefusal != "" {
+			setCondition(&a.Status.Conditions, "AddressesApplied", metav1.ConditionFalse, addressRefusal, msg+"; the previous addresses are still served", a.Generation, now)
 		} else {
 			apimeta.RemoveStatusCondition(&a.Status.Conditions, "AddressesApplied")
 		}
@@ -725,32 +740,68 @@ func addressLabels(into map[string]string, region, node, regional string) {
 	}
 }
 
-// addressesInUse reports whether a binding for another access still holds the
-// destination in the region or the regional address. A tombstone holds its
-// addresses until every member has withdrawn it.
-func (r *Reconciler) addressesInUse(ctx context.Context, access types.UID, region, node, regional string) (bool, error) {
+// addressesInUse reports whether another context's binding holds the
+// destination in the region or the regional address. One context may share
+// its regional address across regions, as the allocator gives it. A tombstone
+// holds its addresses until every member has withdrawn it. With since set,
+// only bindings created before it count, so the older of two duplicates
+// keeps the address. Bindings from before address labels are matched by spec.
+func (r *Reconciler) addressesInUse(ctx context.Context, contextUID types.UID, region, node, regional string, since *metav1.Time, self string) (bool, error) {
 	want := map[string]string{}
 	addressLabels(want, region, node, regional)
+	var candidates []dnsv1alpha1.DNSResolverBinding
 	for label, value := range want {
 		var bindings dnsv1alpha1.DNSResolverBindingList
 		if err := r.List(ctx, &bindings, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabels{label: value}); err != nil {
 			return false, err
 		}
-		for i := range bindings.Items {
-			b := &bindings.Items[i]
-			if b.Spec.Source.AccessBindingRef.UID == access && b.Spec.Source.ProjectUID == r.Options.ProjectUID {
-				continue
-			}
-			if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() {
-				return true, nil
-			}
-			fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
-			if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != "Withdrawn" || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
-				return true, nil
-			}
+		candidates = append(candidates, bindings.Items...)
+	}
+	unlabelled, err := labels.NewRequirement(regionalAddressLabel, selection.DoesNotExist, nil)
+	if err != nil {
+		return false, err
+	}
+	var legacy dnsv1alpha1.DNSResolverBindingList
+	if err := r.List(ctx, &legacy, client.InNamespace(r.Options.PlatformNamespace), client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*unlabelled)}); err != nil {
+		return false, err
+	}
+	for _, b := range legacy.Items {
+		query := b.Spec.Configuration.Query
+		if sameAddressText(query.RegionalAddress, regional) || b.Spec.Placement.Region == region && sameAddressText(query.NodeAddress, node) {
+			candidates = append(candidates, b)
+		}
+	}
+	for i := range candidates {
+		b := &candidates[i]
+		if b.Name == self || b.Spec.Source.ProjectUID == r.Options.ProjectUID && b.Spec.Source.ResolverContextRef.UID == contextUID {
+			continue
+		}
+		if since != nil && (since.Before(&b.CreationTimestamp) || since.Equal(&b.CreationTimestamp) && self < b.Name) {
+			continue
+		}
+		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() {
+			return true, nil
+		}
+		fullyReplicated := apimeta.FindStatusCondition(b.Status.Conditions, "FullyReplicated")
+		if b.Spec.Tombstone && (b.Status.ObservedConfigurationRevision != b.Spec.Configuration.Revision || b.Status.Phase != "Withdrawn" || fullyReplicated == nil || fullyReplicated.Status != metav1.ConditionTrue || fullyReplicated.ObservedGeneration != b.Generation) {
+			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func sameAddressText(a, b string) bool {
+	left, err := netip.ParseAddr(a)
+	if err != nil {
+		return false
+	}
+	right, err := netip.ParseAddr(b)
+	return err == nil && left.Unmap() == right.Unmap()
+}
+
+func accessReady(a *dnsv1alpha1.DNSResolverAccessBinding) bool {
+	ready := apimeta.FindStatusCondition(a.Status.Conditions, "Ready")
+	return ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == a.Generation
 }
 
 func (r *Reconciler) releaseDestinations(ctx context.Context, held map[string]bool) error {

@@ -103,21 +103,17 @@ func (a *Allocator) ClaimRegional(ctx context.Context, projectUID, contextUID ty
 		return err
 	}
 	address = netip.MustParseAddr(address).Unmap().String()
-	owner := string(projectUID) + "/" + string(contextUID)
-	if _, own := a.RegionalPrefixes[region]; own {
-		owner += "/" + region
-	}
+	owner := a.regionalOwner(projectUID, contextUID, region)
 	claim := a.regionalClaim(owner, address)
 	var existing corev1.ConfigMap
 	switch err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); {
 	case err == nil:
 	case apierrors.IsNotFound(err):
 		if err := a.Client.Create(ctx, claim); err == nil {
-			return nil
+			existing = *claim
 		} else if !apierrors.IsAlreadyExists(err) {
 			return err
-		}
-		if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
+		} else if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), &existing); err != nil {
 			return err
 		}
 	default:
@@ -126,7 +122,40 @@ func (a *Allocator) ClaimRegional(ctx context.Context, projectUID, contextUID ty
 	if existing.Data["owner"] != owner || existing.Data["address"] != address {
 		return fmt.Errorf("%w: regional address is already reserved", model.ErrDestinationRefused)
 	}
+	if claimed, err := a.destinationClaimed(ctx, address); err != nil {
+		return err
+	} else if claimed {
+		if err := a.deleteClaim(ctx, &existing); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: regional address is reserved as a service destination", model.ErrDestinationRefused)
+	}
 	return nil
+}
+
+func (a *Allocator) regionalOwner(projectUID, contextUID types.UID, region string) string {
+	owner := string(projectUID) + "/" + string(contextUID)
+	if _, own := a.RegionalPrefixes[region]; own {
+		owner += "/" + region
+	}
+	return owner
+}
+
+// RegionalClaimedByOther reports, without writing, whether another context
+// holds a regional claim on address.
+func (a *Allocator) RegionalClaimedByOther(ctx context.Context, projectUID, contextUID types.UID, region, address string) (bool, error) {
+	parsed, err := netip.ParseAddr(address)
+	if err != nil {
+		return false, err
+	}
+	var claim corev1.ConfigMap
+	if err := a.Client.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-claim-" + model.OpaqueToken(parsed.Unmap().String())}, &claim); apierrors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	owner := claim.Data["owner"]
+	return owner != a.regionalOwner(projectUID, contextUID, region) && owner != string(projectUID)+"/"+string(contextUID), nil
 }
 
 // ClaimDestination atomically reserves an integration-selected service

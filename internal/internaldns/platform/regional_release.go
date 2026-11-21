@@ -28,18 +28,54 @@ const (
 	claimOwnerKey       = "owner"
 )
 
-// RegionalRelease counts one sweep. Released counts what a dry run would free.
+// RegionalRelease counts one sweep. Released counts what a dry run would
+// free. Conflicts counts routed addresses whose claim names another owner.
 type RegionalRelease struct {
-	InUse, Released, Restored int
+	InUse, Released, Restored, Conflicts int
+}
+
+type addressIndex struct {
+	bindings map[string][]*dnsv1alpha1.DNSResolverBinding
+	shards   map[string]map[string]bool
+	shared   []string
+}
+
+func (a *Allocator) indexBindings(bindings []dnsv1alpha1.DNSResolverBinding) addressIndex {
+	index := addressIndex{bindings: map[string][]*dnsv1alpha1.DNSResolverBinding{}, shards: map[string]map[string]bool{}}
+	for i := range bindings {
+		b := &bindings[i]
+		region := b.Spec.Placement.Region
+		if index.shards[region] == nil {
+			index.shards[region] = map[string]bool{}
+			if _, own := a.RegionalPrefixes[region]; !own {
+				index.shared = append(index.shared, region)
+			}
+		}
+		index.shards[region][b.Spec.Placement.Shard] = true
+		if address, ok := normalAddress(b.Spec.Configuration.Query.RegionalAddress); ok {
+			index.bindings[address] = append(index.bindings[address], b)
+		}
+	}
+	return index
+}
+
+// errSnapshotUnavailable marks a shard whose snapshot failed to load earlier
+// in the sweep; its error is reported once.
+var errSnapshotUnavailable = errors.New("serving snapshot unavailable")
+
+type snapshotCache struct {
+	snapshots map[string]*model.ServingSnapshot
+	failed    map[string]error
 }
 
 // ReleaseRegionalAddresses frees regional claims and owner leases by the
 // ReleaseDestinations rule: no binding routes the address and no committed
 // serving snapshot carries it. Claims are matched by owner data, not project,
 // because older claims carry no project label and some projects no longer
-// run. Anything younger than grace may still be awaiting its binding. A live
-// binding whose claim is missing gets it back, which repairs an allocation
-// that raced a release. With dryRun nothing is written.
+// run. Anything allocated within grace may still be awaiting its binding;
+// Allocate restamps a lease it reuses, so its versioned delete also fails. A
+// live binding whose claim is missing gets it back. With dryRun nothing is
+// written.
 func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time, grace time.Duration, dryRun bool) (RegionalRelease, error) {
 	var result RegionalRelease
 	if a.Client == nil || a.Namespace == "" {
@@ -53,6 +89,7 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 	if err := a.Client.List(ctx, &bindings, client.InNamespace(a.Namespace)); err != nil {
 		return result, err
 	}
+	index := a.indexBindings(bindings.Items)
 	claims := map[string]*corev1.ConfigMap{}
 	leases := map[string]*corev1.ConfigMap{}
 	for i := range maps.Items {
@@ -66,30 +103,35 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 			leases[cm.Name] = cm
 		}
 	}
-	snapshots := map[string]*model.ServingSnapshot{}
+	cache := &snapshotCache{snapshots: map[string]*model.ServingSnapshot{}, failed: map[string]error{}}
 	var errs error
+	routed := func(owner, address string) (bool, bool) {
+		ok, err := a.regionalRouted(ctx, index, cache, a.ownerRegions(owner, index), address)
+		if err != nil {
+			if !errors.Is(err, errSnapshotUnavailable) {
+				errs = errors.Join(errs, err)
+			}
+			return false, false
+		}
+		return ok, true
+	}
 
 	for address, claim := range claims {
 		owner := claim.Data[claimOwnerKey]
 		if !a.releasesOwner(owner) {
 			continue
 		}
-		routed, err := a.regionalRouted(ctx, bindings.Items, snapshots, a.ownerRegions(owner, bindings.Items), address)
-		if err != nil {
-			errs = errors.Join(errs, err)
-			continue
-		}
-		if routed {
-			result.InUse++
+		inUse, known := routed(owner, address)
+		if !known {
 			continue
 		}
 		lease := leases[regionalLeasePrefix+model.OpaqueToken(owner)]
-		if young(claim, now, grace) || lease != nil && young(lease, now, grace) {
+		if inUse || young(claim, now, grace) || lease != nil && young(lease, now, grace) {
 			result.InUse++
 			continue
 		}
-		result.Released++
 		if dryRun {
+			result.Released++
 			continue
 		}
 		// Lease first: an orphaned lease would hand out an unreserved
@@ -99,31 +141,39 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 				errs = errors.Join(errs, err)
 				continue
 			}
+			delete(leases, lease.Name)
 		}
 		if err := a.deleteClaim(ctx, claim); err != nil {
 			errs = errors.Join(errs, err)
+			continue
 		}
+		delete(claims, address)
+		result.Released++
 	}
 
 	for _, lease := range leases {
-		address := leaseAddress(lease)
-		owner := leaseOwner(lease)
-		if address == "" || owner == "" || claims[address] != nil || !a.releasesOwner(owner) {
+		address, owner := leaseAddress(lease), leaseOwner(lease)
+		if address == "" || owner == "" || !a.releasesOwner(owner) {
 			continue
 		}
-		routed, err := a.regionalRouted(ctx, bindings.Items, snapshots, a.ownerRegions(owner, bindings.Items), address)
-		if err != nil {
-			errs = errors.Join(errs, err)
+		if claim := claims[address]; claim != nil {
+			if claim.Data[claimOwnerKey] != owner {
+				result.Conflicts++
+			}
 			continue
 		}
-		if routed {
+		inUse, known := routed(owner, address)
+		if !known {
+			continue
+		}
+		if inUse {
 			if !dryRun {
 				if err := a.restoreClaim(ctx, owner, address); err != nil {
 					errs = errors.Join(errs, err)
 					continue
 				}
 			}
-			claims[address] = &corev1.ConfigMap{}
+			claims[address] = &corev1.ConfigMap{Data: map[string]string{claimOwnerKey: owner}}
 			result.Restored++
 			continue
 		}
@@ -133,18 +183,17 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		if !dryRun {
 			if err := a.deleteClaim(ctx, lease); err != nil {
 				errs = errors.Join(errs, err)
+				continue
 			}
 		}
+		result.Released++
 	}
 
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
 		region := b.Spec.Placement.Region
 		address, ok := normalAddress(b.Spec.Configuration.Query.RegionalAddress)
-		if !ok || b.Spec.Tombstone || !b.DeletionTimestamp.IsZero() || claims[address] != nil || !a.releasesRegion(region) {
-			continue
-		}
-		if b.Spec.Source.ProjectUID == "" || b.Spec.Source.ResolverContextRef.UID == "" {
+		if !ok || b.Spec.Tombstone || !b.DeletionTimestamp.IsZero() || !a.releasesRegion(region) || b.Spec.Source.ProjectUID == "" || b.Spec.Source.ResolverContextRef.UID == "" {
 			continue
 		}
 		owner := string(b.Spec.Source.ProjectUID) + "/" + string(b.Spec.Source.ResolverContextRef.UID)
@@ -157,13 +206,19 @@ func (a *Allocator) ReleaseRegionalAddresses(ctx context.Context, now time.Time,
 		if !a.releasesOwner(owner) {
 			continue
 		}
+		if claim := claims[address]; claim != nil {
+			if claim.Data[claimOwnerKey] != owner {
+				result.Conflicts++
+			}
+			continue
+		}
 		if !dryRun {
 			if err := a.restoreClaim(ctx, owner, address); err != nil {
 				errs = errors.Join(errs, err)
 				continue
 			}
 		}
-		claims[address] = &corev1.ConfigMap{}
+		claims[address] = &corev1.ConfigMap{Data: map[string]string{claimOwnerKey: owner}}
 		result.Restored++
 	}
 	return result, errs
@@ -189,32 +244,15 @@ func (a *Allocator) releasesRegion(region string) bool {
 }
 
 // ownerRegions lists the regions whose snapshots may carry the owner's address.
-func (a *Allocator) ownerRegions(owner string, bindings []dnsv1alpha1.DNSResolverBinding) []string {
+func (a *Allocator) ownerRegions(owner string, index addressIndex) []string {
 	if parts := strings.Split(owner, "/"); len(parts) == 3 {
 		return []string{parts[2]}
 	}
-	var regions []string
-	for _, b := range bindings {
-		region := b.Spec.Placement.Region
-		if _, own := a.RegionalPrefixes[region]; !own && !slices.Contains(regions, region) {
-			regions = append(regions, region)
-		}
-	}
-	return regions
+	return index.shared
 }
 
-func (a *Allocator) regionalRouted(ctx context.Context, bindings []dnsv1alpha1.DNSResolverBinding, snapshots map[string]*model.ServingSnapshot, regions []string, address string) (bool, error) {
-	shards := map[string]map[string]bool{}
-	for _, b := range bindings {
-		if slices.Contains(regions, b.Spec.Placement.Region) {
-			if shards[b.Spec.Placement.Region] == nil {
-				shards[b.Spec.Placement.Region] = map[string]bool{}
-			}
-			shards[b.Spec.Placement.Region][b.Spec.Placement.Shard] = true
-		}
-		if !sameAddress(b.Spec.Configuration.Query.RegionalAddress, address) {
-			continue
-		}
+func (a *Allocator) regionalRouted(ctx context.Context, index addressIndex, cache *snapshotCache, regions []string, address string) (bool, error) {
+	for _, b := range index.bindings[address] {
 		if !b.Spec.Tombstone && b.DeletionTimestamp.IsZero() {
 			return true, nil
 		}
@@ -223,10 +261,13 @@ func (a *Allocator) regionalRouted(ctx context.Context, bindings []dnsv1alpha1.D
 			return true, nil
 		}
 	}
-	for region, regionShards := range shards {
-		for shard := range regionShards {
+	for _, region := range regions {
+		for shard := range index.shards[region] {
 			key := region + "/" + shard
-			snapshot, cached := snapshots[key]
+			if cache.failed[key] != nil {
+				return false, errSnapshotUnavailable
+			}
+			snapshot, cached := cache.snapshots[key]
 			if !cached {
 				reader := a.Client
 				if a.RegionClient != nil {
@@ -234,9 +275,10 @@ func (a *Allocator) regionalRouted(ctx context.Context, bindings []dnsv1alpha1.D
 				}
 				var err error
 				if _, snapshot, err = LoadCommittedServingSnapshot(ctx, reader, a.Namespace, region, shard); err != nil {
+					cache.failed[key] = err
 					return false, err
 				}
-				snapshots[key] = snapshot
+				cache.snapshots[key] = snapshot
 			}
 			if snapshot == nil {
 				continue
@@ -263,6 +305,9 @@ func young(obj *corev1.ConfigMap, now time.Time, grace time.Duration) bool {
 	created := obj.CreationTimestamp.Time
 	if lease, err := decodeStoredLease(obj); err == nil && lease.CreatedAt.After(created) {
 		created = lease.CreatedAt
+	}
+	if stamped, err := time.Parse(time.RFC3339, obj.Annotations[leaseAllocatedAnnotation]); err == nil && stamped.After(created) {
+		created = stamped
 	}
 	return !created.IsZero() && now.Sub(created) < grace
 }

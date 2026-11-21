@@ -5,6 +5,7 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // regionalState lists the regional claims (address -> owner) and the owner
@@ -271,5 +273,68 @@ func TestRegionalReleaseFreesOrphanedLeaseAndClaim(t *testing.T) {
 	}
 	if claims, leases := regionalState(t, cl); len(claims) != 0 || len(leases) != 0 {
 		t.Fatalf("orphans were kept: claims %v leases %v (addresses %s %s)", claims, leases, first, second)
+	}
+}
+
+func TestRegionalReleaseLosesToAConcurrentReuse(t *testing.T) {
+	ctx := context.Background()
+	base := testClient(t)
+	allocator := &Allocator{Client: base, Namespace: "platform"}
+	address, err := allocator.Allocate(ctx, "project-a", "context-a", "east")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raced := false
+	cl := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+		if !raced {
+			raced = true
+			if again, err := allocator.Allocate(ctx, "project-a", "context-a", "east"); err != nil || again != address {
+				t.Fatalf("reuse changed the address: %v", err)
+			}
+		}
+		return c.Delete(ctx, obj, opts...)
+	}})
+	sweeper := &Allocator{Client: cl, Namespace: "platform"}
+	if _, err := sweeper.ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false); err == nil {
+		t.Fatal("a sweep deleted a lease reused after it was read")
+	}
+	claims, leases := regionalState(t, base)
+	if claims[address] != "project-a/context-a" || leases["project-a/context-a"] != address {
+		t.Fatalf("a reused allocation lost its claim or lease: %v %v", claims, leases)
+	}
+	if _, err := sweeper.ReleaseRegionalAddresses(ctx, time.Now(), 10*time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := regionalState(t, base); claims[address] == "" {
+		t.Fatal("a just-reused lease was freed within its grace")
+	}
+}
+
+func TestRegionalReleaseKeepsClaimsWhenSnapshotsFail(t *testing.T) {
+	ctx := context.Background()
+	base := testClient(t)
+	allocator := &Allocator{Client: base, Namespace: "platform"}
+	for _, owner := range []string{"a", "b", "c"} {
+		if _, err := allocator.Allocate(ctx, "project-a", types.UID(owner), "east"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := base.Create(ctx, regionalBinding("other", "other", "east", "fd54::ffff")); err != nil {
+		t.Fatal(err)
+	}
+	loads := 0
+	cl := interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if strings.HasPrefix(key.Name, "dns-shard-owner-") {
+			loads++
+			return errors.New("broker unavailable")
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}})
+	result, err := (&Allocator{Client: cl, Namespace: "platform"}).ReleaseRegionalAddresses(ctx, time.Now().Add(time.Hour), 10*time.Minute, false)
+	if err == nil || loads != 1 || result.Released != 0 {
+		t.Fatalf("an unreadable snapshot did not hold every claim once: loads %d, %+v, %v", loads, result, err)
+	}
+	if claims, _ := regionalState(t, base); len(claims) != 4 {
+		t.Fatalf("claims were freed without the snapshot: %v", claims)
 	}
 }

@@ -24,6 +24,7 @@ import (
 
 const leaseLabel = "internal-dns.miloapis.com/address-lease"
 const destinationProjectLabel = "internal-dns.miloapis.com/destination-project"
+const leaseAllocatedAnnotation = "internal-dns.miloapis.com/allocated-at"
 
 type AddressLease struct {
 	Owner          string    `json:"owner"`
@@ -279,7 +280,13 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 	key := client.ObjectKey{Namespace: a.Namespace, Name: "dns-address-owner-" + model.OpaqueToken(owner)}
 	var stored corev1.ConfigMap
 	if err := a.Client.Get(ctx, key, &stored); err == nil {
-		return decodeLease(stored, owner)
+		lease, err := decodeLease(stored, owner)
+		if err != nil {
+			return lease, err
+		}
+		if reused, err := a.reuseLease(ctx, &stored, lease); err != nil || reused {
+			return lease, err
+		}
 	} else if !apierrors.IsNotFound(err) {
 		return AddressLease{}, err
 	}
@@ -327,6 +334,37 @@ func (a *Allocator) reserve(ctx context.Context, projectUID, contextUID, owner s
 		return candidate, nil
 	}
 	return AddressLease{}, fmt.Errorf("address collision budget exhausted")
+}
+
+// reuseLease stamps an existing lease as just allocated, so a release sweep
+// that read it before this allocation fails its versioned delete, and one that
+// reads it after treats it as new. The lease's claim is recreated if missing.
+// A lease whose address another owner has claimed is dropped, and false is
+// returned so a new address is reserved.
+func (a *Allocator) reuseLease(ctx context.Context, stored *corev1.ConfigMap, lease AddressLease) (bool, error) {
+	base := stored.DeepCopy()
+	if stored.Annotations == nil {
+		stored.Annotations = map[string]string{}
+	}
+	stored.Annotations[leaseAllocatedAnnotation] = time.Now().UTC().Format(time.RFC3339)
+	if err := a.Client.Patch(ctx, stored, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return false, err
+	}
+	claim := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "dns-address-claim-" + model.OpaqueToken(lease.ClusterAddress), Namespace: a.Namespace, Labels: map[string]string{leaseLabel: "true"}}, Data: map[string]string{"owner": lease.Owner, "address": lease.ClusterAddress}}
+	err := a.Client.Create(ctx, claim)
+	if err == nil {
+		return true, nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return false, err
+	}
+	if err := a.Client.Get(ctx, client.ObjectKeyFromObject(claim), claim); err != nil {
+		return false, err
+	}
+	if claim.Data["owner"] == lease.Owner && claim.Data["address"] == lease.ClusterAddress {
+		return true, nil
+	}
+	return false, a.deleteClaim(ctx, stored)
 }
 
 func decodeLease(stored corev1.ConfigMap, owner string) (AddressLease, error) {
